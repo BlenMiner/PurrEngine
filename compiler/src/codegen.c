@@ -192,9 +192,10 @@ static void gen_as(gen *g, sb *o, expr *e, const type want)
 static void gen_float_literal(sb *o, str text)
 {
     if (text.len > 0 && (text.ptr[text.len - 1] == 'f' || text.ptr[text.len - 1] == 'F')) text.len--;
-    sb_putn(o, text.ptr, (size_t)text.len);
     bool has_point = false;
     for (int i = 0; i < text.len; i++) {
+        if (text.ptr[i] == '_') continue; // C has no digit separators.
+        sb_putn(o, &text.ptr[i], 1);
         if (text.ptr[i] == '.' || text.ptr[i] == 'e' || text.ptr[i] == 'E') has_point = true;
     }
     sb_put(o, has_point ? "f" : ".0f");

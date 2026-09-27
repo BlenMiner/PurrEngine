@@ -78,27 +78,55 @@ static bool skip_trivia(lexer *lx)
     return true;
 }
 
+static bool is_digit_in_base(const char c, const int base)
+{
+    if (base == 2) return c == '0' || c == '1';
+    if (base == 16) return isxdigit((unsigned char)c);
+    return isdigit((unsigned char)c);
+}
+
+// Digits with optional `_` separators, as in C#: a run of underscores is only
+// consumed when a digit follows it, so `1_` stops before the underscore and is
+// then rejected as an invalid number. `leading` allows `_` before the first
+// digit, which C# permits right after a 0x or 0b prefix.
+static void lex_digits(lexer *lx, const int base, const bool leading)
+{
+    bool any = false;
+    while (lx->p < lx->end) {
+        if (is_digit_in_base(*lx->p, base)) {
+            lx->p++;
+            any = true;
+            continue;
+        }
+        if (*lx->p != '_' || (!any && !leading)) break;
+        const char *q = lx->p;
+        while (q < lx->end && *q == '_') q++;
+        if (q >= lx->end || !is_digit_in_base(*q, base)) break;
+        lx->p = q;
+    }
+}
+
 // Numbers: 12, 1.5, 1e3, 2.5e-3, with an optional f suffix meaning float.
-// Integers can also be hex (0x1F) or binary (0b1010).
+// Integers can also be hex (0x1F) or binary (0b1010). `_` separates digits.
 static tok_kind lex_number(lexer *lx)
 {
     if (*lx->p == '0' && lx->p + 1 < lx->end) {
         const char prefix = lx->p[1];
-        bool hex = prefix == 'x' || prefix == 'X';
-        bool binary = prefix == 'b' || prefix == 'B';
+        const bool hex = prefix == 'x' || prefix == 'X';
+        const bool binary = prefix == 'b' || prefix == 'B';
         if (hex || binary) {
             lx->p += 2;
-            while (lx->p < lx->end && (hex ? isxdigit((unsigned char)*lx->p) : (*lx->p == '0' || *lx->p == '1'))) lx->p++;
+            lex_digits(lx, hex ? 16 : 2, true);
             return T_INT;
         }
     }
 
     bool is_float = false;
-    while (lx->p < lx->end && isdigit((unsigned char)*lx->p)) lx->p++;
+    lex_digits(lx, 10, false);
     if (lx->p + 1 < lx->end && *lx->p == '.' && isdigit((unsigned char)lx->p[1])) {
         is_float = true;
         lx->p++;
-        while (lx->p < lx->end && isdigit((unsigned char)*lx->p)) lx->p++;
+        lex_digits(lx, 10, false);
     }
     if (lx->p < lx->end && (*lx->p == 'e' || *lx->p == 'E')) {
         const char *save = lx->p;
@@ -106,7 +134,7 @@ static tok_kind lex_number(lexer *lx)
         if (lx->p < lx->end && (*lx->p == '+' || *lx->p == '-')) lx->p++;
         if (lx->p < lx->end && isdigit((unsigned char)*lx->p)) {
             is_float = true;
-            while (lx->p < lx->end && isdigit((unsigned char)*lx->p)) lx->p++;
+            lex_digits(lx, 10, false);
         } else {
             lx->p = save;
         }
