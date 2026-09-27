@@ -1,0 +1,2 @@
+namespace Items;
+component Health { int value; }

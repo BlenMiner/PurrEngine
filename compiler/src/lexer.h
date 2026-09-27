@@ -7,6 +7,7 @@ typedef enum tok_kind {
     T_IDENT,
     T_INT,
     T_FLOAT,
+    T_STRING, // Text in double quotes; the token's text excludes them.
 
     // Keywords
     T_COMPONENT,
@@ -76,6 +77,10 @@ typedef struct token {
 
 // Returns an array terminated by a T_EOF token, or NULL after reporting errors.
 token *lex(const source *src);
+
+// Like lex, but returns the tokens even after errors, skipping what it couldn't
+// read. For editors, which need tokens while code is half typed.
+token *lex_all(const source *src);
 
 const char *tok_kind_name(tok_kind kind);
 

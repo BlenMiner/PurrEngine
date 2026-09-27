@@ -2,16 +2,21 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "types.h"
 
-// Every built-in function maps to a purr/math.h function named
+// Every built-in math function maps to a purr/math.h function named
 // purr_<lowercase name>_<type suffix>, for example Math.Dot on float3 is
-// purr_dot_f3. Formulas and semantics follow Unity.Mathematics.
+// purr_dot_f3. Formulas and semantics follow Unity.Mathematics. Draw functions
+// map to purr/draw.h.
 
 static const type T_F = {TY_FLOAT, NULL};
+static const type T_F2 = {TY_FLOAT2, NULL};
 static const type T_F3 = {TY_FLOAT3, NULL};
+static const type T_COLOR = {TY_COLOR, NULL};
+static const type T_STR = {TY_STRING, NULL};
 static const type T_Q = {TY_QUATERNION, NULL};
 static const type T_F4X4 = {TY_FLOAT4X4, NULL};
 static const type T_NONE = {TY_VOID, NULL};
@@ -34,49 +39,76 @@ static const struct {
     {"Lerp", 3, false}, {"Unlerp", 3, false}, {"SmoothStep", 3, false},
 };
 
+#define COMPONENTWISE_COUNT (sizeof componentwise / sizeof componentwise[0])
+
 // ---------------------------------------------------------------------------
 // Fixed signatures, tried in order; the first whose parameters accept the
 // arguments (with implicit int -> float widening) wins.
+//
+// The table is built once and kept for the whole process, so its strings are
+// malloc'd rather than taken from the arena, which the language server resets.
 
 typedef struct signature {
     const char *owner;
     const char *name;
     type result;
     int argc;
-    type params[3];
+    type params[4];
     const char *c_name;
+    const char *param_names; // "center, radius, color", or NULL
+    const char *doc;         // One line for editors, or NULL
 } signature;
 
-static VEC(signature) signatures;
+#define MAX_SIGNATURES 128
 
-static const char *lowercase(const char *s)
+static signature signatures[MAX_SIGNATURES];
+static int signature_count;
+
+static const char *permanent(const char *s)
 {
-    const size_t n = strlen(s);
-    char *out = arena_alloc(n + 1);
-    for (size_t i = 0; i < n; i++) out[i] = (char)tolower((unsigned char)s[i]);
+    const size_t n = strlen(s) + 1;
+    char *out = malloc(n);
+    if (!out) {
+        fprintf(stderr, "purrc: out of memory\n");
+        exit(1);
+    }
+    memcpy(out, s, n);
     return out;
 }
 
-// purr_<lowercase name>_<suffix>
+// purr_<lowercase name>_<suffix>, from the arena.
 static const char *c_function(const char *name, const type t)
 {
     char buf[128];
-    snprintf(buf, sizeof buf, "purr_%s_%s", lowercase(name), type_suffix(t));
+    int n = snprintf(buf, sizeof buf, "purr_");
+    for (const char *p = name; *p && n < (int)sizeof buf - 1; p++) buf[n++] = (char)tolower((unsigned char)*p);
+    snprintf(buf + n, sizeof buf - (size_t)n, "_%s", type_suffix(t));
     char *out = arena_alloc(strlen(buf) + 1);
     memcpy(out, buf, strlen(buf));
     return out;
 }
 
-static void add(const char *owner, const char *name, const type result, const char *c_name,
-                const int argc, const type p0, const type p1, const type p2)
+static signature *add(const char *owner, const char *name, const type result, const char *c_name,
+                      const int argc, const type p0, const type p1, const type p2)
 {
-    const signature s = {owner, name, result, argc, {p0, p1, p2}, c_name};
-    vec_push(signatures, s);
+    if (signature_count == MAX_SIGNATURES) {
+        fprintf(stderr, "purrc: too many built-in signatures (raise MAX_SIGNATURES)\n");
+        exit(1);
+    }
+    signature *s = &signatures[signature_count++];
+    *s = (signature){owner, name, result, argc, {p0, p1, p2, T_NONE}, permanent(c_name), NULL, NULL};
+    return s;
+}
+
+static void describe(signature *s, const char *param_names, const char *doc)
+{
+    s->param_names = param_names;
+    s->doc = doc;
 }
 
 static void build_signatures(void)
 {
-    if (signatures.count > 0) return;
+    if (signature_count > 0) return;
 
     for (int n = 2; n <= 4; n++) {
         const type v = vector_type(true, n);
@@ -116,10 +148,8 @@ static void build_signatures(void)
         const type v = vector_type(true, n);
         char mul_vec[64];
         snprintf(mul_vec, sizeof mul_vec, "purr_mul_%s_%s", type_suffix(m), type_suffix(v));
-        char *mul_vec_name = arena_alloc(strlen(mul_vec) + 1);
-        memcpy(mul_vec_name, mul_vec, strlen(mul_vec));
         add("Math", "Mul", m, c_function("mul", m), 2, m, m, T_NONE);
-        add("Math", "Mul", v, mul_vec_name, 2, m, v, T_NONE);
+        add("Math", "Mul", v, mul_vec, 2, m, v, T_NONE);
         add("Math", "Transpose", m, c_function("transpose", m), 1, m, T_NONE, T_NONE);
         add("Math", "Inverse", m, c_function("inverse", m), 1, m, T_NONE, T_NONE);
         add("Math", "Determinant", T_F, c_function("determinant", m), 1, m, T_NONE, T_NONE);
@@ -128,19 +158,76 @@ static void build_signatures(void)
     add("Math", "Rotate", T_F3, "purr_rotate_f4x4", 2, T_F4X4, T_F3, T_NONE);
 
     // Ways to build quaternions and matrices
-    add("quaternion", "AxisAngle", T_Q, "purr_axisangle_q", 2, T_F3, T_F, T_NONE);
-    add("quaternion", "Euler", T_Q, "purr_euler_q", 1, T_F3, T_NONE, T_NONE);
-    add("quaternion", "LookRotation", T_Q, "purr_lookrotation_q", 2, T_F3, T_F3, T_NONE);
-    add("float4x4", "TRS", T_F4X4, "purr_trs_f4x4", 3, T_F3, T_Q, T_F3);
-    add("float4x4", "Translate", T_F4X4, "purr_translate_f4x4", 1, T_F3, T_NONE, T_NONE);
+    describe(add("quaternion", "AxisAngle", T_Q, "purr_axisangle_q", 2, T_F3, T_F, T_NONE),
+             "axis, angle", "A rotation of `angle` radians around `axis`.");
+    describe(add("quaternion", "Euler", T_Q, "purr_euler_q", 1, T_F3, T_NONE, T_NONE),
+             "radians", "A rotation from Euler angles in radians: Z first, then X, then Y.");
+    describe(add("quaternion", "LookRotation", T_Q, "purr_lookrotation_q", 2, T_F3, T_F3, T_NONE),
+             "forward, up", "A rotation that looks along `forward`, with `up` as up.");
+    describe(add("float4x4", "TRS", T_F4X4, "purr_trs_f4x4", 3, T_F3, T_Q, T_F3),
+             "translation, rotation, scale", "A transform: scale, then rotate, then translate.");
+    describe(add("float4x4", "Translate", T_F4X4, "purr_translate_f4x4", 1, T_F3, T_NONE, T_NONE),
+             "translation", "A translation matrix.");
+
+    // Drawing, in views: purr/draw.h. Codegen passes the view's draw list first.
+    describe(add("Draw", "Clear", T_NONE, "purr_draw_clear", 1, T_COLOR, T_NONE, T_NONE),
+             "color", "Fills the whole screen.");
+    describe(add("Draw", "Camera", T_NONE, "purr_draw_camera", 2, T_F2, T_F, T_NONE),
+             "center, size",
+             "Sets the camera for the Draw calls after it. `center` is the world position at the middle of the "
+             "screen and `size` is half the visible height, like Unity's orthographic size.");
+    describe(add("Draw", "Circle", T_NONE, "purr_draw_circle", 3, T_F2, T_F, T_COLOR),
+             "center, radius, color", "A filled circle.");
+    describe(add("Draw", "WireCircle", T_NONE, "purr_draw_wire_circle", 3, T_F2, T_F, T_COLOR),
+             "center, radius, color", "A circle outline.");
+    describe(add("Draw", "Rect", T_NONE, "purr_draw_rect", 3, T_F2, T_F2, T_COLOR),
+             "center, size, color", "A filled rectangle.");
+    describe(add("Draw", "WireRect", T_NONE, "purr_draw_wire_rect", 3, T_F2, T_F2, T_COLOR),
+             "center, size, color", "A rectangle outline.");
+    describe(add("Draw", "Line", T_NONE, "purr_draw_line", 3, T_F2, T_F2, T_COLOR),
+             "from, to, color", "A line.");
+    signature *text = add("Draw", "Text", T_NONE, "purr_draw_text", 3, T_STR, T_F2, T_F);
+    text->argc = 4;
+    text->params[3] = T_COLOR;
+    describe(text, "text, position, size, color", "Text: `position` is its top left corner and `size` its height.");
 }
+
+// ---------------------------------------------------------------------------
+// Static members: constants reached through a type or Math.
+
+static const struct {
+    const char *owner;
+    const char *member;
+    type_kind kind;
+    const char *c_constant;
+} members[] = {
+    {"Math", "PI", TY_FLOAT, "PURR_PI_F"},
+    {"Math", "TAU", TY_FLOAT, "PURR_TAU_F"},
+    {"Math", "E", TY_FLOAT, "PURR_E_F"},
+    {"quaternion", "identity", TY_QUATERNION, "purr_identity_q()"},
+    {"float2x2", "identity", TY_FLOAT2X2, "purr_identity_f2x2()"},
+    {"float3x3", "identity", TY_FLOAT3X3, "purr_identity_f3x3()"},
+    {"float4x4", "identity", TY_FLOAT4X4, "purr_identity_f4x4()"},
+    {"Color", "white", TY_COLOR, "PURR_COLOR_WHITE"},
+    {"Color", "black", TY_COLOR, "PURR_COLOR_BLACK"},
+    {"Color", "red", TY_COLOR, "PURR_COLOR_RED"},
+    {"Color", "green", TY_COLOR, "PURR_COLOR_GREEN"},
+    {"Color", "blue", TY_COLOR, "PURR_COLOR_BLUE"},
+    {"Color", "yellow", TY_COLOR, "PURR_COLOR_YELLOW"},
+    {"Color", "cyan", TY_COLOR, "PURR_COLOR_CYAN"},
+    {"Color", "magenta", TY_COLOR, "PURR_COLOR_MAGENTA"},
+    {"Color", "gray", TY_COLOR, "PURR_COLOR_GRAY"},
+    {"Color", "clear", TY_COLOR, "PURR_COLOR_CLEAR"},
+};
+
+#define MEMBER_COUNT (sizeof members / sizeof members[0])
 
 // ---------------------------------------------------------------------------
 
 bool builtin_owner(const str name)
 {
     type ignored;
-    return str_eq_c(name, "Math") || builtin_type_named(name, &ignored);
+    return str_eq_c(name, "Math") || str_eq_c(name, "Draw") || builtin_type_named(name, &ignored);
 }
 
 // Widest type of a component-wise call's arguments, or false if they don't fit together.
@@ -172,6 +259,25 @@ static void arg_list(const expr *e, char *buf, const size_t size)
     }
 }
 
+// "Draw.Circle(float2 center, float radius, Color color)", plus " -> float" for results.
+static void format_signature(const signature *s, sb *out)
+{
+    sb_printf(out, "%s.%s(", s->owner, s->name);
+    const char *names = s->param_names;
+    for (int a = 0; a < s->argc; a++) {
+        sb_printf(out, "%s%s", a ? ", " : "", type_name(s->params[a]));
+        if (names) {
+            const char *end = strchr(names, ',');
+            const size_t n = end ? (size_t)(end - names) : strlen(names);
+            sb_put(out, " ");
+            sb_putn(out, names, n);
+            names = end ? end + 2 : NULL;
+        }
+    }
+    sb_put(out, ")");
+    if (s->result.kind != TY_VOID) sb_printf(out, " -> %s", type_name(s->result));
+}
+
 type resolve_builtin_call(const str owner, expr *e)
 {
     for (int i = 0; i < e->args.count; i++) {
@@ -181,7 +287,7 @@ type resolve_builtin_call(const str owner, expr *e)
     e->arg_want.count = 0;
 
     if (str_eq_c(owner, "Math")) {
-        for (size_t i = 0; i < sizeof componentwise / sizeof componentwise[0]; i++) {
+        for (size_t i = 0; i < COMPONENTWISE_COUNT; i++) {
             if (!str_eq_c(e->name, componentwise[i].name)) continue;
             if (e->args.count != componentwise[i].argc) {
                 diag_error(e->at, "Math.%s takes %d argument%s, not %d", componentwise[i].name, componentwise[i].argc,
@@ -204,8 +310,8 @@ type resolve_builtin_call(const str owner, expr *e)
 
     build_signatures();
     bool known = false;
-    for (int i = 0; i < signatures.count; i++) {
-        const signature *s = &signatures.items[i];
+    for (int i = 0; i < signature_count; i++) {
+        const signature *s = &signatures[i];
         if (!str_eq_c(owner, s->owner) || !str_eq_c(e->name, s->name)) continue;
         known = true;
         if (s->argc != e->args.count) continue;
@@ -221,47 +327,210 @@ type resolve_builtin_call(const str owner, expr *e)
 
     if (!known) {
         diag_error(e->at, STR_FMT " has no function '" STR_FMT "'", STR_ARG(owner), STR_ARG(e->name));
+        suggestion s = suggest_start(e->name);
+        for (size_t i = 0; i < COMPONENTWISE_COUNT && str_eq_c(owner, "Math"); i++) {
+            suggest_consider_c(&s, componentwise[i].name);
+        }
+        for (int i = 0; i < signature_count; i++) {
+            if (str_eq_c(owner, signatures[i].owner)) suggest_consider_c(&s, signatures[i].name);
+        }
+        suggest_note(&s);
         return (type){TY_ERROR, NULL};
     }
     char args[256];
     arg_list(e, args, sizeof args);
     diag_error(e->at, "no version of " STR_FMT "." STR_FMT " takes (%s)", STR_ARG(owner), STR_ARG(e->name), args);
-    for (int i = 0; i < signatures.count; i++) {
-        const signature *s = &signatures.items[i];
+    for (int i = 0; i < signature_count; i++) {
+        const signature *s = &signatures[i];
         if (!str_eq_c(owner, s->owner) || !str_eq_c(e->name, s->name)) continue;
-        char params[256] = "";
-        size_t len = 0;
-        for (int a = 0; a < s->argc; a++) {
-            const int n = snprintf(params + len, sizeof params - len, "%s%s", a ? ", " : "", type_name(s->params[a]));
-            if (n > 0) len += (size_t)n;
-        }
-        diag_note("%s.%s(%s) -> %s", s->owner, s->name, params, type_name(s->result));
+        sb line = {0};
+        format_signature(s, &line);
+        diag_note("%s", line.data);
     }
     return (type){TY_ERROR, NULL};
 }
 
 type resolve_builtin_member(const str owner, expr *e)
 {
-    static const struct {
-        const char *owner;
-        const char *member;
-        type_kind kind;
-        const char *c_constant;
-    } members[] = {
-        {"Math", "PI", TY_FLOAT, "PURR_PI_F"},
-        {"Math", "Tau", TY_FLOAT, "PURR_TAU_F"},
-        {"Math", "E", TY_FLOAT, "PURR_E_F"},
-        {"quaternion", "Identity", TY_QUATERNION, "purr_identity_q()"},
-        {"float2x2", "Identity", TY_FLOAT2X2, "purr_identity_f2x2()"},
-        {"float3x3", "Identity", TY_FLOAT3X3, "purr_identity_f3x3()"},
-        {"float4x4", "Identity", TY_FLOAT4X4, "purr_identity_f4x4()"},
-    };
-    for (size_t i = 0; i < sizeof members / sizeof members[0]; i++) {
+    for (size_t i = 0; i < MEMBER_COUNT; i++) {
         if (str_eq_c(owner, members[i].owner) && str_eq_c(e->member, members[i].member)) {
             e->c_constant = members[i].c_constant;
             return (type){members[i].kind, NULL};
         }
     }
     diag_error(e->at, STR_FMT " has no member '" STR_FMT "'", STR_ARG(owner), STR_ARG(e->member));
+    suggestion s = suggest_start(e->member);
+    for (size_t i = 0; i < MEMBER_COUNT; i++) {
+        if (str_eq_c(owner, members[i].owner)) suggest_consider_c(&s, members[i].member);
+    }
+    suggest_note(&s);
     return (type){TY_ERROR, NULL};
+}
+
+const char *builtin_function_owner(const str name)
+{
+    build_signatures();
+    for (size_t i = 0; i < COMPONENTWISE_COUNT; i++) {
+        if (str_eq_c(name, componentwise[i].name)) return "Math";
+    }
+    for (int i = 0; i < signature_count; i++) {
+        if (str_eq_c(name, signatures[i].name)) return signatures[i].owner;
+    }
+    return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// For editors
+
+static const char *componentwise_doc(const char *name)
+{
+    static const struct {
+        const char *name;
+        const char *doc;
+    } docs[] = {
+        {"Clamp", "Clamps `x` between `a` and `b`, component by component."},
+        {"Lerp", "Linear interpolation: `a + (b - a) * t`, component by component."},
+        {"Unlerp", "The `t` for which Lerp(a, b, t) gives `x`."},
+        {"SmoothStep", "Smooth Hermite interpolation between 0 and 1 as `x` goes from `a` to `b`."},
+        {"Step", "1 where `x >= edge`, 0 elsewhere."},
+        {"Saturate", "Clamps between 0 and 1."},
+        {"Round", "Rounds to the nearest integer; ties go to even."},
+        {"Frac", "The fractional part: `x - Floor(x)`."},
+        {"Rsqrt", "1 / Sqrt(x)."},
+        {"Radians", "Degrees to radians."},
+        {"Degrees", "Radians to degrees."},
+        {"Atan2", "The angle of the point (x, y) in radians. Takes (y, x), as in Unity."},
+    };
+    for (size_t i = 0; i < sizeof docs / sizeof docs[0]; i++) {
+        if (strcmp(docs[i].name, name) == 0) return docs[i].doc;
+    }
+    return "Component by component, on numbers and vectors.";
+}
+
+static const char *componentwise_params(const int argc, const char *name)
+{
+    if (strcmp(name, "Clamp") == 0) return "x, a, b";
+    if (strcmp(name, "Lerp") == 0) return "a, b, t";
+    if (strcmp(name, "Unlerp") == 0 || strcmp(name, "SmoothStep") == 0) return "a, b, x";
+    if (strcmp(name, "Step") == 0) return "edge, x";
+    if (strcmp(name, "Atan2") == 0) return "y, x";
+    if (strcmp(name, "Pow") == 0) return "x, y";
+    return argc == 1 ? "x" : argc == 2 ? "a, b" : "a, b, c";
+}
+
+// "Circle(${1:center}, ${2:radius}, ${3:color})" from "center, radius, color".
+static void format_snippet(const char *name, const char *param_names, sb *out)
+{
+    sb_printf(out, "%s(", name);
+    int index = 1;
+    for (const char *p = param_names; p && *p;) {
+        const char *end = strchr(p, ',');
+        const size_t n = end ? (size_t)(end - p) : strlen(p);
+        sb_printf(out, "%s${%d:", index > 1 ? ", " : "", index);
+        sb_putn(out, p, n);
+        sb_put(out, "}");
+        index++;
+        p = end ? end + 2 : NULL;
+    }
+    sb_put(out, ")");
+}
+
+void builtin_list_members(const str owner, void (*visit)(void *user, const builtin_member *m), void *user)
+{
+    build_signatures();
+
+    if (str_eq_c(owner, "Math")) {
+        for (size_t i = 0; i < COMPONENTWISE_COUNT; i++) {
+            const char *params = componentwise_params(componentwise[i].argc, componentwise[i].name);
+            sb detail = {0};
+            sb_printf(&detail, "Math.%s(%s)", componentwise[i].name, params);
+            sb snippet = {0};
+            format_snippet(componentwise[i].name, params, &snippet);
+            const builtin_member m = {componentwise[i].name, true, detail.data, componentwise_doc(componentwise[i].name),
+                                      snippet.data};
+            visit(user, &m);
+        }
+    }
+
+    for (int i = 0; i < signature_count; i++) {
+        const signature *s = &signatures[i];
+        if (!str_eq_c(owner, s->owner)) continue;
+        bool seen = false; // Overloads appear once, under their first signature.
+        for (int j = 0; j < i; j++) {
+            if (strcmp(signatures[j].owner, s->owner) == 0 && strcmp(signatures[j].name, s->name) == 0) seen = true;
+        }
+        if (seen) continue;
+        sb detail = {0};
+        format_signature(s, &detail);
+        sb snippet = {0};
+        if (s->param_names) format_snippet(s->name, s->param_names, &snippet);
+        else sb_printf(&snippet, "%s($1)", s->name);
+        const builtin_member m = {s->name, true, detail.data, s->doc, snippet.data};
+        visit(user, &m);
+    }
+
+    for (size_t i = 0; i < MEMBER_COUNT; i++) {
+        if (!str_eq_c(owner, members[i].owner)) continue;
+        sb detail = {0};
+        sb_printf(&detail, "%s.%s: %s", members[i].owner, members[i].member, type_name((type){members[i].kind, NULL}));
+        const builtin_member m = {members[i].member, false, detail.data, NULL, NULL};
+        visit(user, &m);
+    }
+}
+
+void builtin_signatures(const str owner, const str name, void (*visit)(void *user, const char *label, const char *doc),
+                        void *user)
+{
+    build_signatures();
+    for (size_t i = 0; i < COMPONENTWISE_COUNT && str_eq_c(owner, "Math"); i++) {
+        if (!str_eq_c(name, componentwise[i].name)) continue;
+        sb label = {0};
+        sb_printf(&label, "Math.%s(%s)", componentwise[i].name,
+                  componentwise_params(componentwise[i].argc, componentwise[i].name));
+        visit(user, label.data, componentwise_doc(componentwise[i].name));
+        return;
+    }
+    for (int i = 0; i < signature_count; i++) {
+        const signature *s = &signatures[i];
+        if (!str_eq_c(owner, s->owner) || !str_eq_c(name, s->name)) continue;
+        sb label = {0};
+        format_signature(s, &label);
+        visit(user, label.data, s->doc);
+    }
+}
+
+bool builtin_describe(const str owner, const str name, sb *out)
+{
+    build_signatures();
+    bool found = false;
+
+    for (size_t i = 0; i < COMPONENTWISE_COUNT && str_eq_c(owner, "Math"); i++) {
+        if (!str_eq_c(name, componentwise[i].name)) continue;
+        sb_printf(out, "Math.%s(%s)\n", componentwise[i].name,
+                  componentwise_params(componentwise[i].argc, componentwise[i].name));
+        sb_printf(out, "\n%s", componentwise_doc(componentwise[i].name));
+        return true;
+    }
+
+    const char *doc = NULL;
+    for (int i = 0; i < signature_count; i++) {
+        const signature *s = &signatures[i];
+        if (!str_eq_c(owner, s->owner) || !str_eq_c(name, s->name)) continue;
+        format_signature(s, out);
+        sb_put(out, "\n");
+        if (s->doc) doc = s->doc;
+        found = true;
+    }
+    if (found) {
+        if (doc) sb_printf(out, "\n%s", doc);
+        return true;
+    }
+
+    for (size_t i = 0; i < MEMBER_COUNT; i++) {
+        if (str_eq_c(owner, members[i].owner) && str_eq_c(name, members[i].member)) {
+            sb_printf(out, "%s.%s: %s", members[i].owner, members[i].member, type_name((type){members[i].kind, NULL}));
+            return true;
+        }
+    }
+    return false;
 }

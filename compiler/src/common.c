@@ -37,13 +37,19 @@ void *arena_alloc(size_t size)
     return p;
 }
 
-void *vec_grow(void *items, const size_t cap, const size_t elem_size)
+void arena_reset(void)
 {
-    void *p = realloc(items, cap * elem_size);
-    if (!p) {
-        fprintf(stderr, "purrc: out of memory\n");
-        exit(1);
+    while (arena_head) {
+        arena_block *next = arena_head->next;
+        free(arena_head);
+        arena_head = next;
     }
+}
+
+void *vec_grow(void *items, const size_t old_cap, const size_t new_cap, const size_t elem_size)
+{
+    void *p = arena_alloc(new_cap * elem_size);
+    if (items) memcpy(p, items, old_cap * elem_size);
     return p;
 }
 
@@ -84,7 +90,7 @@ void sb_putn(sb *b, const char *s, const size_t n)
     if (b->len + n + 1 > b->cap) {
         size_t cap = b->cap ? b->cap * 2 : 4096;
         while (cap < b->len + n + 1) cap *= 2;
-        b->data = vec_grow(b->data, cap, 1);
+        b->data = vec_grow(b->data, b->cap, cap, 1);
         b->cap = cap;
     }
     memcpy(b->data + b->len, s, n);
@@ -123,21 +129,59 @@ void sb_printf(sb *b, const char *fmt, ...)
 // ---------------------------------------------------------------------------
 // Diagnostics
 
-static const source *diag_src;
-static int error_count;
+#define MAX_SOURCES 1024
 
-void diag_init(const source *src)
+static const source *sources[MAX_SOURCES];
+static int source_count;
+static int error_count;
+static diag_sink sink;
+static void *sink_user;
+
+void diag_reset(void)
 {
-    diag_src = src;
+    source_count = 0;
     error_count = 0;
 }
 
-// Prints the offending source line with a caret under the column.
-static void print_excerpt(const loc at)
+void diag_add_source(source *src)
 {
-    const char *p = diag_src->text;
-    const char *end = diag_src->text + diag_src->len;
-    if (diag_src->len >= 3 && memcmp(p, "\xEF\xBB\xBF", 3) == 0) p += 3; // Byte-order mark.
+    if (source_count == MAX_SOURCES) {
+        fprintf(stderr, "purrc: more than %d source files\n", MAX_SOURCES);
+        exit(1);
+    }
+    src->file = source_count;
+    sources[source_count++] = src;
+}
+
+const source *diag_source(const int file)
+{
+    return file >= 0 && file < source_count ? sources[file] : NULL;
+}
+
+int diag_source_count(void)
+{
+    return source_count;
+}
+
+void diag_set_sink(const diag_sink new_sink, void *user)
+{
+    sink = new_sink;
+    sink_user = user;
+}
+
+static void to_sink(const diag_severity severity, const loc at, const char *fmt, va_list args)
+{
+    char message[1024];
+    vsnprintf(message, sizeof message, fmt, args);
+    sink(sink_user, severity, at, message);
+}
+
+// Prints the offending source line with a caret under the column.
+static void print_excerpt(const source *src, const loc at)
+{
+    const char *p = src->text;
+    const char *end = src->text + src->len;
+    if (src->len >= 3 && memcmp(p, "\xEF\xBB\xBF", 3) == 0) p += 3; // Byte-order mark.
     for (int line = 1; line < at.line && p < end; p++) {
         if (*p == '\n') line++;
     }
@@ -151,17 +195,20 @@ static void print_excerpt(const loc at)
 
 static void report(const loc at, const char *kind, const char *fmt, const va_list args)
 {
-    fprintf(stderr, "%s:%d:%d: %s: ", diag_src->path, at.line, at.col, kind);
+    const source *src = diag_source(at.file);
+    if (src) fprintf(stderr, "%s:%d:%d: %s: ", src->path, at.line, at.col, kind);
+    else fprintf(stderr, "purrc: %s: ", kind);
     vfprintf(stderr, fmt, args);
     fputc('\n', stderr);
-    print_excerpt(at);
+    if (src && at.line > 0) print_excerpt(src, at);
 }
 
 void diag_error(const loc at, const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    report(at, "error", fmt, args);
+    if (sink) to_sink(DIAG_ERROR, at, fmt, args);
+    else report(at, "error", fmt, args);
     va_end(args);
     error_count++;
 }
@@ -170,7 +217,8 @@ void diag_warning(const loc at, const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    report(at, "warning", fmt, args);
+    if (sink) to_sink(DIAG_WARNING, at, fmt, args);
+    else report(at, "warning", fmt, args);
     va_end(args);
 }
 
@@ -178,13 +226,86 @@ void diag_note(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    fputs("      = note: ", stderr);
-    vfprintf(stderr, fmt, args);
-    fputc('\n', stderr);
+    if (sink) {
+        to_sink(DIAG_NOTE, (loc){0, 0, 0}, fmt, args);
+    } else {
+        fputs("      = note: ", stderr);
+        vfprintf(stderr, fmt, args);
+        fputc('\n', stderr);
+    }
     va_end(args);
 }
 
 int diag_error_count(void)
 {
     return error_count;
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions
+
+suggestion suggest_start(const str wrong)
+{
+    return (suggestion){wrong, {NULL, 0}, 1 << 30};
+}
+
+static char lower(const char c)
+{
+    return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+}
+
+// Edits (insert, delete, replace, swap two neighbors) between two names,
+// ignoring case. Names are short, so the table fits on the stack.
+static int distance(const str a, const str b)
+{
+    enum { MAX = 64 };
+    if (a.len >= MAX || b.len >= MAX) return 1 << 30;
+    int d[MAX][MAX];
+    for (int i = 0; i <= a.len; i++) d[i][0] = i;
+    for (int j = 0; j <= b.len; j++) d[0][j] = j;
+    for (int i = 1; i <= a.len; i++) {
+        for (int j = 1; j <= b.len; j++) {
+            const int cost = lower(a.ptr[i - 1]) != lower(b.ptr[j - 1]);
+            int best = d[i - 1][j - 1] + cost;
+            if (d[i - 1][j] + 1 < best) best = d[i - 1][j] + 1;
+            if (d[i][j - 1] + 1 < best) best = d[i][j - 1] + 1;
+            if (i > 1 && j > 1 && lower(a.ptr[i - 1]) == lower(b.ptr[j - 2]) && lower(a.ptr[i - 2]) == lower(b.ptr[j - 1])
+                && d[i - 2][j - 2] + 1 < best) {
+                best = d[i - 2][j - 2] + 1;
+            }
+            d[i][j] = best;
+        }
+    }
+    return d[a.len][b.len];
+}
+
+void suggest_consider(suggestion *s, const str candidate)
+{
+    if (candidate.len == 0 || str_eq(candidate, s->wrong)) return;
+    const int d = distance(s->wrong, candidate);
+    if (d < s->distance) {
+        s->distance = d;
+        s->best = candidate;
+    }
+}
+
+void suggest_consider_c(suggestion *s, const char *candidate)
+{
+    suggest_consider(s, str_from(candidate));
+}
+
+void suggest_note(const suggestion *s)
+{
+    // One typo in a short name, two in a longer one. Beyond that it's a guess.
+    const int allowed = s->wrong.len <= 4 ? 1 : 2;
+    if (s->best.len > 0 && s->distance <= allowed) diag_note("did you mean '" STR_FMT "'?", STR_ARG(s->best));
+}
+
+int path_compare(const char *a, const char *b)
+{
+    for (;; a++, b++) {
+        const char x = *a == '\\' ? '/' : *a;
+        const char y = *b == '\\' ? '/' : *b;
+        if (x != y || x == '\0') return (unsigned char)x - (unsigned char)y;
+    }
 }

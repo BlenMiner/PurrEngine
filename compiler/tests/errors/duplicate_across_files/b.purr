@@ -1,0 +1,2 @@
+// expect: 'Body' is already declared
+component Body { float2 velocity; }

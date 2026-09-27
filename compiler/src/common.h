@@ -6,10 +6,12 @@
 #include <stdint.h>
 
 // ---------------------------------------------------------------------------
-// Memory. The compiler is a short-lived process: everything comes from one
-// arena and is never freed individually.
+// Memory. Everything comes from one arena and is never freed individually.
+// purrc runs once and exits; the language server resets the arena before each
+// analysis, so nothing the compiler allocates may outlive one.
 
 void *arena_alloc(size_t size); // Zeroed.
+void arena_reset(void);         // Frees everything arena_alloc returned.
 
 #define NEW(T) ((T *)arena_alloc(sizeof(T)))
 
@@ -24,13 +26,15 @@ void *arena_alloc(size_t size); // Zeroed.
 #define vec_push(v, x)                                                         \
     do {                                                                       \
         if ((v).count == (v).cap) {                                            \
+            const int vec_old_cap_ = (v).cap;                                  \
             (v).cap = (v).cap ? (v).cap * 2 : 8;                               \
-            (v).items = vec_grow((v).items, (size_t)(v).cap, sizeof(*(v).items)); \
+            (v).items = vec_grow((v).items, (size_t)vec_old_cap_, (size_t)(v).cap, sizeof(*(v).items)); \
         }                                                                      \
         (v).items[(v).count++] = (x);                                          \
     } while (0)
 
-void *vec_grow(void *items, size_t cap, size_t elem_size);
+// A bigger copy of `items`, from the arena.
+void *vec_grow(void *items, size_t old_cap, size_t new_cap, size_t elem_size);
 
 // ---------------------------------------------------------------------------
 // Strings. Slices point into the source buffer or the arena.
@@ -67,16 +71,52 @@ void sb_printf(sb *b, const char *fmt, ...);
 typedef struct loc {
     int line;
     int col;
+    int file; // Which source file: the index diag_add_source gave it
 } loc;
 
 typedef struct source {
     const char *path; // As given on the command line.
     const char *text;
     size_t len;
+    int file;         // Set by diag_add_source
 } source;
 
-void diag_init(const source *src);
+typedef enum diag_severity {
+    DIAG_ERROR,
+    DIAG_WARNING,
+    DIAG_NOTE, // Belongs to the previous error or warning; `at` is zero.
+} diag_severity;
+
+// Receives diagnostics instead of stderr, for tools such as the language server.
+typedef void (*diag_sink)(void *user, diag_severity severity, loc at, const char *message);
+
+// Forgets every source file and error, before compiling a program.
+void diag_reset(void);
+// Registers a source file and sets src->file: locations in it carry that index.
+void diag_add_source(source *src);
+const source *diag_source(int file);
+int diag_source_count(void);
+void diag_set_sink(diag_sink sink, void *user); // NULL prints to stderr again.
 void diag_error(loc at, const char *fmt, ...);
 void diag_warning(loc at, const char *fmt, ...);
 void diag_note(const char *fmt, ...); // Attaches to the previous error or warning.
 int diag_error_count(void);
+
+// "did you mean ...?" for a misspelled name: offer every name that would have
+// been right, then suggest_note adds a note naming the closest one, if any is
+// close enough (the same letters in another case, or a typo or two away).
+typedef struct suggestion {
+    str wrong;
+    str best;
+    int distance;
+} suggestion;
+
+suggestion suggest_start(str wrong);
+void suggest_consider(suggestion *s, str candidate);
+void suggest_consider_c(suggestion *s, const char *candidate);
+void suggest_note(const suggestion *s);
+
+// The order of a game's files, which decides the default order of its systems:
+// byte by byte, with backslashes as forward slashes, so it's the same on every
+// platform. Returns like strcmp.
+int path_compare(const char *a, const char *b);

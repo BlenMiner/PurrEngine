@@ -1,0 +1,7 @@
+// expect: views only read the world, so their parameters can't be 'mut'
+component Body { float2 position; }
+system Main() { Spawn(Body); }
+view Nudge(mut Body body)
+{
+    body.position.x += 1;
+}

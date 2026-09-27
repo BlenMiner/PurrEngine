@@ -1,0 +1,5 @@
+// expect: orders systems and views
+system Main() { }
+system Move() { }
+[After(Move)]
+component Body { float2 position; }

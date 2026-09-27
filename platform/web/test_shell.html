@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PurrEngine test</title>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+<pre id="log"></pre>
+<script>
+  // For headless web tests (see cmake/WebTest.cmake): stdout goes into #log,
+  // and the exit code into <body data-exit>.
+  const log = document.getElementById('log');
+  const show = text => { console.log(text); log.textContent += text + '\n'; };
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: show,
+    printErr: show,
+    onExit: code => { document.body.dataset.exit = code; },
+    onAbort: reason => { show('abort: ' + reason); document.body.dataset.exit = 'abort'; },
+  };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

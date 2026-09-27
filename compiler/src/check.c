@@ -14,7 +14,8 @@
 
 typedef struct checker {
     program *prog;
-    decl *system;             // Whose parameters are in scope: a system, or the input when checking its constructor.
+    const unit *unit;         // The file being checked: its namespace and `using`s decide what names mean.
+    decl *system;             // Whose parameters are in scope: a system or view, or the input when checking its constructor.
     bool in_constructor;      // Checking the input's constructor, which runs outside the simulation.
     int short_circuit_depth;  // Inside the right side of && or ||, which may not run.
     VEC(stmt *) locals;       // S_VAR statements currently in scope.
@@ -53,13 +54,135 @@ static bool is_scalar_number(const type t)
     return t.kind == TY_INT || t.kind == TY_FLOAT;
 }
 
-static decl *find_type_decl(const program *prog, const str name)
+// ---------------------------------------------------------------------------
+// Names and namespaces
+
+static const str global_ns = {"", 0};
+
+static str decl_ns(const decl *d)
+{
+    return d->unit ? d->unit->ns : global_ns;
+}
+
+// Splits "Game.Combat.Health" into "Game.Combat" and "Health". False if there's no dot.
+static bool split_qualified(const str text, str *ns, str *name)
+{
+    int dot = text.len - 1;
+    while (dot >= 0 && text.ptr[dot] != '.') dot--;
+    if (dot < 0) return false;
+    *ns = (str){text.ptr, dot};
+    *name = (str){text.ptr + dot + 1, text.len - dot - 1};
+    return true;
+}
+
+// Does some file declare this namespace, or one inside it?
+static bool is_namespace(const program *prog, const str ns)
+{
+    for (int i = 0; i < prog->units.count; i++) {
+        const str u = prog->units.items[i]->ns;
+        if (str_eq(u, ns) || (u.len > ns.len && str_starts_with_c(u, str_to_cstr(ns)) && u.ptr[ns.len] == '.')) return true;
+    }
+    return false;
+}
+
+// A type (or with `systems`, a system or view) named exactly `name` in `ns`.
+static decl *find_in(const program *prog, const str ns, const str name, const bool systems)
 {
     for (int i = 0; i < prog->decls.count; i++) {
         decl *d = prog->decls.items[i];
-        if (d->kind != DECL_SYSTEM && str_eq(d->name, name)) return d;
+        if ((d->kind == DECL_SYSTEM) == systems && str_eq(d->name, name) && str_eq(decl_ns(d), ns)) return d;
     }
     return NULL;
+}
+
+// What a name means as written in `from`. A qualified name (Combat.Health) is
+// exact. A plain one is looked up in the file's namespace, then its parents,
+// then the `using` namespaces, then the global namespace. If two `using`
+// namespaces both have it, *other gets the second: the name is ambiguous.
+static decl *lookup(const program *prog, const unit *from, const str text, const bool systems, decl **other)
+{
+    *other = NULL;
+    str ns;
+    str name;
+    if (split_qualified(text, &ns, &name)) return find_in(prog, ns, name, systems);
+
+    for (ns = from ? from->ns : global_ns; ns.len > 0;) {
+        decl *d = find_in(prog, ns, text, systems);
+        if (d) return d;
+        int dot = ns.len - 1;
+        while (dot >= 0 && ns.ptr[dot] != '.') dot--;
+        ns.len = dot < 0 ? 0 : dot;
+    }
+    decl *found = NULL;
+    for (int i = 0; from && i < from->usings.count; i++) {
+        decl *d = find_in(prog, from->usings.items[i], text, systems);
+        if (d && !found) found = d;
+        else if (d && d != found && !*other) *other = d;
+    }
+    return found ? found : find_in(prog, global_ns, text, systems);
+}
+
+static decl *find_type(const checker *c, const str name, const loc at)
+{
+    decl *other;
+    decl *d = lookup(c->prog, c->unit, name, false, &other);
+    if (other) {
+        diag_error(at, "'" STR_FMT "' is ambiguous: both " STR_FMT " and " STR_FMT " have it", STR_ARG(name),
+                   STR_ARG(decl_ns(d)), STR_ARG(decl_ns(other)));
+        diag_note("write which one you mean, like '" STR_FMT "'", STR_ARG(d->qualified));
+    }
+    return d;
+}
+
+// `a.b.c` as the text "a.b.c", if the expression is only names and members.
+static bool qualified_text(const expr *e, str *out)
+{
+    if (e->kind == E_NAME) {
+        *out = e->name;
+        return true;
+    }
+    if (e->kind != E_MEMBER) return false;
+    str left;
+    if (!qualified_text(e->object, &left)) return false;
+    char *text = arena_alloc((size_t)left.len + (size_t)e->member.len + 2);
+    memcpy(text, left.ptr, (size_t)left.len);
+    text[left.len] = '.';
+    memcpy(text + left.len + 1, e->member.ptr, (size_t)e->member.len);
+    *out = (str){text, left.len + 1 + e->member.len};
+    return true;
+}
+
+// The innermost name of a.b.c.
+static const expr *chain_root(const expr *e)
+{
+    while (e->kind == E_MEMBER) e = e->object;
+    return e;
+}
+
+// Marks the namespace parts of Game.Combat.Health, for editors.
+static void mark_namespaces(expr *e)
+{
+    for (; e && (e->kind == E_MEMBER || e->kind == E_NAME); e = e->kind == E_MEMBER ? e->object : NULL) {
+        e->bind = BIND_NAMESPACE;
+    }
+}
+
+// "did you mean" candidates: declared types of the kinds asked for.
+static void suggest_decls(suggestion *s, const program *prog, const bool components, const bool singletons,
+                          const bool inputs)
+{
+    for (int i = 0; i < prog->decls.count; i++) {
+        const decl *d = prog->decls.items[i];
+        if ((components && d->kind == DECL_COMPONENT) || (singletons && d->kind == DECL_SINGLETON)
+            || (inputs && d->kind == DECL_INPUT)) {
+            suggest_consider(s, d->name);
+        }
+    }
+}
+
+static void suggest_fields(suggestion *s, const decl *d)
+{
+    for (int i = 0; i < d->fields.count; i++) suggest_consider(s, d->fields.items[i].name);
 }
 
 static bool check_reserved(const str name, const loc at)
@@ -92,6 +215,14 @@ static stmt *find_local(const checker *c, const str name)
     return NULL;
 }
 
+static bool field_named(const decl *d, const str name)
+{
+    for (int i = 0; d && i < d->fields.count; i++) {
+        if (str_eq(d->fields.items[i].name, name)) return true;
+    }
+    return false;
+}
+
 static param *find_param(const checker *c, const str name)
 {
     if (!c->system) return NULL; // Field defaults are checked outside any system.
@@ -115,10 +246,16 @@ static uint64_t bit(const decl *component)
 // Checks `Transform { position = ... }`.
 static type check_literal(checker *c, expr *e)
 {
-    decl *d = find_type_decl(c->prog, e->name);
+    decl *d = find_type(c, e->name, e->at);
     if (!d || d->kind != DECL_COMPONENT) {
-        if (d) diag_error(e->at, "'" STR_FMT "' isn't a component; only components have values like this", STR_ARG(e->name));
-        else diag_error(e->at, "unknown component '" STR_FMT "'", STR_ARG(e->name));
+        if (d) {
+            diag_error(e->at, "'" STR_FMT "' isn't a component; only components have values like this", STR_ARG(e->name));
+        } else {
+            diag_error(e->at, "unknown component '" STR_FMT "'", STR_ARG(e->name));
+            suggestion s = suggest_start(e->name);
+            suggest_decls(&s, c->prog, true, false, false);
+            suggest_note(&s);
+        }
         for (int i = 0; i < e->inits.count; i++) check_expr(c, e->inits.items[i].value);
         return T_ERR;
     }
@@ -132,6 +269,9 @@ static type check_literal(checker *c, expr *e)
         }
         if (!init->field) {
             diag_error(init->at, "component '" STR_FMT "' has no field '" STR_FMT "'", STR_ARG(d->name), STR_ARG(init->name));
+            suggestion s = suggest_start(init->name);
+            suggest_fields(&s, d);
+            suggest_note(&s);
             continue;
         }
         for (int j = 0; j < i; j++) {
@@ -155,9 +295,14 @@ static decl *check_component_arg(checker *c, expr *arg, const char *fn)
         const type t = check_literal(c, arg);
         return t.kind == TY_COMPONENT ? t.decl : NULL;
     }
-    if (arg->kind == E_NAME) {
-        decl *d = find_type_decl(c->prog, arg->name);
-        if (d && d->kind == DECL_COMPONENT && !find_local(c, arg->name) && !find_param(c, arg->name)) {
+    // Player, or Combat.Health
+    str name;
+    const expr *root = arg->kind == E_NAME || arg->kind == E_MEMBER ? chain_root(arg) : NULL;
+    if (root && root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
+        && qualified_text(arg, &name)) {
+        decl *d = find_type(c, name, arg->at);
+        if (d && d->kind == DECL_COMPONENT) {
+            if (arg->kind == E_MEMBER) mark_namespaces(arg->object);
             arg->bind = BIND_TYPE;
             arg->type_decl = d;
             arg->type = (type){TY_COMPONENT, d};
@@ -209,6 +354,20 @@ static type check_construct(checker *c, expr *e, const type target)
             return target;
         }
         diag_error(e->at, "PlayerID(...) takes a player index, an int");
+        return T_ERR;
+    }
+
+    // Color(r, g, b) with alpha 1, or Color(r, g, b, a).
+    if (target.kind == TY_COLOR) {
+        bool scalars = argc == 3 || argc == 4;
+        for (int i = 0; i < argc; i++) {
+            if (!is_scalar_number(e->args.items[i]->type)) scalars = false;
+        }
+        if (scalars) {
+            e->ctor = CTOR_COLOR;
+            return target;
+        }
+        diag_error(e->at, "Color takes (r, g, b) or (r, g, b, a), numbers from 0 to 1");
         return T_ERR;
     }
 
@@ -311,6 +470,11 @@ static type check_construct(checker *c, expr *e, const type target)
     return T_ERR;
 }
 
+static bool in_view(const checker *c)
+{
+    return c->system && c->system->is_view;
+}
+
 static type check_call(checker *c, expr *e)
 {
     type builtin;
@@ -319,6 +483,10 @@ static type check_call(checker *c, expr *e)
     if (str_eq_c(e->name, "Spawn")) {
         if (c->in_constructor) {
             diag_error(e->at, "the input's constructor runs outside the simulation, so it can't spawn entities");
+            return T_ERR;
+        }
+        if (in_view(c)) {
+            diag_error(e->at, "views only read the world, so they can't spawn entities");
             return T_ERR;
         }
         // Expressions evaluate left to right, so codegen runs a statement's spawns
@@ -337,11 +505,20 @@ static type check_call(checker *c, expr *e)
 
     for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
 
-    const decl *d = find_type_decl(c->prog, e->name);
+    const decl *d = find_type(c, e->name, e->at);
     if (d && d->kind == DECL_COMPONENT) {
         diag_error(e->at, "write '" STR_FMT " { ... }' to make a component value", STR_ARG(e->name));
+        return T_ERR;
+    }
+    diag_error(e->at, "unknown function '" STR_FMT "'", STR_ARG(e->name));
+    const char *owner = builtin_function_owner(e->name);
+    if (owner) {
+        diag_note("it's '%s." STR_FMT "'", owner, STR_ARG(e->name)); // Sin(x) for Math.Sin(x)
     } else {
-        diag_error(e->at, "unknown function '" STR_FMT "'", STR_ARG(e->name));
+        suggestion s = suggest_start(e->name);
+        suggest_consider_c(&s, "Spawn");
+        suggest_builtin_types(&s);
+        suggest_note(&s);
     }
     return T_ERR;
 }
@@ -354,10 +531,19 @@ static bool names_builtin_owner(const checker *c, const expr *e)
 
 static type check_method(checker *c, expr *e)
 {
-    // Math.Dot(a, b), quaternion.AxisAngle(axis, angle)
+    // Math.Dot(a, b), quaternion.AxisAngle(axis, angle), Draw.Circle(center, radius, color)
     if (names_builtin_owner(c, e->object)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
-        return resolve_builtin_call(e->object->name, e);
+        const type result = resolve_builtin_call(e->object->name, e);
+        if (str_eq_c(e->object->name, "Draw")) {
+            if (result.kind != TY_ERROR) e->call = CALL_DRAW;
+            if (!in_view(c)) {
+                diag_error(e->at, "Draw can only be used in views for now");
+                diag_note("views run once per frame and only read the world: 'view Name(...) { ... }'");
+                return T_ERR;
+            }
+        }
+        return result;
     }
 
     const type obj = check_expr(c, e->object);
@@ -371,6 +557,10 @@ static type check_method(checker *c, expr *e)
     }
     if (c->in_constructor) {
         diag_error(e->at, "the input's constructor runs outside the simulation, so it can't change entities");
+        return T_ERR;
+    }
+    if (in_view(c)) {
+        diag_error(e->at, "views only read the world, so they can't change entities");
         return T_ERR;
     }
 
@@ -408,6 +598,11 @@ static type check_method(checker *c, expr *e)
     }
 
     diag_error(e->at, "Entity has no method '" STR_FMT "'; it has Add, Remove and Destroy", STR_ARG(e->name));
+    suggestion s = suggest_start(e->name);
+    suggest_consider_c(&s, "Add");
+    suggest_consider_c(&s, "Remove");
+    suggest_consider_c(&s, "Destroy");
+    suggest_note(&s);
     return T_ERR;
 }
 
@@ -504,10 +699,49 @@ static bool parse_swizzle(expr *e, const int dim)
     return true;
 }
 
+// Combat.Health or Game.Combat where a value belongs: says what the name is.
+static type check_namespace_member(checker *c, expr *e)
+{
+    str text;
+    qualified_text(e, &text);
+    mark_namespaces(e->object);
+    decl *d = find_type(c, text, e->at);
+    if (d) {
+        e->bind = BIND_TYPE;
+        e->type_decl = d;
+        diag_error(e->at, "'" STR_FMT "' is a type, not a value", STR_ARG(text));
+        return T_ERR;
+    }
+    if (is_namespace(c->prog, text)) {
+        diag_error(e->at, "'" STR_FMT "' is a namespace, not a value", STR_ARG(text));
+        return T_ERR;
+    }
+    str ns;
+    str name;
+    split_qualified(text, &ns, &name);
+    diag_error(e->at, "namespace '" STR_FMT "' has no '" STR_FMT "'", STR_ARG(ns), STR_ARG(name));
+    suggestion s = suggest_start(name);
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        const decl *other = c->prog->decls.items[i];
+        if (other->kind != DECL_SYSTEM && str_eq(decl_ns(other), ns)) suggest_consider(&s, other->name);
+    }
+    suggest_note(&s);
+    return T_ERR;
+}
+
 static type check_member(checker *c, expr *e)
 {
-    // quaternion.Identity, Math.PI
+    // quaternion.identity, Math.PI
     if (names_builtin_owner(c, e->object)) return resolve_builtin_member(e->object->name, e);
+
+    // Combat.Health: a namespace, not a variable, on the left
+    const expr *root = chain_root(e);
+    str text;
+    if (root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
+        && !(c->in_constructor && field_named(c->system, root->name)) && is_namespace(c->prog, root->name)
+        && qualified_text(e, &text)) {
+        return check_namespace_member(c, e);
+    }
 
     const type obj = check_expr(c, e->object);
     if (obj.kind == TY_ERROR) return T_ERR;
@@ -525,6 +759,13 @@ static type check_member(checker *c, expr *e)
     if (obj.kind == TY_QUATERNION) {
         if (str_eq_c(e->member, "value")) return (type){TY_FLOAT4, NULL};
         diag_error(e->at, "quaternion has one member, 'value' (a float4), not '" STR_FMT "'", STR_ARG(e->member));
+        return T_ERR;
+    }
+    if (obj.kind == TY_COLOR) {
+        if (str_eq_c(e->member, "r") || str_eq_c(e->member, "g") || str_eq_c(e->member, "b") || str_eq_c(e->member, "a")) {
+            return T_FLOAT_;
+        }
+        diag_error(e->at, "Color has r, g, b and a, not '" STR_FMT "'", STR_ARG(e->member));
         return T_ERR;
     }
     const int n = matrix_dim(obj);
@@ -561,6 +802,9 @@ static type check_member(checker *c, expr *e)
             }
         }
         diag_error(e->at, "%s has no field '" STR_FMT "'", type_name(obj), STR_ARG(e->member));
+        suggestion s = suggest_start(e->member);
+        suggest_fields(&s, obj.decl);
+        suggest_note(&s);
         return T_ERR;
     }
     diag_error(e->at, "%s has no members", type_name(obj));
@@ -592,12 +836,26 @@ static type check_name(const checker *c, expr *e)
             }
         }
     }
-    const decl *d = find_type_decl(c->prog, e->name);
+    const decl *d = find_type(c, e->name, e->at);
     if (d) {
         diag_error(e->at, "'" STR_FMT "' is a type, not a value", STR_ARG(e->name));
-    } else {
-        diag_error(e->at, "unknown name '" STR_FMT "'", STR_ARG(e->name));
+        return T_ERR;
     }
+    if (is_namespace(c->prog, e->name)) {
+        e->bind = BIND_NAMESPACE;
+        diag_error(e->at, "'" STR_FMT "' is a namespace, not a value", STR_ARG(e->name));
+        return T_ERR;
+    }
+    diag_error(e->at, "unknown name '" STR_FMT "'", STR_ARG(e->name));
+    // What's in scope, and the built-in names that start expressions (math. for Math.)
+    suggestion s = suggest_start(e->name);
+    for (int i = 0; i < c->locals.count; i++) suggest_consider(&s, c->locals.items[i]->name);
+    for (int i = 0; c->system && i < c->system->params.count; i++) suggest_consider(&s, c->system->params.items[i].name);
+    if (c->in_constructor) suggest_fields(&s, c->system);
+    suggest_consider_c(&s, "Math");
+    suggest_consider_c(&s, "Draw");
+    suggest_builtin_types(&s);
+    suggest_note(&s);
     return T_ERR;
 }
 
@@ -608,6 +866,7 @@ static type check_expr(checker *c, expr *e)
     case E_INT: t = T_INT_; break;
     case E_FLOAT: t = T_FLOAT_; break;
     case E_BOOL: t = T_BOOL_; break;
+    case E_STRING: t = (type){TY_STRING, NULL}; break;
     case E_NAME: t = check_name(c, e); break;
     case E_MEMBER: t = check_member(c, e); break;
     case E_CALL: t = check_call(c, e); break;
@@ -690,6 +949,8 @@ static void check_assign(checker *c, const stmt *s)
             diag_note("devices can only be read");
         } else if (root->param->type.kind == TY_SINGLETON && root->param->type.decl->builtin) {
             diag_note("'" STR_FMT "' is managed by the engine", STR_ARG(root->param->type_name));
+        } else if (in_view(c)) {
+            diag_note("views only read the world; systems change it");
         } else {
             diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to write to it",
                       STR_ARG(root->param->type_name), STR_ARG(root->name));
@@ -724,6 +985,10 @@ static void check_var(checker *c, stmt *s)
     type value = check_expr(c, s->value);
     if (s->value->kind == E_NAME && s->value->bind == BIND_TYPE) value = T_ERR;
 
+    if (value.kind == TY_STRING) {
+        diag_error(s->value->at, "text can only be passed straight to Draw.Text for now");
+        value = T_ERR;
+    }
     if (s->type_name.len == 0) {
         if (value.kind == TY_VOID) {
             diag_error(s->value->at, "this expression doesn't produce a value");
@@ -731,12 +996,16 @@ static void check_var(checker *c, stmt *s)
         }
         s->type = value;
     } else {
-        decl *d = find_type_decl(c->prog, s->type_name);
+        decl *d = find_type(c, s->type_name, s->type_at);
         if (builtin_type_named(s->type_name, &s->type)) {
         } else if (d) {
             s->type = decl_type(d);
         } else {
-            diag_error(s->at, "unknown type '" STR_FMT "'", STR_ARG(s->type_name));
+            diag_error(s->type_at.line ? s->type_at : s->at, "unknown type '" STR_FMT "'", STR_ARG(s->type_name));
+            suggestion sg = suggest_start(s->type_name);
+            suggest_builtin_types(&sg);
+            suggest_decls(&sg, c->prog, true, true, true);
+            suggest_note(&sg);
             s->type = T_ERR;
         }
         if (!type_assignable(s->type, value)) {
@@ -785,7 +1054,8 @@ static void check_stmt(checker *c, stmt *s)
     case S_EXPR: {
         check_expr(c, s->value);
         const builtin_call call = s->value->call;
-        const bool effect = (s->value->kind == E_METHOD && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY))
+        const bool effect = (s->value->kind == E_METHOD
+                             && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
                          || (s->value->kind == E_CALL && call == CALL_SPAWN);
         if (!effect && s->value->type.kind != TY_ERROR) diag_error(s->value->at, "this expression does nothing on its own");
         break;
@@ -799,7 +1069,7 @@ static void check_stmt(checker *c, stmt *s)
 static bool all_constant(const expr *e);
 
 // Constant expressions: literals, constructors of built-in types, Math
-// functions, built-in constants like quaternion.Identity, members of any of
+// functions, built-in constants like quaternion.identity, members of any of
 // these, and operators on them. Nothing that reads fields, singletons or Time,
 // so a default never depends on other state.
 static bool is_constant(const expr *e)
@@ -858,10 +1128,13 @@ static void check_fields(checker *c, const decl *d)
         field *f = &d->fields.items[i];
         check_reserved(f->name, f->at);
         if (!builtin_type_named(f->type_name, &f->type)) {
-            if (find_type_decl(c->prog, f->type_name)) {
+            if (find_type(c, f->type_name, f->type_at)) {
                 diag_error(f->at, "fields can't hold components or singletons yet");
             } else {
-                diag_error(f->at, "unknown type '" STR_FMT "'", STR_ARG(f->type_name));
+                diag_error(f->type_at.line ? f->type_at : f->at, "unknown type '" STR_FMT "'", STR_ARG(f->type_name));
+                suggestion s = suggest_start(f->type_name);
+                suggest_builtin_types(&s);
+                suggest_note(&s);
             }
             f->type = T_ERR;
         }
@@ -874,15 +1147,16 @@ static void check_fields(checker *c, const decl *d)
     }
 }
 
-static void check_params(const program *prog, decl *sys)
+static void check_params(const checker *c, decl *sys)
 {
+    const program *prog = c->prog;
     bool has_entity = false;
     bool has_input = false;
     uint64_t seen = 0;
 
     for (int i = 0; i < sys->params.count; i++) {
         param *p = &sys->params.items[i];
-        decl *d = find_type_decl(prog, p->type_name);
+        decl *d = find_type(c, p->type_name, p->type_at);
         bool is_entity = str_eq_c(p->type_name, "Entity");
 
         if (p->name.len > 0) {
@@ -892,6 +1166,12 @@ static void check_params(const program *prog, decl *sys)
                     diag_error(p->at, "parameter '" STR_FMT "' is declared twice", STR_ARG(p->name));
                 }
             }
+        }
+
+        if (sys->is_view && p->mode == PARAM_MUT) {
+            diag_error(p->at, "views only read the world, so their parameters can't be 'mut'");
+            diag_note("views run once per frame, outside the simulation");
+            p->mode = PARAM_READ;
         }
 
         if (is_entity) {
@@ -912,7 +1192,12 @@ static void check_params(const program *prog, decl *sys)
         }
 
         if (!d) {
-            diag_error(p->at, "unknown component or singleton '" STR_FMT "'", STR_ARG(p->type_name));
+            diag_error(p->type_at.line ? p->type_at : p->at, "unknown component or singleton '" STR_FMT "'",
+                       STR_ARG(p->type_name));
+            suggestion s = suggest_start(p->type_name);
+            suggest_decls(&s, prog, true, p->mode != PARAM_WITH && p->mode != PARAM_WITHOUT, true);
+            suggest_consider_c(&s, "Entity");
+            suggest_note(&s);
             p->type = T_ERR;
             continue;
         }
@@ -920,6 +1205,10 @@ static void check_params(const program *prog, decl *sys)
         // An input parameter gives the input of the player who owns the entity,
         // so the system only runs on entities with an Owner.
         if (d->kind == DECL_INPUT) {
+            if (sys->is_view) {
+                diag_error(p->at, "views can't read input yet");
+                diag_note("read the state the input changed instead, like a component the systems update");
+            }
             if (p->mode != PARAM_READ) {
                 diag_error(p->at, "input can't be 'mut', 'with' or 'without'; the simulation can only read it");
             }
@@ -971,8 +1260,8 @@ static void add_builtins(program *prog)
     time->kind = DECL_SINGLETON;
     time->name = str_from("Time");
     time->builtin = true;
-    const field dt = {str_from("dt"), str_from("float"), {0, 0}, {0}, NULL};
-    const field tick = {str_from("tick"), str_from("int"), {0, 0}, {0}, NULL};
+    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}};
+    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}};
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
@@ -981,7 +1270,7 @@ static void add_builtins(program *prog)
     owner->kind = DECL_COMPONENT;
     owner->name = str_from("Owner");
     owner->builtin = true;
-    const field player = {str_from("player"), str_from("PlayerID"), {0, 0}, {0}, NULL};
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}};
     vec_push(owner->fields, player);
     prog->owner = owner;
 
@@ -1007,7 +1296,7 @@ static decl *new_record(program *prog, const char *name, const char *c_name)
 
 static void record_field(decl *d, const char *name, const type t)
 {
-    const field f = {str_from(name), str_from(""), {0, 0}, t, NULL};
+    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}};
     vec_push(d->fields, f);
 }
 
@@ -1061,27 +1350,65 @@ static void add_device_records(program *prog)
     prog->devices = devices;
 }
 
+// Names the language reserves: built-in types and function groups.
+static bool is_builtin_name(const str name)
+{
+    type dummy;
+    return builtin_type_named(name, &dummy) || str_eq_c(name, "Math") || str_eq_c(name, "Draw")
+        || str_eq_c(name, "Devices");
+}
+
+// What a declaration is called in generated C: Combat_Health for Combat.Health.
+static void c_name_of(const decl *d, sb *out)
+{
+    const str ns = decl_ns(d);
+    for (int i = 0; i < ns.len; i++) sb_putn(out, ns.ptr[i] == '.' ? "_" : &ns.ptr[i], 1);
+    if (ns.len > 0) sb_put(out, "_");
+    sb_putn(out, d->name.ptr, (size_t)d->name.len);
+}
+
 static void collect_decls(program *prog)
 {
     for (int i = 0; i < prog->decls.count; i++) {
         decl *d = prog->decls.items[i];
-        type dummy;
+        const str ns = decl_ns(d);
+        if (ns.len > 0) {
+            sb qualified = {0};
+            sb_printf(&qualified, STR_FMT "." STR_FMT, STR_ARG(ns), STR_ARG(d->name));
+            d->qualified = (str){qualified.data, (int)qualified.len};
+        } else {
+            d->qualified = d->name;
+        }
 
         if (!d->builtin) {
             check_reserved(d->name, d->at);
-            if (builtin_type_named(d->name, &dummy) || str_eq_c(d->name, "Math") || str_eq_c(d->name, "Devices")) {
+            if (is_builtin_name(d->name)) {
                 diag_error(d->at, "'" STR_FMT "' is built into the language", STR_ARG(d->name));
             }
             for (int j = 0; j < i; j++) {
                 const decl *other = prog->decls.items[j];
                 bool both_types = d->kind != DECL_SYSTEM && other->kind != DECL_SYSTEM;
                 bool both_systems = d->kind == DECL_SYSTEM && other->kind == DECL_SYSTEM;
-                if ((both_types || both_systems) && str_eq(d->name, other->name)) {
+                if (!both_types && !both_systems) continue;
+                if (str_eq(d->name, other->name) && str_eq(ns, decl_ns(other))) {
                     if (other->builtin) {
                         diag_error(d->at, "'" STR_FMT "' is built into the engine", STR_ARG(d->name));
                     } else {
-                        diag_error(d->at, "'" STR_FMT "' is already declared", STR_ARG(d->name));
+                        diag_error(d->at, "'" STR_FMT "' is already declared", STR_ARG(d->qualified));
+                        const source *src = diag_source(other->at.file);
+                        if (src && other->at.file != d->at.file) diag_note("the other one is in %s", src->path);
                     }
+                    continue;
+                }
+                // Different names that generated C would spell the same: Combat.Health and Combat_Health.
+                sb mine = {0};
+                sb theirs = {0};
+                c_name_of(d, &mine);
+                c_name_of(other, &theirs);
+                if (strcmp(mine.data, theirs.data) == 0) {
+                    diag_error(d->at, "'" STR_FMT "' and '" STR_FMT "' would have the same name in generated C, %s",
+                               STR_ARG(d->qualified), STR_ARG(other->qualified), mine.data);
+                    diag_note("rename one of them");
                 }
             }
         }
@@ -1106,10 +1433,18 @@ static void collect_decls(program *prog)
         case DECL_RECORD:
             break;
         case DECL_SYSTEM:
-            if (str_eq_c(d->name, "Main")) {
+            if (d->is_view) {
+                d->index = prog->views.count;
+                vec_push(prog->views, d);
+            } else if (str_eq_c(d->name, "Main")) {
                 d->is_main = true;
-                if (prog->main) diag_error(d->at, "there can only be one 'system Main()'");
-                else prog->main = d;
+                if (prog->main) {
+                    diag_error(d->at, "there can only be one 'system Main()'");
+                    const source *src = diag_source(prog->main->at.file);
+                    if (src) diag_note("the other one is in %s", src->path);
+                } else {
+                    prog->main = d;
+                }
             } else {
                 d->index = prog->systems.count;
                 vec_push(prog->systems, d);
@@ -1175,14 +1510,14 @@ static void derive_archetypes(const checker *c)
     return;
 
 too_many:
-    diag_error((loc){1, 1}, "the program can create more than %d different component combinations", MAX_ARCHETYPES);
+    diag_error((loc){1, 1, 0}, "the program can create more than %d different component combinations", MAX_ARCHETYPES);
     diag_note("every Add and Remove can apply to any entity, so combinations multiply");
 }
 
-static void warn_unmatched_systems(const program *prog)
+static void warn_unmatched(const program *prog, const decl *const *list, const int count)
 {
-    for (int i = 0; i < prog->systems.count; i++) {
-        const decl *sys = prog->systems.items[i];
+    for (int i = 0; i < count; i++) {
+        const decl *sys = list[i];
         if (!sys->per_entity) continue;
         bool matched = false;
         for (int a = 0; a < prog->archetypes.count; a++) {
@@ -1190,7 +1525,8 @@ static void warn_unmatched_systems(const program *prog)
             if ((mask & sys->need_mask) == sys->need_mask && !(mask & sys->without_mask)) matched = true;
         }
         if (!matched) {
-            diag_warning(sys->at, "system '" STR_FMT "' never runs: no entity matches its parameters", STR_ARG(sys->name));
+            diag_warning(sys->at, "%s '" STR_FMT "' never runs: no entity matches its parameters",
+                         sys->is_view ? "view" : "system", STR_ARG(sys->name));
             if (sys->need_mask) {
                 char names[512] = "";
                 append_component_names(prog, sys->need_mask, names, sizeof names);
@@ -1225,6 +1561,174 @@ static void check_constructor(checker *c, decl *input)
     c->system = NULL;
 }
 
+// `namespace` and `using` at the top of each file.
+static void check_units(const program *prog)
+{
+    for (int i = 0; i < prog->units.count; i++) {
+        const unit *u = prog->units.items[i];
+        if (u->ns.len > 0) {
+            const char *dot = memchr(u->ns.ptr, '.', (size_t)u->ns.len);
+            const str root = {u->ns.ptr, dot ? (int)(dot - u->ns.ptr) : u->ns.len};
+            if (is_builtin_name(root)) {
+                diag_error(u->ns_at, "'" STR_FMT "' is built into the language, so it can't name a namespace", STR_ARG(root));
+            }
+            check_reserved(u->ns, u->ns_at);
+        }
+        for (int k = 0; k < u->usings.count; k++) {
+            const str used = u->usings.items[k];
+            if (is_namespace(prog, used)) continue;
+            diag_error(u->using_at.items[k], "no file declares the namespace '" STR_FMT "'", STR_ARG(used));
+            suggestion s = suggest_start(used);
+            for (int j = 0; j < prog->units.count; j++) suggest_consider(&s, prog->units.items[j]->ns);
+            suggest_note(&s);
+        }
+    }
+}
+
+// [Before(X)] and [After(X)] order systems, and views among views.
+static void check_attributes(checker *c)
+{
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        decl *d = c->prog->decls.items[i];
+        for (int a = 0; a < d->attributes.count; a++) {
+            attribute *attr = &d->attributes.items[a];
+            const bool before = str_eq_c(attr->name, "Before");
+            if (!before && !str_eq_c(attr->name, "After")) {
+                diag_error(attr->at, "unknown attribute '" STR_FMT "'", STR_ARG(attr->name));
+                suggestion s = suggest_start(attr->name);
+                suggest_consider_c(&s, "Before");
+                suggest_consider_c(&s, "After");
+                suggest_note(&s);
+                diag_note("the attributes are Before and After, which order systems: [After(Physics.Integrate)]");
+                continue;
+            }
+            if (d->kind != DECL_SYSTEM) {
+                diag_error(attr->at, "'" STR_FMT "' orders systems and views; '" STR_FMT "' is neither",
+                           STR_ARG(attr->name), STR_ARG(d->name));
+                continue;
+            }
+            if (d->is_main) {
+                diag_error(attr->at, "Main runs once when the world is created, before any system, so it isn't ordered");
+                continue;
+            }
+            if (attr->args.count == 0) {
+                diag_error(attr->at, "'" STR_FMT "' needs the %s it runs %s, like [" STR_FMT "(Movement)]",
+                           STR_ARG(attr->name), d->is_view ? "views" : "systems", before ? "before" : "after",
+                           STR_ARG(attr->name));
+                continue;
+            }
+            const char *kind = d->is_view ? "view" : "system";
+            for (int k = 0; k < attr->args.count; k++) {
+                qname *q = &attr->args.items[k];
+                decl *other;
+                decl *target = lookup(c->prog, d->unit, q->text, true, &other);
+                if (!target) {
+                    diag_error(q->name_at, "unknown %s '" STR_FMT "'", kind, STR_ARG(q->text));
+                    suggestion s = suggest_start(q->text);
+                    for (int j = 0; j < c->prog->decls.count; j++) {
+                        const decl *candidate = c->prog->decls.items[j];
+                        if (candidate->kind == DECL_SYSTEM && candidate->is_view == d->is_view && !candidate->is_main) {
+                            suggest_consider(&s, candidate->name);
+                        }
+                    }
+                    suggest_note(&s);
+                    continue;
+                }
+                if (other) {
+                    diag_error(q->name_at, "'" STR_FMT "' is ambiguous: both " STR_FMT " and " STR_FMT " have it",
+                               STR_ARG(q->text), STR_ARG(decl_ns(target)), STR_ARG(decl_ns(other)));
+                    diag_note("write which one you mean, like '" STR_FMT "'", STR_ARG(target->qualified));
+                    continue;
+                }
+                q->decl = target;
+                if (target == d) {
+                    diag_error(q->name_at, "a %s can't run %s itself", kind, before ? "before" : "after");
+                } else if (target->is_main) {
+                    diag_error(q->name_at, "Main runs once when the world is created, before every system");
+                } else if (target->is_view != d->is_view) {
+                    diag_error(q->name_at, "systems and views are ordered separately: views draw once per frame, "
+                                           "after the ticks");
+                } else if (before) {
+                    vec_push(target->after, d);
+                } else {
+                    vec_push(d->after, target);
+                }
+            }
+        }
+    }
+}
+
+static bool placed_all(const decl *d, const bool *placed, const decl *const *list, const int n)
+{
+    for (int i = 0; i < d->after.count; i++) {
+        for (int k = 0; k < n; k++) {
+            if (list[k] == d->after.items[i] && !placed[k]) return false;
+        }
+    }
+    return true;
+}
+
+// Orders systems (or views): each after the ones it must follow, and otherwise
+// in the order they're written, file by file with files sorted by path. The
+// order is part of the program, the same on every platform.
+static void schedule(decl **list, const int n)
+{
+    if (n == 0) return;
+    bool *placed = arena_alloc(sizeof(bool) * (size_t)n);
+    decl **order = arena_alloc(sizeof(decl *) * (size_t)n);
+    int count = 0;
+    while (count < n) {
+        int next = -1;
+        for (int i = 0; i < n && next < 0; i++) {
+            if (!placed[i] && placed_all(list[i], placed, (const decl *const *)list, n)) next = i;
+        }
+        if (next < 0) break; // A cycle
+        placed[next] = true;
+        order[count++] = list[next];
+    }
+
+    if (count < n) {
+        // Follow "must run after" links among the unplaced until one repeats.
+        const decl *path[64];
+        int length = 0;
+        const decl *d = NULL;
+        for (int i = 0; i < n && !d; i++) {
+            if (!placed[i]) d = list[i];
+        }
+        for (;;) {
+            int seen = -1;
+            for (int i = 0; i < length; i++) {
+                if (path[i] == d) seen = i;
+            }
+            if (seen >= 0 || length == 64) {
+                // Each system in the path runs after the next one.
+                sb chain = {0};
+                for (int i = seen >= 0 ? seen : 0; i < length; i++) {
+                    sb_printf(&chain, STR_FMT " runs after ", STR_ARG(path[i]->qualified));
+                }
+                sb_printf(&chain, STR_FMT, STR_ARG(d->qualified));
+                diag_error(d->at, "these %s must each run after the next, which can't happen: %s",
+                           d->is_view ? "views" : "systems", chain.data);
+                diag_note("remove one of the Before or After attributes that form the loop");
+                break;
+            }
+            path[length++] = d;
+            const decl *next = NULL;
+            for (int i = 0; i < d->after.count && !next; i++) {
+                for (int k = 0; k < n; k++) {
+                    if (list[k] == d->after.items[i] && !placed[k]) next = list[k];
+                }
+            }
+            d = next;
+        }
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        list[i] = order[i];
+        list[i]->index = i;
+    }
+}
+
 bool check(program *prog)
 {
     checker c = {0};
@@ -1233,19 +1737,31 @@ bool check(program *prog)
     add_builtins(prog);
     add_device_records(prog);
     collect_decls(prog);
+    check_units(prog);
 
     for (int i = 0; i < prog->decls.count; i++) {
         const decl *d = prog->decls.items[i];
+        c.unit = d->unit;
         if (d->kind != DECL_SYSTEM) check_fields(&c, d);
     }
-    if (prog->input) check_constructor(&c, prog->input);
+    if (prog->input) {
+        c.unit = prog->input->unit;
+        check_constructor(&c, prog->input);
+    }
 
     for (int i = 0; i < prog->decls.count; i++) {
         decl *d = prog->decls.items[i];
         if (d->kind != DECL_SYSTEM) continue;
-        check_params(prog, d);
+        c.unit = d->unit;
+        check_params(&c, d);
         c.system = d;
         check_stmt(&c, d->body);
+    }
+
+    check_attributes(&c);
+    if (diag_error_count() == 0) {
+        schedule(prog->systems.items, prog->systems.count);
+        schedule(prog->views.items, prog->views.count);
     }
 
     if (!prog->main) {
@@ -1260,7 +1776,7 @@ bool check(program *prog)
             diag_error(misspelled->at, "the program has no entry point");
             diag_note("the entry point is spelled 'Main', with a capital M");
         } else {
-            diag_error((loc){1, 1}, "the program has no entry point");
+            diag_error((loc){1, 1, 0}, "the program has no entry point");
             diag_note("add 'system Main() { ... }' to create the starting entities");
         }
     }
@@ -1270,6 +1786,7 @@ bool check(program *prog)
     derive_archetypes(&c);
     if (diag_error_count() > 0) return false;
 
-    warn_unmatched_systems(prog);
+    warn_unmatched(prog, (const decl *const *)prog->systems.items, prog->systems.count);
+    warn_unmatched(prog, (const decl *const *)prog->views.items, prog->views.count);
     return true;
 }

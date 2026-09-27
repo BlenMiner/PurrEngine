@@ -23,6 +23,7 @@ static const struct {
     {"float4x4", TY_FLOAT4X4, "f4x4", "purr_float4x4"},
     {"Entity", TY_ENTITY, "e", "purr_entity"},
     {"PlayerID", TY_PLAYER, "p", "purr_player_id"},
+    {"Color", TY_COLOR, "c", "purr_color"},
 };
 
 #define BUILTIN_COUNT (sizeof builtins / sizeof builtins[0])
@@ -36,6 +37,11 @@ bool builtin_type_named(const str name, type *out)
         }
     }
     return false;
+}
+
+void suggest_builtin_types(suggestion *s)
+{
+    for (size_t i = 0; i < BUILTIN_COUNT; i++) suggest_consider_c(s, builtins[i].name);
 }
 
 int type_dim(const type t)
@@ -115,12 +121,14 @@ const char *type_name(const type t)
     switch (t.kind) {
     case TY_ERROR: return "<error>";
     case TY_VOID: return "nothing";
+    case TY_STRING: return "string";
     case TY_COMPONENT:
     case TY_SINGLETON:
     case TY_INPUT:
     case TY_RECORD: {
         char *b = buf[next++ % 4];
-        snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(t.decl->name));
+        const str name = t.decl->qualified.len > 0 ? t.decl->qualified : t.decl->name;
+        snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(name));
         return b;
     }
     default:
@@ -133,6 +141,7 @@ const char *type_name(const type t)
 
 const char *type_c_name(const type t)
 {
+    if (t.kind == TY_STRING) return "const char *";
     for (size_t i = 0; i < BUILTIN_COUNT; i++) {
         if (builtins[i].kind == t.kind) return builtins[i].c_name;
     }

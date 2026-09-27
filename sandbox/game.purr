@@ -1,4 +1,6 @@
-﻿component Transform
+﻿namespace Test;
+
+component Transform
 {
     float3 position;
 }
@@ -13,16 +15,27 @@ singleton Physics
     int collisionCount = 69;
 }
 
+view Test(Transform trs, with Player)
+{
+    Draw.Circle(trs.position.xy, 5f, Color.red);
+}
+
 system PlayerMovement(mut Transform trs, Player player, Time time, mut Physics physics)
 {
     trs.position += player.velocity * time.dt;
-    physics.collisionCount += 1;
+}
+
+[After(PlayerMovement)]
+system PlayerClamp(mut Transform trs, with Player)
+{
+    if (trs.position.y < 0)
+        trs.position.y = 0;
 }
 
 system Main()
 {
     Spawn(
-        Transform { position = float3(0, 1, 2) },
-        Player { velocity = float3(0, 1, 0) }
+        Transform { position = float3(0, 100, 2) },
+        Player { velocity = float3(0, -10, 0) }
     );
 }

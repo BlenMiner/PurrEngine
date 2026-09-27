@@ -1,0 +1,18 @@
+{
+  "id": "purrls",
+  "name": "PurrLang",
+  "programArgs": {
+    "windows": "$PROJECT_DIR$/build/tools/purrls.exe",
+    "default": "$PROJECT_DIR$/build/tools/purrls"
+  },
+  "fileTypeMappings": [
+    {
+      "fileType": {
+        "patterns": [
+          "*.purr"
+        ]
+      },
+      "languageId": "purrlang"
+    }
+  ]
+}

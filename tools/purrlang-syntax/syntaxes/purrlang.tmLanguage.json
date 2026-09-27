@@ -5,6 +5,8 @@
   "fileTypes": ["purr"],
   "patterns": [
     { "include": "#comments" },
+    { "include": "#namespaces" },
+    { "include": "#attributes" },
     { "include": "#declarations" },
     { "include": "#keywords" },
     { "include": "#literals" },
@@ -28,6 +30,84 @@
         }
       ]
     },
+    "namespaces": {
+      "patterns": [
+        {
+          "comment": "namespace Game.Combat; using Physics;",
+          "begin": "^\\s*(namespace|using)\\b",
+          "end": ";|$",
+          "beginCaptures": {
+            "1": { "name": "keyword.other.namespace.purrlang" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.terminator.purrlang" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "name": "entity.name.namespace.purrlang",
+              "match": "[A-Za-z_][A-Za-z0-9_]*"
+            },
+            {
+              "name": "punctuation.accessor.purrlang",
+              "match": "\\."
+            }
+          ]
+        }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        {
+          "comment": "[Before(Physics.Gravity)], at the start of a line before a declaration",
+          "begin": "^\\s*(\\[)",
+          "end": "(\\])|$",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.attribute.begin.purrlang" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.attribute.end.purrlang" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "begin": "([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+              "end": "\\)|$",
+              "beginCaptures": {
+                "1": { "name": "entity.name.function.attribute.purrlang" },
+                "2": { "name": "punctuation.parenthesis.begin.purrlang" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.parenthesis.end.purrlang" }
+              },
+              "patterns": [
+                { "include": "#comments" },
+                {
+                  "name": "entity.name.function.purrlang",
+                  "match": "[A-Za-z_][A-Za-z0-9_]*"
+                },
+                {
+                  "name": "punctuation.accessor.purrlang",
+                  "match": "\\."
+                },
+                {
+                  "name": "punctuation.separator.comma.purrlang",
+                  "match": ","
+                }
+              ]
+            },
+            {
+              "name": "entity.name.function.attribute.purrlang",
+              "match": "[A-Za-z_][A-Za-z0-9_]*"
+            },
+            {
+              "name": "punctuation.separator.comma.purrlang",
+              "match": ","
+            }
+          ]
+        }
+      ]
+    },
     "declarations": {
       "patterns": [
         {
@@ -39,8 +119,8 @@
           }
         },
         {
-          "comment": "system MovePlayer",
-          "match": "\\b(system)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "comment": "system MovePlayer, view DrawBalls",
+          "match": "\\b(system|view)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.purrlang" },
             "2": { "name": "entity.name.function.purrlang" }
@@ -72,6 +152,17 @@
           "match": "\\b(true|false)\\b"
         },
         {
+          "name": "string.quoted.double.purrlang",
+          "begin": "\"",
+          "end": "\"|$",
+          "patterns": [
+            {
+              "name": "constant.character.escape.purrlang",
+              "match": "\\\\[\"\\\\n]"
+            }
+          ]
+        },
+        {
           "name": "constant.numeric.integer.hexadecimal.purrlang",
           "match": "\\b0[xX][0-9A-Fa-f_]*[0-9A-Fa-f]\\b"
         },
@@ -94,12 +185,12 @@
         {
           "comment": "Built-in value types",
           "name": "storage.type.primitive.purrlang",
-          "match": "\\b(bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|PlayerID)\\b"
+          "match": "\\b(bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|PlayerID|Color)\\b"
         },
         {
-          "comment": "Built-in singletons, components and records",
+          "comment": "Built-in singletons, components, records and function groups",
           "name": "support.class.purrlang",
-          "match": "\\b(Time|Math|Owner|Devices)\\b"
+          "match": "\\b(Time|Math|Draw|Owner|Devices)\\b"
         },
         {
           "comment": "Spawn(...)",
@@ -151,15 +242,23 @@
       "patterns": [
         {
           "name": "keyword.operator.assignment.compound.purrlang",
-          "match": "\\+=|-=|\\*=|/=|%="
+          "match": "<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^="
+        },
+        {
+          "name": "keyword.operator.logical.purrlang",
+          "match": "&&|\\|\\||!(?!=)"
+        },
+        {
+          "name": "keyword.operator.bitwise.shift.purrlang",
+          "match": "<<|>>"
         },
         {
           "name": "keyword.operator.comparison.purrlang",
           "match": "==|!=|<=|>=|<|>"
         },
         {
-          "name": "keyword.operator.logical.purrlang",
-          "match": "&&|\\|\\||!"
+          "name": "keyword.operator.bitwise.purrlang",
+          "match": "&|\\||\\^|~"
         },
         {
           "name": "keyword.operator.assignment.purrlang",

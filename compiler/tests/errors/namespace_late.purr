@@ -1,0 +1,4 @@
+// expect: goes at the top of the file, before any declaration
+component Body { float2 position; }
+namespace Physics;
+system Main() { }

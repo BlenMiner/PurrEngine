@@ -1,0 +1,3 @@
+// expect: did you mean 'red'?
+component Tint { Color color = Color.Red; }
+system Main() { Spawn(Tint); }

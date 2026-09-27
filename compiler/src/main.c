@@ -9,10 +9,11 @@
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: purrc <input.purr> -o <output-dir> [--name <name>] [--no-line]\n"
+            "usage: purrc <file.purr>... -o <output-dir> [--name <name>] [--no-line]\n"
             "\n"
-            "Transpiles a PurrLang program to <output-dir>/<name>.h and <name>.c.\n"
-            "  --name <name>  base name of the generated files (default: input file name)\n"
+            "Transpiles a PurrLang program, made of one or more files, to\n"
+            "<output-dir>/<name>.h and <name>.c.\n"
+            "  --name <name>  base name of the generated files (default: the first file's name)\n"
             "  --no-line      don't map generated code back to .purr lines for debuggers\n");
 }
 
@@ -47,9 +48,16 @@ static const char *stem(const char *path)
     return out;
 }
 
+// Files are compiled in order of their paths (see path_compare).
+static int path_order(const void *a, const void *b)
+{
+    return path_compare(*(const char *const *)a, *(const char *const *)b);
+}
+
 int main(const int argc, char **argv)
 {
-    const char *input = NULL;
+    const char **inputs = calloc((size_t)argc, sizeof(char *));
+    int input_count = 0;
     codegen_options opts = {NULL, NULL, true};
 
     for (int i = 1; i < argc; i++) {
@@ -62,33 +70,34 @@ int main(const int argc, char **argv)
         } else if (argv[i][0] == '-') {
             usage();
             return 2;
-        } else if (!input) {
-            input = argv[i];
         } else {
-            fprintf(stderr, "purrc: only one input file is supported for now\n");
-            return 2;
+            inputs[input_count++] = argv[i];
         }
     }
-    if (!input || !opts.out_dir) {
+    if (input_count == 0 || !opts.out_dir) {
         usage();
         return 2;
     }
-    if (!opts.name) opts.name = stem(input);
+    qsort(inputs, (size_t)input_count, sizeof(char *), path_order);
+    if (!opts.name) opts.name = stem(inputs[0]);
 
-    source src = {input, NULL, 0};
-    char *text = read_file(input, &src.len);
-    if (!text) {
-        fprintf(stderr, "purrc: can't read %s\n", input);
-        return 1;
+    diag_reset();
+    program *prog = program_new();
+    for (int i = 0; i < input_count; i++) {
+        source *src = NEW(source);
+        src->path = inputs[i];
+        char *text = read_file(inputs[i], &src->len);
+        if (!text) {
+            fprintf(stderr, "purrc: can't read %s\n", inputs[i]);
+            return 1;
+        }
+        src->text = text;
+        diag_add_source(src);
+
+        token *toks = lex(src);
+        if (!toks) return 1;
+        if (!parse_file(prog, src, toks, false)) return 1;
     }
-    src.text = text;
-    diag_init(&src);
-
-    token *toks = lex(&src);
-    if (!toks) return 1;
-
-    program *prog = parse(&src, toks);
-    if (!prog) return 1;
 
     if (!check(prog)) return 1;
 

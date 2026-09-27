@@ -7,6 +7,9 @@
 // Looks up a built-in type by name: bool, int, float, float3, quaternion, ...
 bool builtin_type_named(str name, type *out);
 
+// Offers every built-in type name to a "did you mean" suggestion.
+void suggest_builtin_types(suggestion *s);
+
 // Number of components: 1 for int and float, 2-4 for vectors, 0 for anything else.
 int type_dim(type t);
 

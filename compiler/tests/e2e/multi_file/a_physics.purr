@@ -1,0 +1,22 @@
+// A game in several files. Files compile in order of their paths, and systems
+// run in that order unless Before or After says otherwise.
+namespace Physics;
+
+component Body
+{
+    float2 position;
+}
+
+// Declared first, but Gravity must run before it.
+[After(Gravity)]
+system Move(mut Trace trace)
+{
+    trace.move = trace.step;
+    trace.step += 1;
+}
+
+system Gravity(mut Trace trace)
+{
+    trace.gravity = trace.step;
+    trace.step += 1;
+}

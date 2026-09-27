@@ -28,6 +28,8 @@ typedef enum type_kind {
     TY_FLOAT4X4,
     TY_ENTITY,
     TY_PLAYER,     // PlayerID
+    TY_COLOR,
+    TY_STRING,     // Text literals; only Draw.Text takes them for now.
     TY_COMPONENT,
     TY_SINGLETON,
     TY_INPUT,      // The game's input declaration
@@ -40,14 +42,42 @@ typedef struct type {
 } type;
 
 // ---------------------------------------------------------------------------
+// Files and names
+
+// One source file of a program.
+typedef struct unit {
+    const source *src;
+    str ns;           // `namespace Game.Combat;`, or empty for the global namespace
+    loc ns_at;
+    VEC(str) usings;  // `using Physics;`
+    VEC(loc) using_at;
+} unit;
+
+// A name that may be qualified by a namespace: Health, Combat.Health.
+typedef struct qname {
+    str text;    // Without spaces: "Combat.Health"
+    loc at;      // The first part
+    loc name_at; // The last part: the name itself
+    struct decl *decl; // What it names, once checked
+} qname;
+
+// [Before(Physics.Integrate)]
+typedef struct attribute {
+    str name;
+    loc at;
+    VEC(qname) args;
+} attribute;
+
+// ---------------------------------------------------------------------------
 // Declarations
 
 typedef struct field {
     str name;
     str type_name;
-    loc at;
+    loc at;      // The name
     type type;
     expr *default_value; // Constant expression, or NULL for zero.
+    loc type_at; // The type name
 } field;
 
 typedef enum param_mode {
@@ -61,8 +91,11 @@ typedef struct param {
     param_mode mode;
     str type_name;
     str name; // Empty for with/without.
-    loc at;
+    loc at;   // The first token, a modifier or the type
     type type;
+    loc type_at;      // The type's name (the last part if it's qualified)
+    loc type_qual_at; // Where the type starts: its namespace if it's qualified
+    loc name_at;
 } param;
 
 typedef enum decl_kind {
@@ -76,7 +109,11 @@ typedef enum decl_kind {
 typedef struct decl {
     decl_kind kind;
     str name;
+    str qualified; // With its namespace, for messages: "Combat.Health"
     loc at;
+    loc end; // The closing brace
+    const unit *unit; // The file it's in; NULL for built-ins
+    VEC(attribute) attributes;
     bool builtin;
     const char *c_name; // Records: the C struct name.
 
@@ -84,14 +121,16 @@ typedef struct decl {
     VEC(field) fields;
     int index; // Component bit / singleton index / system order.
 
-    // Systems, and an input's constructor
+    // Systems, views, and an input's constructor
     VEC(param) params;
     stmt *body;
     loc body_at;
+    bool is_view;        // A view: a DECL_SYSTEM that runs once per frame, reads the world and draws.
     bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
     uint64_t need_mask;  // Components an entity must have (access and `with`).
     uint64_t without_mask;
+    VEC(struct decl *) after; // Systems or views that must run first ([After], and [Before] on them)
 } decl;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +140,7 @@ typedef enum expr_kind {
     E_INT,
     E_FLOAT,
     E_BOOL,
+    E_STRING,  // "text"; `text` holds it without the quotes, escapes as written
     E_NAME,
     E_MEMBER,
     E_CALL,    // name(args): float3(...), Spawn(...)
@@ -114,6 +154,7 @@ typedef enum builtin_call {
     CALL_NONE,
     CALL_CONSTRUCT, // float3(...), int(...), quaternion(...), float4x4(...)
     CALL_BUILTIN,   // Math.Dot(...), quaternion.AxisAngle(...): calls c_callee
+    CALL_DRAW,      // Draw.Circle(...): calls c_callee with the view's draw list first
     CALL_SPAWN,
     CALL_ADD,
     CALL_REMOVE,
@@ -133,14 +174,16 @@ typedef enum ctor_form {
     CTOR_MAT_FROM_QUAT,  // float3x3(quaternion)
     CTOR_MAT_FROM_ROT_T, // float4x4(float3x3 rotation, float3 translation)
     CTOR_PLAYER,         // PlayerID(index)
+    CTOR_COLOR,          // Color(r, g, b) or Color(r, g, b, a)
 } ctor_form;
 
 typedef enum binding_kind {
     BIND_NONE,
     BIND_PARAM,
     BIND_LOCAL,
-    BIND_TYPE,  // A component name used as a value: Spawn(Player).
+    BIND_TYPE,  // A component name used as a value: Spawn(Player), Spawn(Combat.Health).
     BIND_FIELD, // A field of the input, named directly inside its constructor.
+    BIND_NAMESPACE, // `Combat` in Combat.Health
 } binding_kind;
 
 typedef enum input_edge {
@@ -182,7 +225,7 @@ struct expr {
     input_edge edge;       // .pressed / .released on an input field.
     int swizzle_len;       // Vector swizzle: number of components (0 if not a swizzle).
     int swizzle[4];        // Component indices: 0..3 for x, y, z, w.
-    const char *c_constant; // Static member such as quaternion.Identity, as C.
+    const char *c_constant; // Static member such as quaternion.identity, as C.
 
     // E_CALL, E_METHOD
     VEC(expr *) args;
@@ -201,6 +244,7 @@ struct expr {
 
     // E_LITERAL
     VEC(field_init) inits;
+    loc qual_at; // Where a qualified name starts (Combat.Health { }); `at` is its last part
 };
 
 // ---------------------------------------------------------------------------
@@ -221,6 +265,7 @@ struct stmt {
 
     // S_BLOCK
     VEC(stmt *) stmts;
+    loc end; // The closing brace, or where a block cut short by a syntax error ends
 
     // S_IF
     expr *cond;
@@ -232,6 +277,8 @@ struct stmt {
     str type_name; // Empty for `var`.
     str name;
     type type;
+    loc type_at;
+    loc name_at;
 
     // S_VAR initializer, S_ASSIGN value, S_EXPR expression
     expr *value;
@@ -245,13 +292,14 @@ struct stmt {
 // Program
 
 typedef struct program {
-    const source *src;
-    VEC(decl *) decls; // In source order, builtins first.
+    VEC(unit *) units; // Its files, in the order they're parsed: sorted by path
+    VEC(decl *) decls; // In source order, file by file, builtins first.
 
     // Filled by the checker
     VEC(decl *) components;
     VEC(decl *) singletons;
     VEC(decl *) systems; // Excluding Main.
+    VEC(decl *) views;
     decl *main;
     decl *input;         // The input declaration, if any.
     decl *owner;         // The built-in Owner component.
@@ -266,5 +314,11 @@ typedef struct program {
     bool uses_destroy;
 } program;
 
-program *parse(const source *src, token *toks);
+program *program_new(void);
+
+// Parses one file into `prog`. Without `recover`, stops at the first syntax
+// error and returns false. With it, reports every syntax error it finds and
+// keeps what it could read, skipping a broken statement or declaration: for
+// editors, which need structure while code is half typed.
+bool parse_file(program *prog, const source *src, token *toks, bool recover);
 bool check(program *prog);

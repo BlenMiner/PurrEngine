@@ -7,8 +7,8 @@ component Body
     float2 flat;
     float4 color = float4(1, 0.5, 0.25, 1);
     int2 cell = int2(3, -4);
-    quaternion rotation = quaternion.Identity;
-    float3x3 basis = float3x3.Identity;
+    quaternion rotation = quaternion.identity;
+    float3x3 basis = float3x3.identity;
     float4x4 world;
     float angle = Math.Radians(90);
     float pi = Math.PI;
@@ -68,7 +68,7 @@ system Compute(mut Body body, mut Results r)
     r.rotated = Math.Rotate(yaw, float3(1, 0, 0));
     body.rotation = Math.Mul(body.rotation, yaw);
 
-    float4x4 m = float4x4.TRS(float3(1, 2, 3), quaternion.Identity, float3(2));
+    float4x4 m = float4x4.TRS(float3(1, 2, 3), quaternion.identity, float3(2));
     r.transformed = Math.Transform(m, float3(1, 1, 1));
     r.determinant = Math.Determinant(m);
     body.world = m;

@@ -1,0 +1,48 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+
+#include "json.h"
+
+// One file of the game to analyse.
+typedef struct analysis_file {
+    const char *uri;  // As the editor knows it
+    const char *path; // For messages
+    const char *text;
+    size_t len;
+} analysis_file;
+
+// The compiler's front end run on a whole game, for the language server:
+// tolerant lexing and parsing of every file, then the checker. Results stay
+// valid until the next analysis_run, which resets the compiler's arena. The
+// files must outlive the results.
+void analysis_run(const analysis_file *files, int count);
+
+// Picks the document the requests below are about. False if it isn't part of
+// the analysed game.
+bool analysis_select(const char *uri);
+int analysis_file_count(void);
+const char *analysis_file_uri(int file);
+
+// Diagnostics for one of the game's files.
+void analysis_diagnostics(int file, jbuf *out);                              // Diagnostic[]
+
+// LSP results about the selected document, written as JSON. Positions are
+// LSP's: 0-based lines and UTF-16 columns. Results can point into other files
+// of the game (definitions, references, renames).
+void analysis_completion(int line, int character, jbuf *out);                // CompletionList
+void analysis_hover(int line, int character, jbuf *out);                     // Hover or null
+void analysis_definition(const char *uri, int line, int character, jbuf *out); // Location or null
+void analysis_symbols(jbuf *out);                                            // DocumentSymbol[]
+void analysis_semantic_tokens(jbuf *out);                                    // SemanticTokens
+void analysis_semantic_legend(jbuf *out);                                    // SemanticTokensLegend
+void analysis_references(const char *uri, int line, int character, bool declaration, jbuf *out); // Location[]
+void analysis_highlights(int line, int character, jbuf *out);                // DocumentHighlight[]
+void analysis_signature_help(int line, int character, jbuf *out);           // SignatureHelp or null
+
+// These return an error message for the user instead of writing a result
+// when they can't do their job, and NULL when they did.
+const char *analysis_prepare_rename(int line, int character, jbuf *out);    // Range
+const char *analysis_rename(const char *uri, int line, int character, const char *new_name, jbuf *out); // WorkspaceEdit
+const char *analysis_format(int tab_size, bool insert_spaces, jbuf *out);   // TextEdit[]

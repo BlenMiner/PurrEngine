@@ -1,0 +1,5 @@
+// expect: did you mean 'Math'?
+system Main()
+{
+    var angle = math.PI;
+}

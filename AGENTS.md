@@ -25,6 +25,17 @@ A networking-first game engine:
 - The web (WebAssembly, rendering with WebGL) is actively supported and tested, not an afterthought. Changes must keep the web build working.
 - Determinism holds on every platform, the web included, so web and desktop players can share one simulation.
 
+## Rendering and platform
+
+- raylib handles windows, input and rendering for now. The web build renders with WebGL 2.
+- Rendering stays disconnected from the simulation, so it can be replaced later (for example for consoles):
+  - The simulation never includes raylib or any platform header.
+  - The view reads the world and draws it. It never writes simulation state.
+  - The platform layer's only link to the simulation is filling `Devices`.
+  - Game code and raylib never share a source file: generated headers name types after the game's components (`Transform`), and raylib defines many of the same names. Hosts include `purr/platform.h`, which doesn't include raylib, and `purr_platform` keeps raylib private.
+- `purr/run.h` is the standard host: `purr_run(&(purr_run_desc){.title = "..."})` opens a window, ticks the game at a fixed rate with player 0's input from the devices, and draws its views. A game needs no other C.
+- Views are written in PurrLang (`view` declarations). Their `Draw` calls record commands into a renderer-agnostic draw list (`purr/draw.h`). The platform layer renders the list (`purr_platform_draw`), so replacing raylib only means rewriting that function.
+
 ## Tech stack
 
 - The engine is written in C and compiled with clang on every platform.
@@ -39,8 +50,13 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 - Build only: `cmake --build --preset debug`
 - Run tests: `ctest --preset debug`, or run `build/debug/bin/purr_tests [name-filter]` directly
 - Run the sandbox: `build/debug/bin/sandbox`
+- Run the demo: `build/debug/bin/demo`, or open `build/web-release/bin/demo.html` in a browser after a web build.
 
 There are two presets. `debug` has no optimization. `release` is optimized and keeps debug info for profiling.
+
+Every native build also copies the language server to `build/tools/purrls`, the fixed path editors run (see `tools/purrlang-lsp4ij`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
+
+The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with `-DPURR_PLATFORM=OFF` to build without the platform layer and the demo, for example offline.
 
 ### Web builds
 
@@ -54,34 +70,50 @@ There are two presets. `debug` has no optimization. `release` is optimized and k
 - `tests/test_crossplatform.c` and `compiler/tests/e2e/crossplatform` hash the exact bits of math results and of a full simulation. The hashes must be identical on every platform and in every configuration.
 - If math or generated code changes the results on purpose, update the expected hashes from one platform, then confirm every other platform and configuration agrees.
 - Test code must not depend on C's unspecified argument evaluation order: clang goes right to left on Windows and left to right on WebAssembly. Draw random inputs into locals first.
+- The demo's smoke test (`demo --smoke`, or `demo.html?smoke`) plays a scripted session through the real platform layer. It checks a hash of the simulation (`SMOKE_HASH` in `demo/main.c`, the same on every platform) and pixels read back from the renderer. The native presets run it in a hidden window, so they need a desktop session with OpenGL. The web presets run it in headless Chrome or Edge on the browser's software WebGL, and skip it if neither browser is found.
 
 ### PurrLang programs
 
-`purr_add_game(<target> SOURCE <file.purr> [NAME <name>])` runs `purrc` on the file and compiles the generated C into the target, which then includes `<name>.h`. The files regenerate whenever the `.purr` file or `purrc` changes.
+`purr_add_game(<target> [SOURCES <file.purr>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS])` builds a game as the program `<target>` (see `cmake/PurrLang.cmake`):
 
-The generated header is the API between the game and the host:
+- The game is every `.purr` file in the current source folder and its subfolders; the next build picks up new files. `SOURCES` lists the files instead, for tests and folders that hold several games.
+- Without `HOST`, the game is the whole program and needs no C: a generated `main` runs it in a window through `purr/run.h`. On the web it's `<target>.html`.
+- With `HOST`, those C files are the program (tests, the demo's smoke test, custom hosts). They include `<name>.h`, where `NAME` defaults to `<target>`.
+- `purrc` compiles all the files together, in order of their paths. The generated files regenerate whenever a `.purr` file or `purrc` changes.
+- Every game's files are listed in `build/tools/games.txt`, one `<game>\t<path>` per line. A path ending in `/` is a folder: every `.purr` file in it and its subfolders, so editors see new files before the next build. `purrls` reads it to analyze a game's files together, in `purrc`'s order; a file in no game is analyzed alone.
+
+The generated header is the API between the game and the host. Namespaced declarations have their namespace in their C name: `Combat.Health` is `Combat_Health`, read with `purr_get_Combat_Health`.
 
 - `purr_world`: the whole simulation state as plain data. Copying it is a snapshot.
 - `purr_world_init(w, dt)`: clears the world, sets `Time.dt` and singleton defaults, runs `Main`.
 - `purr_world_tick(w)`: runs every system once, then applies structural changes.
+- `purr_world_draw(w, draw)`: runs every view once, adding their Draw calls to a `purr_draw_list`. Call it once per frame, after `purr_draw_reset(draw)`, then render the list with `purr_platform_draw(draw)`.
 - `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`.
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
-- If the game declares an input: `purr_input_sample(devices)` runs the input's constructor on the client (call `purr_devices_consume(devices)` after it), and `purr_world_set_input(w, player, input)` sets a player's input for the next tick.
+- If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's constructor on the client (call `purr_devices_consume(devices)` after it), and `purr_world_set_input(w, player, input)` sets a player's input for the next tick.
 
 ## Layout
 
 - `engine/`: the engine library (`purr`). Public headers go in `engine/include/purr/`, sources in `engine/src/`. New `.c` files are picked up automatically.
 - `compiler/`: `purrc`, the PurrLang transpiler (owned by Claude). `compiler/tests/e2e/` holds programs compiled and run as tests. `compiler/tests/errors/` holds programs that must fail with the message on their first line.
+- `compiler/lsp/`: `purrls`, the PurrLang language server (owned by Claude). It reuses purrc's front end, with error recovery, to give editors completion, diagnostics, hovers, go to definition, find usages, rename, formatting, parameter hints, the outline and semantic highlighting. Native builds only.
+- `tools/`: editor support. `purrlang-syntax` is a TextMate bundle for highlighting, and `purrlang-lsp4ij` is a template that connects JetBrains IDEs to `purrls` through the LSP4IJ plugin.
 - `docs/purrlang.md`: the language spec.
-- `sandbox/`: an executable for experiments.
+- `platform/`: the platform layer (`purr_platform`): window, frame loop and input devices, on raylib. Public header `platform/include/purr/platform.h`.
+- `demo/`: a small game on the platform layer. `demo.purr` is the simulation and the views that draw it, and `main.c` is the host. It builds as `demo.html` on the web.
+- `sandbox/`: the owner's experiments: a game with no C, built by `purr_add_game`.
 - `tests/`: tests built on the harness in `tests/purr_test.h`. New test files are picked up automatically.
-- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the file that locates clang (`clang-toolchain.cmake`), and `purr_add_game` (`PurrLang.cmake`).
+- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the file that locates clang (`clang-toolchain.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
 
 ### Runtime written by Claude for now
 
 - `engine/include/purr/entity.h` and `engine/src/entity.c` (the entity table) are a temporary implementation Claude wrote so generated code could run. The owner takes them over later. Until then Claude maintains them. Generated code depends on the functions declared in `entity.h`.
 - `engine/include/purr/devices.h`, `engine/src/devices.c` (input devices) and `engine/include/purr/player.h` (`PlayerID`) are Claude's too, on the same terms. purrc reads the device member lists from `devices.h`, so PurrLang and C always agree.
 - `engine/include/purr/math.h` and `engine/src/math.c` (vectors, quaternions, matrices and transcendental functions) are Claude's too, on the same terms. Generated code calls them by the names `purr_<function>_<type>`. The transcendental functions are in-house, computed in double from basic operations; CORE-MATH remains an option to replace them.
+- `engine/include/purr/color.h`, `engine/include/purr/draw.h` and `engine/src/draw.c` (colors and the draw list) are Claude's too, on the same terms. Generated views call the `purr_draw_*` functions.
+- `platform/` (the platform layer) and `demo/` are Claude's too, on the same terms.
+  - The platform layer reads keys by physical position everywhere. On the web it reads the DOM's `code` itself: Emscripten's GLFW, which raylib uses there, reads the legacy `keyCode`, which follows the keyboard layout. `platform/tests/web_keys.c` guards this with AZERTY-style events. Hosts and views should read input from `Devices` too, never raylib's key functions.
+  - On the web, `purr_platform_run` never returns (the browser drives the frames), so hosts do all their work in the frame function.
 
 ## Language
 
@@ -93,6 +125,9 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 - Explicit is the default. Systems declare which components they read and write in their signatures.
 - A system's access (which components it reads or writes) is declared separately from its filters (which components an entity must have or lack). Filters don't create data dependencies.
 - The language is built around the ECS. It should use syntax sugar to hide the ECS's pain points.
+- When nothing else decides a convention (names, axes, units, orderings), follow Unity: Unity.Mathematics for math, the Input System for input. PurrLang's own rules, such as PascalCase methods, still win.
+- Error messages guide the user to the fix: say what's wrong and, whenever it's knowable, what to write instead (a note with the right usage, or "did you mean ..." for a misspelled name).
+- No backward compatibility yet: rename and change freely. Old spellings aren't supported; at most, an error points to the new one.
 
 ## ECS and simulation state
 

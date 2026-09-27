@@ -10,13 +10,26 @@ PurrLang is a working name and may change.
 
 - Source files use the `.purr` extension.
 - The compiler (transpiler) is `purrc`.
+- A game is one or more `.purr` files: by default, every `.purr` file in the game's folder and its subfolders. Every declaration is visible from every file of the game; there are no imports between files.
+- A game needs no C: the engine runs it. A custom C host is optional, for tests or special hosts.
+
+### Namespaces
+
+- A file can put its declarations in a namespace, and namespaces are how large games keep names apart.
+- Code outside the namespace names its declarations with it (`Combat.Health`), or imports it with `using Combat;`.
+
+### Order of systems
+
+- Systems run in one deterministic order, the same on every platform. By default it follows the files, sorted by path, then the order of declarations in each file.
+- Attributes change the order of a system relative to others.
 
 ### Style
 
 - The syntax is C#-like.
 - Types, systems and methods use PascalCase: `Transform`, `MovePlayer`, `Spawn(...)`.
 - Fields, parameters and locals use camelCase (PurrNet style): `trs.position`, not `trs.Position`.
-- Attributes (`[...]`) are only for metadata, not for core semantics.
+- Public properties use camelCase too, even static ones: `Color.red`, `quaternion.identity`. True constants use FULL_CASE: `Math.PI`, `Math.TAU`.
+- Attributes (`[...]`) are only for metadata, such as when a system runs, not for what code does.
 
 ### Declarations
 
@@ -27,7 +40,7 @@ PurrLang is a working name and may change.
 ### Field defaults
 
 - Component and singleton fields can declare a default value: `int value = 100;`.
-- A default must be a constant expression: literals, constructors of built-in types, `Math` functions, built-in constants like `quaternion.Identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
+- A default must be a constant expression: literals, constructors of built-in types, `Math` functions, built-in constants like `quaternion.identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
 - Singletons start with their defaults when the world is created, before `Main` runs.
 - Components get their defaults whenever a value is created without setting that field: `Spawn(Health)`, `e.Add(Health)`, and fields left out of `Health { max = 200 }`.
 - Fields without a default start at zero. `Entity` fields always start as the null entity and can't have a default.
@@ -120,7 +133,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Types and values
 
-- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit) and `Entity`. There is no `double`. Vector types are under Vector math.
+- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit) and `Entity`. There is no `double`. Vector types are under Vector math, and `Color` under Views and drawing.
 - `1.5` is a `float`; the `f` suffix is optional. An `int` converts to `float` implicitly, never the other way.
 - Integer arithmetic wraps on overflow. Integer division and modulo by zero give 0, so no input can crash the simulation.
 - Bitwise operators `& | ^ ~ << >>` work on `int`, with compound forms `&= |= ^= <<= >>=`. As in C#, shift counts use their low 5 bits (`1 << 33` is `2`) and `>>` keeps the sign. Operator precedence follows C#.
@@ -148,12 +161,50 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Syntax
 
-- Statements: blocks, `if`/`else`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), and calls to `Spawn`, `Add`, `Remove` and `Destroy`. There are no loops yet.
+- Statements: blocks, `if`/`else`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), and calls to `Spawn`, `Add`, `Remove`, `Destroy` and the `Draw` functions. There are no loops yet.
 - Operators and their precedence follow C#. Comments are `//` and `/* */`.
 
 ### Limits
 
 - 64 components, 256 archetypes, 16384 entities, 1024 entities per archetype and 4096 structural changes per tick. The last three can be raised with compile definitions.
+
+### Namespaces
+
+- `namespace Game.Combat;` at the top of a file puts everything in the file in that namespace. A file has at most one namespace; files without one are in the global namespace. Namespaces can be dotted.
+- `using Physics;` at the top of a file lets it name Physics' declarations without the prefix. `namespace` and `using` come before any declaration.
+- A plain name is looked up in the file's namespace, then the namespaces around it, then the `using` namespaces, then the global namespace. If two `using` namespaces both have it, it's ambiguous: write the namespace.
+- Qualified names work wherever a type is named: parameters (`mut Combat.Health health`), `with` and `without`, component values (`Combat.Health { value = 10 }`), `Spawn`, `Add` and `Remove`.
+- The same name can be declared in different namespaces. Built-in names can't start a namespace (`namespace Math;` is an error).
+- In generated C, namespaced declarations are prefixed with their namespace: `Combat.Health` is `Combat_Health`, read with `purr_get_Combat_Health`.
+- There's exactly one `Main` in a game, in any file or namespace. `namespace` and `using` are only keywords at the top of a file.
+
+```csharp
+// combat.purr
+namespace Combat;
+
+component Health { int value = 100; }
+
+// main.purr
+using Combat;
+
+system Main()
+{
+    Spawn(Health, Items.Health { value = 3 });
+}
+```
+
+### Order of systems
+
+- Files compile in order of their paths, compared byte by byte. Systems run in that order, then in the order they're declared within a file. Views, which draw once per frame, follow the same rules among themselves; later views draw on top.
+- `[Before(X)]` makes a system run before `X`, and `[After(X)]` after it. They take any number of systems (`[After(Gravity, Collisions)]`), with qualified names when needed (`[After(Physics.Gravity)]`).
+- Otherwise the default order holds: of the systems whose constraints are met, the earliest in the default order runs next.
+- Constraints that form a loop are an error naming the loop. Systems and views are ordered separately, and `Main` isn't ordered: it runs once, before everything.
+- The language server shows a system's place in the order when hovering it.
+
+```csharp
+[After(Physics.Gravity)]
+system Move(mut Body body) { ... }
+```
 
 ## Vector math
 
@@ -183,7 +234,7 @@ float2 flat = trs.position.xz;
 
 - Vectors have `x`, `y`, `z`, `w`. Swizzles can also be assigned (`v.xz = float2(1, 2)`), as long as no component repeats.
 - `quaternion` has `value`, a `float4` with (x, y, z) as the vector part. Matrices are stored column by column and have columns `c0` to `c3`.
-- `Math.PI`, `Math.Tau`, `Math.E`, `quaternion.Identity`, `float2x2.Identity`, `float3x3.Identity`, `float4x4.Identity`.
+- `Math.PI`, `Math.TAU`, `Math.E`, `quaternion.identity`, `float2x2.identity`, `float3x3.identity`, `float4x4.identity`.
 - `quaternion.AxisAngle(axis, angle)`, `quaternion.Euler(radians)` (Z first, then X, then Y, Unity's default order), `quaternion.LookRotation(forward, up)`, `float4x4.TRS(translation, rotation, scale)`, `float4x4.Translate(translation)`.
 
 **Operators**
@@ -217,6 +268,7 @@ float2 flat = trs.position.xz;
   - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
   - **Mouse:** `position`, `delta` and `scroll` (`float2`), and buttons `left`, `right` and `middle`.
   - **Gamepad:** `connected`; `leftStick` and `rightStick` (`float2`); `leftTrigger` and `rightTrigger` (`float`, 0 to 1); face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`); `dpad.up` and the other directions; `leftShoulder`, `rightShoulder`, `start` and `select`.
+  - **Axes follow Unity:** `y` is positive up for sticks and the mouse. Mouse `position` is in window pixels from the bottom left. `scroll.y` is positive when scrolling away from the user.
 
 ```csharp
 input PlayerInput
@@ -250,7 +302,6 @@ system Jump(PlayerInput input, mut Velocity velocity)
 - A system can have one input parameter.
 - Extra device members beyond the list above: mouse `back` and `forward`, gamepad `leftStickButton` and `rightStickButton`, and the full key list in `engine/include/purr/devices.h`.
 - The types inside `Devices` (keyboard, button, and so on) have no names in PurrLang; use `var`.
-
 ### Open
 
 - Players joining, leaving and reconnecting.
@@ -258,11 +309,58 @@ system Jump(PlayerInput input, mut Velocity velocity)
 - Compact input types (bytes, quantized floats) to save bandwidth.
 - Server-side validation of input, such as clamping `move`.
 
+## Views and drawing
+
+### Decided
+
+- Drawing is immediate mode: code calls `Draw` functions every frame, and nothing is kept between frames.
+
+### Provisional
+
+- `view` declares a view. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick, and it only reads the world. `mut` parameters, input parameters, `Spawn`, `Add`, `Remove` and `Destroy` are errors in a view.
+- Views run in declaration order, after all the systems of the frame's ticks. Within a view, entities run in the same order as in systems.
+- `Draw` functions can only be called from views for now. Calling them from systems needs to tell predicted ticks from verified or replayed ones, which comes with multiplayer.
+- `view` is only a keyword at the start of a declaration, like `input`.
+- Positions and sizes are in world units with `y` up. The camera maps them to the screen.
+- The Draw functions:
+  - `Draw.Clear(color)`: fills the screen.
+  - `Draw.Camera(center, size)`: the camera for the Draw calls after it. `center` is the world position at the middle of the screen, and `size` is half the visible height, like Unity's orthographic size. Each frame starts black, with the camera at the origin and one world unit per pixel.
+  - `Draw.Circle(center, radius, color)` and `Draw.WireCircle(center, radius, color)`.
+  - `Draw.Rect(center, size, color)` and `Draw.WireRect(center, size, color)`.
+  - `Draw.Line(from, to, color)`.
+  - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the height.
+- Later Draw calls draw over earlier ones.
+- `Color` is a built-in value type with `r`, `g`, `b` and `a`, floats from 0 to 1, as in Unity. It's built with `Color(r, g, b)` (alpha 1) or `Color(r, g, b, a)`. The constants are `Color.white`, `black`, `red`, `green`, `blue`, `yellow`, `cyan`, `magenta`, `gray` and `clear`, with Unity's values and names. Components and singletons can hold colors. There are no operators on colors yet.
+- Text is written in double quotes, with the escapes `\"`, `\\` and `\n`, in printable ASCII. For now, text can only be passed directly to `Draw.Text`.
+
+```csharp
+view DrawBalls(Body body, Ball ball)
+{
+    Draw.Circle(body.position, body.radius, ball.color);
+}
+
+view DrawHud(Arena arena)
+{
+    Draw.Camera(float2(0, 0), arena.halfSize.y);
+    Draw.Text("fire: space", float2(-arena.halfSize.x, arena.halfSize.y), 18, Color.gray);
+}
+```
+
+### Open
+
+- Drawing from systems, with the prediction stage (verified, predicted, replayed) visible to the code.
+- Views reading input, for example to draw where the local player aims before the tick runs.
+- Smoothing between ticks: views currently see only the latest tick.
+- State that belongs to views, such as animation timers and particles. It must stay outside the world so it never affects determinism.
+- Text with values in it, such as C#'s `$"score {score}"`.
+- 3D drawing, sprites and textures, layers.
+
 ## Open
 
 - User-defined value types (structs), including thin wrappers around a single `int`. The owner prefers distinct types over raw primitives for clarity and refactoring.
 
 - How entities authored as data (levels, prefabs) feed into archetype derivation.
 - Archetype growth. Every `Add` and `Remove` can apply to any entity, so the compiler assumes every combination is reachable, and each archetype currently reserves a fixed 1024 slots. Narrowing this safely needs more analysis, and storage should grow on demand.
-- Which system runs first by default. For v0: declaration order, compiling a single file.
 - How modules, such as the engine's built-in systems, initialize when there's a single `Main`.
+- Groups of systems (phases such as input, simulation, late), which Before and After could order as a whole.
+- Access control: whether a namespace can keep declarations to itself.

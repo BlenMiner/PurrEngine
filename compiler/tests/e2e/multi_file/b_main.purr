@@ -1,0 +1,17 @@
+using Physics;
+
+// Records the order systems run in, one step each.
+singleton Trace
+{
+    int step;
+    int gravity;
+    int move;
+    int damage;
+    int heal;
+}
+
+system Main()
+{
+    // Body through `using Physics`; two components named Health, told apart by namespace.
+    Spawn(Body, Combat.Health { value = 10 }, Items.Health { value = 3 });
+}

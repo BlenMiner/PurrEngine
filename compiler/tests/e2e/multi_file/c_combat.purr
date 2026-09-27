@@ -1,0 +1,13 @@
+namespace Combat;
+
+component Health
+{
+    int value;
+}
+
+[Before(Physics.Move)]
+system Damage(mut Trace trace, Health health)
+{
+    trace.damage = trace.step;
+    trace.step += 1;
+}

@@ -1,0 +1,7 @@
+// expect: did you mean 'position'?
+component Body { float2 position; }
+system Main() { Spawn(Body); }
+system Move(mut Body body)
+{
+    body.postion.x += 1;
+}

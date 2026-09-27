@@ -26,11 +26,12 @@ typedef struct lexer {
     const char *end;
     int line;
     const char *line_start;
+    int file;
 } lexer;
 
 static loc here(const lexer *lx)
 {
-    return (loc){lx->line, (int)(lx->p - lx->line_start) + 1};
+    return (loc){lx->line, (int)(lx->p - lx->line_start) + 1, lx->file};
 }
 
 static bool is_ident_start(const char c)
@@ -146,9 +147,9 @@ static tok_kind lex_number(lexer *lx)
     return is_float ? T_FLOAT : T_INT;
 }
 
-token *lex(const source *src)
+static token *lex_impl(const source *src, const bool tolerant)
 {
-    lexer lx = {src->text, src->text + src->len, 1, src->text};
+    lexer lx = {src->text, src->text + src->len, 1, src->text, src->file};
     VEC(token) toks = {0};
     bool ok = true;
 
@@ -161,6 +162,8 @@ token *lex(const source *src)
     for (;;) {
         if (!skip_trivia(&lx)) {
             ok = false;
+            const token eof = {T_EOF, {lx.end, 0}, here(&lx)};
+            vec_push(toks, eof);
             break;
         }
         token t = {0};
@@ -203,6 +206,44 @@ token *lex(const source *src)
                 lx.p++;
                 continue;
             }
+            vec_push(toks, t);
+            continue;
+        }
+
+        // "text": printable ASCII on one line, with the escapes \" \\ and \n.
+        if (c == '"') {
+            lx.p++;
+            bool closed = false;
+            while (lx.p < lx.end && *lx.p != '\n') {
+                const char ch = *lx.p;
+                if (ch == '"') {
+                    closed = true;
+                    break;
+                }
+                if (ch == '\\') {
+                    const char esc = lx.p + 1 < lx.end ? lx.p[1] : '\0';
+                    if (esc == '\n' || esc == '\0') break;
+                    if (esc != '"' && esc != '\\' && esc != 'n') {
+                        diag_error(here(&lx), "unknown escape '\\%c'; text can use \\\", \\\\ and \\n", esc);
+                        ok = false;
+                    }
+                    lx.p += 2;
+                    continue;
+                }
+                if ((unsigned char)ch >= 0x80 || ch < ' ') {
+                    diag_error(here(&lx), "text can only use printable ASCII characters for now");
+                    ok = false;
+                }
+                lx.p++;
+            }
+            if (!closed) {
+                diag_error(t.at, "text is missing its closing '\"'");
+                ok = false;
+                continue;
+            }
+            lx.p++;
+            t.kind = T_STRING;
+            t.text = (str){start + 1, (int)(lx.p - start) - 2};
             vec_push(toks, t);
             continue;
         }
@@ -265,7 +306,17 @@ token *lex(const source *src)
         vec_push(toks, t);
     }
 
-    return ok ? toks.items : NULL;
+    return ok || tolerant ? toks.items : NULL;
+}
+
+token *lex(const source *src)
+{
+    return lex_impl(src, false);
+}
+
+token *lex_all(const source *src)
+{
+    return lex_impl(src, true);
 }
 
 tok_kind compound_op(const tok_kind assign)
@@ -292,6 +343,7 @@ const char *tok_kind_name(const tok_kind kind)
     case T_IDENT: return "identifier";
     case T_INT: return "integer";
     case T_FLOAT: return "number";
+    case T_STRING: return "text";
     case T_COMPONENT: return "'component'";
     case T_SINGLETON: return "'singleton'";
     case T_SYSTEM: return "'system'";

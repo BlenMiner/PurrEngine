@@ -1,5 +1,5 @@
 // expect: operator '*' doesn't multiply matrices
 system Main()
 {
-    var m = float3x3.Identity * float3x3.Identity;
+    var m = float3x3.identity * float3x3.identity;
 }

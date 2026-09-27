@@ -1,0 +1,6 @@
+// expect: unknown escape '\t'
+system Main() { }
+view Label()
+{
+    Draw.Text("a\tb", float2(0, 0), 1, Color.white);
+}

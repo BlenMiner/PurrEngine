@@ -6,7 +6,7 @@ component Body
 {
     float3 position;
     float3 velocity;
-    quaternion rotation = quaternion.Identity;
+    quaternion rotation = quaternion.identity;
     float phase;
     int counter;
 }

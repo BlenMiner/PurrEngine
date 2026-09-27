@@ -20,10 +20,18 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 include(cmake/PurrFlags.cmake)
 include(cmake/PurrLang.cmake)
+include(cmake/WebTest.cmake)
+
+option(PURR_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
 
 add_subdirectory(engine)
-add_subdirectory(sandbox)
 
 enable_testing()
 add_subdirectory(tests)
 add_subdirectory(compiler)
+
+if(PURR_PLATFORM)
+    add_subdirectory(platform)
+    add_subdirectory(demo)
+    add_subdirectory(sandbox) # Opens a window, so it needs the platform layer
+endif()

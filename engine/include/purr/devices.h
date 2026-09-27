@@ -65,7 +65,10 @@ typedef struct purr_keyboard {
 } purr_keyboard;
 
 typedef struct purr_mouse {
-    PURR_MOUSE_AXES(PURR_DEVICES_MEMBER_FLOAT2) // Window pixels; delta and scroll since the last sample
+    // Position in window pixels from the bottom left, y up, as in Unity. Delta
+    // and scroll add up since the last sample; scroll y is positive away from
+    // the user.
+    PURR_MOUSE_AXES(PURR_DEVICES_MEMBER_FLOAT2)
     PURR_MOUSE_BUTTONS(PURR_DEVICES_MEMBER_BUTTON)
 } purr_mouse;
 
@@ -75,7 +78,7 @@ typedef struct purr_dpad {
 
 typedef struct purr_gamepad {
     bool connected;
-    PURR_GAMEPAD_STICKS(PURR_DEVICES_MEMBER_FLOAT2)   // -1 to 1 on each axis
+    PURR_GAMEPAD_STICKS(PURR_DEVICES_MEMBER_FLOAT2)   // -1 to 1 on each axis, y positive up
     PURR_GAMEPAD_TRIGGERS(PURR_DEVICES_MEMBER_FLOAT)  // 0 to 1
     PURR_GAMEPAD_BUTTONS(PURR_DEVICES_MEMBER_BUTTON)
     purr_dpad dpad;

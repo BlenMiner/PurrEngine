@@ -1,0 +1,6 @@
+// expect: text can only be passed straight to Draw.Text for now
+system Main() { }
+view Label()
+{
+    var name = "player";
+}

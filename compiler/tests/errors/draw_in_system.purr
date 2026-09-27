@@ -1,0 +1,7 @@
+// expect: Draw can only be used in views for now
+component Body { float2 position; }
+system Main() { Spawn(Body); }
+system Move(mut Body body)
+{
+    Draw.Circle(body.position, 1, Color.red);
+}
