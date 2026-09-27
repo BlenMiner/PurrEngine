@@ -5,8 +5,7 @@
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "toolchainFile": "${sourceDir}/cmake/clang-toolchain.cmake"
+      "binaryDir": "${sourceDir}/build/${presetName}"
     },
     {
       "name": "debug",

@@ -25,7 +25,7 @@ A networking-first game engine:
 
 ## Building
 
-Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, checking `$LLVM_ROOT/bin`, then `PATH`, then a standalone LLVM install, then Visual Studio's bundled clang.
+Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, checking `$LLVM_ROOT/bin`, then a standalone LLVM install, then `PATH`, then Visual Studio's bundled clang. This works with any CMake invocation, not just the presets.
 
 - Configure, build and test in one step: `cmake --workflow --preset debug`
 - Build only: `cmake --build --preset debug`

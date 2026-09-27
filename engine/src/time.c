@@ -16,8 +16,8 @@ uint64_t purr_time_now_ns(void)
     QueryPerformanceCounter(&now);
 
     // Split into whole seconds and remainder so the multiply can't overflow.
-    uint64_t f = (uint64_t)freq.QuadPart;
-    uint64_t c = (uint64_t)now.QuadPart;
+    const uint64_t f = (const uint64_t)freq.QuadPart;
+    const uint64_t c = (const uint64_t)now.QuadPart;
     return (c / f) * 1000000000ull + (c % f) * 1000000000ull / f;
 }
 

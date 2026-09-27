@@ -1,14 +1,20 @@
 # Finds clang so the project builds without clang on PATH.
-# Search order: $LLVM_ROOT/bin, PATH, a standalone LLVM install, Visual Studio's bundled clang.
+# Search order: $LLVM_ROOT/bin, a standalone LLVM install, PATH, Visual Studio's bundled clang.
+# The standalone install beats PATH because Visual Studio environments (developer shells,
+# IDE toolchains) put Visual Studio's older bundled clang on PATH.
 
 if(DEFINED ENV{LLVM_ROOT})
     find_program(PURR_CLANG NAMES clang PATHS "$ENV{LLVM_ROOT}/bin" NO_DEFAULT_PATH)
 endif()
 
+if(CMAKE_HOST_WIN32)
+    find_program(PURR_CLANG NAMES clang PATHS "$ENV{ProgramFiles}/LLVM/bin" NO_DEFAULT_PATH)
+endif()
+
 find_program(PURR_CLANG NAMES clang)
 
 if(NOT PURR_CLANG AND CMAKE_HOST_WIN32)
-    set(_purr_search_paths "$ENV{ProgramFiles}/LLVM/bin")
+    set(_purr_search_paths "")
 
     set(_purr_pf86 "ProgramFiles(x86)")
     set(_purr_vswhere "$ENV{${_purr_pf86}}/Microsoft Visual Studio/Installer/vswhere.exe")

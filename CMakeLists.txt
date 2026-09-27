@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Always build with clang, however CMake is invoked (presets, IDE profiles, plain `cmake -B`).
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/clang-toolchain.cmake")
+endif()
+
 project(PurrEngine LANGUAGES C)
 
 if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang" OR NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
