@@ -1,0 +1,3 @@
+// expect: 'Owner' is built into the engine
+component Owner { int id; }
+system Main() { }

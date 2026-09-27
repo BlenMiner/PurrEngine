@@ -1,0 +1,5 @@
+// expect: int3 takes ints, not float
+system Main()
+{
+    var v = int3(1.5, 2, 3);
+}

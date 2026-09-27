@@ -1,0 +1,3 @@
+// expect: 'Math' is built into the language
+component Math { int x; }
+system Main() { }

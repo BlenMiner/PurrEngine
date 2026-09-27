@@ -1,0 +1,63 @@
+// Input: sampling devices on the client, and reading each player's input in systems.
+
+component Transform
+{
+    float3 position;
+}
+
+component Jumps
+{
+    int count;
+    int landings;
+}
+
+singleton Swap
+{
+    bool now;
+}
+
+input PlayerInput
+{
+    float2 move;
+    bool jump;
+    float speed = 1;
+
+    PlayerInput(Devices devices)
+    {
+        var keys = devices.keyboard;
+        if (keys.d.down) move.x += 1;
+        if (keys.a.down) move.x -= 1;
+        if (keys.w.down) move.y += 1;
+        if (keys.s.down) move.y -= 1;
+        move += devices.gamepad.leftStick;
+        jump = keys.space.down || devices.gamepad.buttonSouth.down;
+        if (devices.mouse.left.pressed)
+            speed = 2;
+    }
+}
+
+system Main()
+{
+    Spawn(Transform, Jumps, Owner { player = PlayerID(0) });
+    Spawn(Transform, Jumps, Owner { player = PlayerID(1) });
+    Spawn(Transform, Jumps, Owner); // Owned by no player: gets the default input
+}
+
+system Move(PlayerInput input, Time time, mut Transform trs)
+{
+    trs.position += float3(input.move.x, 0, input.move.y) * input.speed * time.dt;
+}
+
+system Jump(PlayerInput input, mut Jumps jumps)
+{
+    if (input.jump.pressed) jumps.count += 1;
+    if (input.jump.released) jumps.landings += 1;
+}
+
+// Hands players 0 and 1 each other's entity.
+system SwapOwners(Swap swap, mut Owner owner)
+{
+    if (!swap.now) return;
+    if (owner.player == PlayerID(0)) owner.player = PlayerID(1);
+    else if (owner.player == PlayerID(1)) owner.player = PlayerID(0);
+}

@@ -20,15 +20,39 @@
       "displayName": "Release",
       "description": "Optimized, with debug info so profilers can read symbols.",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "web-base",
+      "hidden": true,
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/emscripten-toolchain.cmake"
+    },
+    {
+      "name": "web-debug",
+      "inherits": "web-base",
+      "displayName": "Web Debug",
+      "description": "WebAssembly through Emscripten, no optimization. Tests run under Node.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "web-release",
+      "inherits": "web-base",
+      "displayName": "Web Release",
+      "description": "WebAssembly through Emscripten, optimized. Tests run under Node.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
-    { "name": "release", "configurePreset": "release" }
+    { "name": "release", "configurePreset": "release" },
+    { "name": "web-debug", "configurePreset": "web-debug" },
+    { "name": "web-release", "configurePreset": "web-release" }
   ],
   "testPresets": [
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
-    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } }
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "web-debug", "configurePreset": "web-debug", "output": { "outputOnFailure": true } },
+    { "name": "web-release", "configurePreset": "web-release", "output": { "outputOnFailure": true } }
   ],
   "workflowPresets": [
     {
@@ -45,6 +69,22 @@
         { "type": "configure", "name": "release" },
         { "type": "build", "name": "release" },
         { "type": "test", "name": "release" }
+      ]
+    },
+    {
+      "name": "web-debug",
+      "steps": [
+        { "type": "configure", "name": "web-debug" },
+        { "type": "build", "name": "web-debug" },
+        { "type": "test", "name": "web-debug" }
+      ]
+    },
+    {
+      "name": "web-release",
+      "steps": [
+        { "type": "configure", "name": "web-release" },
+        { "type": "build", "name": "web-release" },
+        { "type": "test", "name": "web-release" }
       ]
     }
   ]

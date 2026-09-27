@@ -19,6 +19,12 @@ A networking-first game engine:
 - An ECS runs systems on multiple threads automatically. Data dependencies come from the ECS and the language, so users never have to think about threads.
 - Graphics work is kept to a minimum. Rendering is not the focus.
 
+## Platforms
+
+- The main targets are desktop and consoles.
+- The web (WebAssembly, rendering with WebGL) is actively supported and tested, not an afterthought. Changes must keep the web build working.
+- Determinism holds on every platform, the web included, so web and desktop players can share one simulation.
+
 ## Tech stack
 
 - The engine is written in C and compiled with clang on every platform.
@@ -36,6 +42,19 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 
 There are two presets. `debug` has no optimization. `release` is optimized and keeps debug info for profiling.
 
+### Web builds
+
+- The `web-debug` and `web-release` presets build everything as WebAssembly with Emscripten: `cmake --workflow --preset web-debug`. Tests run under Node through CTest. purrc runs as WebAssembly too, under Node, during the build.
+- Emscripten is found through `$EMSDK`, then common emsdk locations such as `D:/Tools/emsdk` (see `cmake/emscripten-toolchain.cmake`).
+- Web builds are single-threaded. Threads need a cross-origin isolated page, and running in parallel never changes results anyway.
+- Before finishing a change, the native and web test suites must both pass.
+
+### Cross-platform determinism tests
+
+- `tests/test_crossplatform.c` and `compiler/tests/e2e/crossplatform` hash the exact bits of math results and of a full simulation. The hashes must be identical on every platform and in every configuration.
+- If math or generated code changes the results on purpose, update the expected hashes from one platform, then confirm every other platform and configuration agrees.
+- Test code must not depend on C's unspecified argument evaluation order: clang goes right to left on Windows and left to right on WebAssembly. Draw random inputs into locals first.
+
 ### PurrLang programs
 
 `purr_add_game(<target> SOURCE <file.purr> [NAME <name>])` runs `purrc` on the file and compiles the generated C into the target, which then includes `<name>.h`. The files regenerate whenever the `.purr` file or `purrc` changes.
@@ -47,6 +66,7 @@ The generated header is the API between the game and the host:
 - `purr_world_tick(w)`: runs every system once, then applies structural changes.
 - `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`.
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
+- If the game declares an input: `purr_input_sample(devices)` runs the input's constructor on the client (call `purr_devices_consume(devices)` after it), and `purr_world_set_input(w, player, input)` sets a player's input for the next tick.
 
 ## Layout
 
@@ -60,6 +80,8 @@ The generated header is the API between the game and the host:
 ### Runtime written by Claude for now
 
 - `engine/include/purr/entity.h` and `engine/src/entity.c` (the entity table) are a temporary implementation Claude wrote so generated code could run. The owner takes them over later. Until then Claude maintains them. Generated code depends on the functions declared in `entity.h`.
+- `engine/include/purr/devices.h`, `engine/src/devices.c` (input devices) and `engine/include/purr/player.h` (`PlayerID`) are Claude's too, on the same terms. purrc reads the device member lists from `devices.h`, so PurrLang and C always agree.
+- `engine/include/purr/math.h` and `engine/src/math.c` (vectors, quaternions, matrices and transcendental functions) are Claude's too, on the same terms. Generated code calls them by the names `purr_<function>_<type>`. The transcendental functions are in-house, computed in double from basic operations; CORE-MATH remains an option to replace them.
 
 ## Language
 
@@ -111,7 +133,8 @@ Given the same build and the same inputs, simulation results must be bit-identic
 - Vector math (vectors, matrices, quaternions) is written in-house: it only needs the basic operations, and third-party vector libraries often use approximate instructions or the platform math library.
 - Transcendental functions may come from a third-party library, but only as source vendored into the engine and compiled with its flags. Prefer correctly rounded implementations, such as CORE-MATH: they return the same bits on every platform by definition.
 - No approximate instructions such as `rsqrtps` or `rcpps`. Their results differ between Intel and AMD.
-- Denormal handling (FTZ/DAZ) is set per thread. Every thread that runs simulation code must set it the same way.
+- Denormals stay enabled (no FTZ/DAZ) on every thread and every platform. WebAssembly can't flush denormals, so no other platform may either.
+- No relaxed SIMD on the web: its fused multiply-add gives different results on different machines.
 - No x87 floating point.
 - NaN in simulation state is a bug. NaN bit patterns are not portable.
 

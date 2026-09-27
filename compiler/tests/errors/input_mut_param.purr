@@ -1,0 +1,4 @@
+// expect: input can't be 'mut', 'with' or 'without'
+input PlayerInput { bool jump; }
+system Main() { }
+system Rewrite(mut PlayerInput input) { }

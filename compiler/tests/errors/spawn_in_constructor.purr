@@ -1,0 +1,11 @@
+// expect: can't spawn entities
+component Marker { int id; }
+input PlayerInput
+{
+    bool jump;
+    PlayerInput(Devices devices)
+    {
+        Spawn(Marker);
+    }
+}
+system Main() { }

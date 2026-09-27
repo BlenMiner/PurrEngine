@@ -9,8 +9,9 @@ endif()
 set(expected "${CMAKE_MATCH_1}")
 
 file(MAKE_DIRECTORY "${OUT}")
+# EMULATOR runs purrc when it isn't a native program (Node, for web builds).
 execute_process(
-    COMMAND "${PURRC}" "${SOURCE}" -o "${OUT}"
+    COMMAND ${EMULATOR} "${PURRC}" "${SOURCE}" -o "${OUT}"
     RESULT_VARIABLE result
     OUTPUT_VARIABLE stdout
     ERROR_VARIABLE stderr)

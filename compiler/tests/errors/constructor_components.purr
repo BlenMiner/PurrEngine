@@ -1,0 +1,5 @@
+// expect: float3 needs 3 components, got 2
+system Main()
+{
+    var v = float3(1, 2);
+}

@@ -2,6 +2,9 @@
 #include <string.h>
 
 #include "ast.h"
+#include "builtins.h"
+#include "purr/devices.h"
+#include "types.h"
 
 // Semantic analysis: resolves names and types, enforces access and mutability
 // rules, and derives the archetype list from spawn, add and remove sites.
@@ -11,7 +14,9 @@
 
 typedef struct checker {
     program *prog;
-    decl *system;             // System whose body is being checked.
+    decl *system;             // Whose parameters are in scope: a system, or the input when checking its constructor.
+    bool in_constructor;      // Checking the input's constructor, which runs outside the simulation.
+    int short_circuit_depth;  // Inside the right side of && or ||, which may not run.
     VEC(stmt *) locals;       // S_VAR statements currently in scope.
     VEC(int) scope_marks;
     VEC(expr *) spawns;       // Spawn calls, patched with archetype indices at the end.
@@ -22,47 +27,30 @@ static const type T_VOID_ = {TY_VOID, NULL};
 static const type T_BOOL_ = {TY_BOOL, NULL};
 static const type T_INT_ = {TY_INT, NULL};
 static const type T_FLOAT_ = {TY_FLOAT, NULL};
-static const type T_FLOAT3_ = {TY_FLOAT3, NULL};
 static const type T_ENTITY_ = {TY_ENTITY, NULL};
 
-static const char *type_str(const type t)
+// The type a declaration names: a component, singleton, input or record.
+static type decl_type(decl *d)
 {
-    static char buf[4][128];
-    static int next;
-    switch (t.kind) {
-    case TY_ERROR: return "<error>";
-    case TY_VOID: return "nothing";
-    case TY_BOOL: return "bool";
-    case TY_INT: return "int";
-    case TY_FLOAT: return "float";
-    case TY_FLOAT3: return "float3";
-    case TY_ENTITY: return "Entity";
-    case TY_COMPONENT:
-    case TY_SINGLETON: {
-        char *b = buf[next++ % 4];
-        snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(t.decl->name));
-        return b;
+    switch (d->kind) {
+    case DECL_COMPONENT: return (type){TY_COMPONENT, d};
+    case DECL_SINGLETON: return (type){TY_SINGLETON, d};
+    case DECL_INPUT: return (type){TY_INPUT, d};
+    case DECL_RECORD: return (type){TY_RECORD, d};
+    default: return T_ERR;
     }
-    }
-    return "?";
 }
 
-static bool is_numeric(const type t)
+// Does this type have fields (components, singletons, inputs, records)?
+static bool has_fields(const type t)
+{
+    return t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD;
+}
+
+// int or float, not a vector.
+static bool is_scalar_number(const type t)
 {
     return t.kind == TY_INT || t.kind == TY_FLOAT;
-}
-
-static bool same_type(const type a, const type b)
-{
-    return a.kind == b.kind && a.decl == b.decl;
-}
-
-// Can a value of type `from` be stored where `to` is expected?
-static bool assignable(const type to, const type from)
-{
-    if (to.kind == TY_ERROR || from.kind == TY_ERROR) return true;
-    if (same_type(to, from)) return true;
-    return to.kind == TY_FLOAT && from.kind == TY_INT;
 }
 
 static decl *find_type_decl(const program *prog, const str name)
@@ -72,18 +60,6 @@ static decl *find_type_decl(const program *prog, const str name)
         if (d->kind != DECL_SYSTEM && str_eq(d->name, name)) return d;
     }
     return NULL;
-}
-
-// Built-in value types, usable for fields and locals.
-static bool builtin_type(const str name, type *out)
-{
-    if (str_eq_c(name, "bool")) *out = T_BOOL_;
-    else if (str_eq_c(name, "int")) *out = T_INT_;
-    else if (str_eq_c(name, "float")) *out = T_FLOAT_;
-    else if (str_eq_c(name, "float3")) *out = T_FLOAT3_;
-    else if (str_eq_c(name, "Entity")) *out = T_ENTITY_;
-    else return false;
-    return true;
 }
 
 static bool check_reserved(const str name, const loc at)
@@ -118,6 +94,7 @@ static stmt *find_local(const checker *c, const str name)
 
 static param *find_param(const checker *c, const str name)
 {
+    if (!c->system) return NULL; // Field defaults are checked outside any system.
     for (int i = 0; i < c->system->params.count; i++) {
         param *p = &c->system->params.items[i];
         if (p->name.len > 0 && str_eq(p->name, name)) return p;
@@ -140,7 +117,7 @@ static type check_literal(checker *c, expr *e)
 {
     decl *d = find_type_decl(c->prog, e->name);
     if (!d || d->kind != DECL_COMPONENT) {
-        if (d) diag_error(e->at, "'" STR_FMT "' is a singleton; only components have values like this", STR_ARG(e->name));
+        if (d) diag_error(e->at, "'" STR_FMT "' isn't a component; only components have values like this", STR_ARG(e->name));
         else diag_error(e->at, "unknown component '" STR_FMT "'", STR_ARG(e->name));
         for (int i = 0; i < e->inits.count; i++) check_expr(c, e->inits.items[i].value);
         return T_ERR;
@@ -162,9 +139,9 @@ static type check_literal(checker *c, expr *e)
                 diag_error(init->at, "field '" STR_FMT "' is set twice", STR_ARG(init->name));
             }
         }
-        if (!assignable(init->field->type, value)) {
+        if (!type_assignable(init->field->type, value)) {
             diag_error(init->value->at, "field '" STR_FMT "' is %s, not %s", STR_ARG(init->name),
-                       type_str(init->field->type), type_str(value));
+                       type_name(init->field->type), type_name(value));
         }
     }
     return (type){TY_COMPONENT, d};
@@ -210,23 +187,147 @@ static uint64_t check_component_list(checker *c, const expr *call, const char *f
     return mask;
 }
 
-static type check_call(checker *c, expr *e)
+// Constructors of built-in types: float(x), int3(1), float4(v.xy, 0, 1),
+// quaternion(x, y, z, w), float3x3(c0, c1, c2) and friends.
+static type check_construct(checker *c, expr *e, const type target)
 {
-    if (str_eq_c(e->name, "float3")) {
-        e->call = CALL_FLOAT3;
-        if (e->args.count != 3) {
-            diag_error(e->at, "float3 takes 3 numbers (x, y, z), not %d", e->args.count);
+    bool any_error = false;
+    for (int i = 0; i < e->args.count; i++) {
+        if (check_expr(c, e->args.items[i]).kind == TY_ERROR) any_error = true;
+    }
+    if (any_error) return T_ERR;
+
+    e->call = CALL_CONSTRUCT;
+    const int argc = e->args.count;
+    const char *name = type_name(target);
+    const type first = argc > 0 ? e->args.items[0]->type : T_VOID_;
+
+    // PlayerID(0): a player by index, for local play and tests.
+    if (target.kind == TY_PLAYER) {
+        if (argc == 1 && first.kind == TY_INT) {
+            e->ctor = CTOR_PLAYER;
+            return target;
         }
-        for (int i = 0; i < e->args.count; i++) {
-            const type t = check_expr(c, e->args.items[i]);
-            if (t.kind != TY_ERROR && !is_numeric(t)) {
-                diag_error(e->args.items[i]->at, "float3 takes numbers, not %s", type_str(t));
-            }
-        }
-        return T_FLOAT3_;
+        diag_error(e->at, "PlayerID(...) takes a player index, an int");
+        return T_ERR;
     }
 
+    // float(x), int(x): conversions between the two number types.
+    if (is_scalar_number(target)) {
+        if (argc == 1 && is_scalar_number(first)) {
+            e->ctor = CTOR_SCALAR;
+            return target;
+        }
+        diag_error(e->at, "%s(...) converts one number", name);
+        return T_ERR;
+    }
+
+    const int dim = type_dim(target);
+    if (dim >= 2) {
+        if (argc == 1 && is_scalar_number(first)) {
+            e->ctor = CTOR_SPLAT;
+            return target;
+        }
+        if (argc == 1 && type_dim(first) == dim && first.kind != target.kind) {
+            e->ctor = CTOR_CONVERT;
+            return target;
+        }
+        int total = 0;
+        for (int i = 0; i < argc; i++) {
+            const type t = e->args.items[i]->type;
+            if (!type_is_numeric(t)) {
+                diag_error(e->args.items[i]->at, "%s takes numbers and vectors, not %s", name, type_name(t));
+                return T_ERR;
+            }
+            if (type_is_int_based(target) && type_is_float_based(t)) {
+                diag_error(e->args.items[i]->at, "%s takes ints, not %s", name, type_name(t));
+                diag_note("convert explicitly, for example int(x) or %s(v)", name);
+                return T_ERR;
+            }
+            total += type_dim(t);
+        }
+        if (total != dim) {
+            diag_error(e->at, "%s needs %d components, got %d", name, dim, total);
+            return T_ERR;
+        }
+        e->ctor = CTOR_COMPONENTS;
+        return target;
+    }
+
+    if (target.kind == TY_QUATERNION) {
+        bool scalars = argc == 4;
+        for (int i = 0; i < argc; i++) {
+            if (!is_scalar_number(e->args.items[i]->type)) scalars = false;
+        }
+        if (scalars) {
+            e->ctor = CTOR_COMPONENTS;
+            return target;
+        }
+        if (argc == 1 && first.kind == TY_FLOAT4) {
+            e->ctor = CTOR_QUAT_FROM_F4;
+            return target;
+        }
+        if (argc == 1 && first.kind == TY_FLOAT3X3) {
+            e->ctor = CTOR_QUAT_FROM_MAT;
+            return target;
+        }
+        diag_error(e->at, "quaternion takes (x, y, z, w), a float4 or a float3x3");
+        return T_ERR;
+    }
+
+    const int n = matrix_dim(target);
+    if (n > 0) {
+        const type column = vector_type(true, n);
+        bool columns = argc == n;
+        bool scalars = argc == n * n;
+        for (int i = 0; i < argc; i++) {
+            const type t = e->args.items[i]->type;
+            if (!type_assignable(column, t)) columns = false;
+            if (!is_scalar_number(t)) scalars = false;
+        }
+        if (columns) {
+            e->ctor = CTOR_MAT_COLUMNS;
+            return target;
+        }
+        if (scalars) {
+            e->ctor = CTOR_MAT_SCALARS;
+            return target;
+        }
+        if (n == 3 && argc == 1 && first.kind == TY_QUATERNION) {
+            e->ctor = CTOR_MAT_FROM_QUAT;
+            return target;
+        }
+        if (n == 4 && argc == 2 && first.kind == TY_FLOAT3X3 && type_assignable((type){TY_FLOAT3, NULL}, e->args.items[1]->type)) {
+            e->ctor = CTOR_MAT_FROM_ROT_T;
+            return target;
+        }
+        diag_error(e->at, "%s takes %d float%d columns or %d numbers row by row", name, n, n, n * n);
+        if (n == 3) diag_note("float3x3(quaternion) builds a rotation matrix");
+        if (n == 4) diag_note("float4x4(float3x3 rotation, float3 translation) builds a transform");
+        return T_ERR;
+    }
+
+    diag_error(e->at, "%s has no constructor", name);
+    return T_ERR;
+}
+
+static type check_call(checker *c, expr *e)
+{
+    type builtin;
+    if (builtin_type_named(e->name, &builtin)) return check_construct(c, e, builtin);
+
     if (str_eq_c(e->name, "Spawn")) {
+        if (c->in_constructor) {
+            diag_error(e->at, "the input's constructor runs outside the simulation, so it can't spawn entities");
+            return T_ERR;
+        }
+        // Expressions evaluate left to right, so codegen runs a statement's spawns
+        // first, in order. On the right of && or || that would spawn even when the
+        // right side is skipped.
+        if (c->short_circuit_depth > 0) {
+            diag_error(e->at, "Spawn can't be on the right side of && or ||");
+            diag_note("that side only runs sometimes; spawn into a local before the condition");
+        }
         e->call = CALL_SPAWN;
         e->spawn_mask = check_component_list(c, e, "Spawn");
         c->prog->spawned_mask |= e->spawn_mask;
@@ -239,23 +340,37 @@ static type check_call(checker *c, expr *e)
     const decl *d = find_type_decl(c->prog, e->name);
     if (d && d->kind == DECL_COMPONENT) {
         diag_error(e->at, "write '" STR_FMT " { ... }' to make a component value", STR_ARG(e->name));
-    } else if (str_eq_c(e->name, "int") || str_eq_c(e->name, "float") || str_eq_c(e->name, "bool")) {
-        diag_error(e->at, "type conversions aren't supported yet");
     } else {
         diag_error(e->at, "unknown function '" STR_FMT "'", STR_ARG(e->name));
     }
     return T_ERR;
 }
 
+// Does `e` name a built-in owner like Math or quaternion, rather than a variable?
+static bool names_builtin_owner(const checker *c, const expr *e)
+{
+    return e->kind == E_NAME && builtin_owner(e->name) && !find_local(c, e->name) && !find_param(c, e->name);
+}
+
 static type check_method(checker *c, expr *e)
 {
+    // Math.Dot(a, b), quaternion.AxisAngle(axis, angle)
+    if (names_builtin_owner(c, e->object)) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        return resolve_builtin_call(e->object->name, e);
+    }
+
     const type obj = check_expr(c, e->object);
     if (obj.kind == TY_ERROR) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         return T_ERR;
     }
     if (obj.kind != TY_ENTITY) {
-        diag_error(e->at, "%s has no method '" STR_FMT "'", type_str(obj), STR_ARG(e->name));
+        diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
+        return T_ERR;
+    }
+    if (c->in_constructor) {
+        diag_error(e->at, "the input's constructor runs outside the simulation, so it can't change entities");
         return T_ERR;
     }
 
@@ -311,13 +426,38 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
     case T_MINUS:
     case T_STAR:
     case T_SLASH:
-        if (l.kind == TY_INT && r.kind == TY_INT) return T_INT_;
-        if (is_numeric(l) && is_numeric(r)) return T_FLOAT_;
-        if (l.kind == TY_FLOAT3 && r.kind == TY_FLOAT3) return T_FLOAT3_;
-        if ((op == T_STAR || op == T_SLASH) && l.kind == TY_FLOAT3 && is_numeric(r)) return T_FLOAT3_;
-        if (op == T_STAR && is_numeric(l) && r.kind == TY_FLOAT3) return T_FLOAT3_;
+    case T_PERCENT: {
+        if (l.kind == TY_QUATERNION || r.kind == TY_QUATERNION) {
+            diag_error(at, "operator %s can't be used with quaternions", op_str(op));
+            diag_note("combine rotations with Math.Mul(a, b) and rotate vectors with Math.Rotate(q, v)");
+            return T_ERR;
+        }
+        // Matrices: + and - with the same type, * and / by a number.
+        const int ml = matrix_dim(l);
+        const int mr = matrix_dim(r);
+        if (ml || mr) {
+            if ((op == T_PLUS || op == T_MINUS) && l.kind == r.kind) return l;
+            if ((op == T_STAR || op == T_SLASH) && ml && is_scalar_number(r)) return l;
+            if (op == T_STAR && mr && is_scalar_number(l)) return r;
+            if (op == T_STAR) {
+                diag_error(at, "operator '*' doesn't multiply matrices");
+                diag_note("use Math.Mul(a, b) for a matrix product, or with a vector");
+                return T_ERR;
+            }
+            break;
+        }
+        // Numbers and vectors, component-wise. A scalar widens to the vector's
+        // size, and int widens to float.
+        if (type_is_numeric(l) && type_is_numeric(r)) {
+            const int dl = type_dim(l);
+            const int dr = type_dim(r);
+            const bool is_float = type_is_float_based(l) || type_is_float_based(r);
+            if (dl > 1 && dr > 1 && dl != dr) break;
+            if (op == T_PERCENT && is_float) break;
+            return vector_type(is_float, dl > dr ? dl : dr);
+        }
         break;
-    case T_PERCENT:
+    }
     case T_SHL:
     case T_SHR:
     case T_AMP:
@@ -329,13 +469,14 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
     case T_LE:
     case T_GT:
     case T_GE:
-        if (is_numeric(l) && is_numeric(r)) return T_BOOL_;
+        if (is_scalar_number(l) && is_scalar_number(r)) return T_BOOL_;
         break;
     case T_EQ:
     case T_NE:
-        if (is_numeric(l) && is_numeric(r)) return T_BOOL_;
+        if (is_scalar_number(l) && is_scalar_number(r)) return T_BOOL_;
         if (l.kind == TY_BOOL && r.kind == TY_BOOL) return T_BOOL_;
         if (l.kind == TY_ENTITY && r.kind == TY_ENTITY) return T_BOOL_;
+        if (l.kind == TY_PLAYER && r.kind == TY_PLAYER) return T_BOOL_;
         break;
     case T_AND:
     case T_OR:
@@ -344,25 +485,74 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
     default:
         break;
     }
-    diag_error(at, "operator %s can't be used with %s and %s", op_str(op), type_str(l), type_str(r));
+    diag_error(at, "operator %s can't be used with %s and %s", op_str(op), type_name(l), type_name(r));
     return T_ERR;
+}
+
+// Reads a swizzle such as `xz` or `wzyx` into e->swizzle. False if a letter
+// isn't one of the vector's components.
+static bool parse_swizzle(expr *e, const int dim)
+{
+    if (e->member.len < 1 || e->member.len > 4) return false;
+    for (int i = 0; i < e->member.len; i++) {
+        const char ch = e->member.ptr[i];
+        const int index = ch == 'x' ? 0 : ch == 'y' ? 1 : ch == 'z' ? 2 : ch == 'w' ? 3 : -1;
+        if (index < 0 || index >= dim) return false;
+        e->swizzle[i] = index;
+    }
+    e->swizzle_len = e->member.len;
+    return true;
 }
 
 static type check_member(checker *c, expr *e)
 {
+    // quaternion.Identity, Math.PI
+    if (names_builtin_owner(c, e->object)) return resolve_builtin_member(e->object->name, e);
+
     const type obj = check_expr(c, e->object);
-    switch (obj.kind) {
-    case TY_ERROR:
-        return T_ERR;
-    case TY_FLOAT3:
-        if (e->member.len == 1 && (e->member.ptr[0] == 'x' || e->member.ptr[0] == 'y' || e->member.ptr[0] == 'z')) {
-            e->swizzle = e->member.ptr[0] - 'x';
-            return T_FLOAT_;
+    if (obj.kind == TY_ERROR) return T_ERR;
+
+    const int dim = type_dim(obj);
+    if (dim >= 2) {
+        static const char *components[] = {"", "", "x, y", "x, y, z", "x, y, z, w"};
+        if (!parse_swizzle(e, dim)) {
+            diag_error(e->at, "'" STR_FMT "' doesn't match %s's components (%s)", STR_ARG(e->member), type_name(obj),
+                       components[dim]);
+            return T_ERR;
         }
-        diag_error(e->at, "float3 has members x, y and z, not '" STR_FMT "'", STR_ARG(e->member));
+        return vector_type(type_is_float_based(obj), e->swizzle_len);
+    }
+    if (obj.kind == TY_QUATERNION) {
+        if (str_eq_c(e->member, "value")) return (type){TY_FLOAT4, NULL};
+        diag_error(e->at, "quaternion has one member, 'value' (a float4), not '" STR_FMT "'", STR_ARG(e->member));
         return T_ERR;
-    case TY_COMPONENT:
-    case TY_SINGLETON:
+    }
+    const int n = matrix_dim(obj);
+    if (n > 0) {
+        if (e->member.len == 2 && e->member.ptr[0] == 'c' && e->member.ptr[1] >= '0' && e->member.ptr[1] < '0' + n) {
+            return vector_type(true, n);
+        }
+        diag_error(e->at, "%s has columns c0 to c%d, not '" STR_FMT "'", type_name(obj), n - 1, STR_ARG(e->member));
+        return T_ERR;
+    }
+
+    // input.jump.pressed: a bool field of an input parameter, compared with last tick.
+    if (obj.kind == TY_BOOL && (str_eq_c(e->member, "pressed") || str_eq_c(e->member, "released"))) {
+        const expr *field_access = e->object;
+        const bool on_input_field = field_access->kind == E_MEMBER && field_access->object->kind == E_NAME
+                                 && field_access->object->bind == BIND_PARAM
+                                 && field_access->object->param->type.kind == TY_INPUT;
+        if (!on_input_field) {
+            diag_error(e->at, "only input fields have '." STR_FMT "', like 'input.jump." STR_FMT "'",
+                       STR_ARG(e->member), STR_ARG(e->member));
+            if (c->in_constructor) diag_note("in the constructor, read the device instead, like 'keys.space.pressed'");
+            return T_ERR;
+        }
+        e->edge = str_eq_c(e->member, "pressed") ? EDGE_PRESSED : EDGE_RELEASED;
+        return T_BOOL_;
+    }
+
+    if (has_fields(obj)) {
         for (int i = 0; i < obj.decl->fields.count; i++) {
             field *f = &obj.decl->fields.items[i];
             if (str_eq(f->name, e->member)) {
@@ -370,12 +560,11 @@ static type check_member(checker *c, expr *e)
                 return f->type;
             }
         }
-        diag_error(e->at, "%s has no field '" STR_FMT "'", type_str(obj), STR_ARG(e->member));
-        return T_ERR;
-    default:
-        diag_error(e->at, "%s has no members", type_str(obj));
+        diag_error(e->at, "%s has no field '" STR_FMT "'", type_name(obj), STR_ARG(e->member));
         return T_ERR;
     }
+    diag_error(e->at, "%s has no members", type_name(obj));
+    return T_ERR;
 }
 
 static type check_name(const checker *c, expr *e)
@@ -391,6 +580,17 @@ static type check_name(const checker *c, expr *e)
         e->bind = BIND_PARAM;
         e->param = p;
         return p->type;
+    }
+    // Inside the input's constructor, its fields are in scope by name.
+    if (c->in_constructor) {
+        for (int i = 0; i < c->system->fields.count; i++) {
+            field *f = &c->system->fields.items[i];
+            if (str_eq(f->name, e->name)) {
+                e->bind = BIND_FIELD;
+                e->field = f;
+                return f->type;
+            }
+        }
     }
     const decl *d = find_type_decl(c->prog, e->name);
     if (d) {
@@ -414,8 +614,11 @@ static type check_expr(checker *c, expr *e)
     case E_METHOD: t = check_method(c, e); break;
     case E_LITERAL: t = check_literal(c, e); break;
     case E_BINARY: {
+        const bool short_circuit = e->op == T_AND || e->op == T_OR;
         const type l = check_expr(c, e->lhs);
+        if (short_circuit) c->short_circuit_depth++;
         const type r = check_expr(c, e->rhs);
+        if (short_circuit) c->short_circuit_depth--;
         t = binary_result(e->op, l, r, e->at);
         break;
     }
@@ -424,8 +627,8 @@ static type check_expr(checker *c, expr *e)
         if (operand.kind == TY_ERROR) break;
         if (e->op == T_NOT && operand.kind == TY_BOOL) t = T_BOOL_;
         else if (e->op == T_TILDE && operand.kind == TY_INT) t = T_INT_;
-        else if (e->op == T_MINUS && (is_numeric(operand) || operand.kind == TY_FLOAT3)) t = operand;
-        else diag_error(e->at, "operator %s can't be used with %s", op_str(e->op), type_str(operand));
+        else if (e->op == T_MINUS && (type_is_numeric(operand) || matrix_dim(operand))) t = operand;
+        else diag_error(e->at, "operator %s can't be used with %s", op_str(e->op), type_name(operand));
         break;
     }
     }
@@ -456,10 +659,35 @@ static void check_assign(checker *c, const stmt *s)
         return;
     }
 
+    // Swizzles can be written (v.xz = ...) as long as no component repeats, but
+    // only as the last step: in v.xy.x the swizzle is a temporary copy.
+    for (const expr *m = s->target->object; s->target->kind == E_MEMBER && m->kind == E_MEMBER; m = m->object) {
+        if (m->swizzle_len > 1) {
+            diag_error(m->at, "can't assign through the swizzle '" STR_FMT "'", STR_ARG(m->member));
+            diag_note("assign the components directly instead");
+            return;
+        }
+    }
+    if (s->target->kind == E_MEMBER && s->target->swizzle_len > 1) {
+        for (int i = 0; i < s->target->swizzle_len; i++) {
+            for (int j = 0; j < i; j++) {
+                if (s->target->swizzle[i] == s->target->swizzle[j]) {
+                    diag_error(s->target->at, "'" STR_FMT "' repeats a component, so it can't be assigned",
+                               STR_ARG(s->target->member));
+                    return;
+                }
+            }
+        }
+    }
+
     if (root->bind == BIND_PARAM && root->param->mode != PARAM_MUT) {
         diag_error(root->at, "'" STR_FMT "' is read-only", STR_ARG(root->name));
         if (root->param->type.kind == TY_ENTITY) {
             diag_note("entity handles can't be reassigned");
+        } else if (root->param->type.kind == TY_INPUT) {
+            diag_note("input comes from the players; the simulation can only read it");
+        } else if (root->param->type.kind == TY_RECORD) {
+            diag_note("devices can only be read");
         } else if (root->param->type.kind == TY_SINGLETON && root->param->type.decl->builtin) {
             diag_note("'" STR_FMT "' is managed by the engine", STR_ARG(root->param->type_name));
         } else {
@@ -484,8 +712,8 @@ static void check_assign(checker *c, const stmt *s)
         result = binary_result(compound_op(s->op), target, value, s->at);
         if (result.kind == TY_ERROR) return;
     }
-    if (!assignable(target, result)) {
-        diag_error(s->value->at, "can't assign %s to %s", type_str(result), type_str(target));
+    if (!type_assignable(target, result)) {
+        diag_error(s->value->at, "can't assign %s to %s", type_name(result), type_name(target));
     }
 }
 
@@ -504,15 +732,15 @@ static void check_var(checker *c, stmt *s)
         s->type = value;
     } else {
         decl *d = find_type_decl(c->prog, s->type_name);
-        if (builtin_type(s->type_name, &s->type)) {
+        if (builtin_type_named(s->type_name, &s->type)) {
         } else if (d) {
-            s->type = (type){d->kind == DECL_COMPONENT ? TY_COMPONENT : TY_SINGLETON, d};
+            s->type = decl_type(d);
         } else {
             diag_error(s->at, "unknown type '" STR_FMT "'", STR_ARG(s->type_name));
             s->type = T_ERR;
         }
-        if (!assignable(s->type, value)) {
-            diag_error(s->value->at, "can't initialize %s with %s", type_str(s->type), type_str(value));
+        if (!type_assignable(s->type, value)) {
+            diag_error(s->value->at, "can't initialize %s with %s", type_name(s->type), type_name(value));
         }
     }
 
@@ -534,7 +762,7 @@ static void check_stmt(checker *c, stmt *s)
     case S_IF: {
         const type cond = check_expr(c, s->cond);
         if (cond.kind != TY_ERROR && cond.kind != TY_BOOL) {
-            diag_error(s->cond->at, "condition must be bool, not %s", type_str(cond));
+            diag_error(s->cond->at, "condition must be bool, not %s", type_name(cond));
         }
         push_scope(c);
         check_stmt(c, s->then_stmt);
@@ -554,22 +782,29 @@ static void check_stmt(checker *c, stmt *s)
     case S_ASSIGN:
         check_assign(c, s);
         break;
-    case S_EXPR:
+    case S_EXPR: {
         check_expr(c, s->value);
-        if (s->value->kind != E_METHOD && !(s->value->kind == E_CALL && s->value->call == CALL_SPAWN)) {
-            if (s->value->type.kind != TY_ERROR) diag_error(s->value->at, "this expression does nothing on its own");
-        }
+        const builtin_call call = s->value->call;
+        const bool effect = (s->value->kind == E_METHOD && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY))
+                         || (s->value->kind == E_CALL && call == CALL_SPAWN);
+        if (!effect && s->value->type.kind != TY_ERROR) diag_error(s->value->at, "this expression does nothing on its own");
         break;
+    }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Declarations
 
-// Constant expressions: literals, float3(...) of constants, and operators on
-// constants. No names, so a default never depends on other state.
+static bool all_constant(const expr *e);
+
+// Constant expressions: literals, constructors of built-in types, Math
+// functions, built-in constants like quaternion.Identity, members of any of
+// these, and operators on them. Nothing that reads fields, singletons or Time,
+// so a default never depends on other state.
 static bool is_constant(const expr *e)
 {
+    type ignored;
     switch (e->kind) {
     case E_INT:
     case E_FLOAT:
@@ -580,14 +815,22 @@ static bool is_constant(const expr *e)
     case E_BINARY:
         return is_constant(e->lhs) && is_constant(e->rhs);
     case E_CALL:
-        if (!str_eq_c(e->name, "float3")) return false;
-        for (int i = 0; i < e->args.count; i++) {
-            if (!is_constant(e->args.items[i])) return false;
-        }
-        return true;
+        return builtin_type_named(e->name, &ignored) && all_constant(e);
+    case E_METHOD:
+        return e->object->kind == E_NAME && builtin_owner(e->object->name) && all_constant(e);
+    case E_MEMBER:
+        return (e->object->kind == E_NAME && builtin_owner(e->object->name)) || is_constant(e->object);
     default:
         return false;
     }
+}
+
+static bool all_constant(const expr *e)
+{
+    for (int i = 0; i < e->args.count; i++) {
+        if (!is_constant(e->args.items[i])) return false;
+    }
+    return true;
 }
 
 static void check_default(checker *c, const field *f)
@@ -599,12 +842,13 @@ static void check_default(checker *c, const field *f)
     }
     if (!is_constant(value)) {
         diag_error(value->at, "default values must be constant expressions");
-        diag_note("use literals, float3(...) and operators; defaults can't read fields, singletons or Time");
+        diag_note("use literals, constructors like float3(...), Math functions and operators; "
+                  "defaults can't read fields, singletons or Time");
         return;
     }
     const type t = check_expr(c, value);
-    if (f->type.kind != TY_ERROR && !assignable(f->type, t)) {
-        diag_error(value->at, "field '" STR_FMT "' is %s, not %s", STR_ARG(f->name), type_str(f->type), type_str(t));
+    if (f->type.kind != TY_ERROR && !type_assignable(f->type, t)) {
+        diag_error(value->at, "field '" STR_FMT "' is %s, not %s", STR_ARG(f->name), type_name(f->type), type_name(t));
     }
 }
 
@@ -613,7 +857,7 @@ static void check_fields(checker *c, const decl *d)
     for (int i = 0; i < d->fields.count; i++) {
         field *f = &d->fields.items[i];
         check_reserved(f->name, f->at);
-        if (!builtin_type(f->type_name, &f->type)) {
+        if (!builtin_type_named(f->type_name, &f->type)) {
             if (find_type_decl(c->prog, f->type_name)) {
                 diag_error(f->at, "fields can't hold components or singletons yet");
             } else {
@@ -633,6 +877,7 @@ static void check_fields(checker *c, const decl *d)
 static void check_params(const program *prog, decl *sys)
 {
     bool has_entity = false;
+    bool has_input = false;
     uint64_t seen = 0;
 
     for (int i = 0; i < sys->params.count; i++) {
@@ -659,9 +904,29 @@ static void check_params(const program *prog, decl *sys)
             continue;
         }
 
+        if (str_eq_c(p->type_name, "Devices")) {
+            diag_error(p->at, "Devices can only be read in the input's constructor");
+            diag_note("systems read the players' input instead, through an input parameter");
+            p->type = T_ERR;
+            continue;
+        }
+
         if (!d) {
             diag_error(p->at, "unknown component or singleton '" STR_FMT "'", STR_ARG(p->type_name));
             p->type = T_ERR;
+            continue;
+        }
+
+        // An input parameter gives the input of the player who owns the entity,
+        // so the system only runs on entities with an Owner.
+        if (d->kind == DECL_INPUT) {
+            if (p->mode != PARAM_READ) {
+                diag_error(p->at, "input can't be 'mut', 'with' or 'without'; the simulation can only read it");
+            }
+            if (has_input) diag_error(p->at, "a system can only have one input parameter");
+            has_input = true;
+            p->type = (type){TY_INPUT, d};
+            sys->need_mask |= bit(prog->owner);
             continue;
         }
 
@@ -692,7 +957,7 @@ static void check_params(const program *prog, decl *sys)
     if (sys->need_mask & sys->without_mask) {
         diag_error(sys->at, "system '" STR_FMT "' both requires and excludes the same component", STR_ARG(sys->name));
     }
-    sys->per_entity = has_entity || seen != 0;
+    sys->per_entity = has_entity || has_input || seen != 0;
 
     if (sys->is_main && sys->per_entity) {
         diag_error(sys->at, "Main runs once when the world is created, so it can only take singletons");
@@ -711,12 +976,89 @@ static void add_builtins(program *prog)
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
+    // component Owner { PlayerID player; }: ties an entity to a player.
+    decl *owner = NEW(decl);
+    owner->kind = DECL_COMPONENT;
+    owner->name = str_from("Owner");
+    owner->builtin = true;
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0}, {0}, NULL};
+    vec_push(owner->fields, player);
+    prog->owner = owner;
+
     VEC(decl *) decls = {0};
     vec_push(decls, time);
+    vec_push(decls, owner);
     for (int i = 0; i < prog->decls.count; i++) vec_push(decls, prog->decls.items[i]);
     prog->decls.items = decls.items;
     prog->decls.count = decls.count;
     prog->decls.cap = decls.cap;
+}
+
+static decl *new_record(program *prog, const char *name, const char *c_name)
+{
+    decl *d = NEW(decl);
+    d->kind = DECL_RECORD;
+    d->name = str_from(name);
+    d->c_name = c_name;
+    d->builtin = true;
+    vec_push(prog->records, d);
+    return d;
+}
+
+static void record_field(decl *d, const char *name, const type t)
+{
+    const field f = {str_from(name), str_from(""), {0, 0}, t, NULL};
+    vec_push(d->fields, f);
+}
+
+// The device records an input's constructor reads. Their members come from the
+// X-macros in purr/devices.h, so PurrLang and the C structs always match.
+static void add_device_records(program *prog)
+{
+    const type t_bool = {TY_BOOL, NULL};
+    const type t_float = {TY_FLOAT, NULL};
+    const type t_float2 = {TY_FLOAT2, NULL};
+
+    decl *button = new_record(prog, "Button", "purr_button");
+    record_field(button, "down", t_bool);
+    record_field(button, "pressed", t_bool);
+    record_field(button, "released", t_bool);
+    const type t_button = {TY_RECORD, button};
+
+    decl *dpad = new_record(prog, "Dpad", "purr_dpad");
+    decl *keyboard = new_record(prog, "Keyboard", "purr_keyboard");
+    decl *mouse = new_record(prog, "Mouse", "purr_mouse");
+    decl *gamepad = new_record(prog, "Gamepad", "purr_gamepad");
+
+#define KEY(name) record_field(keyboard, #name, t_button);
+#define MOUSE_AXIS(name) record_field(mouse, #name, t_float2);
+#define MOUSE_BUTTON(name) record_field(mouse, #name, t_button);
+#define DPAD_BUTTON(name) record_field(dpad, #name, t_button);
+#define STICK(name) record_field(gamepad, #name, t_float2);
+#define TRIGGER(name) record_field(gamepad, #name, t_float);
+#define GAMEPAD_BUTTON(name) record_field(gamepad, #name, t_button);
+    PURR_KEYBOARD_KEYS(KEY)
+    PURR_MOUSE_AXES(MOUSE_AXIS)
+    PURR_MOUSE_BUTTONS(MOUSE_BUTTON)
+    PURR_DPAD_BUTTONS(DPAD_BUTTON)
+    record_field(gamepad, "connected", t_bool);
+    PURR_GAMEPAD_STICKS(STICK)
+    PURR_GAMEPAD_TRIGGERS(TRIGGER)
+    PURR_GAMEPAD_BUTTONS(GAMEPAD_BUTTON)
+    record_field(gamepad, "dpad", (type){TY_RECORD, dpad});
+#undef KEY
+#undef MOUSE_AXIS
+#undef MOUSE_BUTTON
+#undef DPAD_BUTTON
+#undef STICK
+#undef TRIGGER
+#undef GAMEPAD_BUTTON
+
+    decl *devices = new_record(prog, "Devices", "purr_devices");
+    record_field(devices, "keyboard", (type){TY_RECORD, keyboard});
+    record_field(devices, "mouse", (type){TY_RECORD, mouse});
+    record_field(devices, "gamepad", (type){TY_RECORD, gamepad});
+    prog->devices = devices;
 }
 
 static void collect_decls(program *prog)
@@ -727,8 +1069,8 @@ static void collect_decls(program *prog)
 
         if (!d->builtin) {
             check_reserved(d->name, d->at);
-            if (builtin_type(d->name, &dummy)) {
-                diag_error(d->at, "'" STR_FMT "' is a built-in type", STR_ARG(d->name));
+            if (builtin_type_named(d->name, &dummy) || str_eq_c(d->name, "Math") || str_eq_c(d->name, "Devices")) {
+                diag_error(d->at, "'" STR_FMT "' is built into the language", STR_ARG(d->name));
             }
             for (int j = 0; j < i; j++) {
                 const decl *other = prog->decls.items[j];
@@ -755,6 +1097,13 @@ static void collect_decls(program *prog)
         case DECL_SINGLETON:
             d->index = prog->singletons.count;
             vec_push(prog->singletons, d);
+            break;
+        case DECL_INPUT:
+            if (prog->input) diag_error(d->at, "a game has one input declaration; '" STR_FMT "' is already it",
+                                        STR_ARG(prog->input->name));
+            else prog->input = d;
+            break;
+        case DECL_RECORD:
             break;
         case DECL_SYSTEM:
             if (str_eq_c(d->name, "Main")) {
@@ -851,18 +1200,45 @@ static void warn_unmatched_systems(const program *prog)
     }
 }
 
+// input PlayerInput { ...; PlayerInput(Devices devices) { ... } }: the
+// constructor runs on the client, outside the simulation. It reads devices and
+// assigns the input's fields, which start at their defaults.
+static void check_constructor(checker *c, decl *input)
+{
+    if (!input->body) return; // Without a constructor, sampling gives the defaults.
+
+    if (input->params.count != 1 || !str_eq_c(input->params.items[0].type_name, "Devices")) {
+        diag_error(input->body_at, "the input's constructor takes the devices: '" STR_FMT "(Devices devices)'",
+                   STR_ARG(input->name));
+    }
+    for (int i = 0; i < input->params.count; i++) {
+        param *p = &input->params.items[i];
+        check_reserved(p->name, p->at);
+        p->mode = PARAM_READ;
+        p->type = str_eq_c(p->type_name, "Devices") ? (type){TY_RECORD, c->prog->devices} : T_ERR;
+    }
+
+    c->system = input;
+    c->in_constructor = true;
+    check_stmt(c, input->body);
+    c->in_constructor = false;
+    c->system = NULL;
+}
+
 bool check(program *prog)
 {
     checker c = {0};
     c.prog = prog;
 
     add_builtins(prog);
+    add_device_records(prog);
     collect_decls(prog);
 
     for (int i = 0; i < prog->decls.count; i++) {
         const decl *d = prog->decls.items[i];
         if (d->kind != DECL_SYSTEM) check_fields(&c, d);
     }
+    if (prog->input) check_constructor(&c, prog->input);
 
     for (int i = 0; i < prog->decls.count; i++) {
         decl *d = prog->decls.items[i];

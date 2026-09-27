@@ -1,0 +1,5 @@
+// expect: does nothing on its own
+system Main()
+{
+    Math.Dot(float3(1), float3(2));
+}

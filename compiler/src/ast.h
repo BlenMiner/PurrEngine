@@ -15,11 +15,23 @@ typedef enum type_kind {
     TY_VOID,
     TY_BOOL,
     TY_INT,
+    TY_INT2,
+    TY_INT3,
+    TY_INT4,
     TY_FLOAT,
+    TY_FLOAT2,
     TY_FLOAT3,
+    TY_FLOAT4,
+    TY_QUATERNION,
+    TY_FLOAT2X2,
+    TY_FLOAT3X3,
+    TY_FLOAT4X4,
     TY_ENTITY,
+    TY_PLAYER,     // PlayerID
     TY_COMPONENT,
     TY_SINGLETON,
+    TY_INPUT,      // The game's input declaration
+    TY_RECORD,     // Built-in read-only data: Devices, Keyboard, Button, ...
 } type_kind;
 
 typedef struct type {
@@ -57,6 +69,8 @@ typedef enum decl_kind {
     DECL_COMPONENT,
     DECL_SINGLETON,
     DECL_SYSTEM,
+    DECL_INPUT,  // input PlayerInput { fields; PlayerInput(Devices devices) { ... } }
+    DECL_RECORD, // Built-in device data; not in program.decls
 } decl_kind;
 
 typedef struct decl {
@@ -64,14 +78,16 @@ typedef struct decl {
     str name;
     loc at;
     bool builtin;
+    const char *c_name; // Records: the C struct name.
 
-    // Components and singletons
+    // Components, singletons, inputs and records
     VEC(field) fields;
     int index; // Component bit / singleton index / system order.
 
-    // Systems
+    // Systems, and an input's constructor
     VEC(param) params;
     stmt *body;
+    loc body_at;
     bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
     uint64_t need_mask;  // Components an entity must have (access and `with`).
@@ -96,19 +112,42 @@ typedef enum expr_kind {
 
 typedef enum builtin_call {
     CALL_NONE,
-    CALL_FLOAT3,
+    CALL_CONSTRUCT, // float3(...), int(...), quaternion(...), float4x4(...)
+    CALL_BUILTIN,   // Math.Dot(...), quaternion.AxisAngle(...): calls c_callee
     CALL_SPAWN,
     CALL_ADD,
     CALL_REMOVE,
     CALL_DESTROY,
 } builtin_call;
 
+// How a constructor call builds its value.
+typedef enum ctor_form {
+    CTOR_SCALAR,         // float(x), int(x)
+    CTOR_SPLAT,          // float3(1): every component the same
+    CTOR_CONVERT,        // float3(int3), int3(float3)
+    CTOR_COMPONENTS,     // float4(v.xy, 1, 2): components from scalars and vectors
+    CTOR_QUAT_FROM_F4,   // quaternion(float4)
+    CTOR_QUAT_FROM_MAT,  // quaternion(float3x3)
+    CTOR_MAT_COLUMNS,    // float3x3(c0, c1, c2)
+    CTOR_MAT_SCALARS,    // float2x2(m00, m01, m10, m11), row by row
+    CTOR_MAT_FROM_QUAT,  // float3x3(quaternion)
+    CTOR_MAT_FROM_ROT_T, // float4x4(float3x3 rotation, float3 translation)
+    CTOR_PLAYER,         // PlayerID(index)
+} ctor_form;
+
 typedef enum binding_kind {
     BIND_NONE,
     BIND_PARAM,
     BIND_LOCAL,
-    BIND_TYPE, // A component name used as a value: Spawn(Player).
+    BIND_TYPE,  // A component name used as a value: Spawn(Player).
+    BIND_FIELD, // A field of the input, named directly inside its constructor.
 } binding_kind;
+
+typedef enum input_edge {
+    EDGE_NONE,
+    EDGE_PRESSED,  // input.jump.pressed: true now, false last tick
+    EDGE_RELEASED, // input.jump.released: false now, true last tick
+} input_edge;
 
 typedef struct field_init {
     str name;
@@ -139,14 +178,21 @@ struct expr {
     // E_MEMBER, E_METHOD
     expr *object;
     str member;
-    field *field;       // Component or singleton field.
-    int swizzle;        // float3 member: 0, 1, 2 for x, y, z; -1 otherwise.
+    field *field;          // Field of a component, singleton, input or record; BIND_FIELD's field.
+    input_edge edge;       // .pressed / .released on an input field.
+    int swizzle_len;       // Vector swizzle: number of components (0 if not a swizzle).
+    int swizzle[4];        // Component indices: 0..3 for x, y, z, w.
+    const char *c_constant; // Static member such as quaternion.Identity, as C.
 
     // E_CALL, E_METHOD
     VEC(expr *) args;
     builtin_call call;
+    ctor_form ctor;         // CALL_CONSTRUCT
+    const char *c_callee;   // CALL_BUILTIN
+    VEC(type) arg_want;     // CALL_BUILTIN: the type each argument converts to.
     uint64_t spawn_mask;  // CALL_SPAWN: components the new entity has.
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
+    const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
 
     // E_BINARY, E_UNARY
     tok_kind op;
@@ -207,6 +253,10 @@ typedef struct program {
     VEC(decl *) singletons;
     VEC(decl *) systems; // Excluding Main.
     decl *main;
+    decl *input;         // The input declaration, if any.
+    decl *owner;         // The built-in Owner component.
+    decl *devices;       // The built-in Devices record.
+    VEC(decl *) records; // Built-in records: Devices, Keyboard, Mouse, Gamepad, Dpad, Button.
 
     VEC(uint64_t) archetypes;  // Component masks, in derivation order.
     VEC(bool) spawn_target;    // Per archetype: does some Spawn create it directly?

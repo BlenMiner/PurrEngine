@@ -17,6 +17,10 @@ purr_e2e_test(structural)
 purr_e2e_test(edge_cases)
 purr_e2e_test(empty_world)
 purr_e2e_test(defaults)
+purr_e2e_test(math)
+purr_e2e_test(input)
+purr_e2e_test(crossplatform)
+purr_e2e_test(evaluation_order)
 
 # Error tests: each errors/<name>.purr must fail to compile, and purrc's output
 # must contain the text on the file's first line, written as `// expect: <text>`.
@@ -26,6 +30,7 @@ foreach(source IN LISTS PURR_ERROR_TESTS)
     add_test(NAME purrc_error_${name}
         COMMAND "${CMAKE_COMMAND}"
             "-DPURRC=$<TARGET_FILE:purrc>"
+            "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}"
             "-DSOURCE=${source}"
             "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/errors"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_error.cmake")

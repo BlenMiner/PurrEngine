@@ -18,3 +18,13 @@ PURR_TEST(fp_no_fma_contraction)
     float fx = vfx, fy = vfy;
     PURR_CHECK(fx * fx - fy == 0.0f);
 }
+
+// Denormals must not be flushed to zero on any platform: WebAssembly can't
+// flush them, so everyone keeps them (see AGENTS.md).
+PURR_TEST(fp_denormals_are_kept)
+{
+    const volatile float smallest_normal = 0x1p-126f;
+    const volatile double smallest_normal_d = 0x1p-1022;
+    PURR_CHECK(smallest_normal / 2.0f != 0.0f);
+    PURR_CHECK(smallest_normal_d / 2.0 != 0.0);
+}

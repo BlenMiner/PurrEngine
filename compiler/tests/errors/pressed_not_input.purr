@@ -1,0 +1,6 @@
+// expect: only input fields have '.pressed'
+system Main()
+{
+    bool held = true;
+    var edge = held.pressed;
+}

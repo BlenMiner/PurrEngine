@@ -1,0 +1,6 @@
+// expect: 'xx' repeats a component, so it can't be assigned
+system Main()
+{
+    mut float3 v = float3(0);
+    v.xx = float2(1, 2);
+}

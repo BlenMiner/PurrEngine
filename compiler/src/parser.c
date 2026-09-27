@@ -71,7 +71,6 @@ static expr *new_expr(const expr_kind kind, const loc at)
     expr *e = NEW(expr);
     e->kind = kind;
     e->at = at;
-    e->swizzle = -1;
     e->spawn_archetype = -1;
     return e;
 }
@@ -377,13 +376,45 @@ static decl *new_decl(const decl_kind kind, const token *name)
     return d;
 }
 
-// component Name { Type field; ... }
+// Name(Type name, ...) { ... } inside an input declaration.
+static void parse_constructor(parser *p, decl *d, const token *name)
+{
+    if (d->kind != DECL_INPUT) {
+        diag_error(name->at, "only inputs have constructors for now");
+        longjmp(p->fail, 1);
+    }
+    if (d->body) {
+        diag_error(name->at, "an input has one constructor");
+        longjmp(p->fail, 1);
+    }
+    d->body_at = name->at;
+    expect(p, T_LPAREN, "'('");
+    if (!at(p, T_RPAREN)) {
+        do {
+            param prm = {0};
+            prm.at = peek(p)->at;
+            prm.type_name = expect_ident(p, "parameter type")->text;
+            prm.name = expect_ident(p, "parameter name")->text;
+            vec_push(d->params, prm);
+        } while (accept(p, T_COMMA));
+    }
+    expect(p, T_RPAREN, "')' after parameters");
+    d->body = parse_block(p);
+}
+
+// component Name { Type field; ... }, and the same for singletons and inputs.
 static decl *parse_data_decl(parser *p, const decl_kind kind)
 {
-    const token *name = expect_ident(p, kind == DECL_COMPONENT ? "component name" : "singleton name");
+    const char *what = kind == DECL_COMPONENT ? "component name" : kind == DECL_SINGLETON ? "singleton name" : "input name";
+    const token *name = expect_ident(p, what);
     decl *d = new_decl(kind, name);
     expect(p, T_LBRACE, "'{'");
     while (!at(p, T_RBRACE)) {
+        // A constructor is the type's own name followed by '('.
+        if (at(p, T_IDENT) && str_eq(peek(p)->text, name->text) && peek_at(p, 1)->kind == T_LPAREN) {
+            parse_constructor(p, d, advance(p));
+            continue;
+        }
         const token *type_tok = expect_ident(p, "field type or '}'");
         const token *field_name = expect_ident(p, "field name");
         field f = {field_name->text, type_tok->text, field_name->at, {0}, NULL};
@@ -442,8 +473,14 @@ program *parse(const source *src, token *toks)
             diag_error(t->at, "attributes aren't supported yet");
             return NULL;
         default:
+            // `input` is only a keyword at the start of a declaration, so it can
+            // still name parameters and locals.
+            if (t->kind == T_IDENT && str_eq_c(t->text, "input") && at(&p, T_IDENT)) {
+                vec_push(prog->decls, parse_data_decl(&p, DECL_INPUT));
+                break;
+            }
             p.pos--;
-            fail_at(&p, t, "'component', 'singleton' or 'system'");
+            fail_at(&p, t, "'component', 'singleton', 'input' or 'system'");
         }
     }
     return prog;

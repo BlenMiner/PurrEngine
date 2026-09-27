@@ -1,0 +1,3 @@
+// expect: Main runs once when the world is created
+input PlayerInput { bool jump; }
+system Main(PlayerInput input) { }

@@ -27,7 +27,7 @@ PurrLang is a working name and may change.
 ### Field defaults
 
 - Component and singleton fields can declare a default value: `int value = 100;`.
-- A default must be a constant expression: literals, `float3(...)` of constants, and operators. It can't read fields, singletons or `Time`.
+- A default must be a constant expression: literals, constructors of built-in types, `Math` functions, built-in constants like `quaternion.Identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
 - Singletons start with their defaults when the world is created, before `Main` runs.
 - Components get their defaults whenever a value is created without setting that field: `Spawn(Health)`, `e.Add(Health)`, and fields left out of `Health { max = 200 }`.
 - Fields without a default start at zero. `Entity` fields always start as the null entity and can't have a default.
@@ -106,6 +106,10 @@ system Main()
 }
 ```
 
+### Evaluation order
+
+- Expressions evaluate left to right, like C#: operands, arguments and field initializers run in source order. `Spawn` is the only expression with a side effect today, so this is what makes entity IDs come out the same on every platform. `Spawn(Pair { a = Spawn(Thing), b = Spawn(Thing) })` spawns `a`'s Thing, then `b`'s, then the Pair.
+
 ### Archetypes
 
 - There are no archetype declarations. The compiler derives every archetype from the code: the component set at each spawn site, plus every combination reachable through adding and removing components.
@@ -116,9 +120,8 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Types and values
 
-- Built-in types are `bool`, `int` (32-bit), `float` (32-bit), `float3` and `Entity`. There is no `double`.
+- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit) and `Entity`. There is no `double`. Vector types are under Vector math.
 - `1.5` is a `float`; the `f` suffix is optional. An `int` converts to `float` implicitly, never the other way.
-- `float3(x, y, z)` builds a vector with members `.x`, `.y`, `.z`. `+ - * /` work component-wise between two `float3`s, `float3 * float`, `float * float3` and `float3 / float` scale, and unary `-` negates.
 - Integer arithmetic wraps on overflow. Integer division and modulo by zero give 0, so no input can crash the simulation.
 - Bitwise operators `& | ^ ~ << >>` work on `int`, with compound forms `&= |= ^= <<= >>=`. As in C#, shift counts use their low 5 bits (`1 << 33` is `2`) and `>>` keeps the sign. Operator precedence follows C#.
 - Integer literals can be decimal (`255`), hex (`0xFF`) or binary (`0b1010`). Decimal goes up to 2147483647. Hex and binary can use all 32 bits and are read as the int's bit pattern: `0xFFFFFFFF` is `-1` and `0x80000000` is the lowest int.
@@ -137,6 +140,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 - `e.Destroy()` destroys an entity. It's deferred like other structural changes.
 - The "fixed point" where structural changes apply is the end of each tick (and the end of `Main`). Changes apply in the order they were recorded.
 - `Add`, `Remove` and `Destroy` on an entity that was already destroyed do nothing.
+- `Spawn` can't appear on the right side of `&&` or `||`. That side only runs sometimes, while spawns run first, in order (see Evaluation order). Spawn into a local before the condition.
 
 ### Built-ins
 
@@ -144,14 +148,119 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Syntax
 
-- Statements: blocks, `if`/`else`, `return;`, local declarations, assignments (`= += -= *= /= %=`), and calls to `Spawn`, `Add`, `Remove` and `Destroy`. There are no loops yet.
+- Statements: blocks, `if`/`else`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), and calls to `Spawn`, `Add`, `Remove` and `Destroy`. There are no loops yet.
 - Operators and their precedence follow C#. Comments are `//` and `/* */`.
 
 ### Limits
 
 - 64 components, 256 archetypes, 16384 entities, 1024 entities per archetype and 4096 structural changes per tick. The last three can be raised with compile definitions.
 
+## Vector math
+
+Follows Unity.Mathematics, with PurrLang's naming. Everything in this section is decided.
+
+- Types: `float2`, `float3`, `float4`, `int2`, `int3`, `int4`, `quaternion`, `float2x2`, `float3x3` and `float4x4`. They're lowercase built-in value types, like `float`.
+- Math functions live on `Math` and follow the PascalCase method convention: `Math.Dot(a, b)`, `Math.Normalize(v)`, `Math.Mul(q, r)`. This overrides Unity.Mathematics' lowercase `math.dot`.
+- Swizzles read any combination of components: `v.xz`, `v.zyx`, `v.xxyy`.
+- Angles are in radians. `Math.Radians(degrees)` and `Math.Degrees(radians)` convert.
+
+```csharp
+quaternion spin = quaternion.AxisAngle(float3(0, 1, 0), input.turn * time.dt);
+trs.rotation = Math.Mul(trs.rotation, spin);
+float3 forward = Math.Rotate(trs.rotation, float3(0, 0, 1));
+trs.position += Math.Normalize(forward) * 5 * time.dt;
+float2 flat = trs.position.xz;
+```
+
+**Constructors**
+
+- Vectors take any mix of scalars and vectors adding up to the right size (`float4(v.xy, 0, 1)`), or one scalar for every component (`float3(1)`).
+- `float3(int3)` and `int3(float3)` convert between int and float vectors. `int(x)` and `float(x)` convert scalars. Float to int truncates toward zero, saturates at the int range, and turns NaN into 0, so no input is undefined.
+- `quaternion(x, y, z, w)`, `quaternion(float4)` and `quaternion(float3x3)`.
+- Matrices take one column vector per column (`float3x3(c0, c1, c2)`) or all numbers row by row (`float2x2(1, 2, 3, 4)`, where `1, 2` is the first row). Also `float3x3(quaternion)` and `float4x4(float3x3 rotation, float3 translation)`.
+
+**Members and constants**
+
+- Vectors have `x`, `y`, `z`, `w`. Swizzles can also be assigned (`v.xz = float2(1, 2)`), as long as no component repeats.
+- `quaternion` has `value`, a `float4` with (x, y, z) as the vector part. Matrices are stored column by column and have columns `c0` to `c3`.
+- `Math.PI`, `Math.Tau`, `Math.E`, `quaternion.Identity`, `float2x2.Identity`, `float3x3.Identity`, `float4x4.Identity`.
+- `quaternion.AxisAngle(axis, angle)`, `quaternion.Euler(radians)` (Z first, then X, then Y, Unity's default order), `quaternion.LookRotation(forward, up)`, `float4x4.TRS(translation, rotation, scale)`, `float4x4.Translate(translation)`.
+
+**Operators**
+
+- `+ - * /` are component-wise on vectors, and `%` too on int vectors. A scalar widens to the vector's size, and int widens to float, so `v * 2 + 1` works.
+- An int vector converts to a float vector of the same size implicitly, like `int` to `float`.
+- Matrices support `+` and `-` with the same type, and `*` and `/` by a number. There's no `*` between matrices, or between a matrix and a vector; that's `Math.Mul`.
+- Quaternions have no operators: combine rotations with `Math.Mul` and rotate vectors with `Math.Rotate`.
+- Comparisons and `==` work on scalars only.
+
+**Functions**
+
+- Component-wise, on numbers and vectors: `Abs`, `Sign`, `Min`, `Max`, `Clamp` (ints too); `Floor`, `Ceil`, `Round` (ties to even), `Trunc`, `Frac`, `Sqrt`, `Rsqrt`, `Saturate`, `Radians`, `Degrees`, `Sin`, `Cos`, `Tan`, `Asin`, `Acos`, `Atan`, `Atan2`, `Exp`, `Exp2`, `Log`, `Log2`, `Log10`, `Pow`, `Step`, `Lerp`, `Unlerp`, `SmoothStep`.
+- Vectors: `Dot`, `Cross`, `Length`, `LengthSq`, `Distance`, `DistanceSq`, `Normalize`, `NormalizeSafe` (zero instead of NaN), `Reflect`, `Csum`, `Cmin`, `Cmax`.
+- Quaternions: `Mul`, `Rotate`, `Inverse`, `Conjugate`, `Normalize`, `NormalizeSafe`, `Dot`, `Slerp`, `Nlerp`, `Forward`, `Up`, `Right`, `Angle`.
+- Matrices: `Mul`, `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
+- Everything is deterministic (see AGENTS.md). The transcendental functions are PurrEngine's own, accurate to about 1 ulp but not correctly rounded.
+
+## Input
+
+### Decided
+
+- One `input` declaration per game describes one player's input for one tick. It's what the network sends.
+- Input is one value per player per tick. The engine writes it, and the simulation can only read it.
+- `Owner` is a built-in component that ties an entity to a player. It's a normal component: it can be read, written, added and removed. Writing it hands control over.
+- Players are identified by a built-in `PlayerID` type, not an `int`. Like `Entity`, it's opaque, comparable with `==`, and has a null value. The simulation only sees `PlayerID`s and never connections, so a player who reconnects and gets their `PlayerID` back (PurrNet style) keeps everything they owned. `PlayerID(0)` names a player by index, for local play and tests.
+- **Sampling is PurrLang code:** the input's constructor. The engine calls it on the client once per tick. Fields start at their defaults, and the constructor assigns them without `mut`. It runs outside the simulation: it can read `Devices` but not components or singletons. There's exactly one, and it takes `Devices`.
+- **Input carries whether buttons are held, not whether they were pressed,** because a missing remote input is guessed by repeating the last one. On a device, `.down` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.pressed` and `.released`, computed against the previous tick.
+- An input parameter in a system gives the input of the player who owns the entity, so the system only runs on entities with an `Owner`.
+- `Devices` has a keyboard, mouse and gamepad for now; pen, touch, joysticks and sensors come later. Every button has `.down`, `.pressed` and `.released`.
+  - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
+  - **Mouse:** `position`, `delta` and `scroll` (`float2`), and buttons `left`, `right` and `middle`.
+  - **Gamepad:** `connected`; `leftStick` and `rightStick` (`float2`); `leftTrigger` and `rightTrigger` (`float`, 0 to 1); face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`); `dpad.up` and the other directions; `leftShoulder`, `rightShoulder`, `start` and `select`.
+
+```csharp
+input PlayerInput
+{
+    float2 move;
+    bool jump;
+
+    PlayerInput(Devices devices)
+    {
+        var keys = devices.keyboard;
+        if (keys.d.down) move.x += 1;
+        if (keys.a.down) move.x -= 1;
+        move += devices.gamepad.leftStick;
+        jump = keys.space.down || devices.gamepad.buttonSouth.down;
+    }
+}
+
+system Jump(PlayerInput input, mut Velocity velocity)
+{
+    if (input.jump.pressed)
+        velocity.value.y = 5;
+}
+```
+
+### Provisional
+
+- `input` is only a keyword at the start of a declaration, so it can still name parameters and locals.
+- Entities owned by no player, or by an unknown `PlayerID`, get the input's default values.
+- A player whose input isn't set for a tick keeps their last one.
+- Up to 16 players for now.
+- A system can have one input parameter.
+- Extra device members beyond the list above: mouse `back` and `forward`, gamepad `leftStickButton` and `rightStickButton`, and the full key list in `engine/include/purr/devices.h`.
+- The types inside `Devices` (keyboard, button, and so on) have no names in PurrLang; use `var`.
+
+### Open
+
+- Players joining, leaving and reconnecting.
+- Pairing devices with players, for local multiplayer.
+- Compact input types (bytes, quantized floats) to save bandwidth.
+- Server-side validation of input, such as clamping `move`.
+
 ## Open
+
+- User-defined value types (structs), including thin wrappers around a single `int`. The owner prefers distinct types over raw primitives for clarity and refactoring.
 
 - How entities authored as data (levels, prefabs) feed into archetype derivation.
 - Archetype growth. Every `Add` and `Remove` can apply to any entity, so the compiler assumes every combination is reachable, and each archetype currently reserves a fixed 1024 slots. Narrowing this safely needs more analysis, and storage should grow on demand.

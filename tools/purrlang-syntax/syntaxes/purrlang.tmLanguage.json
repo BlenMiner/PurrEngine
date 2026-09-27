@@ -31,8 +31,8 @@
     "declarations": {
       "patterns": [
         {
-          "comment": "component Transform, singleton Time",
-          "match": "\\b(component|singleton)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "comment": "component Transform, singleton Time, input PlayerInput",
+          "match": "\\b(component|singleton|input)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.purrlang" },
             "2": { "name": "entity.name.type.purrlang" }
@@ -94,12 +94,12 @@
         {
           "comment": "Built-in value types",
           "name": "storage.type.primitive.purrlang",
-          "match": "\\b(bool|int|float|float3|Entity)\\b"
+          "match": "\\b(bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|PlayerID)\\b"
         },
         {
-          "comment": "Built-in singletons",
+          "comment": "Built-in singletons, components and records",
           "name": "support.class.purrlang",
-          "match": "\\bTime\\b"
+          "match": "\\b(Time|Math|Owner|Devices)\\b"
         },
         {
           "comment": "Spawn(...)",

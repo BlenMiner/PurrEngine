@@ -1,0 +1,7 @@
+// expect: the input's constructor takes the devices
+input PlayerInput
+{
+    bool jump;
+    PlayerInput(int x) { }
+}
+system Main() { }

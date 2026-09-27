@@ -1,0 +1,5 @@
+// expect: Math has no function 'Foo'
+system Main()
+{
+    var x = Math.Foo(1);
+}
