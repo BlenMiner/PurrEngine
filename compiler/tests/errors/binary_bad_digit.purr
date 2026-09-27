@@ -1,0 +1,5 @@
+// expect: invalid number '0b102'
+system Main()
+{
+    var x = 0b102;
+}

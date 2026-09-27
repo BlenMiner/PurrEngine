@@ -1,0 +1,6 @@
+// expect: non-ASCII characters are only allowed in comments
+// Comments can say café freely.
+system Main()
+{
+    var café = 1;
+}

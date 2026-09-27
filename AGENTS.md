@@ -7,6 +7,8 @@ Rules and decisions for anyone, human or AI agent, working on PurrEngine. Only a
 - The project owner is the lead programmer and writes most of the code.
 - Agents help with specific, scoped tasks. Do what was asked. Don't widen scope, scaffold systems, or refactor nearby code unless asked.
 - If it's unclear whether the owner wants code or discussion, ask.
+- **Exception: Claude owns the transpiler.** The owner decides the language design (what it should do, its syntax and semantics). Claude implements and maintains the transpiler, including its tests and build integration, and proposes designs for the owner to approve.
+- The contract between the two sides is the C the transpiler generates and the engine runtime functions that code calls. The owner writes the runtime. Any runtime function the generated code needs is agreed on before either side depends on it.
 
 ## What PurrEngine is
 
@@ -34,20 +36,48 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 
 There are two presets. `debug` has no optimization. `release` is optimized and keeps debug info for profiling.
 
+### PurrLang programs
+
+`purr_add_game(<target> SOURCE <file.purr> [NAME <name>])` runs `purrc` on the file and compiles the generated C into the target, which then includes `<name>.h`. The files regenerate whenever the `.purr` file or `purrc` changes.
+
+The generated header is the API between the game and the host:
+
+- `purr_world`: the whole simulation state as plain data. Copying it is a snapshot.
+- `purr_world_init(w, dt)`: clears the world, sets `Time.dt` and singleton defaults, runs `Main`.
+- `purr_world_tick(w)`: runs every system once, then applies structural changes.
+- `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`.
+- `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
+
 ## Layout
 
 - `engine/`: the engine library (`purr`). Public headers go in `engine/include/purr/`, sources in `engine/src/`. New `.c` files are picked up automatically.
+- `compiler/`: `purrc`, the PurrLang transpiler (owned by Claude). `compiler/tests/e2e/` holds programs compiled and run as tests. `compiler/tests/errors/` holds programs that must fail with the message on their first line.
+- `docs/purrlang.md`: the language spec.
 - `sandbox/`: an executable for experiments.
 - `tests/`: tests built on the harness in `tests/purr_test.h`. New test files are picked up automatically.
-- `cmake/`: shared compiler flags (`PurrFlags.cmake`) and the file that locates clang (`clang-toolchain.cmake`).
+- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the file that locates clang (`clang-toolchain.cmake`), and `purr_add_game` (`PurrLang.cmake`).
+
+### Runtime written by Claude for now
+
+- `engine/include/purr/entity.h` and `engine/src/entity.c` (the entity table) are a temporary implementation Claude wrote so generated code could run. The owner takes them over later. Until then Claude maintains them. Generated code depends on the functions declared in `entity.h`.
 
 ## Language
+
+The language is called PurrLang (working name). Its syntax and semantics are specified in `docs/purrlang.md`.
 
 - Derive as much as possible from the language.
 - It should be as explicit as our needs require, while staying friendly.
 - Dependency trees are static: known at compile time, not discovered at runtime.
 - Explicit is the default. Systems declare which components they read and write in their signatures.
+- A system's access (which components it reads or writes) is declared separately from its filters (which components an entity must have or lack). Filters don't create data dependencies.
 - The language is built around the ECS. It should use syntax sugar to hide the ECS's pain points.
+
+## ECS and simulation state
+
+- The transpiler generates C specific to each game: component structs, archetype storage, per-system dispatch, and the tick. There is no runtime type registry.
+- Resources hold state for the whole world, such as time, RNG and game rules. They live inside the world, and systems declare them the same way as components.
+- The world is always passed as a pointer, never stored in a global. Several worlds can exist at once, for example predicted and verified copies, several matches on one server, or snapshots.
+- The world owns all simulation memory. Components hold offsets into world memory, never pointers. The allocator's state lives in the world too, so a snapshot captures everything.
 
 ## Performance
 
@@ -78,6 +108,8 @@ Given the same build and the same inputs, simulation results must be bit-identic
 - No FMA contraction. The compiler must never fuse `a*b + c` into a single instruction.
 - No fast-math. No reassociation or reordering of float operations.
 - Simulation code must not use the platform math library (`sin`, `cos`, `atan2`, `exp`, `pow`, and so on). Use the engine's own math library, which is built only from the basic operations.
+- Vector math (vectors, matrices, quaternions) is written in-house: it only needs the basic operations, and third-party vector libraries often use approximate instructions or the platform math library.
+- Transcendental functions may come from a third-party library, but only as source vendored into the engine and compiled with its flags. Prefer correctly rounded implementations, such as CORE-MATH: they return the same bits on every platform by definition.
 - No approximate instructions such as `rsqrtps` or `rcpps`. Their results differ between Intel and AMD.
 - Denormal handling (FTZ/DAZ) is set per thread. Every thread that runs simulation code must set it the same way.
 - No x87 floating point.

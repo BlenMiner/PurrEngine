@@ -1,0 +1,9 @@
+// expect: 'x' is already declared
+system Main()
+{
+    var x = 1;
+    if (true)
+    {
+        var x = 2;
+    }
+}

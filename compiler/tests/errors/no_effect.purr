@@ -1,0 +1,5 @@
+// expect: does nothing on its own
+system Main()
+{
+    1 + 2;
+}

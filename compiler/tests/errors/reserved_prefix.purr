@@ -1,0 +1,3 @@
+// expect: reserved for generated code
+component purr_thing { int value; }
+system Main() { }

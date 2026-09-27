@@ -1,0 +1,28 @@
+﻿component Transform
+{
+    float3 position;
+}
+
+component Player
+{
+    float3 velocity;
+}
+
+singleton Physics
+{
+    int collisionCount = 69;
+}
+
+system PlayerMovement(mut Transform trs, Player player, Time time, mut Physics physics)
+{
+    trs.position += player.velocity * time.dt;
+    physics.collisionCount += 1;
+}
+
+system Main()
+{
+    Spawn(
+        Transform { position = float3(0, 1, 2) },
+        Player { velocity = float3(0, 1, 0) }
+    );
+}

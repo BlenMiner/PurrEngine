@@ -1,0 +1,2 @@
+// expect: the program has no entry point
+component Transform { float3 position; }

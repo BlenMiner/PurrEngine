@@ -19,9 +19,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 include(cmake/PurrFlags.cmake)
+include(cmake/PurrLang.cmake)
 
 add_subdirectory(engine)
 add_subdirectory(sandbox)
 
 enable_testing()
 add_subdirectory(tests)
+add_subdirectory(compiler)

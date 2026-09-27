@@ -1,0 +1,35 @@
+{
+  "name": "purrlang",
+  "displayName": "PurrLang",
+  "description": "Syntax highlighting for PurrLang (.purr)",
+  "version": "0.1.0",
+  "publisher": "purrengine",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "purrlang",
+        "aliases": [
+          "PurrLang",
+          "purr"
+        ],
+        "extensions": [
+          ".purr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "purrlang",
+        "scopeName": "source.purrlang",
+        "path": "./syntaxes/purrlang.tmLanguage.json"
+      }
+    ]
+  }
+}

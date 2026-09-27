@@ -1,0 +1,5 @@
+// expect: '0x' needs digits after it
+system Main()
+{
+    var x = 0x;
+}

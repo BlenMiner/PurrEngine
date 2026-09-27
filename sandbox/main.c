@@ -1,15 +1,13 @@
-#include <stdio.h>
+#include "game.h"
 
-#include "purr/time.h"
+static purr_world world;
 
-// Playground for experiments.
 int main(void)
 {
-    const uint64_t start = purr_time_now_ns();
-
-    printf("PurrEngine sandbox\n");
-
-    const uint64_t elapsed = purr_time_now_ns() - start;
-    printf("took %llu ns\n", (unsigned long long)elapsed);
+    purr_world_init(&world, 1.0f);
+    for (int i = 0; i < 6; i++) {
+        purr_world_tick(&world);
+        purr_world_print(&world);
+    }
     return 0;
 }

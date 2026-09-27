@@ -1,0 +1,3 @@
+// expect: Main runs once when the world is created
+component Transform { float3 position; }
+system Main(Transform trs) { }

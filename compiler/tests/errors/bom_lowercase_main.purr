@@ -1,0 +1,4 @@
+﻿// expect: the entry point is spelled 'Main', with a capital M
+system main()
+{
+}

@@ -20,7 +20,7 @@ void purr_test_register(const purr_test_case *tc)
     tests[test_count++] = tc;
 }
 
-void purr_test_fail(const char *file, int line, const char *expr)
+void purr_test_fail(const char *file, const int line, const char *expr)
 {
     printf("    %s:%d: check failed: %s\n", file, line, expr);
     current_failures++;
@@ -30,11 +30,11 @@ static int compare_tests(const void *a, const void *b)
 {
     const purr_test_case *x = *(const purr_test_case *const *)a;
     const purr_test_case *y = *(const purr_test_case *const *)b;
-    int by_file = strcmp(x->file, y->file);
+    const int by_file = strcmp(x->file, y->file);
     return by_file != 0 ? by_file : strcmp(x->name, y->name);
 }
 
-int main(int argc, char **argv)
+int main(const int argc, char **argv)
 {
     const char *filter = argc > 1 ? argv[1] : NULL;
 
@@ -48,9 +48,9 @@ int main(int argc, char **argv)
         if (filter && !strstr(tc->name, filter)) continue;
 
         current_failures = 0;
-        uint64_t start = purr_time_now_ns();
+        const uint64_t start = purr_time_now_ns();
         tc->fn();
-        double ms = (double)(purr_time_now_ns() - start) / 1e6;
+        const double ms = (double)(purr_time_now_ns() - start) / 1e6;
 
         printf("%s %s (%.3f ms)\n", current_failures ? "FAIL" : "ok  ", tc->name, ms);
         ran++;
