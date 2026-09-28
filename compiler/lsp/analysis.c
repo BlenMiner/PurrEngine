@@ -205,7 +205,8 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
     qualifier_ref(qual_at, at, text);
     const str name = last_part(text);
     occurrence o = {.at = at, .len = name.len, .kind = OCC_TYPE, .name = name, .type = t};
-    if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD) {
+    if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
+        || t.kind == TY_STRUCT) {
         o.decl = t.decl;
     } else if (!builtin_type_named(name, &o.type)) {
         // Unresolved, for example a component used as a field type: still a type.
@@ -369,7 +370,7 @@ static void walk_stmt(const stmt *s)
     case S_RETURN:
         break;
     case S_VAR:
-        type_ref(s->type_at, s->type_at, s->type_name, s->type);
+        type_ref(s->type_qual_at.line ? s->type_qual_at : s->type_at, s->type_at, s->type_name, s->type);
         add_occ((occurrence){.at = s->name_at, .len = s->name.len, .kind = OCC_LOCAL, .declaration = true, .local = s,
                              .name = s->name, .type = s->type});
         walk_expr(s->value);
@@ -443,7 +444,7 @@ static void index_program(void)
                              .name = d->name});
         for (int f = 0; f < d->fields.count; f++) {
             const field *fl = &d->fields.items[f];
-            type_ref(fl->type_at, fl->type_at, fl->type_name, fl->type);
+            type_ref(fl->type_qual_at.line ? fl->type_qual_at : fl->type_at, fl->type_at, fl->type_name, fl->type);
             add_occ((occurrence){.at = fl->at, .len = fl->name.len, .kind = OCC_FIELD, .declaration = true, .field = fl,
                                  .decl = d, .name = fl->name, .type = fl->type});
             walk_expr(fl->default_value);
@@ -583,6 +584,7 @@ static const char *decl_keyword(const decl *d)
     case DECL_SINGLETON: return "singleton";
     case DECL_INPUT: return "input";
     case DECL_RECORD: return "record";
+    case DECL_STRUCT: return "struct";
     case DECL_SYSTEM: return d->is_view ? "view" : "system";
     }
     return "";
@@ -1049,7 +1051,7 @@ void analysis_symbols(jbuf *out)
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->builtin || d->at.file != A.doc) continue; // This document's declarations
-        const int kind = d->kind == DECL_COMPONENT ? SYMBOL_STRUCT
+        const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? SYMBOL_STRUCT
                        : d->kind == DECL_SINGLETON ? SYMBOL_CLASS
                        : d->kind == DECL_INPUT ? SYMBOL_INTERFACE
                                                : SYMBOL_FUNCTION;
@@ -1133,9 +1135,9 @@ static void classify(const occurrence *o, int *type, int *mods)
             *mods = is_keyword_type(o->type) ? 0 : *mods | SM_DEFAULT_LIBRARY;
             break;
         }
-        // Components are structs, singletons classes, inputs interfaces, and the
-        // device records types: editors can color each kind.
-        *type = o->decl->kind == DECL_COMPONENT ? ST_STRUCT
+        // Components and structs are structs, singletons classes, inputs
+        // interfaces, and the device records types: editors can color each kind.
+        *type = o->decl->kind == DECL_COMPONENT || o->decl->kind == DECL_STRUCT ? ST_STRUCT
               : o->decl->kind == DECL_INPUT     ? ST_INTERFACE
               : o->decl->kind == DECL_RECORD    ? ST_TYPE
                                                 : ST_CLASS;
@@ -1314,7 +1316,8 @@ static bool is_swizzle(const str member, const int dim)
 // The type of `t.member`, or TY_ERROR.
 static type member_type(const type t, const str member)
 {
-    if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD)) {
+    if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
+                   || t.kind == TY_STRUCT)) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             if (str_eq(t.decl->fields.items[i].name, member)) return t.decl->fields.items[i].type;
         }
@@ -1332,7 +1335,8 @@ static type member_type(const type t, const str member)
 
 static void list_members(completion *c, const type t, const bool edges, const scope *sc)
 {
-    if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD)) {
+    if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
+                   || t.kind == TY_STRUCT)) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             const field *f = &t.decl->fields.items[i];
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
@@ -1466,6 +1470,15 @@ static void complete_types(completion *c, const bool components, const bool sing
     }
 }
 
+// Structs: field and local types, and values like Stats { ... }.
+static void complete_structs(completion *c)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->kind == DECL_STRUCT) item(c, name_for(d), CK_STRUCT, "struct", NULL, NULL);
+    }
+}
+
 // Systems or views, for [Before(...)] and [After(...)].
 static void complete_systems(completion *c, const bool views)
 {
@@ -1512,7 +1525,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
         const decl *d = A.prog->decls.items[i];
         if (!d->unit || !str_eq(d->unit->ns, ns) || d->is_main) continue;
         if (systems != (d->kind == DECL_SYSTEM)) continue;
-        const int kind = d->kind == DECL_COMPONENT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
+        const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
                        : d->kind == DECL_SYSTEM ? CK_FUNCTION : CK_CLASS;
         item(c, str_to_cstr(d->name), kind, decl_keyword(d), NULL, NULL);
     }
@@ -1573,6 +1586,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         complete_types(c, true, false, false);
     }
     complete_value_types(c, true);
+    complete_structs(c);
     item(c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
     complete_namespaces(c, false);
     if (view) item(c, "Draw", CK_MODULE, "Immediate-mode drawing", NULL, NULL);
@@ -1582,6 +1596,8 @@ static void complete_declarations(completion *c)
 {
     item(c, "component", CK_SNIPPET, "component Name { fields }", NULL, "component ${1:Name}\n{\n    $0\n}");
     item(c, "singleton", CK_SNIPPET, "singleton Name { fields }", NULL, "singleton ${1:Name}\n{\n    $0\n}");
+    item(c, "struct", CK_SNIPPET, "struct Name { fields }", "A value type for fields and locals.",
+         "struct ${1:Name}\n{\n    $0\n}");
     item(c, "system", CK_SNIPPET, "system Name(parameters) { ... }", NULL, "system ${1:Name}($2)\n{\n    $0\n}");
     item(c, "view", CK_SNIPPET, "view Name(parameters) { ... }", "Runs once per frame and draws.",
          "view ${1:Name}($2)\n{\n    $0\n}");
@@ -1619,8 +1635,8 @@ static bool starts_declaration(const int i)
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(DOC->toks, i); // Attributes
     return t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
-        && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "namespace")
-            || str_eq_c(t->text, "using"));
+        && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "struct")
+            || str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"));
 }
 
 static bool is_word(const token *t)
@@ -1753,11 +1769,15 @@ void analysis_completion(const int line, const int character, jbuf *out)
     }
 
     case CTX_DATA:
-        if (pk == T_LBRACE || pk == T_SEMI || pk == T_RBRACE) complete_value_types(&c, false);
-        else if (pk != T_IDENT || (last >= 1 && DOC->toks[last - 1].kind != T_LBRACE && DOC->toks[last - 1].kind != T_SEMI
+        if (pk == T_LBRACE || pk == T_SEMI || pk == T_RBRACE) {
+            complete_value_types(&c, false);
+            complete_structs(&c);
+            complete_namespaces(&c, false);
+        } else if (pk != T_IDENT || (last >= 1 && DOC->toks[last - 1].kind != T_LBRACE && DOC->toks[last - 1].kind != T_SEMI
                                    && DOC->toks[last - 1].kind != T_RBRACE)) {
             // A default value: constants only.
             complete_value_types(&c, true);
+            complete_structs(&c);
             item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
         }
         break;
@@ -1767,7 +1787,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             const str name = DOC->toks[f.open - 1].text;
             for (int i = 0; i < A.prog->decls.count; i++) {
                 const decl *d = A.prog->decls.items[i];
-                if (d->kind != DECL_COMPONENT || !str_eq(d->name, name)) continue;
+                if ((d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT) || !str_eq(d->name, name)) continue;
                 for (int k = 0; k < d->fields.count; k++) {
                     const field *fl = &d->fields.items[k];
                     sb snippet = {0};

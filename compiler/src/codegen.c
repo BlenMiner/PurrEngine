@@ -103,7 +103,9 @@ static const char *local_cname(const gen *g, const str name)
 
 static const char *c_type(const type t)
 {
-    if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT) return type_cname(t.decl);
+    if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_STRUCT) {
+        return type_cname(t.decl);
+    }
     if (t.kind == TY_RECORD) return t.decl->c_name;
     return type_c_name(t);
 }
@@ -276,16 +278,20 @@ static void gen_float_literal(sb *o, str text)
     sb_put(o, has_point ? "f" : ".0f");
 }
 
+// Whether a value of `d` isn't all zeros by default: a field has a default, or
+// holds a struct that has one.
 static bool has_defaults(const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) {
-        if (d->fields.items[i].default_value) return true;
+        const field *f = &d->fields.items[i];
+        if (f->default_value || (f->type.kind == TY_STRUCT && has_defaults(f->type.decl))) return true;
     }
     return false;
 }
 
-// A component or singleton value: fields set in `inits` (may be NULL) take that
-// value, the rest take their declared default, and anything else is zero.
+// A value of a component, singleton, input or struct: fields set in `inits`
+// (may be NULL) take that value, the rest take their declared default, and
+// anything else is zero, padding included.
 static void gen_value(gen *g, sb *o, const decl *d, const field_init *inits, const int init_count)
 {
     sb_printf(o, "(%s){", type_cname(d));
@@ -295,6 +301,11 @@ static void gen_value(gen *g, sb *o, const decl *d, const field_init *inits, con
         expr *value = f->default_value;
         for (int j = 0; j < init_count; j++) {
             if (inits[j].field == f) value = inits[j].value;
+        }
+        if (!value && f->type.kind == TY_STRUCT && has_defaults(f->type.decl)) {
+            sb_printf(o, "%s.%s = ", written++ ? ", " : "", field_cname(f));
+            gen_value(g, o, f->type.decl, NULL, 0); // The struct's own defaults
+            continue;
         }
         if (!value) continue;
         sb_printf(o, "%s.%s = ", written++ ? ", " : "", field_cname(f));
@@ -592,6 +603,18 @@ static void gen_string(sb *o, const str text)
     sb_put(o, "\"");
 }
 
+// input.buttons.jump on last tick's input: purr_prev_input->buttons.jump.
+static const char *prev_input_access(gen *g, const expr *field_access)
+{
+    sb b = {0};
+    if (field_access->object->kind == E_NAME) {
+        sb_printf(&b, "%s->%s", prev_input_name(g, field_access->object->name), field_cname(field_access->field));
+    } else {
+        sb_printf(&b, "%s.%s", prev_input_access(g, field_access->object), field_cname(field_access->field));
+    }
+    return b.data;
+}
+
 static void gen_expr(gen *g, sb *o, const expr *e)
 {
     switch (e->kind) {
@@ -628,12 +651,10 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         }
         if (e->edge != EDGE_NONE) {
             // input.jump.down: this tick's value against last tick's.
-            const expr *field_access = e->object;
-            const char *now = expr_text(g, field_access);
-            sb b = {0};
-            sb_printf(&b, "%s->%s", prev_input_name(g, field_access->object->name), field_cname(field_access->field));
-            if (e->edge == EDGE_DOWN) sb_printf(o, "(%s && !%s)", now, b.data);
-            else sb_printf(o, "(!%s && %s)", now, b.data);
+            const char *now = expr_text(g, e->object);
+            const char *before = prev_input_access(g, e->object);
+            if (e->edge == EDGE_DOWN) sb_printf(o, "(%s && !%s)", now, before);
+            else sb_printf(o, "(!%s && %s)", now, before);
             break;
         }
         const char *access = object_access(g, e->object);
@@ -919,14 +940,87 @@ static void gen_stmt(gen *g, const stmt *s)
 // ---------------------------------------------------------------------------
 // Header: types, world layout, public API
 
+// Generated types have no padding the compiler adds: purrc writes it out as
+// members, which values always set to zero, so the bytes of a component (and
+// of the world) only depend on its fields. Snapshots and state hashes can then
+// compare memory directly. Every built-in type is 4-byte aligned with a size
+// that's a multiple of 4, except bool.
+
+typedef struct layout {
+    int size;
+    int align;
+} layout;
+
+static layout decl_layout(const decl *d);
+
+static layout type_layout(const type t)
+{
+    if (t.kind == TY_BOOL) return (layout){1, 1};
+    if (t.kind == TY_STRUCT) return decl_layout(t.decl);
+    if (type_dim(t) > 0) return (layout){4 * type_dim(t), 4};
+    if (matrix_dim(t) > 0) return (layout){4 * matrix_dim(t) * matrix_dim(t), 4};
+    switch (t.kind) {
+    case TY_QUATERNION: case TY_COLOR: return (layout){16, 4};
+    case TY_ENTITY: return (layout){8, 4};
+    case TY_PLAYER: return (layout){4, 4};
+    default: return (layout){4, 4};
+    }
+}
+
+static int round_up(const int n, const int align)
+{
+    return (n + align - 1) / align * align;
+}
+
+// The padding before each field of `d` (pad[i] before field i) and after the
+// last (pad[count]).
+static int *field_padding(const decl *d, layout *out)
+{
+    int *pad = arena_alloc(sizeof(int) * (size_t)(d->fields.count + 1));
+    layout l = {0, 1};
+    for (int i = 0; i < d->fields.count; i++) {
+        const layout f = type_layout(d->fields.items[i].type);
+        pad[i] = round_up(l.size, f.align) - l.size;
+        l.size += pad[i] + f.size;
+        if (f.align > l.align) l.align = f.align;
+    }
+    pad[d->fields.count] = round_up(l.size, l.align) - l.size;
+    l.size += pad[d->fields.count];
+    if (d->fields.count == 0) l.size = 1; // purr_empty
+    if (out) *out = l;
+    return pad;
+}
+
+static layout decl_layout(const decl *d)
+{
+    layout l;
+    field_padding(d, &l);
+    return l;
+}
+
 static void gen_fields(const gen *g, sb *o, const decl *d)
 {
     if (d->fields.count == 0) sb_put(o, "    uint8_t purr_empty; // C structs can't be empty.\n");
-    for (int i = 0; i < d->fields.count; i++) {
+    const int *pad = field_padding(d, NULL);
+    int pads = 0;
+    for (int i = 0; i <= d->fields.count; i++) {
+        if (pad[i]) sb_printf(o, "    uint8_t purr_pad%d[%d];\n", pads++, pad[i]);
+        if (i == d->fields.count) break;
         const field *f = &d->fields.items[i];
         sb_printf(o, "    %s %s;\n", c_type(f->type), field_cname(f));
     }
     (void)g;
+}
+
+// typedef struct Name { fields } Name;, checked to have no hidden padding.
+static void gen_type(const gen *g, sb *o, const decl *d)
+{
+    const char *name = type_cname(d);
+    sb_printf(o, "typedef struct %s {\n", name);
+    gen_fields(g, o, d);
+    sb_printf(o, "} %s;\n", name);
+    sb_printf(o, "_Static_assert(sizeof(%s) == %d, \"%s has padding purrc didn't write out\");\n\n", name,
+              decl_layout(d).size, name);
 }
 
 static void gen_header(gen *g)
@@ -942,30 +1036,19 @@ static void gen_header(gen *g)
     sb_put(o, "#ifndef PURR_ARCHETYPE_CAPACITY\n#define PURR_ARCHETYPE_CAPACITY 1024u\n#endif\n\n");
     sb_put(o, "#ifndef PURR_MAX_COMMANDS\n#define PURR_MAX_COMMANDS 4096u\n#endif\n\n");
 
+    if (prog->structs.count > 0) sb_put(o, "// Structs, each after the ones it contains\n\n");
+    for (int i = 0; i < prog->structs.count; i++) gen_type(g, o, prog->structs.items[i]);
+
     sb_put(o, "// Components\n\n");
-    for (int i = 0; i < prog->components.count; i++) {
-        const decl *d = prog->components.items[i];
-        const char *name = type_cname(d);
-        sb_printf(o, "typedef struct %s {\n", name);
-        gen_fields(g, o, d);
-        sb_printf(o, "} %s;\n\n", name);
-    }
+    for (int i = 0; i < prog->components.count; i++) gen_type(g, o, prog->components.items[i]);
 
     sb_put(o, "// Singletons: one per world\n\n");
-    for (int i = 0; i < prog->singletons.count; i++) {
-        const decl *d = prog->singletons.items[i];
-        const char *name = type_cname(d);
-        sb_printf(o, "typedef struct %s {\n", name);
-        gen_fields(g, o, d);
-        sb_printf(o, "} %s;\n\n", name);
-    }
+    for (int i = 0; i < prog->singletons.count; i++) gen_type(g, o, prog->singletons.items[i]);
 
     if (prog->input) {
         const char *name = type_cname(prog->input);
         sb_put(o, "// One player's input for one tick\n\n");
-        sb_printf(o, "typedef struct %s {\n", name);
-        gen_fields(g, o, prog->input);
-        sb_printf(o, "} %s;\n\n", name);
+        gen_type(g, o, prog->input);
         sb_put(o, "// For hosts that work with any game: whether it has an input, and its type by a fixed name.\n");
         sb_printf(o, "#define PURR_HAS_INPUT 1\ntypedef %s purr_input;\n\n", name);
         sb_put(o, "// The server's slot in purr_world's inputs, after the players'.\n");
@@ -1456,19 +1539,35 @@ static bool has_floats(const type t)
     case TY_FLOAT: case TY_FLOAT2: case TY_FLOAT3: case TY_FLOAT4: case TY_QUATERNION:
     case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4: case TY_COLOR:
         return true;
+    case TY_STRUCT:
+        for (int i = 0; i < t.decl->fields.count; i++) {
+            if (has_floats(t.decl->fields.items[i].type)) return true;
+        }
+        return false;
     default:
         return false;
     }
 }
 
-// Whether inputs from outside need purr_input_repair: floats to check, or
-// field bounds to apply.
-static bool input_needs_repair(const decl *input)
+// Whether values of `d` from outside need repairing: floats to check, field
+// bounds to apply or padding to clear, in `d` or the structs it holds.
+static bool needs_repair(const decl *d)
 {
-    for (int i = 0; i < input->fields.count; i++) {
-        if (has_floats(input->fields.items[i].type) || input->fields.items[i].attributes.count > 0) return true;
+    const int *pad = field_padding(d, NULL);
+    for (int i = 0; i <= d->fields.count; i++) {
+        if (pad[i]) return true;
+    }
+    for (int i = 0; i < d->fields.count; i++) {
+        const field *f = &d->fields.items[i];
+        if (has_floats(f->type) || f->attributes.count > 0) return true;
+        if (f->type.kind == TY_STRUCT && needs_repair(f->type.decl)) return true;
     }
     return false;
+}
+
+static bool input_needs_repair(const decl *input)
+{
+    return needs_repair(input);
 }
 
 // Replaces each NaN or infinite float of a value with the same float of `def`.
@@ -1497,6 +1596,14 @@ static void gen_repair_value(gen *g, const char *in, const char *def, const type
             snprintf(b, sizeof b, "%s.%s", def, channels[i]);
             gen_repair_value(g, a, b, (type){TY_FLOAT, NULL});
         }
+    } else if (t.kind == TY_STRUCT) {
+        for (int i = 0; i < t.decl->fields.count; i++) {
+            const field *f = &t.decl->fields.items[i];
+            if (!has_floats(f->type)) continue;
+            snprintf(a, sizeof a, "%s.%s", in, field_cname(f));
+            snprintf(b, sizeof b, "%s.%s", def, field_cname(f));
+            gen_repair_value(g, a, b, f->type);
+        }
     } else if (has_floats(t)) { // float2 to float4
         for (int i = 0; i < type_dim(t); i++) {
             snprintf(a, sizeof a, "%s.%s", in, xyzw[i]);
@@ -1506,17 +1613,62 @@ static void gen_repair_value(gen *g, const char *in, const char *def, const type
     }
 }
 
+// The fields' [Clamp], [Min] and [Max] in `d`, the structs it holds included.
+// `in` is the C access to the value, ending in '.'.
+static void gen_bounds(gen *g, const decl *d, const char *in)
+{
+    sb *o = &g->c;
+    for (int i = 0; i < d->fields.count; i++) {
+        const field *f = &d->fields.items[i];
+        for (int k = 0; k < f->attributes.count; k++) {
+            const attribute *a = &f->attributes.items[k];
+            // [Min(x)] is "at least x": the larger of the two, and [Max] the reverse.
+            const char *fn = str_eq_c(a->name, "Clamp") ? "clamp" : str_eq_c(a->name, "Min") ? "max" : "min";
+            indent(g, o);
+            sb_printf(o, "%s%s = purr_%s_%s(%s%s", in, field_cname(f), fn, type_suffix(f->type), in, field_cname(f));
+            for (int v = 0; v < a->values.count; v++) {
+                sb_put(o, ", ");
+                gen_as(g, o, a->values.items[v], f->type);
+            }
+            sb_put(o, ");\n");
+        }
+        if (f->type.kind == TY_STRUCT) {
+            char inner[256];
+            snprintf(inner, sizeof inner, "%s%s.", in, field_cname(f));
+            gen_bounds(g, f->type.decl, inner);
+        }
+    }
+}
+
+// Clears the padding of `d` and the structs it holds: bytes from outside could
+// be anything, and the world's bytes must only depend on its fields.
+static void gen_clear_padding(gen *g, const decl *d, const char *in)
+{
+    const int *pad = field_padding(d, NULL);
+    int pads = 0;
+    for (int i = 0; i <= d->fields.count; i++) {
+        if (pad[i]) line(g, &g->c, "memset(%spurr_pad%d, 0, %d);", in, pads++, pad[i]);
+        if (i == d->fields.count) break;
+        const field *f = &d->fields.items[i];
+        if (f->type.kind == TY_STRUCT) {
+            char inner[256];
+            snprintf(inner, sizeof inner, "%s%s.", in, field_cname(f));
+            gen_clear_padding(g, f->type.decl, inner);
+        }
+    }
+}
+
 // Input from other machines is an attack point, so before Sanitize sees it,
 // NaN and infinite floats become the field's default (nothing a client sends
 // can put them in the simulation), then the fields' [Clamp], [Min] and [Max]
-// apply.
+// apply, and padding is cleared.
 static void gen_repair(gen *g)
 {
     const decl *input = g->prog->input;
     sb *o = &g->c;
     const char *name = type_cname(input);
     sb_printf(o, "// NaN and infinite floats in a " STR_FMT " become the field's default, then the\n", STR_ARG(input->name));
-    sb_put(o, "// fields' bounds apply.\n");
+    sb_put(o, "// fields' bounds apply, and padding is cleared.\n");
     sb_printf(o, "static %s purr_input_repair(%s purr_in)\n{\n", name, name);
     g->indent = 1;
     sb_printf(o, "    const %s purr_def = ", name);
@@ -1531,22 +1683,8 @@ static void gen_repair(gen *g)
         snprintf(def, sizeof def, "purr_def.%s", field_cname(f));
         gen_repair_value(g, in, def, f->type);
     }
-    for (int i = 0; i < input->fields.count; i++) {
-        const field *f = &input->fields.items[i];
-        for (int k = 0; k < f->attributes.count; k++) {
-            const attribute *a = &f->attributes.items[k];
-            // [Min(x)] is "at least x": the larger of the two, and [Max] the reverse.
-            const char *fn = str_eq_c(a->name, "Clamp") ? "clamp" : str_eq_c(a->name, "Min") ? "max" : "min";
-            indent(g, o);
-            sb_printf(o, "purr_in.%s = purr_%s_%s(purr_in.%s", field_cname(f), fn, type_suffix(f->type),
-                      field_cname(f));
-            for (int v = 0; v < a->values.count; v++) {
-                sb_put(o, ", ");
-                gen_as(g, o, a->values.items[v], f->type);
-            }
-            sb_put(o, ");\n");
-        }
-    }
+    gen_bounds(g, input, "purr_in.");
+    gen_clear_padding(g, input, "purr_in.");
     line(g, o, "return purr_in;");
     g->indent = 0;
     sb_put(o, "}\n\n");
@@ -1627,6 +1765,16 @@ static void gen_print_value(sb *o, const type t, const char *access)
     case TY_COLOR:
         sb_printf(o, "        printf(\"Color(%%g, %%g, %%g, %%g)\", (double)%s.r, (double)%s.g, (double)%s.b, (double)%s.a);\n",
                   access, access, access, access);
+        return;
+    case TY_STRUCT:
+        sb_printf(o, "        printf(\"" STR_FMT " {\");\n", STR_ARG(t.decl->qualified));
+        for (int f = 0; f < t.decl->fields.count; f++) {
+            const field *fl = &t.decl->fields.items[f];
+            sb_printf(o, "        printf(\"%s" STR_FMT " = \");\n", f ? ", " : " ", STR_ARG(fl->name));
+            snprintf(part, sizeof part, "%s.%s", access, field_cname(fl));
+            gen_print_value(o, fl->type, part);
+        }
+        sb_put(o, "        printf(\" }\");\n");
         return;
     default:
         break;

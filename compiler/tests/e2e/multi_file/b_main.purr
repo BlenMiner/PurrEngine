@@ -8,6 +8,8 @@ singleton Trace
     int move;
     int damage;
     int heal;
+    Combat.Hit hit; // A struct from another namespace
+    int hit_seen;
 }
 
 system Main()

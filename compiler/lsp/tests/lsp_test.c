@@ -529,6 +529,47 @@ PURR_TEST(lsp_semantic_tokens)
     PURR_CHECK(has(input, "1,4,6,11,0,")); // Sample: line +1, column 4
 }
 
+#define STRUCTS                                                                \
+    "struct Stats\n"                                                           \
+    "{\n"                                                                      \
+    "    float health = 100;\n"                                                \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "component Unit\n"                                                         \
+    "{\n"                                                                      \
+    "    Stats stats;\n"                                                       \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "system Main()\n"                                                          \
+    "{\n"                                                                      \
+    "    Spawn(Unit);\n"                                                       \
+    "}\n"
+
+PURR_TEST(lsp_structs)
+{
+    start();
+    open_document(STRUCTS);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    // `Stats` on line 0, column 7: a struct (2), declared (1).
+    PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,7,5,2,1,"));
+    PURR_CHECK(has(request("textDocument/documentSymbol"), "\"name\":\"Stats\""));
+
+    // As a field type, through members, and in values.
+    PURR_CHECK(offers(complete("struct Stats { float health; }\ncomponent Unit\n{\n    $\n}\n"), "Stats"));
+    PURR_CHECK(offers(complete(STRUCTS "system Hurt(mut Unit unit)\n{\n    unit.stats.$\n}\n"), "health"));
+    PURR_CHECK(offers(complete(STRUCTS "system Hurt(mut Unit unit)\n{\n    unit.stats = Stats { $ };\n}\n"), "health"));
+
+    open_document("struct St$ats\n{\n    float health = 100;\n}\nsystem Main() { }\n");
+    const char *hover = request("textDocument/hover");
+    PURR_CHECK(has(hover, "struct Stats"));
+    PURR_CHECK(has(hover, "float health = 100;"));
+
+    // Laid out like the other declarations.
+    static const char messy[] = "struct Stats {\nfloat health = 100;\n}\nsystem Main() { }\n";
+    format_reply(messy);
+    PURR_CHECK(strcmp(apply_reply(messy, NULL), "struct Stats\n{\n    float health = 100;\n}\nsystem Main() { }\n") == 0);
+}
+
 #define USES_RADIUS                                                            \
     GAME_TYPES                                                                 \
     "system Grow(mut Body body)\n{\n    body.radius += 1;\n}\n"                  \

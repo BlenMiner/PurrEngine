@@ -1,0 +1,3 @@
+// expect: write 'Range { ... }' to make a struct value
+struct Range { float lo; float hi; }
+system Main() { var r = Range(0, 1); }

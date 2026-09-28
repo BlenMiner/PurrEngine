@@ -111,8 +111,8 @@
     "declarations": {
       "patterns": [
         {
-          "comment": "component Transform, singleton Time, input PlayerInput",
-          "match": "\\b(component|singleton|input)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "comment": "component Transform, singleton Time, struct Stats, input PlayerInput",
+          "match": "\\b(component|singleton|struct|input)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.purrlang" },
             "2": { "name": "entity.name.type.purrlang" }

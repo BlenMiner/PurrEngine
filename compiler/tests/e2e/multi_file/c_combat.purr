@@ -5,9 +5,16 @@ component Health
     int value;
 }
 
+// Other files name it Combat.Hit.
+struct Hit
+{
+    int amount = 2;
+}
+
 [Before(Physics.Move)]
 system Damage(mut Trace trace, with Health)
 {
     trace.damage = trace.step;
     trace.step += 1;
+    trace.hit = Hit { amount = 5 };
 }

@@ -34,11 +34,12 @@ typedef enum type_kind {
     TY_SINGLETON,
     TY_INPUT,      // The game's input declaration
     TY_RECORD,     // Built-in read-only data: Devices, Keyboard, Button, ...
+    TY_STRUCT,     // A struct: plain data, copied like any value
 } type_kind;
 
 typedef struct type {
     type_kind kind;
-    decl *decl; // For components and singletons.
+    decl *decl; // For components, singletons, inputs, records and structs.
 } type;
 
 // ---------------------------------------------------------------------------
@@ -78,8 +79,9 @@ typedef struct field {
     loc at;      // The name
     type type;
     expr *default_value; // Constant expression, or NULL for zero.
-    loc type_at; // The type name
-    VEC(attribute) attributes; // [Clamp], [Min] and [Max] on input fields
+    loc type_at; // The type's name (the last part if it's qualified)
+    VEC(attribute) attributes; // [Clamp], [Min] and [Max] on input and struct fields
+    loc type_qual_at; // Where the type starts: its namespace if it's qualified
 } field;
 
 typedef enum param_mode {
@@ -127,6 +129,7 @@ typedef enum decl_kind {
     DECL_SYSTEM,
     DECL_INPUT,  // input PlayerInput { fields; PlayerInput(Devices devices) { ... } }
     DECL_RECORD, // Built-in device data; not in program.decls
+    DECL_STRUCT, // struct Stats { fields }: a value type for fields and locals
 } decl_kind;
 
 typedef struct decl {
@@ -140,7 +143,7 @@ typedef struct decl {
     bool builtin;
     const char *c_name; // Records: the C struct name.
 
-    // Components, singletons, inputs and records
+    // Components, singletons, inputs, records and structs
     VEC(field) fields;
     int index; // Component bit / singleton index / system order.
 
@@ -306,11 +309,12 @@ struct stmt {
 
     // S_VAR
     bool is_mut;
-    str type_name; // Empty for `var`.
+    str type_name; // Empty for `var`. With its namespace if it's qualified.
     str name;
     type type;
-    loc type_at;
+    loc type_at;      // The type's name (the last part if it's qualified)
     loc name_at;
+    loc type_qual_at; // Where the type starts: its namespace if it's qualified
 
     // S_VAR initializer, S_ASSIGN value, S_EXPR expression
     expr *value;
@@ -337,6 +341,7 @@ typedef struct program {
     decl *owner;         // The built-in Owner component.
     decl *devices;       // The built-in Devices record.
     VEC(decl *) records; // Built-in records: Devices, Keyboard, Mouse, Gamepad, Dpad, Button.
+    VEC(decl *) structs; // In an order where each comes after the structs it contains.
 
     VEC(uint64_t) archetypes;  // Component masks, in derivation order.
     VEC(bool) spawn_target;    // Per archetype: does some Spawn create it directly?

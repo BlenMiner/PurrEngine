@@ -159,6 +159,7 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 - Singletons hold state for the whole world, such as time, RNG and game rules (other ECSs call them resources). There is one of each per world, stored inside it, and systems declare them the same way as components.
 - The world is always passed as a pointer, never stored in a global. Several worlds can exist at once, for example predicted and verified copies, several matches on one server, or snapshots.
 - The world owns all simulation memory. Components hold offsets into world memory, never pointers. The allocator's state lives in the world too, so a snapshot captures everything.
+- Generated types (components, singletons, the input and structs) have no padding the compiler adds: purrc writes it out as members, which every value sets to zero, and the generated header checks each type's size (`_Static_assert`). Their bytes only depend on their fields, so snapshots and state hashes can compare memory directly. Input from outside gets its padding cleared along with its other repairs.
 
 ## Performance
 

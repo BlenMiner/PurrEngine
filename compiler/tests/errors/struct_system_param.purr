@@ -1,0 +1,4 @@
+// expect: 'Stats' is a struct; systems take components and singletons
+struct Stats { float health; }
+system Main() { }
+system Heal(mut Stats stats) { stats.health += 1; }

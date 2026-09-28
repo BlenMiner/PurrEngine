@@ -32,7 +32,7 @@ static const type T_INT_ = {TY_INT, NULL};
 static const type T_FLOAT_ = {TY_FLOAT, NULL};
 static const type T_ENTITY_ = {TY_ENTITY, NULL};
 
-// The type a declaration names: a component, singleton, input or record.
+// The type a declaration names: a component, singleton, input, record or struct.
 static type decl_type(decl *d)
 {
     switch (d->kind) {
@@ -40,14 +40,16 @@ static type decl_type(decl *d)
     case DECL_SINGLETON: return (type){TY_SINGLETON, d};
     case DECL_INPUT: return (type){TY_INPUT, d};
     case DECL_RECORD: return (type){TY_RECORD, d};
+    case DECL_STRUCT: return (type){TY_STRUCT, d};
     default: return T_ERR;
     }
 }
 
-// Does this type have fields (components, singletons, inputs, records)?
+// Does this type have fields (components, singletons, inputs, records, structs)?
 static bool has_fields(const type t)
 {
-    return t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD;
+    return t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
+        || t.kind == TY_STRUCT;
 }
 
 // int or float, not a vector.
@@ -182,6 +184,13 @@ static void suggest_decls(suggestion *s, const program *prog, const bool compone
     }
 }
 
+static void suggest_structs(suggestion *s, const program *prog)
+{
+    for (int i = 0; i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->kind == DECL_STRUCT) suggest_consider(s, prog->decls.items[i]->name);
+    }
+}
+
 static void suggest_fields(suggestion *s, const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) suggest_consider(s, d->fields.items[i].name);
@@ -246,17 +255,19 @@ static uint64_t bit(const decl *component)
     return (uint64_t)1 << component->index;
 }
 
-// Checks `Transform { position = ... }`.
+// Checks `Transform { position = ... }` and `Stats { armor = 2 }`.
 static type check_literal(checker *c, expr *e)
 {
     decl *d = find_type(c, e->name, e->at);
-    if (!d || d->kind != DECL_COMPONENT) {
+    if (!d || (d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT)) {
         if (d) {
-            diag_error(e->at, "'" STR_FMT "' isn't a component; only components have values like this", STR_ARG(e->name));
+            diag_error(e->at, "'" STR_FMT "' isn't a component or struct; only those have values like this",
+                       STR_ARG(e->name));
         } else {
-            diag_error(e->at, "unknown component '" STR_FMT "'", STR_ARG(e->name));
+            diag_error(e->at, "unknown component or struct '" STR_FMT "'", STR_ARG(e->name));
             suggestion s = suggest_start(e->name);
             suggest_decls(&s, c->prog, true, false, false);
+            suggest_structs(&s, c->prog);
             suggest_note(&s);
         }
         for (int i = 0; i < e->inits.count; i++) check_expr(c, e->inits.items[i].value);
@@ -271,7 +282,8 @@ static type check_literal(checker *c, expr *e)
             if (str_eq(d->fields.items[j].name, init->name)) init->field = &d->fields.items[j];
         }
         if (!init->field) {
-            diag_error(init->at, "component '" STR_FMT "' has no field '" STR_FMT "'", STR_ARG(d->name), STR_ARG(init->name));
+            diag_error(init->at, "%s '" STR_FMT "' has no field '" STR_FMT "'",
+                       d->kind == DECL_STRUCT ? "struct" : "component", STR_ARG(d->name), STR_ARG(init->name));
             suggestion s = suggest_start(init->name);
             suggest_fields(&s, d);
             suggest_note(&s);
@@ -287,7 +299,7 @@ static type check_literal(checker *c, expr *e)
                        type_name(init->field->type), type_name(value));
         }
     }
-    return (type){TY_COMPONENT, d};
+    return decl_type(d);
 }
 
 // A component argument to Spawn or Add: `Player` (defaults) or `Player { ... }`.
@@ -296,6 +308,10 @@ static decl *check_component_arg(checker *c, expr *arg, const char *fn)
 {
     if (arg->kind == E_LITERAL) {
         const type t = check_literal(c, arg);
+        if (t.kind == TY_STRUCT) {
+            diag_error(arg->at, "%s takes components, and '" STR_FMT "' is a struct", fn, STR_ARG(t.decl->name));
+            diag_note("put it in a component, like 'component Name { " STR_FMT " value; }'", STR_ARG(t.decl->name));
+        }
         return t.kind == TY_COMPONENT ? t.decl : NULL;
     }
     // Player, or Combat.Health
@@ -310,6 +326,14 @@ static decl *check_component_arg(checker *c, expr *arg, const char *fn)
             arg->type_decl = d;
             arg->type = (type){TY_COMPONENT, d};
             return d;
+        }
+        if (d && d->kind == DECL_STRUCT) {
+            if (arg->kind == E_MEMBER) mark_namespaces(arg->object);
+            arg->bind = BIND_TYPE;
+            arg->type_decl = d;
+            diag_error(arg->at, "%s takes components, and '" STR_FMT "' is a struct", fn, STR_ARG(d->name));
+            diag_note("put it in a component, like 'component Name { " STR_FMT " value; }'", STR_ARG(d->name));
+            return NULL;
         }
     }
     const type t = check_expr(c, arg);
@@ -518,8 +542,9 @@ static type check_call(checker *c, expr *e)
     for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
 
     const decl *d = find_type(c, e->name, e->at);
-    if (d && d->kind == DECL_COMPONENT) {
-        diag_error(e->at, "write '" STR_FMT " { ... }' to make a component value", STR_ARG(e->name));
+    if (d && (d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT)) {
+        diag_error(e->at, "write '" STR_FMT " { ... }' to make a %s value", STR_ARG(e->name),
+                   d->kind == DECL_STRUCT ? "struct" : "component");
         return T_ERR;
     }
     diag_error(e->at, "unknown function '" STR_FMT "'", STR_ARG(e->name));
@@ -693,6 +718,7 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
         break;
     }
     diag_error(at, "operator %s can't be used with %s and %s", op_str(op), type_name(l), type_name(r));
+    if ((op == T_EQ || op == T_NE) && l.kind == TY_STRUCT && r.kind == TY_STRUCT) diag_note("compare their fields instead");
     return T_ERR;
 }
 
@@ -739,6 +765,17 @@ static type check_namespace_member(checker *c, expr *e)
     }
     suggest_note(&s);
     return T_ERR;
+}
+
+// input.jump or input.buttons.jump: a field of an input parameter, maybe
+// inside structs.
+static bool is_input_field(const expr *e)
+{
+    if (e->kind != E_MEMBER || !e->field) return false;
+    for (e = e->object; e->kind == E_MEMBER; e = e->object) {
+        if (!e->field) return false;
+    }
+    return e->kind == E_NAME && e->bind == BIND_PARAM && e->param->type.kind == TY_INPUT;
 }
 
 static type check_member(checker *c, expr *e)
@@ -791,10 +828,7 @@ static type check_member(checker *c, expr *e)
 
     // input.jump.down: a bool field of an input parameter, compared with last tick.
     if (obj.kind == TY_BOOL) {
-        const expr *field_access = e->object;
-        const bool on_input_field = field_access->kind == E_MEMBER && field_access->object->kind == E_NAME
-                                 && field_access->object->bind == BIND_PARAM
-                                 && field_access->object->param->type.kind == TY_INPUT;
+        const bool on_input_field = is_input_field(e->object);
         const bool edge = str_eq_c(e->member, "down") || str_eq_c(e->member, "up");
         if (edge && on_input_field) {
             e->edge = str_eq_c(e->member, "down") ? EDGE_DOWN : EDGE_UP;
@@ -1075,6 +1109,7 @@ static void check_var(checker *c, stmt *s)
             suggestion sg = suggest_start(s->type_name);
             suggest_builtin_types(&sg);
             suggest_decls(&sg, c->prog, true, true, true);
+            suggest_structs(&sg, c->prog);
             suggest_note(&sg);
             s->type = T_ERR;
         }
@@ -1162,6 +1197,11 @@ static bool is_constant(const expr *e)
         return e->object->kind == E_NAME && builtin_owner(e->object->name) && all_constant(e);
     case E_MEMBER:
         return (e->object->kind == E_NAME && builtin_owner(e->object->name)) || is_constant(e->object);
+    case E_LITERAL:
+        for (int i = 0; i < e->inits.count; i++) {
+            if (!is_constant(e->inits.items[i].value)) return false;
+        }
+        return true;
     default:
         return false;
     }
@@ -1184,8 +1224,8 @@ static void check_default(checker *c, const field *f)
     }
     if (!is_constant(value)) {
         diag_error(value->at, "default values must be constant expressions");
-        diag_note("use literals, constructors like float3(...), Math functions and operators; "
-                  "defaults can't read fields, singletons or Time");
+        diag_note("use literals, constructors like float3(...), struct values of constants, Math functions and "
+                  "operators; defaults can't read fields, singletons or Time");
         return;
     }
     const type t = check_expr(c, value);
@@ -1213,15 +1253,16 @@ static void check_bound(checker *c, const field *f, expr *value)
     }
 }
 
-// [Clamp(lo, hi)], [Min(x)] and [Max(x)] on input fields. The engine applies
-// them to every input before Sanitize, so they're a quick way to bound what
-// players send.
+// [Clamp(lo, hi)], [Min(x)] and [Max(x)] on input and struct fields. The
+// engine applies them to every input before Sanitize, the fields of structs in
+// it included, so they're a quick way to bound what players send. Elsewhere,
+// a struct field's bounds only describe it.
 static void check_field_attributes(checker *c, const decl *d, field *f)
 {
     if (f->attributes.count == 0) return;
-    if (d->kind != DECL_INPUT) {
-        diag_error(f->attributes.items[0].at, "field attributes only work on input fields for now");
-        diag_note("there they bound what players send: [Clamp(lo, hi)], [Min(x)] and [Max(x)]");
+    if (d->kind != DECL_INPUT && d->kind != DECL_STRUCT) {
+        diag_error(f->attributes.items[0].at, "field attributes only work on input and struct fields for now");
+        diag_note("in an input, they bound what players send: [Clamp(lo, hi)], [Min(x)] and [Max(x)]");
         return;
     }
     bool has_clamp = false;
@@ -1266,22 +1307,64 @@ static void check_field_attributes(checker *c, const decl *d, field *f)
     }
 }
 
+// A field's type: a built-in type or a struct.
+static void resolve_field_types(const checker *c, const decl *d)
+{
+    for (int i = 0; i < d->fields.count; i++) {
+        field *f = &d->fields.items[i];
+        const loc at = f->type_qual_at.line ? f->type_qual_at : f->at;
+        if (builtin_type_named(f->type_name, &f->type)) continue;
+        f->type = T_ERR;
+        decl *const t = find_type(c, f->type_name, at);
+        if (t && t->kind == DECL_STRUCT) {
+            f->type = (type){TY_STRUCT, t};
+        } else if (t) {
+            const char *what = t->kind == DECL_COMPONENT ? "components" : t->kind == DECL_SINGLETON ? "singletons" : "inputs";
+            diag_error(at, "fields can't hold %s", what);
+            diag_note("to share fields between types, declare a struct, like 'struct Name { ... }', and use it in both");
+        } else {
+            diag_error(at, "unknown type '" STR_FMT "'", STR_ARG(f->type_name));
+            suggestion s = suggest_start(f->type_name);
+            suggest_builtin_types(&s);
+            suggest_structs(&s, c->prog);
+            suggest_note(&s);
+        }
+    }
+}
+
+// Puts `d` in prog->structs after the structs it contains. A struct can't
+// contain itself, even through others: it would be infinitely big. `index`
+// tracks the visit: 0 not yet, 1 on the way down, 2 done.
+static void order_struct(program *prog, decl *d)
+{
+    if (d->index == 2) return;
+    d->index = 1;
+    for (int i = 0; i < d->fields.count; i++) {
+        field *f = &d->fields.items[i];
+        if (f->type.kind != TY_STRUCT) continue;
+        decl *const inner = f->type.decl;
+        if (inner->index == 1) {
+            if (inner == d) {
+                diag_error(f->type_at, "struct '" STR_FMT "' can't contain itself", STR_ARG(d->name));
+            } else {
+                diag_error(f->type_at, "struct '" STR_FMT "' can't contain '" STR_FMT "': '" STR_FMT "' already contains '"
+                           STR_FMT "'", STR_ARG(d->name), STR_ARG(inner->name), STR_ARG(inner->name), STR_ARG(d->name));
+            }
+            diag_note("it would be infinitely big");
+            f->type = T_ERR; // Breaks the loop for everything that walks fields
+            continue;
+        }
+        order_struct(prog, inner);
+    }
+    d->index = 2;
+    vec_push(prog->structs, d);
+}
+
 static void check_fields(checker *c, const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) {
         field *f = &d->fields.items[i];
         check_reserved(f->name, f->at);
-        if (!builtin_type_named(f->type_name, &f->type)) {
-            if (find_type(c, f->type_name, f->type_at)) {
-                diag_error(f->at, "fields can't hold components or singletons yet");
-            } else {
-                diag_error(f->type_at.line ? f->type_at : f->at, "unknown type '" STR_FMT "'", STR_ARG(f->type_name));
-                suggestion s = suggest_start(f->type_name);
-                suggest_builtin_types(&s);
-                suggest_note(&s);
-            }
-            f->type = T_ERR;
-        }
         for (int j = 0; j < i; j++) {
             if (str_eq(d->fields.items[j].name, f->name)) {
                 diag_error(f->at, "field '" STR_FMT "' is declared twice", STR_ARG(f->name));
@@ -1343,6 +1426,15 @@ static void check_params(const checker *c, decl *sys)
             suggest_decls(&s, prog, true, p->mode != PARAM_WITH && p->mode != PARAM_WITHOUT, true);
             suggest_consider_c(&s, "Entity");
             suggest_note(&s);
+            p->type = T_ERR;
+            continue;
+        }
+
+        if (d->kind == DECL_STRUCT) {
+            diag_error(p->type_at.line ? p->type_at : p->at, "'" STR_FMT "' is a struct; systems take components and singletons",
+                       STR_ARG(d->name));
+            diag_note("keep it in a component or singleton, like 'component Name { " STR_FMT " value; }'",
+                      STR_ARG(d->name));
             p->type = T_ERR;
             continue;
         }
@@ -1435,8 +1527,8 @@ static void add_builtins(program *prog)
     time->kind = DECL_SINGLETON;
     time->name = str_from("Time");
     time->builtin = true;
-    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}};
-    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}};
+    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
+    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
@@ -1445,7 +1537,7 @@ static void add_builtins(program *prog)
     owner->kind = DECL_COMPONENT;
     owner->name = str_from("Owner");
     owner->builtin = true;
-    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}};
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
     vec_push(owner->fields, player);
     prog->owner = owner;
 
@@ -1471,7 +1563,7 @@ static decl *new_record(program *prog, const char *name, const char *c_name)
 
 static void record_field(decl *d, const char *name, const type t)
 {
-    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}};
+    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
     vec_push(d->fields, f);
 }
 
@@ -1606,6 +1698,7 @@ static void collect_decls(program *prog)
             else prog->input = d;
             break;
         case DECL_RECORD:
+        case DECL_STRUCT: // Ordered once their fields are known; see order_struct
             break;
         case DECL_SYSTEM:
             if (d->is_view) {
@@ -1928,6 +2021,14 @@ bool check(program *prog)
     collect_decls(prog);
     check_units(prog);
 
+    for (int i = 0; i < prog->decls.count; i++) {
+        const decl *d = prog->decls.items[i];
+        c.unit = d->unit;
+        if (d->kind != DECL_SYSTEM) resolve_field_types(&c, d);
+    }
+    for (int i = 0; i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->kind == DECL_STRUCT) order_struct(prog, prog->decls.items[i]);
+    }
     for (int i = 0; i < prog->decls.count; i++) {
         const decl *d = prog->decls.items[i];
         c.unit = d->unit;

@@ -347,8 +347,16 @@ static stmt *new_stmt(const stmt_kind kind, const loc at)
 
 static stmt *parse_stmt(parser *p);
 
-// Keywords that only start declarations, and `input` or `view` at the start of a
-// line: where recovery can safely pick up again.
+// Contextual keywords: special only where a declaration or a file header can
+// start, so they can still name parameters and locals.
+static bool is_decl_word(const str text)
+{
+    return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct")
+        || str_eq_c(text, "namespace") || str_eq_c(text, "using");
+}
+
+// Keywords that only start declarations, and the contextual ones at the start
+// of a line: where recovery can safely pick up again.
 bool attributes_before_field(const token *toks, int i)
 {
     do { // [A(...)] [B] ...: skip to after the last ']'
@@ -361,8 +369,7 @@ bool attributes_before_field(const token *toks, int i)
         i++;
     } while (toks[i].kind == T_LBRACKET);
     const token *t = &toks[i];
-    return t->kind == T_IDENT && toks[i + 1].kind == T_IDENT && !str_eq_c(t->text, "input")
-        && !str_eq_c(t->text, "view") && !str_eq_c(t->text, "namespace") && !str_eq_c(t->text, "using");
+    return t->kind == T_IDENT && (toks[i + 1].kind == T_IDENT || toks[i + 1].kind == T_DOT) && !is_decl_word(t->text);
 }
 
 static bool at_decl_start(const parser *p)
@@ -370,9 +377,7 @@ static bool at_decl_start(const parser *p)
     const token *t = peek(p);
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(p->toks, p->pos);
-    return t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT
-        && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "namespace")
-            || str_eq_c(t->text, "using"));
+    return t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text);
 }
 
 // After a syntax error in a statement or field: skips to the end of it (a ';'
@@ -439,9 +444,10 @@ static stmt *parse_var(parser *p)
     stmt *s = new_stmt(S_VAR, first->at);
     s->is_mut = accept(p, T_MUT);
     if (!accept(p, T_VAR)) {
-        const token *type_tok = expect_ident(p, "'var' or a type");
-        s->type_name = type_tok->text;
-        s->type_at = type_tok->at;
+        const qname type = parse_qname(p, "'var' or a type");
+        s->type_name = type.text;
+        s->type_at = type.name_at;
+        s->type_qual_at = type.at;
     }
     const token *name = expect_ident(p, "variable name");
     s->name = name->text;
@@ -489,9 +495,12 @@ static stmt *parse_stmt(parser *p)
     case T_VAR:
         return parse_var(p);
 
-    default:
-        // `Type name = ...` declares a local: two identifiers in a row.
-        if (t->kind == T_IDENT && peek_at(p, 1)->kind == T_IDENT) return parse_var(p);
+    default: {
+        // `Type name = ...` declares a local: two identifiers in a row, the
+        // first maybe qualified, as in `Combat.Stats stats = ...`.
+        int next = 1;
+        while (t->kind == T_IDENT && peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
+        if (t->kind == T_IDENT && peek_at(p, next)->kind == T_IDENT) return parse_var(p);
 
         expr *e = parse_expr(p);
         if (is_assign_op(peek(p)->kind)) {
@@ -507,6 +516,7 @@ static stmt *parse_stmt(parser *p)
         s->value = e;
         expect(p, T_SEMI, "';'");
         return s;
+    }
     }
 }
 
@@ -602,9 +612,14 @@ static void parse_field_attributes(parser *p)
 // Type name; [= default];
 static void parse_field(parser *p, decl *d)
 {
-    const token *type_tok = expect_ident(p, "field type or '}'");
+    const qname type = parse_qname(p, "field type or '}'");
     const token *field_name = expect_ident(p, "field name");
-    field f = {field_name->text, type_tok->text, field_name->at, {0}, NULL, type_tok->at, {0}};
+    field f = {0};
+    f.name = field_name->text;
+    f.at = field_name->at;
+    f.type_name = type.text;
+    f.type_at = type.name_at;
+    f.type_qual_at = type.at;
     f.attributes.items = p->field_pending.items;
     f.attributes.count = p->field_pending.count;
     f.attributes.cap = p->field_pending.cap;
@@ -615,10 +630,13 @@ static void parse_field(parser *p, decl *d)
     vec_push(d->fields, f);
 }
 
-// component Name { Type field; ... }, and the same for singletons and inputs.
+// component Name { Type field; ... }, and the same for singletons, inputs and structs.
 static decl *parse_data_decl(parser *p, const decl_kind kind)
 {
-    const char *what = kind == DECL_COMPONENT ? "component name" : kind == DECL_SINGLETON ? "singleton name" : "input name";
+    const char *what = kind == DECL_COMPONENT   ? "component name"
+                       : kind == DECL_SINGLETON ? "singleton name"
+                       : kind == DECL_STRUCT    ? "struct name"
+                                                : "input name";
     const token *name = expect_ident(p, what);
     decl *d = new_decl(kind, name);
     expect(p, T_LBRACE, "'{'");
@@ -634,7 +652,7 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
             continue;
         }
         if (p->field_pending.count > 0 && at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN) {
-            diag_error(p->field_pending.items[0].at, "attributes in an input go right before a field");
+            diag_error(p->field_pending.items[0].at, "field attributes go right before a field");
             p->field_pending.count = 0;
         }
         // Sample(...), or a constructor: the type's own name followed by '('.
@@ -789,7 +807,8 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         else if (t->kind == T_SYSTEM) d = parse_system(&p, false);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "input")) d = parse_data_decl(&p, DECL_INPUT);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "view")) d = parse_system(&p, true);
-        else fail_at(&p, t, "'component', 'singleton', 'input', 'system' or 'view'"); // Consumed, so recovery skips it
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "struct")) d = parse_data_decl(&p, DECL_STRUCT);
+        else fail_at(&p, t, "'component', 'singleton', 'struct', 'input', 'system' or 'view'"); // Consumed, so recovery skips it
         d->unit = p.unit;
         d->attributes.items = p.pending.items;
         d->attributes.count = p.pending.count;

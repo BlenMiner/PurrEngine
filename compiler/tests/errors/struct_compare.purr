@@ -1,0 +1,4 @@
+// expect: compare their fields instead
+struct Range { float lo; float hi; }
+singleton Limits { Range a; Range b; bool same; }
+system Main(mut Limits limits) { limits.same = limits.a == limits.b; }

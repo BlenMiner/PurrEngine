@@ -1,0 +1,3 @@
+// expect: struct 'Node' can't contain itself
+struct Node { int value; Node next; }
+system Main() { }

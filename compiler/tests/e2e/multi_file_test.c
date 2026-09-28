@@ -31,3 +31,13 @@ PURR_TEST(multi_file_namespaces)
     PURR_CHECK(purr_get_Combat_Health(&world, e)->value == 10); // Heal changes Items.Health only
     PURR_CHECK(purr_get_Items_Health(&world, e)->value == 4);
 }
+
+// A struct used by its qualified name, Combat.Hit, as a field and a local.
+PURR_TEST(multi_file_qualified_struct)
+{
+    purr_world_init(&world, 1.0f);
+    PURR_CHECK(world.Trace.hit.amount == 2); // Its default
+    purr_world_tick(&world);
+    PURR_CHECK(world.Trace.hit.amount == 5); // Set by Combat.Damage...
+    PURR_CHECK(world.Trace.hit_seen == 5);   // ...then read by Items.Heal
+}

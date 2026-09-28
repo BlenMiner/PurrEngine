@@ -36,12 +36,13 @@ PurrLang is a working name and may change.
 
 - `component` declares a component.
 - `singleton` declares world-wide state (what other ECSs call a resource). There is exactly one instance **per world**, not per process.
+- `struct` declares a value type for fields and locals (see Structs).
 - `system` declares a system.
 
 ### Field defaults
 
-- Component and singleton fields can declare a default value: `int value = 100;`.
-- A default must be a constant expression: literals, constructors of built-in types, `Math` functions, built-in constants like `quaternion.identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
+- Fields of components, singletons, inputs and structs can declare a default value: `int value = 100;`.
+- A default must be a constant expression: literals, constructors of built-in types, struct values of constants (`Range { hi = 5 }`), `Math` functions, built-in constants like `quaternion.identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
 - Singletons start with their defaults when the world is created, before `Main` runs.
 - Components get their defaults whenever a value is created without setting that field: `Spawn(Health)`, `e.Add(Health)`, and fields left out of `Health { max = 200 }`.
 - Fields without a default start at zero. `Entity` fields always start as the null entity and can't have a default.
@@ -57,6 +58,43 @@ component Health
 {
     int value = 100;
     int max = 2 * 2 * 25;
+}
+```
+
+### Structs
+
+- A struct is plain data, copied when it's assigned, with no references. The world stays plain data, so copying it is still a snapshot.
+- Structs are the types of fields (of components, singletons, inputs and other structs) and of locals. System parameters stay components, singletons, the input and `Entity`.
+- A value is written like a component's: `Stats { armor = 2 }`. Fields left out take their default, and a struct field without one takes its struct's defaults.
+- A struct's fields change through whatever holds it: `unit.stats.health -= 5` needs `mut Unit unit`, so a system's signature still says what it writes. A local copy changes with `mut var`.
+- A struct can't contain itself, even through other structs: it would be infinitely big.
+- Namespaces apply as to every declaration: another namespace names it `Combat.Stats`.
+- `[Clamp]`, `[Min]` and `[Max]` on a struct's field are enforced where untrusted data enters the simulation: in an input that holds the struct, before `Sanitize`, as on the input's own fields. Elsewhere they only describe the field.
+- `==` doesn't compare structs; compare their fields.
+- Next, in this order: methods, read-only unless marked `mut` (calling a `mut` method needs write access to what holds the struct, as with parameters), on components too; then custom operators, in C#'s form.
+
+```csharp
+struct Range
+{
+    float lo;
+    float hi = 1;
+}
+
+struct Stats
+{
+    float health = 100;
+    Range damage;                   // lo = 0, hi = 1: Range's defaults
+    Range armor = Range { hi = 5 };
+}
+
+component Unit
+{
+    Stats stats;
+}
+
+system Hurt(mut Unit unit)
+{
+    unit.stats.health -= unit.stats.damage.hi;
 }
 ```
 
@@ -268,10 +306,10 @@ float2 flat = trs.position.xz;
 - `Owner` is a built-in component that ties an entity to a player. It's a normal component: it can be read, written, added and removed. Writing it hands control over.
 - Players are identified by a built-in `PlayerID` type, not an `int`. Like `Entity`, it's opaque, comparable with `==`, and has a null value. The simulation only sees `PlayerID`s and never connections, so a player who reconnects and gets their `PlayerID` back (PurrNet style) keeps everything they owned. `PlayerID(0)` names a player by index, for local play and tests.
 - **Sampling is PurrLang code:** the input's `Sample(Devices devices)` method. The engine calls it on the client once per tick. Fields start at their defaults, and `Sample` assigns them by name, without `mut`. It runs outside the simulation: it can read `Devices` but not components or singletons.
-- **Input carries whether buttons are held, not whether they just went down,** because a missing remote input is guessed by repeating the last one. On a device, `.pressed` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.down` and `.up`, computed against the previous tick.
+- **Input carries whether buttons are held, not whether they just went down,** because a missing remote input is guessed by repeating the last one. On a device, `.pressed` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.down` and `.up`, computed against the previous tick, inside structs too (`input.aim.fire.down`).
 - An input parameter in a system gives the input of the player who owns the entity. Entities without an `Owner`, or whose owner isn't a known player, get the **server's input**, and so do systems that run once per tick. This is how the server controls what no player owns (PurrNet style). An input parameter doesn't filter entities: add `with Owner` to only run on owned ones.
 - An input can have a `Sanitize()` method. Every input passes through it before the simulation reads it, including input from other players, so systems can rely on what it guarantees without checking again. It assigns the input's fields by name, like `Sample`, and reads nothing else.
-- Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector.
+- Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`, and so can the fields of structs an input holds. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector.
 - **Input is an attack point,** so the engine is forgiving with it. Before `Sanitize` runs, NaN and infinite floats become the field's default. Nothing a client sends can put NaN in the simulation, and `Sanitize` only deals with values that are merely out of range.
 - `Devices` has a keyboard, mouse and gamepad for now; pen, touch, joysticks and sensors come later. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up), named as in Unity: the Input System's `isPressed`, and the old `GetKeyDown` and `GetKeyUp`.
   - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
@@ -383,8 +421,6 @@ view DrawHud(Arena arena)
 - 3D drawing, sprites and textures, layers.
 
 ## Open
-
-- User-defined value types (structs), including thin wrappers around a single `int`. The owner prefers distinct types over raw primitives for clarity and refactoring.
 
 - How entities authored as data (levels, prefabs) feed into archetype derivation.
 - Archetype growth. Every `Add` and `Remove` can apply to any entity, so the compiler assumes every combination is reachable, and each archetype currently reserves a fixed 1024 slots. Narrowing this safely needs more analysis, and storage should grow on demand.
