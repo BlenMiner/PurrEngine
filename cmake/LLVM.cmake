@@ -38,17 +38,36 @@ if(NOT PURR_LLVM_ROOT)
         if(NOT code EQUAL 0)
             message(FATAL_ERROR "Downloading LLVM failed: ${status}")
         endif()
-        execute_process(COMMAND "${PURR_ZSTD}" -d -q -f --long=31 -o "${_purr_llvm_dir}/${_purr_llvm_name}.tar"
-            "${_purr_llvm_file}" RESULT_VARIABLE result)
+        # purr needs the headers, the static libraries and clang's own headers:
+        # a small part of the archive, which unpacks to several gigabytes.
+        file(REMOVE_RECURSE "${_purr_llvm_root}")
+        if(CMAKE_HOST_WIN32)
+            set(_purr_llvm_tar "${_purr_llvm_dir}/${_purr_llvm_name}.tar")
+            execute_process(COMMAND "${PURR_ZSTD}" -d -q -f --long=31 -o "${_purr_llvm_tar}" "${_purr_llvm_file}"
+                RESULT_VARIABLE result)
+            if(result EQUAL 0)
+                file(ARCHIVE_EXTRACT INPUT "${_purr_llvm_tar}" DESTINATION "${_purr_llvm_dir}"
+                    PATTERNS "${_purr_llvm_name}/include/*" "${_purr_llvm_name}/lib/*${CMAKE_STATIC_LIBRARY_SUFFIX}"
+                             "${_purr_llvm_name}/lib/clang/*/include/*")
+            endif()
+            file(REMOVE "${_purr_llvm_tar}")
+        else()
+            # Straight from zstd into tar: the Linux archive unpacks to 12 GB.
+            find_program(PURR_TAR NAMES tar REQUIRED)
+            execute_process(COMMAND "${PURR_ZSTD}" -d -q -c --long=31 "${_purr_llvm_file}"
+                COMMAND "${PURR_TAR}" -x -f - -C "${_purr_llvm_dir}" --exclude=*.so* --exclude=*.dylib
+                    "${_purr_llvm_name}/include" "${_purr_llvm_name}/lib"
+                RESULT_VARIABLE result)
+        endif()
         if(NOT result EQUAL 0)
             message(FATAL_ERROR "Unpacking ${_purr_llvm_file} failed")
         endif()
-        # The headers, the static libraries, and clang's own headers.
-        file(REMOVE_RECURSE "${_purr_llvm_root}")
-        file(ARCHIVE_EXTRACT INPUT "${_purr_llvm_dir}/${_purr_llvm_name}.tar" DESTINATION "${_purr_llvm_dir}"
-            PATTERNS "${_purr_llvm_name}/include/*" "${_purr_llvm_name}/lib/*${CMAKE_STATIC_LIBRARY_SUFFIX}"
-                     "${_purr_llvm_name}/lib/clang/*/include/*")
-        file(REMOVE "${_purr_llvm_file}" "${_purr_llvm_dir}/${_purr_llvm_name}.tar")
+        file(REMOVE "${_purr_llvm_file}")
+        # Only LLVM's, clang's and lld's libraries, and clang's headers.
+        file(GLOB _purr_llvm_unneeded LIST_DIRECTORIES true "${_purr_llvm_root}/lib/*" "${_purr_llvm_root}/lib/clang/*/*")
+        list(FILTER _purr_llvm_unneeded EXCLUDE REGEX
+            "/lib/((lib)?(LLVM|clang|lld)[^/]*\\${CMAKE_STATIC_LIBRARY_SUFFIX}|clang|clang/[^/]+/include)$")
+        file(REMOVE_RECURSE ${_purr_llvm_unneeded})
         file(TOUCH "${_purr_llvm_root}/done")
     endif()
     set(PURR_LLVM_ROOT "${_purr_llvm_root}")
