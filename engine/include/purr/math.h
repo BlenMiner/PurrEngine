@@ -81,10 +81,20 @@ static inline float purr_copysign_f(const float magnitude, const float sign)
 // 1, -1 or 0 (also 0 for NaN).
 static inline float purr_sign_f(const float x) { return (x > 0.0f ? 1.0f : 0.0f) - (x < 0.0f ? 1.0f : 0.0f); }
 
-static inline float purr_min_f(const float a, const float b) { return a < b ? a : b; }
-static inline float purr_max_f(const float a, const float b) { return a > b ? a : b; }
-static inline float purr_clamp_f(const float x, const float lo, const float hi) { return purr_max_f(lo, purr_min_f(hi, x)); }
-static inline float purr_saturate_f(const float x) { return purr_clamp_f(x, 0.0f, 1.0f); }
+// Every float but NaN and the infinities. Reads the bits, so no compiler
+// setting can change the answer.
+static inline bool purr_is_finite_f(const float x) { return (purr_f_bits(x) & 0x7F800000u) != 0x7F800000u; }
+
+// With one NaN argument, they return the other one: a bad value, maybe from
+// another player's input, shouldn't spread (b != b is true only for NaN).
+static inline float purr_min_f(const float a, const float b) { return a < b || b != b ? a : b; }
+static inline float purr_max_f(const float a, const float b) { return a > b || b != b ? a : b; }
+// NaN gives lo, so a clamped value is always in range (x == x is false only for NaN).
+static inline float purr_clamp_f(const float x, const float lo, const float hi)
+{
+    return x == x ? purr_max_f(lo, purr_min_f(hi, x)) : lo;
+}
+static inline float purr_saturate_f(const float x) { return purr_clamp_f(x, 0.0f, 1.0f); } // NaN gives 0
 
 // Floats at or above 2^23 in magnitude are already integers (or inf/NaN).
 static inline float purr_trunc_f(const float x)

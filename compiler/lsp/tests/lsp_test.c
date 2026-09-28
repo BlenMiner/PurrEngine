@@ -271,8 +271,54 @@ PURR_TEST(lsp_complete_input_edges)
 {
     start();
     const char *reply = complete(GAME_TYPES "system Fire(PlayerInput input)\n{\n    if (input.fire.$) return;\n}\n");
-    PURR_CHECK(offers(reply, "pressed"));
-    PURR_CHECK(offers(reply, "released"));
+    PURR_CHECK(offers(reply, "down"));
+    PURR_CHECK(offers(reply, "up"));
+}
+
+// Inside Sanitize, the input's fields are in scope; Sample's devices aren't.
+PURR_TEST(lsp_sanitize)
+{
+    start();
+    static const char program[] = "input PlayerInput\n{\n    float move;\n\n    Sample(Devices devices) { }\n\n"
+                                  "    Sanitize()\n    {\n        move = Math.Clamp($, -1, 1);\n    }\n}\n"
+                                  "system Main() { }\n";
+    const char *reply = complete(program);
+    PURR_CHECK(offers(reply, "move"));
+    PURR_CHECK(!offers(reply, "devices"));
+
+    open("input PlayerInput\n{\n    float move;\n    Sani$tize() { move = Math.Clamp(move, -1, 1); }\n}\n"
+         "system Main() { }\n");
+    PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
+    PURR_CHECK(has(request("textDocument/hover"), "Runs on every input before the simulation reads it"));
+
+    open("input PlayerInput\n{\n    bool jump;\n    Sam$ple(Devices devices) { jump = devices.keyboard.space.pressed; }\n}\n"
+         "system Main() { }\n");
+    PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
+    PURR_CHECK(has(request("textDocument/hover"), "Builds the player's input from the devices"));
+}
+
+static const char *format_reply(const char *text);
+
+// [Clamp], [Min] and [Max] on input fields: completion, and formatting.
+PURR_TEST(lsp_field_attributes)
+{
+    start();
+    const char *names = complete("input PlayerInput\n{\n    [$] float move;\n}\nsystem Main() { }\n");
+    PURR_CHECK(offers(names, "Clamp") && offers(names, "Min") && offers(names, "Max"));
+    PURR_CHECK(!offers(names, "Before"));
+    const char *bounds = complete("input PlayerInput\n{\n    [Clamp(float2(0, 0), $)] float2 aim;\n}\nsystem Main() { }\n");
+    PURR_CHECK(offers(bounds, "Math") && offers(bounds, "float2"));
+
+    static const char messy[] = "input PlayerInput\n{\n[Clamp(-1,1)]float move;\n    [Min(0),Max(3)]   int gear;\n}\n"
+                                "system Main() { }\n";
+    static const char expected[] = "input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    [Min(0), Max(3)] int gear;\n}\n"
+                                   "system Main() { }\n";
+    open(messy);
+    PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
 }
 
 PURR_TEST(lsp_complete_builtin_owners)
@@ -318,12 +364,12 @@ PURR_TEST(lsp_complete_names_in_scope)
 PURR_TEST(lsp_complete_in_constructor)
 {
     start();
-    const char *devices = complete("input PlayerInput\n{\n    float2 move;\n\n    PlayerInput(Devices devices)\n    {\n"
+    const char *devices = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample(Devices devices)\n    {\n"
                                    "        var keys = devices.$\n    }\n}\nsystem Main() { }\n");
     PURR_CHECK(offers(devices, "keyboard"));
     PURR_CHECK(offers(devices, "gamepad"));
 
-    const char *keys = complete("input PlayerInput\n{\n    float2 move;\n\n    PlayerInput(Devices devices)\n    {\n"
+    const char *keys = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample(Devices devices)\n    {\n"
                                 "        var keys = devices.keyboard;\n        if (keys.$\n    }\n}\nsystem Main() { }\n");
     PURR_CHECK(offers(keys, "space"));
     PURR_CHECK(offers(keys, "leftShift"));
@@ -436,17 +482,17 @@ PURR_TEST(lsp_definition_in_c)
     PURR_CHECK(has(c_definition(IN_SYSTEM("var c = Color.red.g$;")), "float r, g, b, a;"));
     PURR_CHECK(strcmp(c_definition(GAME_TYPES "system S(Ti$me time) { }\n"), "") == 0); // Generated: no C definition
 
-    static const char constructor[] = "input PlayerInput\n{\n    bool fire;\n\n    PlayerInput(Devices devices)\n    {\n"
-                                      "        var keys = devices.key$board;\n        fire = keys.space.down;\n    }\n}\n"
+    static const char constructor[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
+                                      "        var keys = devices.key$board;\n        fire = keys.space.pressed;\n    }\n}\n"
                                       "system Main() { }\n";
     PURR_CHECK(has(c_definition(constructor), "purr_keyboard keyboard;"));
-    static const char key[] = "input PlayerInput\n{\n    bool fire;\n\n    PlayerInput(Devices devices)\n    {\n"
-                              "        var keys = devices.keyboard;\n        fire = keys.spa$ce.down;\n    }\n}\n"
+    static const char key[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
+                              "        var keys = devices.keyboard;\n        fire = keys.spa$ce.pressed;\n    }\n}\n"
                               "system Main() { }\n";
     PURR_CHECK(has(c_definition(key), "X(space)"));
-    static const char button[] = "input PlayerInput\n{\n    bool fire;\n\n    PlayerInput(Devices devices)\n    {\n"
-                                 "        fire = devices.mouse.left.do$wn;\n    }\n}\nsystem Main() { }\n";
-    PURR_CHECK(has(c_definition(button), "bool down;"));
+    static const char button[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
+                                 "        fire = devices.mouse.left.pre$ssed;\n    }\n}\nsystem Main() { }\n";
+    PURR_CHECK(has(c_definition(button), "bool pressed;"));
 #undef IN_SYSTEM
 #undef IN_VIEW
 }
@@ -568,6 +614,7 @@ PURR_TEST(lsp_format)
         "system Move( mut Body body,Time time )\n{\nif(body.radius>1)\nbody.radius-=1;\n"
         "  else if (body.radius <-5) { body.radius = -body.radius *2; }\n"
         "    var p = float2(1,-2)+body.position;\n"
+        "var s=body.radius>1?-1:0;\n"
         "Spawn(Body{position=p},\nOwner);\n\n}\n"
         "/* a\n   block */\n"
         "system Main( ) { }";
@@ -576,6 +623,7 @@ PURR_TEST(lsp_format)
         "system Move(mut Body body, Time time)\n{\n    if (body.radius > 1)\n        body.radius -= 1;\n"
         "    else if (body.radius < -5) { body.radius = -body.radius * 2; }\n"
         "    var p = float2(1, -2) + body.position;\n"
+        "    var s = body.radius > 1 ? -1 : 0;\n"
         "    Spawn(Body { position = p },\n        Owner);\n\n}\n"
         "/* a\n   block */\n"
         "system Main() { }\n";
@@ -603,7 +651,7 @@ PURR_TEST(lsp_format_keeps_tokens)
         GAME_TYPES
         "system Move(PlayerInput input, Time time, mut Body body)\n{\n"
         "      mut var speed=Math.Length(body.position.xy)*2;\n"
-        "  if (input.fire.pressed&&speed<10) { body.position+=input.move*time.dt; }\n"
+        "  if (input.fire.down&&speed<10) { body.position+=input.move*time.dt; }\n"
         "else body.radius=Math.Clamp(body.radius,1,-2) ;\n"
         "    var e=Spawn(Body{position=float2(1,2)});e.Destroy();\n}\n"
         "view DrawBody(Body body, Arena arena)\n{\n"
@@ -637,7 +685,7 @@ PURR_TEST(lsp_every_prefix_is_safe)
     static const char program[] =
         GAME_TYPES
         "input Controls\n{\n    float2 aim;\n\n    Controls(Devices devices)\n    {\n"
-        "        var keys = devices.keyboard;\n        if (keys.w.down) aim.y += 1;\n    }\n}\n"
+        "        var keys = devices.keyboard;\n        if (keys.w.pressed) aim.y += 1;\n    }\n}\n"
         "system Move(Controls controls, Time time, mut Body body, without Arena)\n{\n"
         "    mut var speed = Math.Length(body.position.xy) * 2;\n"
         "    if (controls.aim.x > 0 && speed < 10) { body.position += controls.aim * time.dt; }\n"
@@ -896,4 +944,45 @@ PURR_TEST(lsp_shutdown_and_exit)
     PURR_CHECK(server.exited && server.exit_code == 0);
     clear_sent();
     lsp_free(&server);
+}
+
+// Above each system: its stage and why it waits. Access a system doesn't use
+// gets a warning and a quick fix.
+PURR_TEST(lsp_schedule_lenses_and_fixes)
+{
+    start();
+    static const char program[] = "component Body { float2 position; float2 velocity; }\n"
+                                  "singleton Score { int total; }\n"
+                                  "system Main() { Spawn(Body); }\n"
+                                  "system Move(mut Body body) { body.position += body.velocity; }\n"
+                                  "system Look(mut Body body, mut Score s) { s.total = 0; if (body.position.x > 0) return; }\n"
+                                  "system Tag(mut Score s, Body body) { s.total = 1; }\n";
+    open(program);
+    PURR_CHECK(has(sent[0], "'body' is declared mut but never written"));
+    PURR_CHECK(has(sent[0], "'body' is never used"));
+
+    const char *lenses = request("textDocument/codeLens");
+    PURR_CHECK(has(lenses, "stage 1"));
+    PURR_CHECK(has(lenses, "stage 2") && has(lenses, "after Move: both write Body"));
+    PURR_CHECK(has(lenses, "stage 3") && has(lenses, "after Look: both write Score; it writes Body, which this reads"));
+    PURR_CHECK(has(lenses, "nothing runs alongside"));
+
+    const char *hover = request_at("file:///test.purr", "textDocument/hover", 5, 8, "");
+    PURR_CHECK(has(hover, "**Stage 3.**") && has(hover, "`Move`: it writes `Body`, which this reads"));
+    PURR_CHECK(has(hover, "No other system can run at the same time."));
+
+    const char *remove_mut = request_at("file:///test.purr", "textDocument/codeAction", 4, 0,
+                                        "\"range\":{\"start\":{\"line\":4,\"character\":0},\"end\":{\"line\":4,\"character\":0}}");
+    PURR_CHECK(has(remove_mut, "Remove 'mut' from 'body'") && has(remove_mut, "\"newText\":\"\""));
+    PURR_CHECK(has(remove_mut, "\"start\":{\"line\":4,\"character\":12}"));
+    const char *use_with = request_at("file:///test.purr", "textDocument/codeAction", 5, 0,
+                                      "\"range\":{\"start\":{\"line\":5,\"character\":0},\"end\":{\"line\":5,\"character\":0}}");
+    PURR_CHECK(has(use_with, "\"newText\":\"with Body\""));
+
+    open("component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n"
+         "system Push(Body body) { body.position.x = 1; }\n");
+    const char *add_mut = request_at("file:///test.purr", "textDocument/codeAction", 2, 0,
+                                     "\"range\":{\"start\":{\"line\":2,\"character\":25},\"end\":{\"line\":2,\"character\":29}}");
+    PURR_CHECK(has(add_mut, "Declare 'body' as mut") && has(add_mut, "\"newText\":\"mut \""));
+    PURR_CHECK(has(add_mut, "\"start\":{\"line\":2,\"character\":12}"));
 }

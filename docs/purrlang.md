@@ -29,7 +29,7 @@ PurrLang is a working name and may change.
 - Types, systems and methods use PascalCase: `Transform`, `MovePlayer`, `Spawn(...)`.
 - Fields, parameters and locals use camelCase (PurrNet style): `trs.position`, not `trs.Position`.
 - Public properties use camelCase too, even static ones: `Color.red`, `quaternion.identity`. True constants use FULL_CASE: `Math.PI`, `Math.TAU`.
-- Attributes (`[...]`) are only for metadata, such as when a system runs, not for what code does.
+- Attributes (`[...]`) are only for metadata, such as when a system runs or the bounds of an input field, not for what code does. The engine may enforce what an attribute declares, as it clamps an input field to its `[Clamp]`.
 
 ### Declarations
 
@@ -122,6 +122,7 @@ system Main()
 ### Evaluation order
 
 - Expressions evaluate left to right, like C#: operands, arguments and field initializers run in source order. `Spawn` is the only expression with a side effect today, so this is what makes entity IDs come out the same on every platform. `Spawn(Pair { a = Spawn(Thing), b = Spawn(Thing) })` spawns `a`'s Thing, then `b`'s, then the Pair.
+- `cond ? a : b` runs the condition first, then only the side it picks, as in C#.
 
 ### Archetypes
 
@@ -135,6 +136,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 - Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit) and `Entity`. There is no `double`. Vector types are under Vector math, and `Color` under Views and drawing.
 - `1.5` is a `float`; the `f` suffix is optional. An `int` converts to `float` implicitly, never the other way.
+- In `cond ? a : b`, the condition is a `bool`, and the two sides have the same type or one converts to the other's, as in C#: `ready ? 1 : 0.5` is a `float`. It binds looser than every binary operator and groups to the right.
 - Integer arithmetic wraps on overflow. Integer division and modulo by zero give 0, so no input can crash the simulation.
 - Bitwise operators `& | ^ ~ << >>` work on `int`, with compound forms `&= |= ^= <<= >>=`. As in C#, shift counts use their low 5 bits (`1 << 33` is `2`) and `>>` keeps the sign. Operator precedence follows C#.
 - Integer literals can be decimal (`255`), hex (`0xFF`) or binary (`0b1010`). Decimal goes up to 2147483647. Hex and binary can use all 32 bits and are read as the int's bit pattern: `0xFFFFFFFF` is `-1` and `0x80000000` is the lowest int.
@@ -144,6 +146,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 ### Systems
 
 - A system with no component or `Entity` parameters runs once per tick. Otherwise it runs once per matching entity.
+- A parameter that's never used, or declared `mut` and never written, is a warning: it makes other systems wait for nothing. A component that's only there to filter entities belongs in `with`.
 - `return;` ends the system for the current entity.
 - Locals can't reuse the name of another local or parameter in scope.
 - Names starting with `purr_` are reserved for generated code.
@@ -153,7 +156,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 - `e.Destroy()` destroys an entity. It's deferred like other structural changes.
 - The "fixed point" where structural changes apply is the end of each tick (and the end of `Main`). Changes apply in the order they were recorded.
 - `Add`, `Remove` and `Destroy` on an entity that was already destroyed do nothing.
-- `Spawn` can't appear on the right side of `&&` or `||`. That side only runs sometimes, while spawns run first, in order (see Evaluation order). Spawn into a local before the condition.
+- `Spawn` can't appear on the right side of `&&` or `||`, or in a side of `?:`. Those parts only run sometimes, while spawns run first, in order (see Evaluation order). Spawn into a local before the condition, or use `if`/`else`.
 
 ### Built-ins
 
@@ -200,6 +203,7 @@ system Main()
 - Otherwise the default order holds: of the systems whose constraints are met, the earliest in the default order runs next.
 - Constraints that form a loop are an error naming the loop. Systems and views are ordered separately, and `Main` isn't ordered: it runs once, before everything.
 - The language server shows a system's place in the order when hovering it.
+- Systems that share no data they write can run at the same time; the others wait, in this order. Above each system, the language server shows its stage and why it waits ("stage 2 · after Move: both write Body"), and `purrc --schedule` prints the whole plan.
 
 ```csharp
 [After(Physics.Gravity)]
@@ -214,6 +218,7 @@ Follows Unity.Mathematics, with PurrLang's naming. Everything in this section is
 - Math functions live on `Math` and follow the PascalCase method convention: `Math.Dot(a, b)`, `Math.Normalize(v)`, `Math.Mul(q, r)`. This overrides Unity.Mathematics' lowercase `math.dot`.
 - Swizzles read any combination of components: `v.xz`, `v.zyx`, `v.xxyy`.
 - Angles are in radians. `Math.Radians(degrees)` and `Math.Degrees(radians)` convert.
+- Math is forgiving with bad values, which can come from other players' input. `Math.Clamp` always returns a value in range: NaN gives the lower bound. `Math.Min` and `Math.Max` with one NaN argument return the other. Everywhere else, results match Unity.Mathematics.
 
 ```csharp
 quaternion spin = quaternion.AxisAngle(float3(0, 1, 0), input.turn * time.dt);
@@ -261,10 +266,13 @@ float2 flat = trs.position.xz;
 - Input is one value per player per tick. The engine writes it, and the simulation can only read it.
 - `Owner` is a built-in component that ties an entity to a player. It's a normal component: it can be read, written, added and removed. Writing it hands control over.
 - Players are identified by a built-in `PlayerID` type, not an `int`. Like `Entity`, it's opaque, comparable with `==`, and has a null value. The simulation only sees `PlayerID`s and never connections, so a player who reconnects and gets their `PlayerID` back (PurrNet style) keeps everything they owned. `PlayerID(0)` names a player by index, for local play and tests.
-- **Sampling is PurrLang code:** the input's constructor. The engine calls it on the client once per tick. Fields start at their defaults, and the constructor assigns them without `mut`. It runs outside the simulation: it can read `Devices` but not components or singletons. There's exactly one, and it takes `Devices`.
-- **Input carries whether buttons are held, not whether they were pressed,** because a missing remote input is guessed by repeating the last one. On a device, `.down` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.pressed` and `.released`, computed against the previous tick.
-- An input parameter in a system gives the input of the player who owns the entity, so the system only runs on entities with an `Owner`.
-- `Devices` has a keyboard, mouse and gamepad for now; pen, touch, joysticks and sensors come later. Every button has `.down`, `.pressed` and `.released`.
+- **Sampling is PurrLang code:** the input's `Sample(Devices devices)` method. The engine calls it on the client once per tick. Fields start at their defaults, and `Sample` assigns them by name, without `mut`. It runs outside the simulation: it can read `Devices` but not components or singletons.
+- **Input carries whether buttons are held, not whether they just went down,** because a missing remote input is guessed by repeating the last one. On a device, `.pressed` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.down` and `.up`, computed against the previous tick.
+- An input parameter in a system gives the input of the player who owns the entity. Entities without an `Owner`, or whose owner isn't a known player, get the **server's input**, and so do systems that run once per tick. This is how the server controls what no player owns (PurrNet style). An input parameter doesn't filter entities: add `with Owner` to only run on owned ones.
+- An input can have a `Sanitize()` method. Every input passes through it before the simulation reads it, including input from other players, so systems can rely on what it guarantees without checking again. It assigns the input's fields by name, like `Sample`, and reads nothing else.
+- Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector.
+- **Input is an attack point,** so the engine is forgiving with it. Before `Sanitize` runs, NaN and infinite floats become the field's default. Nothing a client sends can put NaN in the simulation, and `Sanitize` only deals with values that are merely out of range.
+- `Devices` has a keyboard, mouse and gamepad for now; pen, touch, joysticks and sensors come later. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up), named as in Unity: the Input System's `isPressed`, and the old `GetKeyDown` and `GetKeyUp`.
   - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
   - **Mouse:** `position`, `delta` and `scroll` (`float2`), and buttons `left`, `right` and `middle`.
   - **Gamepad:** `connected`; `leftStick` and `rightStick` (`float2`); `leftTrigger` and `rightTrigger` (`float`, 0 to 1); face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`); `dpad.up` and the other directions; `leftShoulder`, `rightShoulder`, `start` and `select`.
@@ -276,28 +284,46 @@ input PlayerInput
     float2 move;
     bool jump;
 
-    PlayerInput(Devices devices)
+    Sample(Devices devices)
     {
         var keys = devices.keyboard;
-        if (keys.d.down) move.x += 1;
-        if (keys.a.down) move.x -= 1;
+        if (keys.d.pressed) move.x += 1;
+        if (keys.a.pressed) move.x -= 1;
         move += devices.gamepad.leftStick;
-        jump = keys.space.down || devices.gamepad.buttonSouth.down;
+        jump = keys.space.pressed || devices.gamepad.buttonSouth.pressed;
     }
 }
 
 system Jump(PlayerInput input, mut Velocity velocity)
 {
-    if (input.jump.pressed)
+    if (input.jump.down)
         velocity.value.y = 5;
+}
+```
+
+```csharp
+input PlayerInput
+{
+    [Clamp(-1, 1)] float2 move;
+    [Min(0), Max(3)] int gear = 1;
+    bool boost;
+
+    Sample(Devices devices) { move = devices.gamepad.leftStick; }
+
+    // After the bounds: what attributes can't say.
+    Sanitize()
+    {
+        if (gear == 0) boost = false;
+    }
 }
 ```
 
 ### Provisional
 
 - `input` is only a keyword at the start of a declaration, so it can still name parameters and locals.
-- Entities owned by no player, or by an unknown `PlayerID`, get the input's default values.
-- A player whose input isn't set for a tick keeps their last one.
+- A player, or the server, whose input isn't set for a tick keeps their last one. Until then, inputs are the defaults.
+- In local play, the machine is also the server: `purr/run.h` gives the devices to player 0 and to the server.
+- The input's defaults go through the same steps as any input: NaN repair, bounds, then `Sanitize`.
 - Up to 16 players for now.
 - A system can have one input parameter.
 - Extra device members beyond the list above: mouse `back` and `forward`, gamepad `leftStickButton` and `rightStickButton`, and the full key list in `engine/include/purr/devices.h`.
@@ -307,7 +333,7 @@ system Jump(PlayerInput input, mut Velocity velocity)
 - Players joining, leaving and reconnecting.
 - Pairing devices with players, for local multiplayer.
 - Compact input types (bytes, quantized floats) to save bandwidth.
-- Server-side validation of input, such as clamping `move`.
+- The server's input computed from the game's state (AI) rather than from devices.
 
 ## Views and drawing
 

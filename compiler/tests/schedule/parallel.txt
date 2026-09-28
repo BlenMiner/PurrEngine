@@ -1,0 +1,27 @@
+parallel: 6 systems each tick, 3 stages deep; 6 can run alongside others.
+A system starts once everything it runs after is done.
+
+stage 1  Move  (per entity)
+         reads Velocity
+         writes Position
+         alongside Tally
+stage 2  Drag  (per entity)
+         writes Velocity
+         after Move: it reads Velocity, which this writes
+         alongside PushPlayers, PushEnemies, Tally
+stage 2  PushPlayers  (per entity)
+         writes Position
+         after Move: both write Position
+         alongside Drag, PushEnemies, Tally, Report
+stage 2  PushEnemies  (per entity)
+         writes Position
+         after Move: both write Position
+         alongside Drag, PushPlayers, Tally, Report
+stage 1  Tally  (per entity)
+         reads Player
+         writes Score
+         alongside Move, Drag, PushPlayers, PushEnemies, Report
+stage 3  Report  (per entity)
+         reads Enemy
+         after Drag: this has [After(Drag)]
+         alongside PushPlayers, PushEnemies, Tally

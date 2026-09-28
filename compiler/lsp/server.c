@@ -380,6 +380,8 @@ static void initialize(lsp_server *s, const json *id)
                "\"documentFormattingProvider\":true,"
                "\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"],\"retriggerCharacters\":[\",\"]},"
                "\"documentSymbolProvider\":true,"
+               "\"codeLensProvider\":{},"
+               "\"codeActionProvider\":{\"codeActionKinds\":[\"quickfix\"]},"
                "\"semanticTokensProvider\":{\"legend\":");
     analysis_semantic_legend(&b);
     jb_put(&b, ",\"full\":true}},\"serverInfo\":{\"name\":\"purrls\",\"version\":\"0.1\"}}}");
@@ -428,6 +430,11 @@ static void document_request(lsp_server *s, const char *method, const json *id, 
                                 !spaces || spaces->kind != JSON_FALSE, &b);
     } else if (strcmp(method, "textDocument/documentSymbol") == 0) {
         analysis_symbols(&b);
+    } else if (strcmp(method, "textDocument/codeLens") == 0) {
+        analysis_code_lenses(&b);
+    } else if (strcmp(method, "textDocument/codeAction") == 0) {
+        analysis_code_actions(json_int(json_path(params, "range", "start", "line", NULL), 0),
+                              json_int(json_path(params, "range", "end", "line", NULL), 0), &b);
     } else {
         analysis_semantic_tokens(&b);
     }
@@ -447,6 +454,7 @@ static bool is_document_request(const char *method)
         "textDocument/completion", "textDocument/hover", "textDocument/definition", "textDocument/references",
         "textDocument/documentHighlight", "textDocument/signatureHelp", "textDocument/prepareRename",
         "textDocument/rename", "textDocument/formatting", "textDocument/documentSymbol",
+        "textDocument/codeLens", "textDocument/codeAction",
         "textDocument/semanticTokens/full",
     };
     for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {

@@ -388,12 +388,14 @@ static const char *componentwise_doc(const char *name)
         const char *name;
         const char *doc;
     } docs[] = {
-        {"Clamp", "Clamps `x` between `a` and `b`, component by component."},
+        {"Clamp", "Clamps `x` between `a` and `b`, component by component. NaN gives `a`."},
+        {"Min", "The smaller of `a` and `b`, component by component. If one is NaN, the other."},
+        {"Max", "The larger of `a` and `b`, component by component. If one is NaN, the other."},
         {"Lerp", "Linear interpolation: `a + (b - a) * t`, component by component."},
         {"Unlerp", "The `t` for which Lerp(a, b, t) gives `x`."},
         {"SmoothStep", "Smooth Hermite interpolation between 0 and 1 as `x` goes from `a` to `b`."},
         {"Step", "1 where `x >= edge`, 0 elsewhere."},
-        {"Saturate", "Clamps between 0 and 1."},
+        {"Saturate", "Clamps between 0 and 1. NaN gives 0."},
         {"Round", "Rounds to the nearest integer; ties go to even."},
         {"Frac", "The fractional part: `x - Floor(x)`."},
         {"Rsqrt", "1 / Sqrt(x)."},

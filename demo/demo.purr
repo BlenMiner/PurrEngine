@@ -35,16 +35,16 @@ input PlayerInput
     float2 move;
     bool fire;
 
-    PlayerInput(Devices devices)
+    Sample(Devices devices)
     {
         var keys = devices.keyboard;
-        if (keys.d.down || keys.rightArrow.down) move.x += 1;
-        if (keys.a.down || keys.leftArrow.down) move.x -= 1;
-        if (keys.w.down || keys.upArrow.down) move.y += 1;
-        if (keys.s.down || keys.downArrow.down) move.y -= 1;
+        if (keys.d.pressed || keys.rightArrow.pressed) move.x += 1;
+        if (keys.a.pressed || keys.leftArrow.pressed) move.x -= 1;
+        if (keys.w.pressed || keys.upArrow.pressed) move.y += 1;
+        if (keys.s.pressed || keys.downArrow.pressed) move.y -= 1;
         var stick = devices.gamepad.leftStick;
         if (Math.Length(stick) > 0.2) move += stick;
-        fire = keys.space.down || devices.gamepad.buttonSouth.down;
+        fire = keys.space.pressed || devices.gamepad.buttonSouth.pressed;
     }
 }
 
@@ -66,7 +66,7 @@ system Steer(PlayerInput input, mut Body body, mut Aim aim)
 
 system Fire(PlayerInput input, Body body, Aim aim)
 {
-    if (!input.fire.pressed) return;
+    if (!input.fire.down) return;
     var muzzle = body.position + aim.direction * (body.radius + 10);
     Spawn(Body { position = muzzle, velocity = aim.direction * 420, radius = 6 }, Ball, Lifetime);
 }

@@ -1,0 +1,6 @@
+// expect: [Max] works on numbers and vectors, not bool
+input PlayerInput
+{
+    [Max(1)] bool jump;
+}
+system Main() { }

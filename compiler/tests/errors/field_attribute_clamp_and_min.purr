@@ -1,0 +1,6 @@
+// expect: [Clamp] already sets both bounds; use it, or [Min] and [Max]
+input PlayerInput
+{
+    [Clamp(0, 1), Min(0)] float throttle;
+}
+system Main() { }

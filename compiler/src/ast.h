@@ -65,7 +65,8 @@ typedef struct qname {
 typedef struct attribute {
     str name;
     loc at;
-    VEC(qname) args;
+    VEC(qname) args;     // On declarations, names: [After(Physics.Gravity)]
+    VEC(expr *) values;  // On input fields, constant values: [Clamp(-1, 1)]
 } attribute;
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ typedef struct field {
     type type;
     expr *default_value; // Constant expression, or NULL for zero.
     loc type_at; // The type name
+    VEC(attribute) attributes; // [Clamp], [Min] and [Max] on input fields
 } field;
 
 typedef enum param_mode {
@@ -96,7 +98,28 @@ typedef struct param {
     loc type_at;      // The type's name (the last part if it's qualified)
     loc type_qual_at; // Where the type starts: its namespace if it's qualified
     loc name_at;
+    bool read;    // The body names it
+    bool written; // The body assigns through it
 } param;
+
+// Why a system waits for one that runs before it in the tick (see parallel.c).
+typedef enum conflict_kind {
+    CONFLICT_BOTH_WRITE,     // Both write the data
+    CONFLICT_EARLIER_READS,  // The earlier system reads what this one writes
+    CONFLICT_EARLIER_WRITES, // The earlier system writes what this one reads
+} conflict_kind;
+
+typedef struct conflict {
+    struct decl *data; // A component or singleton
+    conflict_kind kind;
+} conflict;
+
+typedef struct wait {
+    struct decl *on;         // A system earlier in the tick
+    VEC(conflict) conflicts; // The data they share; empty if only an attribute orders them
+    bool ordered;            // [After] or [Before] orders them
+    struct decl *through;    // Another system it waits for that already waits for `on`, or NULL
+} wait;
 
 typedef enum decl_kind {
     DECL_COMPONENT,
@@ -121,16 +144,23 @@ typedef struct decl {
     VEC(field) fields;
     int index; // Component bit / singleton index / system order.
 
-    // Systems, views, and an input's constructor
+    // Systems, views, and an input's Sample
     VEC(param) params;
     stmt *body;
     loc body_at;
+    stmt *sanitize; // An input's Sanitize() { ... }
+    loc sanitize_at;
     bool is_view;        // A view: a DECL_SYSTEM that runs once per frame, reads the world and draws.
     bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
     uint64_t need_mask;  // Components an entity must have (access and `with`).
     uint64_t without_mask;
     VEC(struct decl *) after; // Systems or views that must run first ([After], and [Before] on them)
+
+    // Systems in the tick, from analyze_parallelism
+    VEC(wait) waits;              // Earlier systems it must wait for
+    VEC(struct decl *) alongside; // Systems it can run at the same time as
+    int stage;                    // 1 + the deepest stage it waits for; 0 before the analysis
 } decl;
 
 // ---------------------------------------------------------------------------
@@ -148,6 +178,7 @@ typedef enum expr_kind {
     E_BINARY,
     E_UNARY,
     E_LITERAL, // Transform { position = ... }
+    E_CONDITIONAL, // cond ? lhs : rhs
 } expr_kind;
 
 typedef enum builtin_call {
@@ -182,14 +213,14 @@ typedef enum binding_kind {
     BIND_PARAM,
     BIND_LOCAL,
     BIND_TYPE,  // A component name used as a value: Spawn(Player), Spawn(Combat.Health).
-    BIND_FIELD, // A field of the input, named directly inside its constructor.
+    BIND_FIELD, // A field of the input, named directly inside its Sample or Sanitize.
     BIND_NAMESPACE, // `Combat` in Combat.Health
 } binding_kind;
 
 typedef enum input_edge {
     EDGE_NONE,
-    EDGE_PRESSED,  // input.jump.pressed: true now, false last tick
-    EDGE_RELEASED, // input.jump.released: false now, true last tick
+    EDGE_DOWN, // input.jump.down: true now, false last tick
+    EDGE_UP,   // input.jump.up: false now, true last tick
 } input_edge;
 
 typedef struct field_init {
@@ -222,7 +253,7 @@ struct expr {
     expr *object;
     str member;
     field *field;          // Field of a component, singleton, input or record; BIND_FIELD's field.
-    input_edge edge;       // .pressed / .released on an input field.
+    input_edge edge;       // .down / .up on an input field.
     int swizzle_len;       // Vector swizzle: number of components (0 if not a swizzle).
     int swizzle[4];        // Component indices: 0..3 for x, y, z, w.
     const char *c_constant; // Static member such as quaternion.identity, as C.
@@ -237,10 +268,11 @@ struct expr {
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
     const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
 
-    // E_BINARY, E_UNARY
+    // E_BINARY, E_UNARY; E_CONDITIONAL's two sides
     tok_kind op;
     expr *lhs;
     expr *rhs;
+    expr *cond; // E_CONDITIONAL
 
     // E_LITERAL
     VEC(field_init) inits;
@@ -312,13 +344,51 @@ typedef struct program {
     uint64_t added_mask;       // Components that appear in Add.
     uint64_t removed_mask;     // Components that appear in Remove.
     bool uses_destroy;
+    VEC(struct fix) fixes;     // Quick fixes for editors
 } program;
 
+// A change that fixes a diagnostic, which editors offer as a quick fix.
+typedef enum fix_kind {
+    FIX_ADD_MUT,    // Writing through a read-only parameter: declare it mut
+    FIX_REMOVE_MUT, // A mut parameter that's never written
+    FIX_USE_WITH,   // A component parameter that's never used: filter with `with` instead
+} fix_kind;
+
+typedef struct fix {
+    fix_kind kind;
+    loc at; // Where the diagnostic points
+    const param *param;
+} fix;
+
 program *program_new(void);
+
+// Works out which systems in the tick can run at the same time, and why the
+// others wait (fills decl.waits, alongside and stage). Two systems conflict
+// when one writes a component or singleton the other reads or writes, unless
+// their entities can never be the same (disjoint archetypes). Conflicting
+// systems keep their order in the tick, and [Before]/[After] order them too.
+// Needs the archetypes.
+void analyze_parallelism(program *prog);
+
+// Why `sys` waits for `w->on`, like "both write Transform". `quote` wraps names
+// ("`" for Markdown).
+void describe_wait(const decl *sys, const wait *w, const char *quote, sb *out);
+
+// A declaration's name as code in `from`'s namespace writes it: short in the
+// same namespace, qualified elsewhere, and always qualified without `from`.
+void put_decl_name(sb *out, const decl *d, const char *quote, const decl *from);
+
+// The whole tick's schedule as text, for `purrc --schedule`.
+void print_schedule(const program *prog, const char *game, sb *out);
 
 // Parses one file into `prog`. Without `recover`, stops at the first syntax
 // error and returns false. With it, reports every syntax error it finds and
 // keeps what it could read, skipping a broken statement or declaration: for
 // editors, which need structure while code is half typed.
 bool parse_file(program *prog, const source *src, token *toks, bool recover);
+
+// Whether the attributes starting at toks[i] (a '[') belong to a field: after
+// the last ']' come a type name and a field name. Otherwise they belong to a
+// declaration. For recovery, which takes a '[' at column 1 as a declaration.
+bool attributes_before_field(const token *toks, int i);
 bool check(program *prog);

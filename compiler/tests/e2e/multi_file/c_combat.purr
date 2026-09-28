@@ -6,7 +6,7 @@ component Health
 }
 
 [Before(Physics.Move)]
-system Damage(mut Trace trace, Health health)
+system Damage(mut Trace trace, with Health)
 {
     trace.damage = trace.step;
     trace.step += 1;

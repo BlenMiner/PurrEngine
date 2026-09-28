@@ -16,6 +16,7 @@ typedef struct parser {
     // File level. In the struct rather than locals: they change between setjmp and longjmp.
     unit *unit;
     VEC(attribute) pending; // Attributes waiting for the next declaration
+    VEC(attribute) field_pending; // Attributes waiting for the next field
     bool seen_decl;
 } parser;
 
@@ -318,9 +319,19 @@ static expr *parse_binary(parser *p, const int min_prec)
     }
 }
 
+// cond ? a : b binds looser than every binary operator and groups to the
+// right, as in C#: a ? b : c ? d : e is a ? b : (c ? d : e).
 static expr *parse_expr(parser *p)
 {
-    return parse_binary(p, 1);
+    expr *cond = parse_binary(p, 1);
+    if (!at(p, T_QUESTION)) return cond;
+    const token *question = advance(p);
+    expr *e = new_expr(E_CONDITIONAL, question->at);
+    e->cond = cond;
+    e->lhs = parse_expr(p);
+    expect(p, T_COLON, "':' and the value for when the condition is false");
+    e->rhs = parse_expr(p);
+    return e;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,11 +349,27 @@ static stmt *parse_stmt(parser *p);
 
 // Keywords that only start declarations, and `input` or `view` at the start of a
 // line: where recovery can safely pick up again.
+bool attributes_before_field(const token *toks, int i)
+{
+    do { // [A(...)] [B] ...: skip to after the last ']'
+        int depth = 0;
+        for (; toks[i].kind != T_EOF; i++) {
+            if (toks[i].kind == T_LBRACKET) depth++;
+            else if (toks[i].kind == T_RBRACKET && --depth == 0) break;
+        }
+        if (toks[i].kind == T_EOF) return false;
+        i++;
+    } while (toks[i].kind == T_LBRACKET);
+    const token *t = &toks[i];
+    return t->kind == T_IDENT && toks[i + 1].kind == T_IDENT && !str_eq_c(t->text, "input")
+        && !str_eq_c(t->text, "view") && !str_eq_c(t->text, "namespace") && !str_eq_c(t->text, "using");
+}
+
 static bool at_decl_start(const parser *p)
 {
     const token *t = peek(p);
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
-    if (t->kind == T_LBRACKET && t->at.col == 1) return true; // Attributes
+    if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(p->toks, p->pos);
     return t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "namespace")
             || str_eq_c(t->text, "using"));
@@ -495,16 +522,24 @@ static decl *new_decl(const decl_kind kind, const token *name)
     return d;
 }
 
-// Name(Type name, ...) { ... } inside an input declaration.
-static void parse_constructor(parser *p, decl *d, const token *name)
+// Sample(Devices devices) { ... } inside an input declaration. The input's
+// own name instead of Sample is the constructor it used to be.
+static void parse_sample(parser *p, decl *d, const token *name)
 {
+    const bool spelled_sample = str_eq_c(name->text, "Sample") || str_eq_c(name->text, "sample");
     if (d->kind != DECL_INPUT) {
-        diag_error(name->at, "only inputs have constructors for now");
+        if (spelled_sample) diag_error(name->at, "only inputs have Sample");
+        else diag_error(name->at, "only inputs have methods; give fields defaults instead of a constructor");
         longjmp(p->fail, 1);
     }
     if (d->body) {
-        diag_error(name->at, "an input has one constructor");
+        diag_error(name->at, "an input has one Sample");
         longjmp(p->fail, 1);
+    }
+    if (str_eq_c(name->text, "sample")) {
+        diag_error(name->at, "methods use PascalCase: 'Sample(Devices devices)'");
+    } else if (!spelled_sample) {
+        diag_error(name->at, "inputs read the devices in a method: 'Sample(Devices devices)'");
     }
     d->body_at = name->at;
     expect(p, T_LPAREN, "'('");
@@ -523,12 +558,58 @@ static void parse_constructor(parser *p, decl *d, const token *name)
     d->body = parse_block(p);
 }
 
+// Sanitize() { ... } inside an input declaration.
+static void parse_sanitize(parser *p, decl *d, const token *name)
+{
+    if (d->kind != DECL_INPUT) {
+        diag_error(name->at, "only inputs have Sanitize");
+        longjmp(p->fail, 1);
+    }
+    if (d->sanitize) {
+        diag_error(name->at, "an input has one Sanitize");
+        longjmp(p->fail, 1);
+    }
+    if (name->text.ptr[0] == 's') diag_error(name->at, "methods use PascalCase: 'Sanitize()'");
+    d->sanitize_at = name->at;
+    expect(p, T_LPAREN, "'('");
+    expect(p, T_RPAREN, "')': Sanitize takes no parameters, it works on the input's fields");
+    d->sanitize = parse_block(p);
+}
+
+// [Clamp(-1, 1)] before a field. Unlike a declaration's attributes, the
+// arguments are values.
+static void parse_field_attributes(parser *p)
+{
+    expect(p, T_LBRACKET, "'['");
+    do {
+        attribute a = {0};
+        const token *name = expect_ident(p, "attribute name");
+        a.name = name->text;
+        a.at = name->at;
+        if (accept(p, T_LPAREN)) {
+            if (!at(p, T_RPAREN)) {
+                do {
+                    vec_push(a.values, parse_expr(p));
+                } while (accept(p, T_COMMA));
+            }
+            expect(p, T_RPAREN, "')' after the attribute's arguments");
+        }
+        vec_push(p->field_pending, a);
+    } while (accept(p, T_COMMA));
+    expect(p, T_RBRACKET, "']' after attributes");
+}
+
 // Type name; [= default];
 static void parse_field(parser *p, decl *d)
 {
     const token *type_tok = expect_ident(p, "field type or '}'");
     const token *field_name = expect_ident(p, "field name");
-    field f = {field_name->text, type_tok->text, field_name->at, {0}, NULL, type_tok->at};
+    field f = {field_name->text, type_tok->text, field_name->at, {0}, NULL, type_tok->at, {0}};
+    f.attributes.items = p->field_pending.items;
+    f.attributes.count = p->field_pending.count;
+    f.attributes.cap = p->field_pending.cap;
+    p->field_pending.items = NULL;
+    p->field_pending.count = p->field_pending.cap = 0;
     if (accept(p, T_ASSIGN)) f.default_value = parse_expr(p);
     expect(p, T_SEMI, "';' after field");
     vec_push(d->fields, f);
@@ -547,9 +628,25 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
             d->end = peek(p)->at;
             return d;
         }
-        // A constructor is the type's own name followed by '('.
-        if (at(p, T_IDENT) && str_eq(peek(p)->text, name->text) && peek_at(p, 1)->kind == T_LPAREN) {
-            parse_constructor(p, d, advance(p));
+        if (at(p, T_LBRACKET)) {
+            if (p->recover) RECOVERING(p, parse_field_attributes(p));
+            else parse_field_attributes(p);
+            continue;
+        }
+        if (p->field_pending.count > 0 && at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN) {
+            diag_error(p->field_pending.items[0].at, "attributes in an input go right before a field");
+            p->field_pending.count = 0;
+        }
+        // Sample(...), or a constructor: the type's own name followed by '('.
+        if (at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN
+            && (str_eq_c(peek(p)->text, "Sample") || str_eq_c(peek(p)->text, "sample")
+                || str_eq(peek(p)->text, name->text))) {
+            parse_sample(p, d, advance(p));
+            continue;
+        }
+        if (at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN
+            && (str_eq_c(peek(p)->text, "Sanitize") || str_eq_c(peek(p)->text, "sanitize"))) {
+            parse_sanitize(p, d, advance(p));
             continue;
         }
         if (p->recover) RECOVERING(p, parse_field(p, d));
@@ -659,7 +756,7 @@ program *program_new(void)
 
 bool parse_file(program *prog, const source *src, token *toks, const bool recover)
 {
-    parser p = {toks, 0, {0}, recover, NULL, {0}, false};
+    parser p = {toks, 0, {0}, recover, NULL, {0}, {0}, false};
     p.unit = NEW(unit);
     p.unit->src = src;
     vec_push(prog->units, p.unit);

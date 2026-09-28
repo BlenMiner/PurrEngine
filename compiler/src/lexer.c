@@ -259,6 +259,8 @@ static token *lex_impl(const source *src, const bool tolerant)
         case ';': t.kind = T_SEMI; break;
         case ',': t.kind = T_COMMA; break;
         case '.': t.kind = T_DOT; break;
+        case '?': t.kind = T_QUESTION; break;
+        case ':': t.kind = T_COLON; break;
         case '=': t.kind = n == '=' ? (len = 2, T_EQ) : T_ASSIGN; break;
         case '!': t.kind = n == '=' ? (len = 2, T_NE) : T_NOT; break;
         case '<':
@@ -365,6 +367,8 @@ const char *tok_kind_name(const tok_kind kind)
     case T_SEMI: return "';'";
     case T_COMMA: return "','";
     case T_DOT: return "'.'";
+    case T_QUESTION: return "'?'";
+    case T_COLON: return "':'";
     case T_ASSIGN: return "'='";
     case T_PLUS_ASSIGN: return "'+='";
     case T_MINUS_ASSIGN: return "'-='";

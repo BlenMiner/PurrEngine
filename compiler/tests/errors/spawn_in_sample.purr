@@ -3,7 +3,7 @@ component Marker { int id; }
 input PlayerInput
 {
     bool jump;
-    PlayerInput(Devices devices)
+    Sample(Devices devices)
     {
         Spawn(Marker);
     }

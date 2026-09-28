@@ -25,6 +25,8 @@ purr_e2e_test(input)
 purr_e2e_test(crossplatform)
 purr_e2e_test(evaluation_order)
 purr_e2e_test(views)
+purr_e2e_test(conditional)
+purr_e2e_test(input_bounds)
 purr_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.purr e2e/multi_file/b_main.purr
     e2e/multi_file/c_combat.purr e2e/multi_file/d_items.purr)
 
@@ -44,4 +46,19 @@ foreach(source IN LISTS PURR_ERROR_TESTS)
             "-DSOURCE=${source}"
             "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/errors"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_error.cmake")
+endforeach()
+
+# Schedule tests: `purrc --schedule` on schedule/<name>.purr must print
+# schedule/<name>.txt exactly.
+file(GLOB PURR_SCHEDULE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/schedule/*.purr")
+foreach(source IN LISTS PURR_SCHEDULE_TESTS)
+    get_filename_component(name "${source}" NAME_WE)
+    get_filename_component(dir "${source}" DIRECTORY)
+    add_test(NAME purrc_schedule_${name}
+        COMMAND "${CMAKE_COMMAND}"
+            "-DPURRC=$<TARGET_FILE:purrc>"
+            "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}"
+            "-DSOURCE=${source}"
+            "-DEXPECTED=${dir}/${name}.txt"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_schedule.cmake")
 endforeach()

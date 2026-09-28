@@ -1,0 +1,6 @@
+// expect: expected ':' and the value for when the condition is false, found ';'
+singleton Score { int value; int bonus; }
+system Award(mut Score score)
+{
+    score.bonus = score.value > 10 ? 5;
+}

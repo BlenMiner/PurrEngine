@@ -1,0 +1,40 @@
+// Bounds on input fields: [Clamp], [Min] and [Max] clean up what players send.
+
+input PlayerInput
+{
+    [Clamp(-1, 1)] float2 move;                        // A number bounds every component
+    [Clamp(float2(0, -5), float2(10, 5))] float2 aim;  // Or one bound per component
+    [Min(0)] float throttle;
+    [Max(10)] int count;
+    [Min(1), Max(3)] int gear = 1;
+    [Min(1)] int lives;                                // Its default, 0, is out of bounds too
+
+    // Runs after the bounds: count is at most 10 here.
+    Sanitize()
+    {
+        count = count * 2;
+    }
+}
+
+singleton Seen
+{
+    float2 move;
+    float2 aim;
+    float throttle;
+    int count;
+    int gear;
+    int lives;
+}
+
+system Main() { }
+
+// Runs once per tick, so it reads the server's input.
+system Watch(PlayerInput input, mut Seen seen)
+{
+    seen.move = input.move;
+    seen.aim = input.aim;
+    seen.throttle = input.throttle;
+    seen.count = input.count;
+    seen.gear = input.gear;
+    seen.lives = input.lives;
+}

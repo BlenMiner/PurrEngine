@@ -265,6 +265,10 @@
           "match": "="
         },
         {
+          "name": "keyword.operator.ternary.purrlang",
+          "match": "\\?|:"
+        },
+        {
           "name": "keyword.operator.arithmetic.purrlang",
           "match": "\\+|-|\\*|/|%"
         }

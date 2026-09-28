@@ -15,9 +15,11 @@
 typedef struct checker {
     program *prog;
     const unit *unit;         // The file being checked: its namespace and `using`s decide what names mean.
-    decl *system;             // Whose parameters are in scope: a system or view, or the input when checking its constructor.
-    bool in_constructor;      // Checking the input's constructor, which runs outside the simulation.
+    decl *system;             // Whose parameters are in scope: a system or view, or the input when checking its Sample.
+    bool in_input;      // Checking the input's constructor, which runs outside the simulation.
+    bool in_sanitize;         // Checking the input's Sanitize; in_input is set too, for the fields.
     int short_circuit_depth;  // Inside the right side of && or ||, which may not run.
+    int branch_depth;         // Inside a side of ?:, which may not run.
     VEC(stmt *) locals;       // S_VAR statements currently in scope.
     VEC(int) scope_marks;
     VEC(expr *) spawns;       // Spawn calls, patched with archetype indices at the end.
@@ -226,6 +228,7 @@ static bool field_named(const decl *d, const str name)
 static param *find_param(const checker *c, const str name)
 {
     if (!c->system) return NULL; // Field defaults are checked outside any system.
+    if (c->in_sanitize) return NULL; // Sample's parameters aren't Sanitize's
     for (int i = 0; i < c->system->params.count; i++) {
         param *p = &c->system->params.items[i];
         if (p->name.len > 0 && str_eq(p->name, name)) return p;
@@ -470,6 +473,12 @@ static type check_construct(checker *c, expr *e, const type target)
     return T_ERR;
 }
 
+// The input code being checked, for messages.
+static const char *input_code(const checker *c)
+{
+    return c->in_sanitize ? "Sanitize" : "Sample";
+}
+
 static bool in_view(const checker *c)
 {
     return c->system && c->system->is_view;
@@ -481,8 +490,8 @@ static type check_call(checker *c, expr *e)
     if (builtin_type_named(e->name, &builtin)) return check_construct(c, e, builtin);
 
     if (str_eq_c(e->name, "Spawn")) {
-        if (c->in_constructor) {
-            diag_error(e->at, "the input's constructor runs outside the simulation, so it can't spawn entities");
+        if (c->in_input) {
+            diag_error(e->at, "%s runs outside the simulation, so it can't spawn entities", input_code(c));
             return T_ERR;
         }
         if (in_view(c)) {
@@ -490,9 +499,12 @@ static type check_call(checker *c, expr *e)
             return T_ERR;
         }
         // Expressions evaluate left to right, so codegen runs a statement's spawns
-        // first, in order. On the right of && or || that would spawn even when the
-        // right side is skipped.
-        if (c->short_circuit_depth > 0) {
+        // first, in order. On the right of && or ||, or in a side of ?:, that would
+        // spawn even when that part is skipped.
+        if (c->branch_depth > 0) {
+            diag_error(e->at, "Spawn can't be inside '?:'");
+            diag_note("only one side runs; spawn in an if/else instead");
+        } else if (c->short_circuit_depth > 0) {
             diag_error(e->at, "Spawn can't be on the right side of && or ||");
             diag_note("that side only runs sometimes; spawn into a local before the condition");
         }
@@ -555,8 +567,8 @@ static type check_method(checker *c, expr *e)
         diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
         return T_ERR;
     }
-    if (c->in_constructor) {
-        diag_error(e->at, "the input's constructor runs outside the simulation, so it can't change entities");
+    if (c->in_input) {
+        diag_error(e->at, "%s runs outside the simulation, so it can't change entities", input_code(c));
         return T_ERR;
     }
     if (in_view(c)) {
@@ -738,7 +750,7 @@ static type check_member(checker *c, expr *e)
     const expr *root = chain_root(e);
     str text;
     if (root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
-        && !(c->in_constructor && field_named(c->system, root->name)) && is_namespace(c->prog, root->name)
+        && !(c->in_input && field_named(c->system, root->name)) && is_namespace(c->prog, root->name)
         && qualified_text(e, &text)) {
         return check_namespace_member(c, e);
     }
@@ -777,20 +789,32 @@ static type check_member(checker *c, expr *e)
         return T_ERR;
     }
 
-    // input.jump.pressed: a bool field of an input parameter, compared with last tick.
-    if (obj.kind == TY_BOOL && (str_eq_c(e->member, "pressed") || str_eq_c(e->member, "released"))) {
+    // input.jump.down: a bool field of an input parameter, compared with last tick.
+    if (obj.kind == TY_BOOL) {
         const expr *field_access = e->object;
         const bool on_input_field = field_access->kind == E_MEMBER && field_access->object->kind == E_NAME
                                  && field_access->object->bind == BIND_PARAM
                                  && field_access->object->param->type.kind == TY_INPUT;
-        if (!on_input_field) {
+        const bool edge = str_eq_c(e->member, "down") || str_eq_c(e->member, "up");
+        if (edge && on_input_field) {
+            e->edge = str_eq_c(e->member, "down") ? EDGE_DOWN : EDGE_UP;
+            return T_BOOL_;
+        }
+        if (edge) {
             diag_error(e->at, "only input fields have '." STR_FMT "', like 'input.jump." STR_FMT "'",
                        STR_ARG(e->member), STR_ARG(e->member));
-            if (c->in_constructor) diag_note("in the constructor, read the device instead, like 'keys.space.pressed'");
+            if (c->in_input && !c->in_sanitize) {
+                diag_note("in Sample, read the device instead, like 'keys.space.down'");
+            }
             return T_ERR;
         }
-        e->edge = str_eq_c(e->member, "pressed") ? EDGE_PRESSED : EDGE_RELEASED;
-        return T_BOOL_;
+        if (on_input_field && (str_eq_c(e->member, "pressed") || str_eq_c(e->member, "released"))) {
+            diag_error(e->at, "input fields have '.down' and '.up', not '." STR_FMT "'", STR_ARG(e->member));
+            diag_note(str_eq_c(e->member, "pressed")
+                          ? "the field is true the whole time it's held; '.down' is true on the tick it went down"
+                          : "'.up' is true on the tick it went up");
+            return T_ERR;
+        }
     }
 
     if (has_fields(obj)) {
@@ -802,6 +826,10 @@ static type check_member(checker *c, expr *e)
             }
         }
         diag_error(e->at, "%s has no field '" STR_FMT "'", type_name(obj), STR_ARG(e->member));
+        if (obj.kind == TY_RECORD && str_eq_c(obj.decl->name, "Button") && str_eq_c(e->member, "released")) {
+            diag_note("'up' is true on the tick the button went up");
+            return T_ERR;
+        }
         suggestion s = suggest_start(e->member);
         suggest_fields(&s, obj.decl);
         suggest_note(&s);
@@ -823,10 +851,11 @@ static type check_name(const checker *c, expr *e)
     if (p) {
         e->bind = BIND_PARAM;
         e->param = p;
+        p->read = true;
         return p->type;
     }
-    // Inside the input's constructor, its fields are in scope by name.
-    if (c->in_constructor) {
+    // Inside the input's Sample and Sanitize, its fields are in scope by name.
+    if (c->in_input) {
         for (int i = 0; i < c->system->fields.count; i++) {
             field *f = &c->system->fields.items[i];
             if (str_eq(f->name, e->name)) {
@@ -851,11 +880,48 @@ static type check_name(const checker *c, expr *e)
     suggestion s = suggest_start(e->name);
     for (int i = 0; i < c->locals.count; i++) suggest_consider(&s, c->locals.items[i]->name);
     for (int i = 0; c->system && i < c->system->params.count; i++) suggest_consider(&s, c->system->params.items[i].name);
-    if (c->in_constructor) suggest_fields(&s, c->system);
+    if (c->in_input) suggest_fields(&s, c->system);
     suggest_consider_c(&s, "Math");
     suggest_consider_c(&s, "Draw");
     suggest_builtin_types(&s);
     suggest_note(&s);
+    return T_ERR;
+}
+
+// A side of cond ? a : b that has to be a value.
+static bool check_side(const expr *side, const type t)
+{
+    if (t.kind == TY_VOID) {
+        diag_error(side->at, "this side of '?:' doesn't produce a value");
+        return false;
+    }
+    if (t.kind == TY_STRING) {
+        diag_error(side->at, "text can only be passed straight to Draw.Text for now");
+        return false;
+    }
+    return t.kind != TY_ERROR;
+}
+
+// cond ? a : b. As in C#, the sides need the same type, or one that converts
+// to the other's (int to float).
+static type check_conditional(checker *c, expr *e)
+{
+    const type cond = check_expr(c, e->cond);
+    if (cond.kind != TY_ERROR && cond.kind != TY_BOOL) {
+        diag_error(e->cond->at, "the condition of '?:' must be bool, not %s", type_name(cond));
+        if (type_is_numeric(cond) && type_dim(cond) == 1) diag_note("compare it, for example 'x != 0 ? a : b'");
+    }
+    c->branch_depth++;
+    const type a = check_expr(c, e->lhs);
+    const type b = check_expr(c, e->rhs);
+    c->branch_depth--;
+    const bool a_ok = check_side(e->lhs, a);
+    const bool b_ok = check_side(e->rhs, b);
+    if (!a_ok || !b_ok || cond.kind != TY_BOOL) return T_ERR;
+    if (type_assignable(a, b)) return a;
+    if (type_assignable(b, a)) return b;
+    diag_error(e->at, "the two sides of '?:' have different types: %s and %s", type_name(a), type_name(b));
+    diag_note("convert one side so both have the same type");
     return T_ERR;
 }
 
@@ -881,6 +947,7 @@ static type check_expr(checker *c, expr *e)
         t = binary_result(e->op, l, r, e->at);
         break;
     }
+    case E_CONDITIONAL: t = check_conditional(c, e); break;
     case E_UNARY: {
         const type operand = check_expr(c, e->lhs);
         if (operand.kind == TY_ERROR) break;
@@ -917,6 +984,7 @@ static void check_assign(checker *c, const stmt *s)
         diag_error(s->target->at, "can't assign to this expression");
         return;
     }
+    if (root->bind == BIND_PARAM) root->param->written = true;
 
     // Swizzles can be written (v.xz = ...) as long as no component repeats, but
     // only as the last step: in v.xy.x the swizzle is a temporary copy.
@@ -954,6 +1022,8 @@ static void check_assign(checker *c, const stmt *s)
         } else {
             diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to write to it",
                       STR_ARG(root->param->type_name), STR_ARG(root->name));
+            const fix f = {FIX_ADD_MUT, root->at, root->param};
+            vec_push(c->prog->fixes, f);
         }
         return;
     }
@@ -1084,6 +1154,8 @@ static bool is_constant(const expr *e)
         return is_constant(e->lhs);
     case E_BINARY:
         return is_constant(e->lhs) && is_constant(e->rhs);
+    case E_CONDITIONAL:
+        return is_constant(e->cond) && is_constant(e->lhs) && is_constant(e->rhs);
     case E_CALL:
         return builtin_type_named(e->name, &ignored) && all_constant(e);
     case E_METHOD:
@@ -1122,6 +1194,78 @@ static void check_default(checker *c, const field *f)
     }
 }
 
+// A bound of [Clamp], [Min] or [Max] on field `f`: a constant of the field's
+// type, or a number for every component of a vector.
+static void check_bound(checker *c, const field *f, expr *value)
+{
+    if (!is_constant(value)) {
+        diag_error(value->at, "attribute bounds must be constants");
+        diag_note("use literals, constructors like float2(...), Math constants and operators");
+        return;
+    }
+    const type t = check_expr(c, value);
+    if (t.kind == TY_ERROR || f->type.kind == TY_ERROR) return;
+    const bool splat = type_dim(t) == 1 && type_is_numeric(t) && type_dim(f->type) > 1
+                    && (type_is_float_based(f->type) || type_is_int_based(t));
+    if (!type_assignable(f->type, t) && !splat) {
+        diag_error(value->at, "the bound is %s, but field '" STR_FMT "' is %s", type_name(t), STR_ARG(f->name),
+                   type_name(f->type));
+    }
+}
+
+// [Clamp(lo, hi)], [Min(x)] and [Max(x)] on input fields. The engine applies
+// them to every input before Sanitize, so they're a quick way to bound what
+// players send.
+static void check_field_attributes(checker *c, const decl *d, field *f)
+{
+    if (f->attributes.count == 0) return;
+    if (d->kind != DECL_INPUT) {
+        diag_error(f->attributes.items[0].at, "field attributes only work on input fields for now");
+        diag_note("there they bound what players send: [Clamp(lo, hi)], [Min(x)] and [Max(x)]");
+        return;
+    }
+    bool has_clamp = false;
+    bool has_min = false;
+    bool has_max = false;
+    for (int i = 0; i < f->attributes.count; i++) {
+        attribute *a = &f->attributes.items[i];
+        const bool clamp = str_eq_c(a->name, "Clamp");
+        const bool min = str_eq_c(a->name, "Min");
+        const bool max = str_eq_c(a->name, "Max");
+        if (!clamp && !min && !max) {
+            diag_error(a->at, "unknown field attribute '" STR_FMT "'", STR_ARG(a->name));
+            suggestion s = suggest_start(a->name);
+            suggest_consider_c(&s, "Clamp");
+            suggest_consider_c(&s, "Min");
+            suggest_consider_c(&s, "Max");
+            suggest_note(&s);
+            continue;
+        }
+        const int want = clamp ? 2 : 1;
+        if (a->values.count != want) {
+            diag_error(a->at, clamp ? "[Clamp] takes two bounds: [Clamp(lo, hi)]"
+                                    : min ? "[Min] takes one bound: [Min(x)]" : "[Max] takes one bound: [Max(x)]");
+            continue;
+        }
+        if ((clamp && has_clamp) || (min && has_min) || (max && has_max)) {
+            diag_error(a->at, "field '" STR_FMT "' already has [" STR_FMT "]", STR_ARG(f->name), STR_ARG(a->name));
+            continue;
+        }
+        if ((clamp && (has_min || has_max)) || ((min || max) && has_clamp)) {
+            diag_error(a->at, "[Clamp] already sets both bounds; use it, or [Min] and [Max]");
+            continue;
+        }
+        has_clamp |= clamp;
+        has_min |= min;
+        has_max |= max;
+        if (f->type.kind != TY_ERROR && !type_is_numeric(f->type)) {
+            diag_error(a->at, "[" STR_FMT "] works on numbers and vectors, not %s", STR_ARG(a->name), type_name(f->type));
+            continue;
+        }
+        for (int k = 0; k < a->values.count; k++) check_bound(c, f, a->values.items[k]);
+    }
+}
+
 static void check_fields(checker *c, const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) {
@@ -1144,6 +1288,7 @@ static void check_fields(checker *c, const decl *d)
             }
         }
         if (f->default_value) check_default(c, f);
+        check_field_attributes(c, d, f);
     }
 }
 
@@ -1185,7 +1330,7 @@ static void check_params(const checker *c, decl *sys)
         }
 
         if (str_eq_c(p->type_name, "Devices")) {
-            diag_error(p->at, "Devices can only be read in the input's constructor");
+            diag_error(p->at, "Devices can only be read in the input's Sample");
             diag_note("systems read the players' input instead, through an input parameter");
             p->type = T_ERR;
             continue;
@@ -1203,7 +1348,7 @@ static void check_params(const checker *c, decl *sys)
         }
 
         // An input parameter gives the input of the player who owns the entity,
-        // so the system only runs on entities with an Owner.
+        // or the server's input when no player does. It doesn't filter entities.
         if (d->kind == DECL_INPUT) {
             if (sys->is_view) {
                 diag_error(p->at, "views can't read input yet");
@@ -1215,7 +1360,6 @@ static void check_params(const checker *c, decl *sys)
             if (has_input) diag_error(p->at, "a system can only have one input parameter");
             has_input = true;
             p->type = (type){TY_INPUT, d};
-            sys->need_mask |= bit(prog->owner);
             continue;
         }
 
@@ -1246,10 +1390,41 @@ static void check_params(const checker *c, decl *sys)
     if (sys->need_mask & sys->without_mask) {
         diag_error(sys->at, "system '" STR_FMT "' both requires and excludes the same component", STR_ARG(sys->name));
     }
-    sys->per_entity = has_entity || has_input || seen != 0;
+    sys->per_entity = has_entity || seen != 0;
 
-    if (sys->is_main && sys->per_entity) {
+    if (sys->is_main && has_input) {
+        diag_error(sys->at, "Main runs once when the world is created, before any input arrives");
+        diag_note("read the input in a system; it runs every tick");
+    } else if (sys->is_main && sys->per_entity) {
         diag_error(sys->at, "Main runs once when the world is created, so it can only take singletons");
+    }
+}
+
+// Access a system declares but doesn't use makes other systems wait for
+// nothing, so it's worth a warning.
+static void warn_unused_params(checker *c, const decl *sys)
+{
+    for (int i = 0; i < sys->params.count; i++) {
+        const param *p = &sys->params.items[i];
+        const type_kind kind = p->type.kind;
+        if (p->name.len == 0 || (kind != TY_COMPONENT && kind != TY_SINGLETON)) continue;
+        const str type = p->type_name;
+        if (!p->read && kind == TY_COMPONENT) {
+            diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
+            diag_note("to only require the component, write 'with " STR_FMT "': a filter doesn't make other "
+                      "systems wait",
+                      STR_ARG(type));
+            const fix f = {FIX_USE_WITH, p->name_at, p};
+            vec_push(c->prog->fixes, f);
+        } else if (!p->read) {
+            diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
+            diag_note("remove it: systems that write " STR_FMT " wait for this one while it's declared", STR_ARG(type));
+        } else if (p->mode == PARAM_MUT && !p->written && !sys->is_view) {
+            diag_warning(p->at, "'" STR_FMT "' is declared mut but never written", STR_ARG(p->name));
+            diag_note("without 'mut', systems that read " STR_FMT " can run alongside this one", STR_ARG(type));
+            const fix f = {FIX_REMOVE_MUT, p->at, p};
+            vec_push(c->prog->fixes, f);
+        }
     }
 }
 
@@ -1260,8 +1435,8 @@ static void add_builtins(program *prog)
     time->kind = DECL_SINGLETON;
     time->name = str_from("Time");
     time->builtin = true;
-    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}};
-    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}};
+    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}};
+    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}};
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
@@ -1270,7 +1445,7 @@ static void add_builtins(program *prog)
     owner->kind = DECL_COMPONENT;
     owner->name = str_from("Owner");
     owner->builtin = true;
-    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}};
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}};
     vec_push(owner->fields, player);
     prog->owner = owner;
 
@@ -1296,11 +1471,11 @@ static decl *new_record(program *prog, const char *name, const char *c_name)
 
 static void record_field(decl *d, const char *name, const type t)
 {
-    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}};
+    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}};
     vec_push(d->fields, f);
 }
 
-// The device records an input's constructor reads. Their members come from the
+// The device records an input's Sample reads. Their members come from the
 // X-macros in purr/devices.h, so PurrLang and the C structs always match.
 static void add_device_records(program *prog)
 {
@@ -1309,9 +1484,9 @@ static void add_device_records(program *prog)
     const type t_float2 = {TY_FLOAT2, NULL};
 
     decl *button = new_record(prog, "Button", "purr_button");
-    record_field(button, "down", t_bool);
     record_field(button, "pressed", t_bool);
-    record_field(button, "released", t_bool);
+    record_field(button, "down", t_bool);
+    record_field(button, "up", t_bool);
     const type t_button = {TY_RECORD, button};
 
     decl *dpad = new_record(prog, "Dpad", "purr_dpad");
@@ -1536,16 +1711,15 @@ static void warn_unmatched(const program *prog, const decl *const *list, const i
     }
 }
 
-// input PlayerInput { ...; PlayerInput(Devices devices) { ... } }: the
-// constructor runs on the client, outside the simulation. It reads devices and
-// assigns the input's fields, which start at their defaults.
-static void check_constructor(checker *c, decl *input)
+// input PlayerInput { ...; Sample(Devices devices) { ... } }: Sample runs on
+// the client, outside the simulation. It reads devices and assigns the input's
+// fields, which start at their defaults.
+static void check_sample(checker *c, decl *input)
 {
-    if (!input->body) return; // Without a constructor, sampling gives the defaults.
+    if (!input->body) return; // Without Sample, sampling gives the defaults.
 
     if (input->params.count != 1 || !str_eq_c(input->params.items[0].type_name, "Devices")) {
-        diag_error(input->body_at, "the input's constructor takes the devices: '" STR_FMT "(Devices devices)'",
-                   STR_ARG(input->name));
+        diag_error(input->body_at, "Sample takes the devices: 'Sample(Devices devices)'");
     }
     for (int i = 0; i < input->params.count; i++) {
         param *p = &input->params.items[i];
@@ -1555,9 +1729,24 @@ static void check_constructor(checker *c, decl *input)
     }
 
     c->system = input;
-    c->in_constructor = true;
+    c->in_input = true;
     check_stmt(c, input->body);
-    c->in_constructor = false;
+    c->in_input = false;
+    c->system = NULL;
+}
+
+// Sanitize() { ... }: runs on every input before the simulation reads it, so
+// systems can rely on what it guarantees. It assigns the input's fields by
+// name, like Sample, and reads nothing else.
+static void check_sanitize(checker *c, decl *input)
+{
+    if (!input->sanitize) return;
+    c->system = input;
+    c->in_input = true;
+    c->in_sanitize = true;
+    check_stmt(c, input->sanitize);
+    c->in_sanitize = false;
+    c->in_input = false;
     c->system = NULL;
 }
 
@@ -1746,7 +1935,8 @@ bool check(program *prog)
     }
     if (prog->input) {
         c.unit = prog->input->unit;
-        check_constructor(&c, prog->input);
+        check_sample(&c, prog->input);
+        check_sanitize(&c, prog->input);
     }
 
     for (int i = 0; i < prog->decls.count; i++) {
@@ -1755,7 +1945,9 @@ bool check(program *prog)
         c.unit = d->unit;
         check_params(&c, d);
         c.system = d;
+        const int errors = diag_error_count();
         check_stmt(&c, d->body);
+        if (diag_error_count() == errors) warn_unused_params(&c, d); // Errors hide uses
     }
 
     check_attributes(&c);
@@ -1788,5 +1980,6 @@ bool check(program *prog)
 
     warn_unmatched(prog, (const decl *const *)prog->systems.items, prog->systems.count);
     warn_unmatched(prog, (const decl *const *)prog->views.items, prog->views.count);
+    analyze_parallelism(prog);
     return true;
 }

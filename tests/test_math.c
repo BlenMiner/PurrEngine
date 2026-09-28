@@ -108,6 +108,31 @@ PURR_TEST(math_exp_log_accuracy)
     PURR_CHECK(worst <= MAX_ULP);
 }
 
+// A clamped value is always in range, even from NaN.
+PURR_TEST(math_clamp_nan_gives_the_lower_bound)
+{
+    PURR_CHECK(purr_clamp_f(NAN, -1.0f, 1.0f) == -1.0f);
+    PURR_CHECK(purr_saturate_f(NAN) == 0.0f);
+    const purr_float3 v = purr_clamp_f3((purr_float3){NAN, 5.0f, 0.5f}, (purr_float3){-1.0f, -1.0f, -1.0f},
+                                        (purr_float3){1.0f, 1.0f, 1.0f});
+    PURR_CHECK(v.x == -1.0f && v.y == 1.0f && v.z == 0.5f);
+    // Everything else is unchanged, down to the sign of zero.
+    PURR_CHECK(signbit(purr_clamp_f(-0.0f, 0.0f, 1.0f)));
+    PURR_CHECK(purr_clamp_f(INFINITY, -1.0f, 1.0f) == 1.0f);
+}
+
+// With one NaN argument, Min and Max return the other, whichever side it's on.
+PURR_TEST(math_min_max_ignore_one_nan)
+{
+    PURR_CHECK(purr_min_f(NAN, 1.0f) == 1.0f && purr_min_f(1.0f, NAN) == 1.0f);
+    PURR_CHECK(purr_max_f(NAN, 1.0f) == 1.0f && purr_max_f(1.0f, NAN) == 1.0f);
+    PURR_CHECK(isnan(purr_min_f(NAN, NAN)));
+    PURR_CHECK(purr_min_f(2.0f, 1.0f) == 1.0f && purr_max_f(2.0f, 1.0f) == 2.0f);
+    PURR_CHECK(!signbit(purr_min_f(-0.0f, 0.0f))); // Unchanged: equal values give the second
+    PURR_CHECK(purr_is_finite_f(1.0f) && purr_is_finite_f(-0.0f) && purr_is_finite_f(1e-45f));
+    PURR_CHECK(!purr_is_finite_f(NAN) && !purr_is_finite_f(INFINITY) && !purr_is_finite_f(-INFINITY));
+}
+
 PURR_TEST(math_special_values)
 {
     const float inf = INFINITY;

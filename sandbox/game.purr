@@ -8,6 +8,7 @@ component Transform
 component Player
 {
     float3 velocity;
+    float radius = 25;
 }
 
 singleton Physics
@@ -15,21 +16,52 @@ singleton Physics
     int collisionCount = 69;
 }
 
-view Test(Transform trs, with Player)
+input PlayerInput
 {
-    Draw.Circle(trs.position.xy, 5f, Color.red);
+    float horizontal;
+
+    Sample(Devices devices)
+    {
+        float a = devices.keyboard.a.pressed ? -1 : 0;
+        float d = devices.keyboard.d.pressed ?  1 : 0;
+        horizontal = a + d;
+    }
+
+    Sanitize()
+    {
+        horizontal = Math.Clamp(horizontal, -1, 1);
+    }
 }
 
-system PlayerMovement(mut Transform trs, Player player, Time time, mut Physics physics)
+view Map()
+{
+    float WIDTH = 200;
+    Draw.Line(float2(-WIDTH, 0), float2(WIDTH, 0), Color.green);
+}
+
+view Test(Transform trs, Player player)
+{
+    Draw.Circle(trs.position.xy, player.radius, Color.red);
+}
+
+system PlayerMovement(mut Transform trs, Player player, Time time)
 {
     trs.position += player.velocity * time.dt;
 }
 
 [After(PlayerMovement)]
-system PlayerClamp(mut Transform trs, with Player)
+system PlayerClamp(mut Transform trs, mut Player player)
 {
-    if (trs.position.y < 0)
-        trs.position.y = 0;
+    if (trs.position.y <= player.radius)
+    {
+        player.velocity.y = -player.velocity.y;
+        trs.position.y = player.radius;
+    }
+}
+
+system PlayerGravity(mut Player player, Time time)
+{
+    player.velocity -= float3(0, 9.7 * time.dt, 0);
 }
 
 system Main()

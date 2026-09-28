@@ -1,3 +1,5 @@
+#include <math.h>
+
 #include "game.h"
 #include "purr_test.h"
 
@@ -7,6 +9,7 @@ static purr_world world;
 static const purr_entity FIRST = {0, 1};  // Owned by player 0
 static const purr_entity SECOND = {1, 1}; // Owned by player 1
 static const purr_entity NOBODY = {2, 1}; // Owned by no player
+static const purr_entity UNOWNED = {3, 1}; // No Owner
 
 static PlayerInput moving_right(const bool jump)
 {
@@ -90,4 +93,45 @@ PURR_TEST(input_ignores_players_out_of_range)
     purr_world_set_input(&world, purr_player_from_index((int32_t)PURR_MAX_PLAYERS), moving_right(false));
     purr_world_tick(&world);
     PURR_CHECK(purr_get_Transform(&world, FIRST)->position.x == 0.0f);
+}
+
+PURR_TEST(input_unowned_entities_and_once_per_tick_systems_read_the_server)
+{
+    purr_world_init(&world, 1.0f);
+    purr_world_set_server_input(&world, moving_right(false));
+    purr_world_tick(&world);
+
+    PURR_CHECK(purr_get_Transform(&world, NOBODY)->position.x == 1.0f);
+    PURR_CHECK(purr_get_Transform(&world, UNOWNED)->position.x == 1.0f);
+    PURR_CHECK(purr_get_Transform(&world, FIRST)->position.x == 0.0f); // Player 0's input isn't set
+    PURR_CHECK(world.ServerView.moveX == 1.0f);
+}
+
+PURR_TEST(input_sanitize_runs_before_the_simulation_sees_input)
+{
+    purr_world_init(&world, 1.0f);
+    PlayerInput cheating = moving_right(false);
+    cheating.move.x = 50.0f;
+    cheating.speed = 10.0f;
+    purr_world_set_input(&world, purr_player_from_index(0), cheating);
+    purr_world_set_server_input(&world, cheating);
+    purr_world_tick(&world);
+
+    PURR_CHECK(purr_get_Transform(&world, FIRST)->position.x == 2.0f);   // move 1, speed 2
+    PURR_CHECK(purr_get_Transform(&world, UNOWNED)->position.x == 2.0f); // The server's input too
+    PURR_CHECK(world.ServerView.moveX == 1.0f);
+}
+
+PURR_TEST(input_nan_and_infinity_become_the_defaults)
+{
+    purr_world_init(&world, 1.0f);
+    PlayerInput attack = moving_right(false); // move.x = 1
+    attack.move.y = NAN;
+    attack.speed = INFINITY;
+    purr_world_set_input(&world, purr_player_from_index(0), attack);
+    purr_world_tick(&world);
+
+    const Transform *trs = purr_get_Transform(&world, FIRST);
+    PURR_CHECK(trs->position.x == 1.0f); // speed is back to its default, 1
+    PURR_CHECK(trs->position.z == 0.0f); // move.y is back to 0, not NaN
 }

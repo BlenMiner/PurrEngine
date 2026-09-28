@@ -1,0 +1,6 @@
+// expect: the condition of '?:' must be bool, not int
+singleton Score { int value; int bonus; }
+system Award(mut Score score)
+{
+    score.bonus = score.value ? 10 : 0;
+}

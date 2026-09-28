@@ -46,3 +46,5 @@ void analysis_signature_help(int line, int character, jbuf *out);           // S
 const char *analysis_prepare_rename(int line, int character, jbuf *out);    // Range
 const char *analysis_rename(const char *uri, int line, int character, const char *new_name, jbuf *out); // WorkspaceEdit
 const char *analysis_format(int tab_size, bool insert_spaces, jbuf *out);   // TextEdit[]
+void analysis_code_lenses(jbuf *out);                                        // CodeLens[]
+void analysis_code_actions(int start_line, int end_line, jbuf *out);         // CodeAction[]

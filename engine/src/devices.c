@@ -2,9 +2,9 @@
 
 static void consume_button(purr_button *b)
 {
-    b->down = b->held;
-    b->pressed = false;
-    b->released = false;
+    b->pressed = b->held;
+    b->down = false;
+    b->up = false;
 }
 
 void purr_devices_consume(purr_devices *d)

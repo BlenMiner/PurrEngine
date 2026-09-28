@@ -1,0 +1,6 @@
+// expect: [Clamp] takes two bounds: [Clamp(lo, hi)]
+input PlayerInput
+{
+    [Clamp(1)] float move;
+}
+system Main() { }

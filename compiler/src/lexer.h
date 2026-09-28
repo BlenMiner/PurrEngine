@@ -33,6 +33,8 @@ typedef enum tok_kind {
     T_SEMI,
     T_COMMA,
     T_DOT,
+    T_QUESTION,
+    T_COLON,
 
     T_ASSIGN,
     T_PLUS_ASSIGN,

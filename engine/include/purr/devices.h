@@ -15,13 +15,14 @@
 // player's input from them (purr_input_sample in generated code) and then calls
 // purr_devices_consume to start the next sample window.
 
-// A button between two samples. `down` is true if the button was down at any
-// point since the last sample, so a quick tap between two ticks is never lost.
+// A button between two samples, named as in Unity. `pressed` is true if the
+// button was down at any point since the last sample, so a quick tap between
+// two ticks is never lost.
 typedef struct purr_button {
-    bool down;     // Down at any point since the last sample
-    bool pressed;  // Went down since the last sample
-    bool released; // Went up since the last sample
-    bool held;     // Down right now; platform state, not visible to PurrLang
+    bool pressed; // Down at any point since the last sample
+    bool down;    // Went down since the last sample
+    bool up;      // Went up since the last sample
+    bool held;    // Down right now; platform state, not visible to PurrLang
 } purr_button;
 
 // Keys by physical position, named after the US layout: `w` is the key in the W
@@ -98,9 +99,9 @@ typedef struct purr_devices {
 // button; presses and releases latch until the next purr_devices_consume.
 static inline void purr_button_set(purr_button *b, const bool down_now)
 {
-    if (down_now && !b->held) b->pressed = true;
-    if (!down_now && b->held) b->released = true;
-    if (down_now) b->down = true;
+    if (down_now && !b->held) b->down = true;
+    if (!down_now && b->held) b->up = true;
+    if (down_now) b->pressed = true;
     b->held = down_now;
 }
 

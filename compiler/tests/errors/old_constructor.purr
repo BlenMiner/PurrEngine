@@ -1,0 +1,7 @@
+// expect: inputs read the devices in a method: 'Sample(Devices devices)'
+input PlayerInput
+{
+    bool jump;
+    PlayerInput(Devices devices) { jump = devices.keyboard.space.pressed; }
+}
+system Main() { }

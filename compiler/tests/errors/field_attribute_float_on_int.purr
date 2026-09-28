@@ -1,0 +1,6 @@
+// expect: the bound is float, but field 'count' is int
+input PlayerInput
+{
+    [Max(1.5)] int count;
+}
+system Main() { }

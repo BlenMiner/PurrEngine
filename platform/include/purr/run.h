@@ -12,8 +12,9 @@
 //     }
 //
 // The simulation ticks at a fixed rate. If the game declares an input, the
-// devices are sampled as player 0's input every tick. The views draw every
-// frame. Close the window to quit.
+// devices are sampled every tick as player 0's input and, since this machine is
+// also the server, as the server's. The views draw every frame. Close the
+// window to quit.
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later.
@@ -46,6 +47,7 @@ static inline void purr_run_tick(void)
     const purr_input input = purr_input_sample(&purr_run_devices);
     purr_devices_consume(&purr_run_devices);
     purr_world_set_input(&purr_run_world, purr_player_from_index(0), input);
+    purr_world_set_server_input(&purr_run_world, input); // Local play: this machine is also the server
 #endif
     purr_world_tick(&purr_run_world);
 }

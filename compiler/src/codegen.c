@@ -25,7 +25,7 @@ typedef struct gen {
     const char *c_path;
     VEC(transition) moves;
     int indent;
-    bool in_constructor; // Generating the input's constructor: fields live in purr_self.
+    bool in_input; // Generating the input's constructor: fields live in purr_self.
     int spawn_temps;     // Temporaries for hoisted spawns, numbered per function.
 } gen;
 
@@ -210,6 +210,17 @@ static const char *expr_text(gen *g, const expr *e)
 static void gen_as(gen *g, sb *o, expr *e, const type want)
 {
     const type have = e->type;
+    if (e->kind == E_CONDITIONAL && (want.kind != have.kind || want.decl != have.decl)) {
+        // Convert each side, so literals stay literals: (c ? 1.0f : 0.0f).
+        sb_put(o, "(");
+        gen_expr(g, o, e->cond);
+        sb_put(o, " ? ");
+        gen_as(g, o, e->lhs, want);
+        sb_put(o, " : ");
+        gen_as(g, o, e->rhs, want);
+        sb_put(o, ")");
+        return;
+    }
     if (want.kind == TY_FLOAT && have.kind == TY_INT) {
         if (e->kind == E_INT) {
             // Same rounding as a runtime conversion, but reads as a plain literal.
@@ -601,7 +612,7 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         break;
     case E_NAME:
         if (e->bind == BIND_FIELD) {
-            sb_printf(o, "purr_self.%s", field_cname(e->field)); // Inside the input's constructor
+            sb_printf(o, "purr_self.%s", field_cname(e->field)); // Inside the input's Sample or Sanitize
         } else if (e->bind == BIND_LOCAL) {
             sb_put(o, local_cname(g, e->name));
         } else if (e->bind == BIND_PARAM && is_pointer_param(e->param)) {
@@ -616,12 +627,12 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             break;
         }
         if (e->edge != EDGE_NONE) {
-            // input.jump.pressed: this tick's value against last tick's.
+            // input.jump.down: this tick's value against last tick's.
             const expr *field_access = e->object;
             const char *now = expr_text(g, field_access);
             sb b = {0};
             sb_printf(&b, "%s->%s", prev_input_name(g, field_access->object->name), field_cname(field_access->field));
-            if (e->edge == EDGE_PRESSED) sb_printf(o, "(%s && !%s)", now, b.data);
+            if (e->edge == EDGE_DOWN) sb_printf(o, "(%s && !%s)", now, b.data);
             else sb_printf(o, "(!%s && %s)", now, b.data);
             break;
         }
@@ -652,6 +663,17 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         break;
     case E_BINARY:
         gen_binary(g, o, e->op, e->lhs, e->rhs, e->type);
+        break;
+    case E_CONDITIONAL:
+        // C runs only the chosen side too. Both sides convert to the result type,
+        // so they have the same C type.
+        sb_put(o, "(");
+        gen_expr(g, o, e->cond);
+        sb_put(o, " ? ");
+        gen_as(g, o, e->lhs, e->type);
+        sb_put(o, " : ");
+        gen_as(g, o, e->rhs, e->type);
+        sb_put(o, ")");
         break;
     case E_UNARY:
         if (e->op == T_NOT || e->op == T_TILDE) {
@@ -758,6 +780,9 @@ static void collect_spawns(expr *e, expr_list *out)
     case E_UNARY:
         collect_spawns(e->lhs, out);
         break;
+    case E_CONDITIONAL:
+        collect_spawns(e->cond, out); // The checker keeps spawns out of the sides, which may not run
+        break;
     default:
         break;
     }
@@ -834,7 +859,7 @@ static void gen_stmt(gen *g, const stmt *s)
         break;
 
     case S_RETURN:
-        line(g, o, g->in_constructor ? "return purr_self;" : "return;");
+        line(g, o, g->in_input ? "return purr_self;" : "return;");
         break;
 
     case S_VAR: {
@@ -943,6 +968,8 @@ static void gen_header(gen *g)
         sb_printf(o, "} %s;\n\n", name);
         sb_put(o, "// For hosts that work with any game: whether it has an input, and its type by a fixed name.\n");
         sb_printf(o, "#define PURR_HAS_INPUT 1\ntypedef %s purr_input;\n\n", name);
+        sb_put(o, "// The server's slot in purr_world's inputs, after the players'.\n");
+        sb_put(o, "#define PURR_SERVER_INPUT PURR_MAX_PLAYERS\n\n");
     }
 
     sb_put(o, "// Archetypes: storage for each component combination the program can create\n\n");
@@ -1000,10 +1027,10 @@ static void gen_header(gen *g)
     sb_put(o, "    uint32_t command_count;\n    purr_command commands[PURR_MAX_COMMANDS];\n");
     if (prog->input) {
         const char *name = type_cname(prog->input);
-        sb_put(o, "    // Each player's input for this tick and the last; last tick's gives .pressed and .released.\n");
-        sb_printf(o, "    %s inputs[PURR_MAX_PLAYERS];\n", name);
-        sb_printf(o, "    %s previous_inputs[PURR_MAX_PLAYERS];\n", name);
-        sb_printf(o, "    %s no_input; // For entities owned by no player: the defaults.\n", name);
+        sb_put(o, "    // Each player's input for this tick and the last, then the server's (PURR_SERVER_INPUT).\n");
+        sb_put(o, "    // Last tick's gives .down and .up.\n");
+        sb_printf(o, "    %s inputs[PURR_MAX_PLAYERS + 1];\n", name);
+        sb_printf(o, "    %s previous_inputs[PURR_MAX_PLAYERS + 1];\n", name);
     }
     sb_put(o, "} purr_world;\n\n");
 
@@ -1026,11 +1053,16 @@ static void gen_header(gen *g)
     if (prog->input) {
         const char *name = type_cname(prog->input);
         sb_put(o, "\n// Client side: builds the local player's input from the devices by running the\n");
-        sb_put(o, "// input's constructor. Call once per tick, then purr_devices_consume(devices).\n");
+        sb_put(o, "// input's Sample. Call once per tick, then purr_devices_consume(devices).\n");
         sb_printf(o, "%s purr_input_sample(const purr_devices *devices);\n\n", name);
         sb_put(o, "// Sets a player's input for the next tick. A player whose input isn't set keeps\n");
-        sb_put(o, "// their last one, which is also the usual guess for a remote player.\n");
-        sb_printf(o, "void purr_world_set_input(purr_world *w, purr_player_id player, %s input);\n", name);
+        sb_put(o, "// their last one, which is also the usual guess for a remote player. Inputs set\n");
+        sb_put(o, "// here are untrusted: NaN and infinite floats become the field's default, the\n");
+        sb_put(o, "// fields' [Clamp], [Min] and [Max] apply, then the input passes through its Sanitize.\n");
+        sb_printf(o, "void purr_world_set_input(purr_world *w, purr_player_id player, %s input);\n\n", name);
+        sb_put(o, "// Sets the server's input for the next tick. Entities no player owns read it, and\n");
+        sb_put(o, "// so do systems that run once per tick. It's kept until set again, like a player's.\n");
+        sb_printf(o, "void purr_world_set_server_input(purr_world *w, %s input);\n", name);
     }
 }
 
@@ -1278,10 +1310,10 @@ static void gen_apply(gen *g)
 
     if (prog->input) {
         const char *name = type_cname(prog->input);
-        sb_put(o, "// A player's input, this tick's or last tick's. No player gets the defaults.\n");
+        sb_put(o, "// A player's input, this tick's or last tick's. No player, or an unknown one, means the server's.\n");
         sb_printf(o, "PURR_HELPER const %s *purr_input_of(const purr_world *w, purr_player_id player, bool previous)\n{\n", name);
-        sb_put(o, "    const int32_t index = purr_player_index(player);\n");
-        sb_put(o, "    if (index < 0) return &w->no_input;\n");
+        sb_put(o, "    int32_t index = purr_player_index(player);\n");
+        sb_put(o, "    if (index < 0) index = PURR_SERVER_INPUT;\n");
         sb_put(o, "    return previous ? &w->previous_inputs[index] : &w->inputs[index];\n}\n\n");
     }
 }
@@ -1332,8 +1364,9 @@ static void gen_system_body(gen *g, const decl *sys)
     sb_put(o, "\n");
 }
 
-// Arguments that bind one entity's data to the system's parameters.
-static void gen_system_args(gen *g, const decl *sys, const char *arch_var)
+// Arguments that bind one entity's data to the system's parameters. `mask` is
+// the archetype's components; arch_var is NULL for a system that runs once.
+static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const uint64_t mask)
 {
     sb *o = &g->c;
     for (int i = 0; i < sys->params.count; i++) {
@@ -1350,29 +1383,33 @@ static void gen_system_args(gen *g, const decl *sys, const char *arch_var)
                 sb_printf(o, ", &%s->%s[purr_i]", arch_var, type_cname(p->type.decl));
             }
             break;
-        case TY_INPUT: {
-            // The owner's input this tick and last tick. Input systems always require Owner.
-            const char *owner = type_cname(g->prog->owner);
-            sb_printf(o, ", purr_input_of(purr_w, %s->%s[purr_i].player, false)", arch_var, owner);
-            sb_printf(o, ", purr_input_of(purr_w, %s->%s[purr_i].player, true)", arch_var, owner);
+        case TY_INPUT:
+            // This tick's input and last tick's: the owner's, or the server's for
+            // entities without an Owner and for systems that run once.
+            if (arch_var && has_component(mask, g->prog->owner->index)) {
+                const char *owner = type_cname(g->prog->owner);
+                sb_printf(o, ", purr_input_of(purr_w, %s->%s[purr_i].player, false)", arch_var, owner);
+                sb_printf(o, ", purr_input_of(purr_w, %s->%s[purr_i].player, true)", arch_var, owner);
+            } else {
+                sb_put(o, ", &purr_w->inputs[PURR_SERVER_INPUT], &purr_w->previous_inputs[PURR_SERVER_INPUT]");
+            }
             break;
-        }
         default:
             break;
         }
     }
 }
 
-// The input's constructor, as purr_input_sample: fields start at their defaults
+// The input's Sample, as purr_input_sample: fields start at their defaults
 // and the body assigns them from the devices.
-static void gen_constructor(gen *g)
+static void gen_sample(gen *g)
 {
     const decl *input = g->prog->input;
     sb *o = &g->c;
     const char *name = type_cname(input);
     const char *devices = input->params.count > 0 ? local_cname(g, input->params.items[0].name) : "devices";
 
-    sb_printf(o, "// " STR_FMT "'s constructor\n", STR_ARG(input->name));
+    sb_printf(o, "// " STR_FMT "'s Sample\n", STR_ARG(input->name));
     sb_printf(o, "%s purr_input_sample(const purr_devices *restrict %s)\n{\n", name, devices);
     g->indent = 1;
     indent(g, o);
@@ -1380,16 +1417,148 @@ static void gen_constructor(gen *g)
     gen_value(g, o, input, NULL, 0);
     sb_put(o, ";\n");
     line(g, o, "(void)%s;", devices);
-    g->in_constructor = true;
+    g->in_input = true;
     if (input->body) {
         for (int i = 0; i < input->body->stmts.count; i++) gen_stmt(g, input->body->stmts.items[i]);
     }
-    g->in_constructor = false;
+    g->in_input = false;
     line(g, o, "return purr_self;");
     g->indent = 0;
     sb_put(o, "}\n");
     line_reset(g);
     sb_put(o, "\n");
+}
+
+// The input's Sanitize, which every input passes through on its way into the
+// world (see purr_world_set_input).
+static void gen_sanitize(gen *g)
+{
+    const decl *input = g->prog->input;
+    sb *o = &g->c;
+    sb_printf(o, "// " STR_FMT "'s Sanitize\n", STR_ARG(input->name));
+    sb_printf(o, "static %s purr_input_sanitize(%s purr_self)\n{\n", type_cname(input), type_cname(input));
+    g->indent = 1;
+    g->in_input = true;
+    for (int i = 0; i < input->sanitize->stmts.count; i++) gen_stmt(g, input->sanitize->stmts.items[i]);
+    g->in_input = false;
+    line(g, o, "return purr_self;");
+    g->indent = 0;
+    sb_put(o, "}\n");
+    line_reset(g);
+    sb_put(o, "\n");
+}
+
+// Whether a type holds floats, which input from other machines could make NaN
+// or infinite.
+static bool has_floats(const type t)
+{
+    switch (t.kind) {
+    case TY_FLOAT: case TY_FLOAT2: case TY_FLOAT3: case TY_FLOAT4: case TY_QUATERNION:
+    case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4: case TY_COLOR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Whether inputs from outside need purr_input_repair: floats to check, or
+// field bounds to apply.
+static bool input_needs_repair(const decl *input)
+{
+    for (int i = 0; i < input->fields.count; i++) {
+        if (has_floats(input->fields.items[i].type) || input->fields.items[i].attributes.count > 0) return true;
+    }
+    return false;
+}
+
+// Replaces each NaN or infinite float of a value with the same float of `def`.
+// `in` and `def` are C accesses to values of type `t`.
+static void gen_repair_value(gen *g, const char *in, const char *def, const type t)
+{
+    char a[256];
+    char b[256];
+    const int columns = matrix_dim(t);
+    if (t.kind == TY_FLOAT) {
+        line(g, &g->c, "if (!purr_is_finite_f(%s)) %s = %s;", in, in, def);
+    } else if (columns > 0) {
+        for (int c = 0; c < columns; c++) {
+            snprintf(a, sizeof a, "%s.c%d", in, c);
+            snprintf(b, sizeof b, "%s.c%d", def, c);
+            gen_repair_value(g, a, b, vector_type(true, columns));
+        }
+    } else if (t.kind == TY_QUATERNION) {
+        snprintf(a, sizeof a, "%s.value", in);
+        snprintf(b, sizeof b, "%s.value", def);
+        gen_repair_value(g, a, b, vector_type(true, 4));
+    } else if (t.kind == TY_COLOR) {
+        static const char *const channels[] = {"r", "g", "b", "a"};
+        for (int i = 0; i < 4; i++) {
+            snprintf(a, sizeof a, "%s.%s", in, channels[i]);
+            snprintf(b, sizeof b, "%s.%s", def, channels[i]);
+            gen_repair_value(g, a, b, (type){TY_FLOAT, NULL});
+        }
+    } else if (has_floats(t)) { // float2 to float4
+        for (int i = 0; i < type_dim(t); i++) {
+            snprintf(a, sizeof a, "%s.%s", in, xyzw[i]);
+            snprintf(b, sizeof b, "%s.%s", def, xyzw[i]);
+            gen_repair_value(g, a, b, (type){TY_FLOAT, NULL});
+        }
+    }
+}
+
+// Input from other machines is an attack point, so before Sanitize sees it,
+// NaN and infinite floats become the field's default (nothing a client sends
+// can put them in the simulation), then the fields' [Clamp], [Min] and [Max]
+// apply.
+static void gen_repair(gen *g)
+{
+    const decl *input = g->prog->input;
+    sb *o = &g->c;
+    const char *name = type_cname(input);
+    sb_printf(o, "// NaN and infinite floats in a " STR_FMT " become the field's default, then the\n", STR_ARG(input->name));
+    sb_put(o, "// fields' bounds apply.\n");
+    sb_printf(o, "static %s purr_input_repair(%s purr_in)\n{\n", name, name);
+    g->indent = 1;
+    sb_printf(o, "    const %s purr_def = ", name);
+    gen_value(g, o, input, NULL, 0);
+    sb_put(o, ";\n");
+    for (int i = 0; i < input->fields.count; i++) {
+        const field *f = &input->fields.items[i];
+        if (!has_floats(f->type)) continue;
+        char in[256];
+        char def[256];
+        snprintf(in, sizeof in, "purr_in.%s", field_cname(f));
+        snprintf(def, sizeof def, "purr_def.%s", field_cname(f));
+        gen_repair_value(g, in, def, f->type);
+    }
+    for (int i = 0; i < input->fields.count; i++) {
+        const field *f = &input->fields.items[i];
+        for (int k = 0; k < f->attributes.count; k++) {
+            const attribute *a = &f->attributes.items[k];
+            // [Min(x)] is "at least x": the larger of the two, and [Max] the reverse.
+            const char *fn = str_eq_c(a->name, "Clamp") ? "clamp" : str_eq_c(a->name, "Min") ? "max" : "min";
+            indent(g, o);
+            sb_printf(o, "purr_in.%s = purr_%s_%s(purr_in.%s", field_cname(f), fn, type_suffix(f->type),
+                      field_cname(f));
+            for (int v = 0; v < a->values.count; v++) {
+                sb_put(o, ", ");
+                gen_as(g, o, a->values.items[v], f->type);
+            }
+            sb_put(o, ");\n");
+        }
+    }
+    line(g, o, "return purr_in;");
+    g->indent = 0;
+    sb_put(o, "}\n\n");
+}
+
+// An input arriving from outside the simulation: repaired, then sanitized.
+static void gen_incoming_input(const gen *g, sb *o, const char *value)
+{
+    const bool repair = input_needs_repair(g->prog->input);
+    const bool sanitize = g->prog->input->sanitize != NULL;
+    sb_printf(o, "%s%s%s%s%s", sanitize ? "purr_input_sanitize(" : "", repair ? "purr_input_repair(" : "", value,
+              repair ? ")" : "", sanitize ? ")" : "");
 }
 
 static void gen_system_run(gen *g, const decl *sys)
@@ -1410,7 +1579,7 @@ static void gen_system_run(gen *g, const decl *sys)
 
     if (!sys->per_entity) {
         sb_printf(o, "    %s", call.data);
-        gen_system_args(g, sys, NULL);
+        gen_system_args(g, sys, NULL, 0);
         sb_put(o, ");\n");
     } else {
         bool any = false;
@@ -1423,7 +1592,7 @@ static void gen_system_run(gen *g, const decl *sys)
             sb_printf(o, "        %spurr_%s *purr_a = &purr_w->%s;\n", view ? "const " : "", name, name);
             sb_put(o, "        for (uint32_t purr_i = 0; purr_i < purr_a->count; purr_i++) {\n");
             sb_printf(o, "            %s", call.data);
-            gen_system_args(g, sys, "purr_a");
+            gen_system_args(g, sys, "purr_a", mask);
             sb_put(o, ");\n        }\n    }\n");
         }
         if (!any) {
@@ -1512,11 +1681,15 @@ static void gen_api(gen *g)
         sb_put(o, ";\n");
     }
     if (prog->input) {
-        sb_put(o, "    w->no_input = ");
+        // The defaults go through the same checks as any input, so even before
+        // the first input arrives, the simulation sees nothing out of bounds.
+        sb_printf(o, "    const %s purr_declared = ", type_cname(prog->input));
         gen_value(g, o, prog->input, NULL, 0);
+        sb_printf(o, ";\n    const %s purr_defaults = ", type_cname(prog->input));
+        gen_incoming_input(g, o, "purr_declared");
         sb_put(o, ";\n");
-        sb_put(o, "    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {\n");
-        sb_put(o, "        w->inputs[i] = w->no_input;\n        w->previous_inputs[i] = w->no_input;\n    }\n");
+        sb_put(o, "    for (uint32_t i = 0; i <= PURR_SERVER_INPUT; i++) {\n");
+        sb_put(o, "        w->inputs[i] = purr_defaults;\n        w->previous_inputs[i] = purr_defaults;\n    }\n");
     }
     sb_printf(o, "    purr_system_%s(w", decl_cname(prog->main));
     for (int i = 0; i < prog->main->params.count; i++) {
@@ -1543,7 +1716,13 @@ static void gen_api(gen *g)
         sb_printf(o, "void purr_world_set_input(purr_world *w, purr_player_id player, %s input)\n{\n",
                   type_cname(prog->input));
         sb_put(o, "    const int32_t index = purr_player_index(player);\n");
-        sb_put(o, "    if (index >= 0) w->inputs[index] = input;\n}\n\n");
+        sb_put(o, "    if (index < 0) return;\n    w->inputs[index] = ");
+        gen_incoming_input(g, o, "input");
+        sb_put(o, ";\n}\n\n");
+        sb_printf(o, "void purr_world_set_server_input(purr_world *w, %s input)\n{\n", type_cname(prog->input));
+        sb_put(o, "    w->inputs[PURR_SERVER_INPUT] = ");
+        gen_incoming_input(g, o, "input");
+        sb_put(o, ";\n}\n\n");
     }
 
     sb_put(o, "uint32_t purr_world_entity_count(const purr_world *w)\n{\n    uint32_t n = 0;\n");
@@ -1638,7 +1817,9 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_moves(&g);
     gen_command_recorders(&g);
     gen_apply(&g);
-    if (prog->input) gen_constructor(&g);
+    if (prog->input) gen_sample(&g);
+    if (prog->input && prog->input->sanitize) gen_sanitize(&g);
+    if (prog->input && input_needs_repair(prog->input)) gen_repair(&g);
     gen_system_body(&g, prog->main);
     for (int i = 0; i < prog->systems.count; i++) gen_system_body(&g, prog->systems.items[i]);
     for (int i = 0; i < prog->views.count; i++) gen_system_body(&g, prog->views.items[i]);

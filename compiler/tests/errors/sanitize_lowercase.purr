@@ -1,0 +1,7 @@
+// expect: methods use PascalCase: 'Sanitize()'
+input PlayerInput
+{
+    float move;
+    sanitize() { move = Math.Clamp(move, -1, 1); }
+}
+system Main() { }

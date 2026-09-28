@@ -41,12 +41,12 @@ static int frame(void *user, const float seconds)
         key_event("keydown", "KeyW", "z", 90);
         return PURR_KEEP_RUNNING;
     case 1:
-        check(devices.keyboard.w.held && devices.keyboard.w.pressed, "the key in the W position reads as w");
+        check(devices.keyboard.w.held && devices.keyboard.w.down, "the key in the W position reads as w");
         check(!devices.keyboard.z.held, "and not as z, the letter it types on AZERTY");
         key_event("keyup", "KeyW", "z", 90);
         return PURR_KEEP_RUNNING;
     case 2:
-        check(!devices.keyboard.w.held && devices.keyboard.w.released, "releasing it reads as a release");
+        check(!devices.keyboard.w.held && devices.keyboard.w.up, "releasing it reads as a release");
         key_event("keydown", "Space", " ", 32);
         emscripten_run_script("dispatchEvent(new FocusEvent('blur'))");
         return PURR_KEEP_RUNNING;

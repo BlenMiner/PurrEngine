@@ -92,6 +92,14 @@ int main(void)
     endif()
     target_include_directories(${target} PRIVATE "${out_dir}")
 
+    # `cmake --build --preset <preset> --target <target>_schedule` prints which
+    # systems can run at the same time, and why the others wait.
+    add_custom_target(${target}_schedule
+        COMMAND purrc ${sources} --schedule --name "${name}"
+        DEPENDS purrc
+        VERBATIM
+        USES_TERMINAL)
+
     foreach(path IN LISTS manifest_paths)
         set_property(GLOBAL APPEND PROPERTY PURR_GAME_LINES "${target}\t${path}")
     endforeach()

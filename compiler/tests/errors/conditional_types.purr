@@ -1,0 +1,6 @@
+// expect: the two sides of '?:' have different types: float3 and float
+singleton Aim { float3 target; bool ready; }
+system Point(mut Aim aim)
+{
+    aim.target = aim.ready ? float3(1, 0, 0) : 0.5;
+}

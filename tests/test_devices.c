@@ -7,24 +7,24 @@ PURR_TEST(devices_quick_tap_between_samples_is_not_lost)
     purr_devices d = {0};
     purr_button_set(&d.keyboard.space, true);  // frame 1: down
     purr_button_set(&d.keyboard.space, false); // frame 2: up again, before any sample
-    PURR_CHECK(d.keyboard.space.down);
     PURR_CHECK(d.keyboard.space.pressed);
-    PURR_CHECK(d.keyboard.space.released);
+    PURR_CHECK(d.keyboard.space.down);
+    PURR_CHECK(d.keyboard.space.up);
 
     purr_devices_consume(&d);
-    PURR_CHECK(!d.keyboard.space.down);
     PURR_CHECK(!d.keyboard.space.pressed);
-    PURR_CHECK(!d.keyboard.space.released);
+    PURR_CHECK(!d.keyboard.space.down);
+    PURR_CHECK(!d.keyboard.space.up);
 }
 
-PURR_TEST(devices_held_button_stays_down_without_repeating_press)
+PURR_TEST(devices_held_button_stays_pressed_but_goes_down_once)
 {
     purr_devices d = {0};
     purr_button_set(&d.gamepad.buttonSouth, true);
     purr_devices_consume(&d);
     purr_button_set(&d.gamepad.buttonSouth, true);
-    PURR_CHECK(d.gamepad.buttonSouth.down);
-    PURR_CHECK(!d.gamepad.buttonSouth.pressed);
+    PURR_CHECK(d.gamepad.buttonSouth.pressed);
+    PURR_CHECK(!d.gamepad.buttonSouth.down);
 }
 
 PURR_TEST(devices_consume_resets_mouse_motion)

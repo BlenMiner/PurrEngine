@@ -10,11 +10,14 @@ static void usage(void)
 {
     fprintf(stderr,
             "usage: purrc <file.purr>... -o <output-dir> [--name <name>] [--no-line]\n"
+            "       purrc <file.purr>... --schedule [--name <name>]\n"
             "\n"
             "Transpiles a PurrLang program, made of one or more files, to\n"
             "<output-dir>/<name>.h and <name>.c.\n"
             "  --name <name>  base name of the generated files (default: the first file's name)\n"
-            "  --no-line      don't map generated code back to .purr lines for debuggers\n");
+            "  --no-line      don't map generated code back to .purr lines for debuggers\n"
+            "  --schedule     print which systems can run at the same time and why the others\n"
+            "                 wait, instead of generating code\n");
 }
 
 static char *read_file(const char *path, size_t *len)
@@ -59,6 +62,7 @@ int main(const int argc, char **argv)
     const char **inputs = calloc((size_t)argc, sizeof(char *));
     int input_count = 0;
     codegen_options opts = {NULL, NULL, true};
+    bool schedule = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -67,6 +71,8 @@ int main(const int argc, char **argv)
             opts.name = argv[++i];
         } else if (strcmp(argv[i], "--no-line") == 0) {
             opts.line_directives = false;
+        } else if (strcmp(argv[i], "--schedule") == 0) {
+            schedule = true;
         } else if (argv[i][0] == '-') {
             usage();
             return 2;
@@ -74,7 +80,7 @@ int main(const int argc, char **argv)
             inputs[input_count++] = argv[i];
         }
     }
-    if (input_count == 0 || !opts.out_dir) {
+    if (input_count == 0 || (!opts.out_dir && !schedule)) {
         usage();
         return 2;
     }
@@ -101,5 +107,11 @@ int main(const int argc, char **argv)
 
     if (!check(prog)) return 1;
 
+    if (schedule) {
+        sb text = {0};
+        print_schedule(prog, opts.name, &text);
+        fputs(text.data, stdout);
+        return 0;
+    }
     return codegen(prog, &opts) ? 0 : 1;
 }

@@ -38,6 +38,7 @@ static void tick(void)
     const PlayerInput input = purr_input_sample(&devices);
     purr_devices_consume(&devices);
     purr_world_set_input(&world, purr_player_from_index(0), input);
+    purr_world_set_server_input(&world, input); // Local play: this machine is also the server
     purr_world_tick(&world);
 }
 

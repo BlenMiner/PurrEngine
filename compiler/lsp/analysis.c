@@ -31,7 +31,7 @@ typedef enum occ_kind {
     OCC_FUNCTION, // Math.Dot, Draw.Circle, Spawn
     OCC_CONSTANT, // Math.PI, Color.red
     OCC_METHOD,   // e.Add, e.Remove, e.Destroy
-    OCC_MEMBER,   // Swizzles, color channels, quaternion.value, matrix columns, .pressed
+    OCC_MEMBER,   // Swizzles, color channels, quaternion.value, matrix columns, input .down/.up
     OCC_NAMESPACE, // Combat in `namespace Combat;` or Combat.Health
 } occ_kind;
 
@@ -344,6 +344,12 @@ static void walk_expr(const expr *e)
     case E_UNARY:
         walk_expr(e->lhs);
         break;
+
+    case E_CONDITIONAL:
+        walk_expr(e->cond);
+        walk_expr(e->lhs);
+        walk_expr(e->rhs);
+        break;
     }
 }
 
@@ -438,11 +444,19 @@ static void index_program(void)
             add_occ((occurrence){.at = fl->at, .len = fl->name.len, .kind = OCC_FIELD, .declaration = true, .field = fl,
                                  .decl = d, .name = fl->name, .type = fl->type});
             walk_expr(fl->default_value);
+            for (int a = 0; a < fl->attributes.count; a++) {
+                for (int v = 0; v < fl->attributes.items[a].values.count; v++) walk_expr(fl->attributes.items[a].values.items[v]);
+            }
         }
-        if (d->body) { // The input's constructor
-            add_occ((occurrence){.at = d->body_at, .len = d->name.len, .kind = OCC_TYPE, .decl = d, .name = d->name});
+        if (d->body) { // The input's Sample
+            add_occ((occurrence){.at = d->body_at, .len = 6, .kind = OCC_METHOD, .decl = d, .name = str_from("Sample")});
             walk_params(d);
             walk_stmt(d->body);
+        }
+        if (d->sanitize) {
+            add_occ((occurrence){.at = d->sanitize_at, .len = 8, .kind = OCC_METHOD, .decl = d,
+                                 .name = str_from("Sanitize")});
+            walk_stmt(d->sanitize);
         }
     }
 
@@ -630,6 +644,19 @@ static void code_block(sb *out, const char *code)
 
 static void describe_order(const decl *d, sb *out);
 
+// What a Button's fields mean. Engines disagree on these names (raylib's
+// "down" is Unity's "pressed"), so hovers and completions spell it out.
+static const char *button_field_doc(const decl *d, const str name)
+{
+    if (!d || d->kind != DECL_RECORD || !str_eq_c(d->name, "Button")) return NULL;
+    if (str_eq_c(name, "pressed")) {
+        return "True while the button is held: down at any point since the last tick, so a quick tap is never missed.";
+    }
+    if (str_eq_c(name, "down")) return "True on the tick the button went down.";
+    if (str_eq_c(name, "up")) return "True on the tick the button went up.";
+    return NULL;
+}
+
 // Markdown for a hover over `o`.
 static void describe(const occurrence *o, sb *out)
 {
@@ -660,6 +687,7 @@ static void describe(const occurrence *o, sb *out)
         if (o->decl && !o->decl->builtin) format_default(o->field, &code);
         code_block(out, code.data);
         if (o->decl) sb_printf(out, "\n\nField of %s `" STR_FMT "`.", decl_keyword(o->decl), STR_ARG(o->decl->name));
+        if (button_field_doc(o->decl, o->field->name)) sb_printf(out, " %s", button_field_doc(o->decl, o->field->name));
         break;
     case OCC_PARAM:
         format_param(o->param, &code);
@@ -694,7 +722,15 @@ static void describe(const occurrence *o, sb *out)
         }
         break;
     case OCC_METHOD:
-        if (str_eq_c(o->name, "Destroy")) {
+        if (str_eq_c(o->name, "Sample")) {
+            code_block(out, "Sample(Devices devices)");
+            sb_put(out, "\n\nBuilds the player's input from the devices, once per tick on their machine. Fields "
+                        "start at their defaults. It runs outside the simulation, so it only sees the devices.");
+        } else if (str_eq_c(o->name, "Sanitize")) {
+            code_block(out, "Sanitize()");
+            sb_put(out, "\n\nRuns on every input before the simulation reads it, including input from other "
+                        "players, so systems can rely on what it guarantees.");
+        } else if (str_eq_c(o->name, "Destroy")) {
             code_block(out, "entity.Destroy()");
         } else {
             sb_printf(&code, "entity." STR_FMT "(components...)", STR_ARG(o->name));
@@ -707,8 +743,8 @@ static void describe(const occurrence *o, sb *out)
     case OCC_MEMBER:
         sb_printf(&code, "%s " STR_FMT, type_name(o->type), STR_ARG(o->name));
         code_block(out, code.data);
-        if (str_eq_c(o->name, "pressed")) sb_put(out, "\n\nTrue on the tick the button went down.");
-        if (str_eq_c(o->name, "released")) sb_put(out, "\n\nTrue on the tick the button went up.");
+        if (str_eq_c(o->name, "down")) sb_put(out, "\n\nTrue on the tick it became true.");
+        if (str_eq_c(o->name, "up")) sb_put(out, "\n\nTrue on the tick it became false.");
         break;
     case OCC_NAMESPACE: {
         sb_printf(&code, "namespace " STR_FMT, STR_ARG(o->name));
@@ -745,6 +781,129 @@ static void describe_order(const decl *d, sb *out)
         sb_printf(out, "%s`" STR_FMT "`", i ? ", " : ", after ", STR_ARG(d->after.items[i]->qualified));
     }
     sb_put(out, ".");
+    if (d->is_view || d->stage == 0) return;
+
+    sb_printf(out, "\n\n**Stage %d.** ", d->stage);
+    if (d->waits.count == 0) sb_put(out, "It doesn't wait for any system.");
+    else sb_put(out, "It waits for:");
+    for (int i = 0; i < d->waits.count; i++) {
+        const wait *w = &d->waits.items[i];
+        sb_put(out, "\n- ");
+        put_decl_name(out, w->on, "`", d);
+        sb_put(out, ": ");
+        describe_wait(d, w, "`", out);
+    }
+    if (d->alongside.count == 0) {
+        sb_put(out, "\n\nNo other system can run at the same time.");
+    } else {
+        sb_put(out, "\n\nCan run at the same time as ");
+        for (int i = 0; i < d->alongside.count; i++) {
+            sb_put(out, i == 0 ? "" : i == d->alongside.count - 1 ? " and " : ", ");
+            put_decl_name(out, d->alongside.items[i], "`", d);
+        }
+        sb_put(out, ".");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Code lenses: above each system, its stage and why it waits
+
+void analysis_code_lenses(jbuf *out)
+{
+    jb_put(out, "[");
+    int written = 0;
+    for (int i = 0; i < A.prog->systems.count; i++) {
+        const decl *d = A.prog->systems.items[i];
+        if (d->at.file != A.doc || d->stage == 0) continue;
+        sb title = {0};
+        sb_printf(&title, "stage %d", d->stage);
+        for (int k = 0; k < d->waits.count; k++) {
+            const wait *w = &d->waits.items[k];
+            if (w->through) continue; // Shown on the system it goes through
+            sb_put(&title, " \u00B7 after ");
+            put_decl_name(&title, w->on, "", d);
+            sb_put(&title, ": ");
+            describe_wait(d, w, "", &title);
+        }
+        if (d->alongside.count == 0 && A.prog->systems.count > 1) {
+            sb_put(&title, " \u00B7 nothing runs alongside");
+        } else if (d->alongside.count > 0) {
+            sb_put(&title, " \u00B7 alongside ");
+            const int shown = d->alongside.count > 3 ? 3 : d->alongside.count;
+            for (int k = 0; k < shown; k++) {
+                if (k) sb_put(&title, ", ");
+                put_decl_name(&title, d->alongside.items[k], "", d);
+            }
+            if (d->alongside.count > shown) sb_printf(&title, " and %d more", d->alongside.count - shown);
+        }
+        if (written++) jb_put(out, ",");
+        jb_put(out, "{\"range\":");
+        write_range(out, d->at, d->name.len);
+        jb_put(out, ",\"command\":{\"title\":");
+        jb_string(out, title.data);
+        jb_put(out, ",\"command\":\"\"}}");
+    }
+    jb_put(out, "]");
+}
+
+// ---------------------------------------------------------------------------
+// Quick fixes
+
+static loc type_start(const param *p)
+{
+    return p->type_qual_at.line > 0 ? p->type_qual_at : p->type_at;
+}
+
+static void write_edit_range(jbuf *out, const loc start, const loc end)
+{
+    jb_put(out, "{\"start\":");
+    write_position(out, start);
+    jb_put(out, ",\"end\":");
+    write_position(out, end);
+    jb_put(out, "}");
+}
+
+void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
+{
+    jb_put(out, "[");
+    int written = 0;
+    for (int i = 0; i < A.prog->fixes.count; i++) {
+        const fix *f = &A.prog->fixes.items[i];
+        if (f->at.file != A.doc || f->at.line - 1 < start_line || f->at.line - 1 > end_line) continue;
+        const param *p = f->param;
+        sb title = {0};
+        sb text = {0};
+        loc start = type_start(p);
+        loc end = start;
+        switch (f->kind) {
+        case FIX_ADD_MUT:
+            sb_printf(&title, "Declare '" STR_FMT "' as mut", STR_ARG(p->name));
+            sb_put(&text, "mut ");
+            break;
+        case FIX_REMOVE_MUT:
+            sb_printf(&title, "Remove 'mut' from '" STR_FMT "'", STR_ARG(p->name));
+            start = p->at;
+            sb_put(&text, "");
+            break;
+        case FIX_USE_WITH:
+            sb_printf(&title, "Only require it: 'with " STR_FMT "'", STR_ARG(p->type_name));
+            start = p->at;
+            end = (loc){p->name_at.line, p->name_at.col + p->name.len, p->name_at.file};
+            sb_printf(&text, "with " STR_FMT, STR_ARG(p->type_name));
+            break;
+        }
+        if (written++) jb_put(out, ",");
+        jb_put(out, "{\"title\":");
+        jb_string(out, title.data);
+        jb_put(out, ",\"kind\":\"quickfix\",\"isPreferred\":true,\"edit\":{\"changes\":{");
+        jb_string(out, A.files[A.doc].uri);
+        jb_put(out, ":[{\"range\":");
+        write_edit_range(out, start, end);
+        jb_put(out, ",\"newText\":");
+        jb_string(out, text.data ? text.data : "");
+        jb_put(out, "}]}}}");
+    }
+    jb_put(out, "]");
 }
 
 static const occurrence *occurrence_at(const loc at)
@@ -1026,7 +1185,8 @@ static void item(completion *c, const char *label, const int kind, const char *d
 // What surrounds the cursor.
 typedef struct scope {
     const decl *decl;           // The system, view or input whose body holds the cursor, or NULL
-    bool in_constructor;
+    bool in_input;
+    bool in_sanitize; // Sets in_input too, for the fields
     VEC(const stmt *) locals;   // Locals declared before the cursor, still in scope
 } scope;
 
@@ -1055,10 +1215,12 @@ static scope scope_at(const loc at)
     scope sc = {0};
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (d->builtin || !block_contains(d->body, at)) continue;
+        const bool sanitize = block_contains(d->sanitize, at);
+        if (d->builtin || (!block_contains(d->body, at) && !sanitize)) continue;
         sc.decl = d;
-        sc.in_constructor = d->kind == DECL_INPUT;
-        collect_locals(d->body, at, &sc);
+        sc.in_input = d->kind == DECL_INPUT;
+        sc.in_sanitize = sanitize;
+        collect_locals(sanitize ? d->sanitize : d->body, at, &sc);
     }
     return sc;
 }
@@ -1071,14 +1233,14 @@ static type name_type(const scope *sc, const str name, const param **param_out)
         if (str_eq(sc->locals.items[i]->name, name)) return sc->locals.items[i]->type;
     }
     if (!sc->decl) return (type){TY_ERROR, NULL};
-    for (int i = 0; i < sc->decl->params.count; i++) {
+    for (int i = 0; i < sc->decl->params.count && !sc->in_sanitize; i++) {
         const param *p = &sc->decl->params.items[i];
         if (p->name.len > 0 && str_eq(p->name, name)) {
             *param_out = p;
             return p->type;
         }
     }
-    if (sc->in_constructor) {
+    if (sc->in_input) {
         for (int i = 0; i < sc->decl->fields.count; i++) {
             if (str_eq(sc->decl->fields.items[i].name, name)) return sc->decl->fields.items[i].type;
         }
@@ -1120,7 +1282,7 @@ static void list_members(completion *c, const type t, const bool edges, const sc
     if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD)) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             const field *f = &t.decl->fields.items[i];
-            item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), NULL, NULL);
+            item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
         }
     }
     const int dim = type_dim(t);
@@ -1148,14 +1310,14 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         static const char *const columns[] = {"c0", "c1", "c2", "c3"};
         item(c, columns[i], CK_PROPERTY, type_name(vector_type(true, n)), "A column.", NULL);
     }
-    if (t.kind == TY_ENTITY && sc->decl && !sc->decl->is_view && !sc->in_constructor) {
+    if (t.kind == TY_ENTITY && sc->decl && !sc->decl->is_view && !sc->in_input) {
         item(c, "Add", CK_METHOD, "entity.Add(components...)", "Adds components, or replaces their values.", "Add($1)");
         item(c, "Remove", CK_METHOD, "entity.Remove(components...)", "Removes components.", "Remove($1)");
         item(c, "Destroy", CK_METHOD, "entity.Destroy()", "Destroys the entity at the end of the tick.", "Destroy()");
     }
     if (edges && t.kind == TY_BOOL) {
-        item(c, "pressed", CK_PROPERTY, "bool", "True on the tick it became true.", NULL);
-        item(c, "released", CK_PROPERTY, "bool", "True on the tick it became false.", NULL);
+        item(c, "down", CK_PROPERTY, "bool", "True on the tick it became true.", NULL);
+        item(c, "up", CK_PROPERTY, "bool", "True on the tick it became false.", NULL);
     }
 }
 
@@ -1337,14 +1499,14 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         item(c, str_to_cstr(s->name), CK_VARIABLE, type_name(s->type), NULL, NULL);
     }
     if (sc.decl) {
-        for (int i = 0; i < sc.decl->params.count; i++) {
+        for (int i = 0; i < sc.decl->params.count && !sc.in_sanitize; i++) {
             const param *p = &sc.decl->params.items[i];
             if (p->name.len == 0) continue;
             sb detail = {0};
             format_param(p, &detail);
             item(c, str_to_cstr(p->name), CK_VARIABLE, detail.data, NULL, NULL);
         }
-        if (sc.in_constructor) {
+        if (sc.in_input) {
             for (int i = 0; i < sc.decl->fields.count; i++) {
                 const field *f = &sc.decl->fields.items[i];
                 item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), NULL, NULL);
@@ -1352,7 +1514,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         }
     }
 
-    if (sc.decl && !view && !sc.in_constructor) {
+    if (sc.decl && !view && !sc.in_input) {
         item(c, "Spawn", CK_FUNCTION, "Spawn(components...) -> Entity", "Creates an entity with these components.",
              "Spawn($1)");
         complete_types(c, true, false, false);
@@ -1370,8 +1532,8 @@ static void complete_declarations(completion *c)
     item(c, "system", CK_SNIPPET, "system Name(parameters) { ... }", NULL, "system ${1:Name}($2)\n{\n    $0\n}");
     item(c, "view", CK_SNIPPET, "view Name(parameters) { ... }", "Runs once per frame and draws.",
          "view ${1:Name}($2)\n{\n    $0\n}");
-    item(c, "input", CK_SNIPPET, "input Name { fields; constructor }", "What a player sends each tick.",
-         "input ${1:Name}\n{\n    $0\n\n    ${1:Name}(Devices devices)\n    {\n    }\n}");
+    item(c, "input", CK_SNIPPET, "input Name { fields; Sample }", "What a player sends each tick.",
+         "input ${1:Name}\n{\n    $0\n\n    Sample(Devices devices)\n    {\n    }\n}");
     item(c, "namespace", CK_KEYWORD, "namespace Name;", "The namespace of everything in this file. Goes at the top.",
          "namespace ${1:Name};");
     item(c, "using", CK_KEYWORD, "using Name;", "Names from another namespace, without writing it. Goes at the top.",
@@ -1388,7 +1550,10 @@ static void complete_param_name(completion *c, const str type_name_)
 }
 
 // Contexts the cursor can be in, found by scanning tokens.
-typedef enum context_kind { CTX_TOP, CTX_DATA, CTX_HEADER, CTX_CODE, CTX_LITERAL, CTX_ATTRIBUTE, CTX_ATTRIBUTE_ARGS } context_kind;
+typedef enum context_kind {
+    CTX_TOP, CTX_DATA, CTX_HEADER, CTX_CODE, CTX_LITERAL, CTX_ATTRIBUTE, CTX_ATTRIBUTE_ARGS,
+    CTX_FIELD_ATTRIBUTE, CTX_FIELD_ATTRIBUTE_ARGS, // [Clamp(-1, 1)] before an input field
+} context_kind;
 
 typedef struct frame {
     context_kind kind;
@@ -1399,7 +1564,7 @@ static bool starts_declaration(const int i)
 {
     const token *t = &DOC->toks[i];
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
-    if (t->kind == T_LBRACKET && t->at.col == 1) return true; // Attributes
+    if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(DOC->toks, i); // Attributes
     return t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "namespace")
             || str_eq_c(t->text, "using"));
@@ -1444,6 +1609,14 @@ void analysis_completion(const int line, const int character, jbuf *out)
             stack[++depth] = (frame){CTX_ATTRIBUTE_ARGS, i};
         } else if (kind == T_RPAREN && top == CTX_ATTRIBUTE_ARGS) {
             depth--;
+        } else if (kind == T_LBRACKET && top == CTX_DATA && depth < 63) {
+            stack[++depth] = (frame){CTX_FIELD_ATTRIBUTE, i};
+        } else if (kind == T_RBRACKET && top == CTX_FIELD_ATTRIBUTE) {
+            depth--;
+        } else if (kind == T_LPAREN && (top == CTX_FIELD_ATTRIBUTE || top == CTX_FIELD_ATTRIBUTE_ARGS) && depth < 63) {
+            stack[++depth] = (frame){CTX_FIELD_ATTRIBUTE_ARGS, i}; // One frame per parenthesis: float2(0, 1)
+        } else if (kind == T_RPAREN && top == CTX_FIELD_ATTRIBUTE_ARGS) {
+            depth--;
         } else if (kind == T_LBRACE && depth < 63) {
             context_kind next = CTX_CODE;
             if (top == CTX_TOP && before == T_IDENT) next = CTX_DATA;
@@ -1453,8 +1626,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             depth--;
         } else if (kind == T_LPAREN && depth < 63) {
             const bool header = top == CTX_TOP
-                             || (top == CTX_DATA && before == T_IDENT && stack[depth].open >= 1
-                                 && str_eq(DOC->toks[i - 1].text, DOC->toks[stack[depth].open - 1].text));
+                             || (top == CTX_DATA && before == T_IDENT && str_eq_c(DOC->toks[i - 1].text, "Sample"));
             if (header) stack[++depth] = (frame){CTX_HEADER, i};
         } else if (kind == T_RPAREN && top == CTX_HEADER) {
             depth--;
@@ -1483,6 +1655,20 @@ void analysis_completion(const int line, const int character, jbuf *out)
         }
         break;
 
+    case CTX_FIELD_ATTRIBUTE:
+        if (pk == T_LBRACKET || pk == T_COMMA) {
+            item(&c, "Clamp", CK_FUNCTION, "[Clamp(lo, hi)]", "Keeps the field between lo and hi, before Sanitize runs.",
+                 "Clamp($1)");
+            item(&c, "Min", CK_FUNCTION, "[Min(x)]", "Keeps the field at least x, before Sanitize runs.", "Min($1)");
+            item(&c, "Max", CK_FUNCTION, "[Max(x)]", "Keeps the field at most x, before Sanitize runs.", "Max($1)");
+        }
+        break;
+
+    case CTX_FIELD_ATTRIBUTE_ARGS: // Constant bounds, like a default value
+        complete_value_types(&c, true);
+        item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
+        break;
+
     case CTX_ATTRIBUTE_ARGS:
         if (pk == T_LPAREN || pk == T_COMMA) {
             complete_systems(&c, false);
@@ -1492,8 +1678,8 @@ void analysis_completion(const int line, const int character, jbuf *out)
         break;
 
     case CTX_HEADER: {
-        const bool constructor = f.open < 2 || !(DOC->toks[f.open - 2].kind == T_SYSTEM || str_eq_c(DOC->toks[f.open - 2].text, "view"));
-        if (constructor) {
+        const bool sample = f.open < 2 || !(DOC->toks[f.open - 2].kind == T_SYSTEM || str_eq_c(DOC->toks[f.open - 2].text, "view"));
+        if (sample) {
             if (pk == T_LPAREN) item(&c, "Devices", CK_CLASS, "The keyboard, mouse and gamepad", NULL, NULL);
             else if (pk == T_IDENT) item(&c, "devices", CK_VARIABLE, NULL, NULL, NULL);
         } else if (pk == T_WITH || pk == T_WITHOUT) {
@@ -1673,6 +1859,9 @@ static const decl *decl_of_local(const stmt *local)
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->body && loc_cmp(d->body->at, local->at) < 0 && loc_cmp(local->at, d->body->end) < 0) return d;
+        if (d->sanitize && loc_cmp(d->sanitize->at, local->at) < 0 && loc_cmp(local->at, d->sanitize->end) < 0) {
+            return d;
+        }
     }
     return NULL;
 }

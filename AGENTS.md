@@ -80,6 +80,7 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 - Without `HOST`, the game is the whole program and needs no C: a generated `main` runs it in a window through `purr/run.h`. On the web it's `<target>.html`.
 - With `HOST`, those C files are the program (tests, the demo's smoke test, custom hosts). They include `<name>.h`, where `NAME` defaults to `<target>`.
 - `purrc` compiles all the files together, in order of their paths. The generated files regenerate whenever a `.purr` file or `purrc` changes.
+- `<target>_schedule` is a build target that prints the game's schedule: which systems can run at the same time, and why the others wait.
 - Every game's files are listed in `build/tools/games.txt`, one `<game>\t<path>` per line. A path ending in `/` is a folder: every `.purr` file in it and its subfolders, so editors see new files before the next build. `purrls` reads it to analyze a game's files together, in `purrc`'s order; a file in no game is analyzed alone.
 
 The generated header is the API between the game and the host. Namespaced declarations have their namespace in their C name: `Combat.Health` is `Combat_Health`, read with `purr_get_Combat_Health`.
@@ -90,7 +91,7 @@ The generated header is the API between the game and the host. Namespaced declar
 - `purr_world_draw(w, draw)`: runs every view once, adding their Draw calls to a `purr_draw_list`. Call it once per frame, after `purr_draw_reset(draw)`, then render the list with `purr_platform_draw(draw)`.
 - `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`.
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
-- If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's constructor on the client (call `purr_devices_consume(devices)` after it), and `purr_world_set_input(w, player, input)` sets a player's input for the next tick.
+- If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's `Sample` on the client (call `purr_devices_consume(devices)` after it). `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.
 
 ## Layout
 
@@ -132,7 +133,7 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 ## ECS and simulation state
 
 - The transpiler generates C specific to each game: component structs, archetype storage, per-system dispatch, and the tick. There is no runtime type registry.
-- Resources hold state for the whole world, such as time, RNG and game rules. They live inside the world, and systems declare them the same way as components.
+- Singletons hold state for the whole world, such as time, RNG and game rules (other ECSs call them resources). There is one of each per world, stored inside it, and systems declare them the same way as components.
 - The world is always passed as a pointer, never stored in a global. Several worlds can exist at once, for example predicted and verified copies, several matches on one server, or snapshots.
 - The world owns all simulation memory. Components hold offsets into world memory, never pointers. The allocator's state lives in the world too, so a snapshot captures everything.
 
@@ -147,6 +148,7 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 
 - Rollback netcode with full server authority. The server is the source of truth. Clients predict ahead and roll back when the server disagrees.
 - Sync relies on determinism as much as possible. The main thing sent over the network is inputs.
+- Inputs come from clients, so they're attack points. The engine is forgiving with them and makes bad values hard to turn into broken math or a broken game: NaN and infinite floats in an input become the field's default before the game's `Sanitize` runs, and math functions avoid spreading NaN where they can (`Math.Clamp` always returns a value in range; `Math.Min` and `Math.Max` with one NaN return the other argument).
 - State corrections are supported. Divergence is detected through state hashing.
 - Clients can be denied specific state through a visibility system, for example other players' cards in a poker game.
 - Visibility is dynamic. The server decides at runtime what each player can see, through an API.
@@ -182,3 +184,8 @@ Given the same build and the same inputs, simulation results must be bit-identic
 - It is not an error for two systems to write the same component. It's normal.
 - Those systems run one after the other, in a deterministic order.
 - Tooling tells the user why they didn't run in parallel. Example: "`MoveSystem` runs after `GravitySystem`: both write `Position`."
+- Two systems conflict when one writes a component or singleton the other reads or writes, unless they can never touch the same entity: the compiler proves that from the archetypes (`with Player` against `with Enemy`). `Spawn`, `Add`, `Remove` and `Destroy` never conflict, because they're recorded and applied at the end of the tick in order. Input and `Time` are only read.
+- Conflicting systems keep their order in the tick, and `[Before]`/`[After]` order systems too. A system starts as soon as everything it waits for is done; there are no barriers between stages. A system's stage is only how deep it is in that chain.
+- A system splitting its entities across threads is the other kind of parallelism, and it doesn't change results either.
+- The tick doesn't run on threads yet, but the plan already exists (`analyze_parallelism` in `compiler/src/parallel.c`): the language server shows each system's stage and waits above it and on hover, and `purrc --schedule` (or the `<game>_schedule` build target) prints it as text for CI and agents. `compiler/tests/schedule/` pins its output.
+- Declared access that isn't used is a warning, since it makes other systems wait for nothing: a `mut` parameter that's never written, or a parameter that's never used (a component only needed as a filter belongs in `with`). The language server offers quick fixes, as it does for adding a missing `mut`.

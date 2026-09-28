@@ -1,0 +1,8 @@
+// expect: unknown name 'devices'
+input PlayerInput
+{
+    bool jump;
+    Sample(Devices devices) { jump = devices.keyboard.space.pressed; }
+    Sanitize() { jump = devices.keyboard.space.pressed; }
+}
+system Main() { }
