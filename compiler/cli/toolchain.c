@@ -8,10 +8,8 @@
 
 #ifdef _WIN32
 #define EXE ".exe"
-#define EMCC "emcc.bat"
 #else
 #define EXE ""
-#define EMCC "emcc"
 #endif
 
 static char *existing(const char *dir, const char *name)
@@ -85,28 +83,10 @@ char *find_clang(void)
     return NULL;
 }
 
-static char *emcc_in(const char *emsdk)
+char *find_wasm_ld(const char *clang)
 {
-    char *dir = path_join(emsdk, "upstream/emscripten");
-    char *found = existing(dir, EMCC);
-#ifdef _WIN32
-    if (!found) found = existing(dir, "emcc.exe"); // Newer Emscripten
-#endif
+    char *dir = path_dir(clang);
+    char *found = existing(dir, "wasm-ld" EXE);
     free(dir);
-    return found;
-}
-
-char *find_emcc(void)
-{
-    char *found = sys_env("EMSDK") ? emcc_in(sys_env("EMSDK")) : NULL;
-    if (!found) found = sys_which("emcc"); // An activated emsdk puts emcc on PATH
-    const char *home = sys_env("USERPROFILE") ? sys_env("USERPROFILE") : sys_env("HOME");
-    if (!found && home) {
-        char *emsdk = path_join(home, "emsdk");
-        found = emcc_in(emsdk);
-        free(emsdk);
-    }
-    if (!found) found = emcc_in("C:/emsdk");
-    if (!found) found = emcc_in("D:/Tools/emsdk");
-    return found;
+    return found ? found : sys_which("wasm-ld");
 }

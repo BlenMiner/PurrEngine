@@ -319,7 +319,7 @@ int sys_run(const char *const *argv, const char *cwd, const bool quiet)
     size_t cap = 0;
     for (int i = 0; argv[i]; i++) append_arg(&line, &len, &cap, argv[i]);
 
-    // Batch files, such as Emscripten's emcc.bat, run through cmd.
+    // Batch files run through cmd.
     char *command = line;
     if (ends_with(argv[0], ".bat") || ends_with(argv[0], ".cmd")) {
         command = malloc(len + 32);

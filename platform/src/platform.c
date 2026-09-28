@@ -6,9 +6,8 @@
 
 #include <raylib.h>
 
-#ifdef __EMSCRIPTEN__
-#include <emscripten/emscripten.h>
-#include <emscripten/html5.h>
+#ifdef __wasm__
+#include "purr_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
 #endif
 
 #define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
@@ -84,64 +83,35 @@ static const button_binding mouse_buttons[] = {
 
 _Static_assert(COUNT_OF(mouse_buttons) == 0 PURR_MOUSE_BUTTONS(PLUS_ONE), "every mouse button needs a binding");
 
-static const button_binding gamepad_buttons[] = {
-    {offsetof(purr_gamepad, buttonSouth), GAMEPAD_BUTTON_RIGHT_FACE_DOWN},
-    {offsetof(purr_gamepad, buttonEast), GAMEPAD_BUTTON_RIGHT_FACE_RIGHT},
-    {offsetof(purr_gamepad, buttonWest), GAMEPAD_BUTTON_RIGHT_FACE_LEFT},
-    {offsetof(purr_gamepad, buttonNorth), GAMEPAD_BUTTON_RIGHT_FACE_UP},
-    {offsetof(purr_gamepad, leftShoulder), GAMEPAD_BUTTON_LEFT_TRIGGER_1},
-    {offsetof(purr_gamepad, rightShoulder), GAMEPAD_BUTTON_RIGHT_TRIGGER_1},
-    {offsetof(purr_gamepad, leftStickButton), GAMEPAD_BUTTON_LEFT_THUMB},
-    {offsetof(purr_gamepad, rightStickButton), GAMEPAD_BUTTON_RIGHT_THUMB},
-    {offsetof(purr_gamepad, start), GAMEPAD_BUTTON_MIDDLE_RIGHT},
-    {offsetof(purr_gamepad, select), GAMEPAD_BUTTON_MIDDLE_LEFT},
-    {offsetof(purr_gamepad, dpad.up), GAMEPAD_BUTTON_LEFT_FACE_UP},
-    {offsetof(purr_gamepad, dpad.down), GAMEPAD_BUTTON_LEFT_FACE_DOWN},
-    {offsetof(purr_gamepad, dpad.left), GAMEPAD_BUTTON_LEFT_FACE_LEFT},
-    {offsetof(purr_gamepad, dpad.right), GAMEPAD_BUTTON_LEFT_FACE_RIGHT},
+// raylib's button (desktop), and the button's index in the browser's standard
+// gamepad mapping (web).
+typedef struct gamepad_binding {
+    size_t offset;
+    int raylib;
+    int web;
+} gamepad_binding;
+
+static const gamepad_binding gamepad_buttons[] = {
+    {offsetof(purr_gamepad, buttonSouth), GAMEPAD_BUTTON_RIGHT_FACE_DOWN, 0},
+    {offsetof(purr_gamepad, buttonEast), GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, 1},
+    {offsetof(purr_gamepad, buttonWest), GAMEPAD_BUTTON_RIGHT_FACE_LEFT, 2},
+    {offsetof(purr_gamepad, buttonNorth), GAMEPAD_BUTTON_RIGHT_FACE_UP, 3},
+    {offsetof(purr_gamepad, leftShoulder), GAMEPAD_BUTTON_LEFT_TRIGGER_1, 4},
+    {offsetof(purr_gamepad, rightShoulder), GAMEPAD_BUTTON_RIGHT_TRIGGER_1, 5},
+    {offsetof(purr_gamepad, leftStickButton), GAMEPAD_BUTTON_LEFT_THUMB, 10},
+    {offsetof(purr_gamepad, rightStickButton), GAMEPAD_BUTTON_RIGHT_THUMB, 11},
+    {offsetof(purr_gamepad, start), GAMEPAD_BUTTON_MIDDLE_RIGHT, 9},
+    {offsetof(purr_gamepad, select), GAMEPAD_BUTTON_MIDDLE_LEFT, 8},
+    {offsetof(purr_gamepad, dpad.up), GAMEPAD_BUTTON_LEFT_FACE_UP, 12},
+    {offsetof(purr_gamepad, dpad.down), GAMEPAD_BUTTON_LEFT_FACE_DOWN, 13},
+    {offsetof(purr_gamepad, dpad.left), GAMEPAD_BUTTON_LEFT_FACE_LEFT, 14},
+    {offsetof(purr_gamepad, dpad.right), GAMEPAD_BUTTON_LEFT_FACE_RIGHT, 15},
 };
 
 _Static_assert(COUNT_OF(gamepad_buttons) == 0 PURR_GAMEPAD_BUTTONS(PLUS_ONE) PURR_DPAD_BUTTONS(PLUS_ONE),
                "every gamepad button needs a binding");
 
-#ifdef __EMSCRIPTEN__
-// raylib reads web keys by the character they type, which depends on the
-// keyboard layout. Physical positions come from the DOM's `code` instead.
-static bool web_key_held[COUNT_OF(keys)];
-
-// Keys whose browser default (scrolling, moving focus) would fight the game.
-static bool browser_default_interferes(const int key)
-{
-    switch (key) {
-    case KEY_SPACE: case KEY_TAB: case KEY_BACKSPACE:
-    case KEY_UP: case KEY_DOWN: case KEY_LEFT: case KEY_RIGHT:
-    case KEY_PAGE_UP: case KEY_PAGE_DOWN: case KEY_HOME: case KEY_END:
-        return true;
-    default:
-        return false;
-    }
-}
-
-static EM_BOOL on_web_key(const int type, const EmscriptenKeyboardEvent *event, void *user)
-{
-    (void)user;
-    for (size_t i = 0; i < COUNT_OF(keys); i++) {
-        if (strcmp(event->code, keys[i].dom) == 0) {
-            web_key_held[i] = type == EMSCRIPTEN_EVENT_KEYDOWN;
-            return browser_default_interferes(keys[i].raylib);
-        }
-    }
-    return false;
-}
-
-// Keys released while the page is in the background never send keyup.
-static EM_BOOL on_web_blur(const int type, const EmscriptenFocusEvent *event, void *user)
-{
-    (void)type, (void)event, (void)user;
-    memset(web_key_held, 0, sizeof web_key_held);
-    return false;
-}
-
+#ifdef __wasm__
 static bool web_timer_frames; // Frames on timers instead of animation frames
 #endif
 
@@ -154,7 +124,7 @@ void purr_platform_open(const purr_window_desc *desc)
     // On the web, a resizable window is a canvas that fills the page. Tests
     // keep the size they asked for.
     if (!desc->hidden) flags |= FLAG_WINDOW_RESIZABLE;
-#ifndef __EMSCRIPTEN__
+#ifndef __wasm__
     // The browser paces web frames itself.
     flags |= desc->hidden ? FLAG_WINDOW_HIDDEN : FLAG_VSYNC_HINT;
 #endif
@@ -163,19 +133,18 @@ void purr_platform_open(const purr_window_desc *desc)
     InitWindow(desc->width, desc->height, desc->title);
     SetExitKey(KEY_NULL); // Escape belongs to the game
 
-#ifdef __EMSCRIPTEN__
+#ifdef __wasm__
+    // raylib reads web keys by the character they type, which depends on the
+    // keyboard layout. The page reads the DOM's `code`, which names positions.
     web_timer_frames = desc->hidden;
-    const char *target = EMSCRIPTEN_EVENT_TARGET_WINDOW;
-    emscripten_set_keydown_callback(target, NULL, false, on_web_key);
-    emscripten_set_keyup_callback(target, NULL, false, on_web_key);
-    emscripten_set_blur_callback(target, NULL, false, on_web_blur);
+    for (size_t i = 0; i < COUNT_OF(keys); i++) purr_web_watch_key((int)i, keys[i].dom);
 #endif
 }
 
 _Noreturn static void finish(const int code)
 {
-#ifdef __EMSCRIPTEN__
-    emscripten_cancel_main_loop();
+#ifdef __wasm__
+    purr_web_stop();
 #endif
     CloseWindow();
     exit(code);
@@ -189,8 +158,9 @@ static int step(void)
     return code;
 }
 
-#ifdef __EMSCRIPTEN__
-static void web_step(void)
+#ifdef __wasm__
+// The page calls it for every frame, once purr_platform_run starts the loop.
+__attribute__((export_name("purr_web_frame"))) void purr_web_frame(void)
 {
     const int code = step();
     if (code != PURR_KEEP_RUNNING) finish(code);
@@ -201,11 +171,10 @@ void purr_platform_run(const purr_frame_fn frame, void *user)
 {
     run_frame = frame;
     run_user = user;
-#ifdef __EMSCRIPTEN__
+#ifdef __wasm__
     // Frames on requestAnimationFrame, or as fast as timers allow when hidden.
-    // Doesn't return: it unwinds main's stack.
-    emscripten_set_main_loop(web_step, web_timer_frames ? 1000 : 0, true);
-    __builtin_unreachable();
+    // Doesn't return: it unwinds main's stack back to the browser.
+    purr_web_run(web_timer_frames);
 #else
     for (;;) {
         if (WindowShouldClose()) finish(0);
@@ -218,8 +187,8 @@ void purr_platform_run(const purr_frame_fn frame, void *user)
 static void poll_keyboard(purr_keyboard *k)
 {
     for (size_t i = 0; i < COUNT_OF(keys); i++) {
-#ifdef __EMSCRIPTEN__
-        const bool held = web_key_held[i];
+#ifdef __wasm__
+        const bool held = purr_web_key_held((int)i);
 #else
         const bool held = IsKeyDown(keys[i].raylib);
 #endif
@@ -242,39 +211,46 @@ static void poll_mouse(purr_mouse *m)
         purr_button_set(BUTTON_AT(m, mouse_buttons[i].offset), IsMouseButtonDown(mouse_buttons[i].raylib));
 }
 
-// 0 to 1. `web_button` is the trigger in the browser's standard gamepad mapping.
-static float gamepad_trigger(const int pad, const int axis, const int web_button)
+// A trigger as 0 to 1 (raylib reports -1 released to 1 fully pressed).
+static float trigger(const int pad, const int axis)
 {
-#ifdef __EMSCRIPTEN__
-    // Browsers report triggers as analog buttons, not axes.
-    (void)axis;
-    EmscriptenGamepadEvent state;
-    if (emscripten_get_gamepad_status(pad, &state) == EMSCRIPTEN_RESULT_SUCCESS && web_button < state.numButtons)
-        return (float)state.analogButton[web_button];
-    return 0.0f;
-#else
-    (void)web_button;
-    return (GetGamepadAxisMovement(pad, axis) + 1.0f) * 0.5f; // raylib: -1 released, 1 fully pressed
-#endif
+    return (GetGamepadAxisMovement(pad, axis) + 1.0f) * 0.5f;
 }
 
 static void poll_gamepad(purr_gamepad *g)
 {
     const int pad = 0;
+#ifdef __wasm__
+    // The browser's standard mapping: axes 0 to 3 are the sticks, and the
+    // triggers are analog buttons 6 and 7.
+    g->connected = purr_web_gamepad_connected(pad);
+    if (g->connected) {
+        g->leftStick = purr_f2(purr_web_gamepad_axis(pad, 0), -purr_web_gamepad_axis(pad, 1));
+        g->rightStick = purr_f2(purr_web_gamepad_axis(pad, 2), -purr_web_gamepad_axis(pad, 3));
+        g->leftTrigger = purr_web_gamepad_button(pad, 6);
+        g->rightTrigger = purr_web_gamepad_button(pad, 7);
+    }
+#else
     g->connected = IsGamepadAvailable(pad);
     if (g->connected) {
         g->leftStick = purr_f2(GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_X),
                                -GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_Y));
         g->rightStick = purr_f2(GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X),
                                 -GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_Y));
-        g->leftTrigger = gamepad_trigger(pad, GAMEPAD_AXIS_LEFT_TRIGGER, 6);
-        g->rightTrigger = gamepad_trigger(pad, GAMEPAD_AXIS_RIGHT_TRIGGER, 7);
-    } else {
+        g->leftTrigger = trigger(pad, GAMEPAD_AXIS_LEFT_TRIGGER);
+        g->rightTrigger = trigger(pad, GAMEPAD_AXIS_RIGHT_TRIGGER);
+    }
+#endif
+    if (!g->connected) {
         g->leftStick = g->rightStick = purr_f2(0.0f, 0.0f);
         g->leftTrigger = g->rightTrigger = 0.0f;
     }
     for (size_t i = 0; i < COUNT_OF(gamepad_buttons); i++) {
+#ifdef __wasm__
+        const bool held = g->connected && purr_web_gamepad_button(pad, gamepad_buttons[i].web) > 0.5f;
+#else
         const bool held = g->connected && IsGamepadButtonDown(pad, gamepad_buttons[i].raylib);
+#endif
         purr_button_set(BUTTON_AT(g, gamepad_buttons[i].offset), held);
     }
 }

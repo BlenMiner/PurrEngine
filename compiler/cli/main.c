@@ -29,7 +29,7 @@ static void usage(void)
            "\n"
            "run and build:\n"
            "  --release          optimized, the way players get it\n"
-           "  --web              a web page (WebGL 2), through Emscripten\n"
+           "  --web              a web page (WebGL 2), with clang's WebAssembly target\n"
            "  --title <title>    the window's title (default: the folder's name)\n"
            "  --stats            show the tick, the entity count and the frame rate\n"
            "  -o <path>          build: where the program goes\n"
@@ -66,9 +66,9 @@ static int version(const char *root)
 {
     printf("purr %s (%s)\ninstalled in %s\n", PURR_VERSION, purr_channel(root), root);
     char *clang = find_clang();
-    char *emcc = find_emcc();
-    printf("clang:      %s\n", clang ? clang : "not found (purr needs it to build games)");
-    printf("emscripten: %s\n", emcc ? emcc : "not found (needed for --web)");
+    char *wasm_ld = clang ? find_wasm_ld(clang) : NULL;
+    printf("clang:   %s\n", clang ? clang : "not found (purr needs it to build games)");
+    printf("wasm-ld: %s\n", wasm_ld ? wasm_ld : "not found (needed for --web)");
     return 0;
 }
 

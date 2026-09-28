@@ -25,7 +25,7 @@
       "name": "web-base",
       "hidden": true,
       "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/emscripten-toolchain.cmake"
+      "toolchainFile": "${sourceDir}/cmake/wasi-toolchain.cmake"
     },
     {
       "name": "web-debug",

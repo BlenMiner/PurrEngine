@@ -18,11 +18,35 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# Web builds: WebAssembly through clang and wasi-libc (cmake/wasi-toolchain.cmake).
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+    set(PURR_WEB ON)
+    set(CMAKE_EXECUTABLE_SUFFIX .wasm) # CMake's WASI platform leaves it empty
+else()
+    set(PURR_WEB OFF)
+endif()
+
 include(cmake/PurrFlags.cmake)
 include(cmake/PurrLang.cmake)
 include(cmake/WebTest.cmake)
 
 option(PURR_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
+option(PURR_TOOLS_ONLY "Build only purrc, as web builds do for their host (cmake/HostPurrc.cmake)" OFF)
+
+# purr_add_game runs purrc: this build's, or in web builds a native one, since
+# a WebAssembly purrc can't run during the build.
+if(PURR_WEB)
+    include(cmake/HostPurrc.cmake)
+else()
+    set(PURRC_COMMAND purrc)
+    set(PURRC_DEPENDS purrc)
+    set(PURRC_PATH "$<TARGET_FILE:purrc>")
+endif()
+
+if(PURR_TOOLS_ONLY)
+    add_subdirectory(compiler)
+    return()
+endif()
 
 # What the purr command says it is, and where it looks for updates. Release
 # builds get the version semantic-release picked (.github/workflows/build.yml);
@@ -37,7 +61,7 @@ set(PURR_REPOSITORY "BlenMiner/PurrEngine" CACHE STRING "The GitHub repository p
 # prebuilt platform layer.
 file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/package/VERSION" CONTENT "${PURR_VERSION}\n")
 install(FILES "${CMAKE_BINARY_DIR}/package/VERSION" DESTINATION . COMPONENT purr)
-if(NOT EMSCRIPTEN)
+if(NOT PURR_WEB)
     # Editor support: highlighting, and the language server through purrls on PATH.
     install(DIRECTORY tools/purrlang-syntax DESTINATION editors COMPONENT purr)
     install(FILES tools/purrlang-lsp4ij/installed/template.json DESTINATION editors/purrlang-lsp4ij COMPONENT purr)

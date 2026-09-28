@@ -1,14 +1,13 @@
 // Web only: the platform layer must read keys by physical position.
 //
 // The events imitate an AZERTY keyboard, where the key in the US W position
-// types 'z'. Emscripten's GLFW, which raylib uses on the web, reads the typed
-// key and would report Z; Devices must report w, as on desktop.
+// types 'z'. Anything reading the typed key would report Z; Devices must report
+// w, as on desktop.
 
 #include <stdio.h>
 
-#include <emscripten/emscripten.h>
-
 #include "purr/platform.h"
+#include "purr_web.h"
 
 static purr_devices devices;
 static int failures;
@@ -19,13 +18,13 @@ static void check(const bool ok, const char *what)
     if (!ok) failures++;
 }
 
-// `key_code` is the legacy code for the typed key, which Emscripten's GLFW reads.
+// `key_code` is the legacy code for the typed key, which follows the layout.
 static void key_event(const char *type, const char *code, const char *key, const int key_code)
 {
     char script[200];
     snprintf(script, sizeof script, "dispatchEvent(new KeyboardEvent('%s', {code: '%s', key: '%s', keyCode: %d}))",
              type, code, key, key_code);
-    emscripten_run_script(script);
+    purr_web_eval(script);
 }
 
 // Each frame checks the events sent at the end of the previous one, the way
@@ -48,7 +47,7 @@ static int frame(void *user, const float seconds)
     case 2:
         check(!devices.keyboard.w.held && devices.keyboard.w.up, "releasing it reads as a release");
         key_event("keydown", "Space", " ", 32);
-        emscripten_run_script("dispatchEvent(new FocusEvent('blur'))");
+        purr_web_eval("dispatchEvent(new FocusEvent('blur'))");
         return PURR_KEEP_RUNNING;
     default:
         check(!devices.keyboard.space.held, "losing focus releases held keys");

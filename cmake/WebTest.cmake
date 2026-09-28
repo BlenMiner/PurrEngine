@@ -6,7 +6,7 @@
 # <pre id="log"> and the exit code into <body data-exit>, as
 # platform/web/test_shell.html does. The test is skipped if no browser is found.
 
-if(EMSCRIPTEN)
+if(PURR_WEB)
     find_program(PURR_BROWSER
         NAMES chrome google-chrome chromium chromium-browser msedge "Google Chrome"
         PATHS
@@ -21,7 +21,7 @@ function(purr_add_web_test name)
     add_test(NAME ${name}
         COMMAND "${CMAKE_COMMAND}"
             "-DBROWSER=${PURR_BROWSER}"
-            "-DPAGE=$<TARGET_FILE:${ARG_TARGET}>"
+            "-DPAGE=$<TARGET_FILE_DIR:${ARG_TARGET}>/${ARG_TARGET}.html"
             "-DQUERY=${ARG_QUERY}"
             "-DPROFILE=${CMAKE_CURRENT_BINARY_DIR}/${name}-browser"
             -P "${PROJECT_SOURCE_DIR}/cmake/run_web_test.cmake")

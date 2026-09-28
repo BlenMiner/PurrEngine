@@ -58,8 +58,8 @@ function(purr_add_game target)
     add_custom_command(
         OUTPUT "${out_c}" "${out_h}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out_dir}"
-        COMMAND purrc ${sources} -o "${out_dir}" --name "${name}"
-        DEPENDS purrc ${sources}
+        COMMAND ${PURRC_COMMAND} ${sources} -o "${out_dir}" --name "${name}"
+        DEPENDS ${PURRC_DEPENDS} ${sources}
         COMMENT "purrc ${target}"
         VERBATIM)
 
@@ -95,8 +95,8 @@ int main(void)
     # `cmake --build --preset <preset> --target <target>_schedule` prints which
     # systems can run at the same time, and why the others wait.
     add_custom_target(${target}_schedule
-        COMMAND purrc ${sources} --schedule --name "${name}"
-        DEPENDS purrc
+        COMMAND ${PURRC_COMMAND} ${sources} --schedule --name "${name}"
+        DEPENDS ${PURRC_DEPENDS}
         VERBATIM
         USES_TERMINAL)
 

@@ -28,9 +28,9 @@ script.
 - **Windows:** [LLVM](https://github.com/llvm/llvm-project/releases) (or
   `winget install LLVM.LLVM`), and Visual Studio or its Build Tools with
   *Desktop development with C++*, for the system libraries programs link with.
-- **Linux:** clang from your package manager.
-- **Web games:** [Emscripten](https://emscripten.org/docs/getting_started/downloads.html),
-  with `EMSDK` set to its folder.
+- **Linux:** clang and lld from your package manager.
+
+Web games need nothing more: the same clang builds them for WebAssembly.
 
 `purr version` shows which compilers it found.
 

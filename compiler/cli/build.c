@@ -134,14 +134,21 @@ static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-
 #define EXE_SUFFIX ""
 #endif
 
-// What the web platform library was built with (platform/, cmake/PurrFlags.cmake).
-static const char *const web_link_flags[] = {"-sSINGLE_FILE=1", "-sEXIT_RUNTIME=1", "-sINITIAL_MEMORY=64MB",
-                                             "-sALLOW_MEMORY_GROWTH=1", "-sSTACK_SIZE=1MB", "-sUSE_GLFW=3",
-                                             "-sEXPORTED_RUNTIME_METHODS=ccall", "-sMIN_WEBGL_VERSION=2",
-                                             "-sMAX_WEBGL_VERSION=2", NULL};
+// Web builds: clang's own wasm target, with the package's wasi-libc (as in
+// cmake/wasi-toolchain.cmake). The page's JavaScript implements the GL
+// functions the platform imports, and allocates with malloc.
+static const char *web_target = "--target=wasm32-wasip1";
+static char *web_sysroot;  // --sysroot=<root>/wasi/sysroot
+static char *web_builtins; // The compiler runtime, passed by path
+static const char *const web_link_flags[] = {"-nodefaultlibs", "-Wl,--allow-undefined", "-Wl,--export=malloc",
+                                             "-Wl,--export=free", "-Wl,-z,stack-size=1048576", NULL};
 
 static void config_flags(args *a, const build_options *opts)
 {
+    if (opts->web) {
+        arg(a, web_target);
+        arg(a, web_sysroot);
+    }
     arg_list(a, common_flags);
     arg_list(a, opts->release ? release_flags : debug_flags);
 #ifdef _WIN32
@@ -219,6 +226,56 @@ static void compile_engine_file(void *user, const char *source)
 }
 
 // ---------------------------------------------------------------------------
+// The web page: the package's shell, with a <script> holding the program as
+// base64 and purr.js, which runs it. The same as cmake/web_page.mjs.
+
+static char *base64(const unsigned char *data, const size_t len)
+{
+    static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char *out = malloc((len + 2) / 3 * 4 + 1);
+    if (!out) abort();
+    size_t n = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        const unsigned v = (unsigned)data[i] << 16 | (i + 1 < len ? (unsigned)data[i + 1] << 8 : 0)
+                         | (i + 2 < len ? data[i + 2] : 0);
+        out[n++] = digits[v >> 18 & 63];
+        out[n++] = digits[v >> 12 & 63];
+        out[n++] = i + 1 < len ? digits[v >> 6 & 63] : '=';
+        out[n++] = i + 2 < len ? digits[v & 63] : '=';
+    }
+    out[n] = '\0';
+    return out;
+}
+
+static bool make_page(const char *root, const char *program, const char *page)
+{
+    char *shell_path = path_join(root, "web/shell.html");
+    char *script_path = path_join(root, "web/purr.js");
+    char *shell = sys_read_file(shell_path, NULL);
+    char *script = sys_read_file(script_path, NULL);
+    size_t wasm_len = 0;
+    char *wasm = sys_read_file(program, &wasm_len);
+    const char *slot = shell ? strstr(shell, "{{{ SCRIPT }}}") : NULL;
+    if (!script || !wasm || !slot) {
+        fprintf(stderr, "purr: the web page's files are missing from %s/web; reinstall purr\n", root);
+        return false;
+    }
+    char *encoded = base64((const unsigned char *)wasm, wasm_len);
+    FILE *f = fopen(page, "wb");
+    if (!f) {
+        fprintf(stderr, "purr: can't write %s\n", page);
+        return false;
+    }
+    fwrite(shell, 1, (size_t)(slot - shell), f);
+    fprintf(f, "<script>\nconst PURR_PROGRAM = \"%s\";\n%s</script>", encoded, script);
+    fputs(slot + strlen("{{{ SCRIPT }}}"), f);
+    const bool ok = fclose(f) == 0;
+    free(encoded);
+    free(wasm);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 
 static bool generate(const char *folder, const char *gen)
 {
@@ -244,18 +301,21 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
         return NULL;
     }
 
-    char *compiler = opts->web ? find_emcc() : find_clang();
+    char *compiler = find_clang();
     if (!compiler) {
-        if (opts->web) {
-            fprintf(stderr, "purr: Emscripten isn't installed, and web builds need it\n");
-            fprintf(stderr, "  = note: install emsdk (https://emscripten.org/docs/getting_started/downloads.html) "
-                            "and set EMSDK to its folder\n");
-        } else {
-            fprintf(stderr, "purr: clang isn't installed, and purr needs it to build games\n");
-            fprintf(stderr, "  = note: install LLVM (https://github.com/llvm/llvm-project/releases), add it to PATH, "
-                            "or set LLVM_ROOT\n");
-        }
+        fprintf(stderr, "purr: clang isn't installed, and purr needs it to build games\n");
+        fprintf(stderr, "  = note: install LLVM (https://github.com/llvm/llvm-project/releases), add it to PATH, "
+                        "or set LLVM_ROOT\n");
         return NULL;
+    }
+    if (opts->web) {
+        if (!find_wasm_ld(compiler)) {
+            fprintf(stderr, "purr: web builds need wasm-ld, the WebAssembly linker, and it isn't next to clang\n");
+            fprintf(stderr, "  = note: LLVM's releases include it; on Linux, install your distribution's lld\n");
+            return NULL;
+        }
+        web_sysroot = format("--sysroot=%s/wasi/sysroot", root, NULL);
+        web_builtins = format("%s/wasi/libclang_rt.builtins.a", root, NULL);
     }
 
     // Everything purr makes goes in <folder>/.purr/<configuration>.
@@ -306,9 +366,20 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
     }
     char *output_dir = path_dir(output);
     sys_mkdirs(output_dir);
+    // Web builds link a .wasm, which then goes inside the page.
+    char *program = output;
+    if (opts->web) {
+        char file[512];
+        snprintf(file, sizeof file, "%s.wasm", name);
+        program = path_join(cache, file);
+    }
 
     args a = {0};
     arg(&a, compiler);
+    if (opts->web) {
+        arg(&a, web_target);
+        arg(&a, web_sysroot);
+    }
     arg(&a, game_o);
     arg(&a, main_o);
     for (int i = 0; i < engine.objects.count; i++) arg(&a, engine.objects.items[i]);
@@ -320,14 +391,12 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
     arg(&a, platform_lib);
     arg(&a, raylib_lib);
     arg(&a, "-o");
-    arg(&a, output);
+    arg(&a, program);
     arg_list(&a, opts->release ? release_flags : debug_flags);
-    char *shell = NULL;
     if (opts->web) {
-        shell = path_join(root, "web/shell.html");
-        arg(&a, "--shell-file");
-        arg(&a, shell);
         arg_list(&a, web_link_flags);
+        arg(&a, "-lc");
+        arg(&a, web_builtins);
     } else {
         arg_list(&a, native_flags);
 #ifdef _WIN32
@@ -348,6 +417,7 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
         if (code == -1) fprintf(stderr, "purr: couldn't start %s\n", compiler);
         return NULL;
     }
+    if (opts->web && !make_page(root, program, output)) return NULL;
     return output;
 }
 
