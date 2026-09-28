@@ -211,11 +211,13 @@ static void poll_mouse(purr_mouse *m)
         purr_button_set(BUTTON_AT(m, mouse_buttons[i].offset), IsMouseButtonDown(mouse_buttons[i].raylib));
 }
 
+#ifndef __wasm__
 // A trigger as 0 to 1 (raylib reports -1 released to 1 fully pressed).
 static float trigger(const int pad, const int axis)
 {
     return (GetGamepadAxisMovement(pad, axis) + 1.0f) * 0.5f;
 }
+#endif
 
 static void poll_gamepad(purr_gamepad *g)
 {

@@ -114,56 +114,87 @@ static const char *const debug_flags[] = {"-O0", "-g", NULL};
 static const char *const release_flags[] = {"-O2", "-DNDEBUG", NULL};
 
 #ifdef _WIN32
-// The C runtime is linked statically, as in the prebuilt platform library, so
-// players need no Visual C++ redistributable.
-static const char *const native_flags[] = {"-fms-runtime-lib=static", "-D_CRT_SECURE_NO_WARNINGS", NULL};
-static const char *const native_libs[] = {"-lopengl32", "-lglu32", "-lgdi32", "-lwinmm", "-luser32", "-lshell32",
-                                          "-lkernel32", "-lole32", "-loleaut32", "-luuid", "-lcomdlg32",
-                                          "-ladvapi32", "-lwinspool", NULL};
-#define LIB_PREFIX ""
-#define LIB_SUFFIX ".lib"
+// Windows games use the MinGW-w64 target, whose C runtime comes with purr (as
+// in cmake/mingw-toolchain.cmake): Microsoft's can't be redistributed. Its C
+// library is the UCRT, part of Windows, so games need no DLLs of their own.
+#define NATIVE_TARGET "--target=x86_64-w64-windows-gnu"
+#define NATIVE_RUNTIME "mingw"
+static const char *const native_libs[] = {"-lmingw32", "-lmingwex", "-lmoldname", "-lmsvcrt", "-lkernel32",
+                                          "-luser32", "-lgdi32", "-lshell32", "-ladvapi32", "-lopengl32",
+                                          "-lwinmm", NULL};
 #define EXE_SUFFIX ".exe"
 #elif defined(__APPLE__)
-static const char *const native_flags[] = {NULL};
 // What raylib and its GLFW link on macOS.
 static const char *const native_libs[] = {"-framework", "Cocoa", "-framework", "IOKit", "-framework", "CoreFoundation",
                                           "-framework", "CoreVideo", "-framework", "OpenGL", "-framework", "CoreAudio",
                                           "-framework", "AudioToolbox", NULL};
-#define LIB_PREFIX "lib"
-#define LIB_SUFFIX ".a"
 #define EXE_SUFFIX ""
 #else
-static const char *const native_flags[] = {NULL};
 // raylib calls Xlib directly (the rest of X11 and OpenGL it loads at run time).
 // The library itself, not -lX11: every desktop has it, but not every desktop
 // has the development package that provides libX11.so.
 static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-l:libX11.so.6", NULL};
-#define LIB_PREFIX "lib"
-#define LIB_SUFFIX ".a"
 #define EXE_SUFFIX ""
 #endif
 
 // Web builds: clang's own wasm target, with the package's wasi-libc (as in
 // cmake/wasi-toolchain.cmake). The page's JavaScript implements the GL
 // functions the platform imports, and allocates with malloc.
-static const char *web_target = "--target=wasm32-wasip1";
-static char *web_sysroot;  // --sysroot=<root>/wasi/sysroot
-static char *web_builtins; // The compiler runtime, passed by path
-static const char *const web_link_flags[] = {"-nodefaultlibs", "-Wl,--allow-undefined", "-Wl,--export=malloc",
-                                             "-Wl,--export=free", "-Wl,-z,stack-size=1048576", NULL};
+static const char *const web_link_flags[] = {"-Wl,--allow-undefined", "-Wl,--export=malloc", "-Wl,--export=free",
+                                             "-Wl,-z,stack-size=1048576", NULL};
+
+// The target, when it isn't the system's: its C library comes with purr, in
+// <root>/<runtime>/sysroot, and its compiler runtime is passed by path, since
+// clang looks for it in its own installation.
+typedef struct target {
+    const char *flag;   // --target=..., or NULL for the system's
+    char *sysroot_flag; // --sysroot=...
+    char *builtins;     // The compiler runtime
+} target;
+
+static target build_target;
+
+static bool find_target(const char *root, const build_options *opts)
+{
+    const char *runtime = NULL;
+    if (opts->web) {
+        build_target.flag = "--target=wasm32-wasip1";
+        runtime = "wasi";
+    }
+#ifdef NATIVE_TARGET
+    else {
+        build_target.flag = NATIVE_TARGET;
+        runtime = NATIVE_RUNTIME;
+    }
+#endif
+    if (!runtime) return true;
+    char *dir = path_join(root, runtime);
+    build_target.sysroot_flag = format("--sysroot=%s/sysroot", dir, NULL);
+    build_target.builtins = opts->web ? path_join(dir, "libclang_rt.builtins.a")
+                                      : path_join(dir, "libclang_rt.builtins-x86_64.a");
+    const bool found = sys_exists(build_target.builtins);
+    if (!found) {
+        fprintf(stderr, "purr: this installation can't build %s games: %s is missing\n", opts->web ? "web" : "native",
+                dir);
+        fprintf(stderr, "  = note: reinstall purr, or for a build of this repo package the %s preset too\n",
+                opts->web ? "web-package" : "mingw-release");
+    }
+    free(dir);
+    return found;
+}
 
 static void config_flags(args *a, const build_options *opts)
 {
-    if (opts->web) {
-        arg(a, web_target);
-        arg(a, web_sysroot);
+    if (build_target.flag) {
+        arg(a, build_target.flag);
+        arg(a, build_target.sysroot_flag);
     }
     arg_list(a, common_flags);
     arg_list(a, opts->release ? release_flags : debug_flags);
 #ifdef _WIN32
+    // Debug info Visual Studio's debugger reads, in a .pdb next to the game.
     if (!opts->web && !opts->release) arg(a, "-gcodeview");
 #endif
-    if (!opts->web) arg_list(a, native_flags);
 }
 
 // One line with everything that decides the engine objects, so a change in
@@ -326,14 +357,8 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
                             "macOS `brew install llvm lld`\n");
             return NULL;
         }
-        web_sysroot = format("--sysroot=%s/wasi/sysroot", root, NULL);
-        web_builtins = format("%s/wasi/libclang_rt.builtins.a", root, NULL);
-        if (!sys_exists(web_builtins)) {
-            fprintf(stderr, "purr: this installation can't build web games: %s/wasi is missing\n", root);
-            fprintf(stderr, "  = note: reinstall purr, or for a build of this repo package the web-package preset too\n");
-            return NULL;
-        }
     }
+    if (!find_target(root, opts)) return NULL;
 
     // Everything purr makes goes in <folder>/.purr/<configuration>.
     char *purr_dir = path_join(folder, ".purr");
@@ -393,18 +418,17 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
 
     args a = {0};
     arg(&a, compiler);
-    if (opts->web) {
-        arg(&a, web_target);
-        arg(&a, web_sysroot);
+    if (build_target.flag) {
+        arg(&a, build_target.flag);
+        arg(&a, build_target.sysroot_flag);
     }
     arg(&a, game_o);
     arg(&a, main_o);
     for (int i = 0; i < engine.objects.count; i++) arg(&a, engine.objects.items[i]);
     // The prebuilt platform layer, raylib inside (see platform/CMakeLists.txt).
     char *lib_dir = path_join(root, opts->web ? "lib/web" : "lib/native");
-    const char *lib_format = opts->web ? "%s/lib%s.a" : "%s/" LIB_PREFIX "%s" LIB_SUFFIX;
-    char *platform_lib = format(lib_format, lib_dir, "purr_platform");
-    char *raylib_lib = format(lib_format, lib_dir, "raylib");
+    char *platform_lib = format("%s/lib%s.a", lib_dir, "purr_platform");
+    char *raylib_lib = format("%s/lib%s.a", lib_dir, "raylib");
     arg(&a, platform_lib);
     arg(&a, raylib_lib);
     arg(&a, "-o");
@@ -412,22 +436,22 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
     arg_list(&a, opts->release ? release_flags : debug_flags);
     if (opts->web) {
         arg_list(&a, web_link_flags);
-        arg(&a, "-lc");
-        arg(&a, web_builtins);
         arg(&a, format("-fuse-ld=%s", wasm_ld, NULL)); // It may be elsewhere than clang, as with Homebrew
     } else {
-        arg_list(&a, native_flags);
 #ifdef _WIN32
         arg(&a, "-fuse-ld=lld");
-        // A release game opens its window without a console next to it.
-        if (opts->release) {
-            arg(&a, "-Xlinker");
-            arg(&a, "/subsystem:windows");
-            arg(&a, "-Xlinker");
-            arg(&a, "/entry:mainCRTStartup");
-        }
+        // A release game opens its window without a console next to it; a
+        // debug game gets its debug info in a .pdb.
+        arg(&a, opts->release ? "-Wl,--subsystem,windows" : "-Wl,--pdb=");
 #endif
         arg_list(&a, native_libs);
+    }
+    // A target's C library, when it comes with purr: its libraries by name
+    // (on the web, just the C library) and the compiler runtime by path.
+    if (build_target.flag) {
+        arg(&a, "-nodefaultlibs");
+        if (opts->web) arg(&a, "-lc");
+        arg(&a, build_target.builtins);
     }
     const int code = sys_run(a.items, NULL, false);
     free(a.items);

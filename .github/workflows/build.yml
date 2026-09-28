@@ -1,6 +1,6 @@
 # Builds, tests and publishes purr (see AGENTS.md, Packaging).
 #
-# - Pull requests: build and test on Windows and Linux.
+# - Pull requests: build and test on Windows, Linux and macOS.
 # - Pushes to dev: also publish a nightly pre-release, like 0.2.0-nightly.3.
 # - Pushes to release: also publish a stable release, and commit the new VERSION.
 #
@@ -83,11 +83,17 @@ jobs:
         run: |
           brew install ninja llvm lld
           echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
-      # Web builds download wasi-sdk's C library (cmake/wasi-toolchain.cmake).
+      # Web builds download wasi-sdk's C library (cmake/wasi-toolchain.cmake),
+      # and MinGW builds llvm-mingw's (cmake/mingw-toolchain.cmake).
       - uses: actions/cache@v4
         with:
           path: build/wasi-sdk-*
           key: wasi-sdk-${{ hashFiles('cmake/wasi-toolchain.cmake') }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: build/llvm-mingw-*
+          key: llvm-mingw-${{ hashFiles('cmake/mingw-toolchain.cmake') }}
 
       # The demo's smoke test opens a window, which needs a GPU the runners
       # don't have; the web one runs in headless Chrome.
@@ -98,6 +104,13 @@ jobs:
           ctest --preset release -E demo_smoke
       - name: Test (web)
         run: cmake --workflow --preset web-release
+      # The target purr builds Windows games for; its platform layer goes in the package.
+      - name: Test (MinGW)
+        if: runner.os == 'Windows'
+        run: |
+          cmake --preset mingw-release
+          cmake --build --preset mingw-release
+          ctest --preset mingw-release -E demo_smoke
 
       - name: Package
         run: |

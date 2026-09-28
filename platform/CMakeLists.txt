@@ -58,10 +58,27 @@ if(PURR_WEB)
     install(FILES "${PURR_WASI_SYSROOT}/lib/wasm32-wasip1/crt1-command.o" "${PURR_WASI_SYSROOT}/lib/wasm32-wasip1/libc.a"
         "${PURR_WASI_SYSROOT}/lib/wasm32-wasip1/libm.a" DESTINATION wasi/sysroot/lib/wasm32-wasip1 COMPONENT purr)
     install(FILES "${PURR_WASI_BUILTINS}" DESTINATION wasi RENAME libclang_rt.builtins.a COMPONENT purr)
-else()
+elseif(MINGW)
+    # purr builds Windows games for MinGW, with this C runtime (see
+    # cmake/mingw-toolchain.cmake): every header, and only the libraries games
+    # link (compiler/cli/build.c).
+    set(PURR_PACKAGE_LIBS lib/native)
+    set(mingw_target "${PURR_MINGW_SYSROOT}/x86_64-w64-mingw32")
+    install(DIRECTORY "${mingw_target}/include" DESTINATION mingw/sysroot/x86_64-w64-mingw32 COMPONENT purr)
+    set(mingw_libs crt2.o crtbegin.o crtend.o)
+    foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 opengl32 winmm)
+        list(APPEND mingw_libs lib${lib}.a)
+    endforeach()
+    list(TRANSFORM mingw_libs PREPEND "${mingw_target}/lib/")
+    install(FILES ${mingw_libs} DESTINATION mingw/sysroot/x86_64-w64-mingw32/lib COMPONENT purr)
+    install(FILES "${PURR_MINGW_BUILTINS}" DESTINATION mingw COMPONENT purr)
+elseif(NOT WIN32)
     set(PURR_PACKAGE_LIBS lib/native)
 endif()
-install(FILES $<TARGET_FILE:purr_platform> $<TARGET_FILE:raylib> DESTINATION ${PURR_PACKAGE_LIBS} COMPONENT purr)
+# On Windows, only the MinGW build's platform layer goes in the package.
+if(PURR_PACKAGE_LIBS)
+    install(FILES $<TARGET_FILE:purr_platform> $<TARGET_FILE:raylib> DESTINATION ${PURR_PACKAGE_LIBS} COMPONENT purr)
+endif()
 
 if(PURR_WEB)
     # Keys by physical position on the web, where the typed character would be wrong.
