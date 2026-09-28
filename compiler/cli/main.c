@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "build.h"
+#include "editors.h"
 #include "sys.h"
 #include "toolchain.h"
 #include "upgrade.h"
@@ -22,6 +23,7 @@ static void usage(void)
            "  run [folder]       build the game in folder (default: here) and play it\n"
            "  build [folder]     build the game into <folder>/build\n"
            "  schedule [folder]  show which systems can run at the same time, and why the others wait\n"
+           "  editors            add PurrLang to VS Code, Cursor, VSCodium and Windsurf\n"
            "  upgrade            update purr to the newest version\n"
            "  version            show purr's version, and which compilers it found\n"
            "\n"
@@ -86,6 +88,18 @@ int main(const int argc, char **argv)
 
     if (strcmp(command, "version") == 0 || strcmp(command, "--version") == 0) return version(root);
 
+    if (strcmp(command, "editors") == 0) {
+        bool only_updates = false;
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--update") == 0) only_updates = true; // Used by purr upgrade
+            else {
+                fprintf(stderr, "purr: editors doesn't take '%s'\n", argv[i]);
+                return 2;
+            }
+        }
+        return purr_editors(root, only_updates);
+    }
+
     if (strcmp(command, "upgrade") == 0) {
         const char *channel = NULL;
         const char *exact = NULL;
@@ -106,7 +120,7 @@ int main(const int argc, char **argv)
     const bool schedule = strcmp(command, "schedule") == 0;
     if (!run && !build && !schedule) {
         fprintf(stderr, "purr: unknown command '%s'\n", command);
-        fprintf(stderr, "  = note: the commands are run, build, schedule, upgrade and version; see `purr help`\n");
+        fprintf(stderr, "  = note: the commands are run, build, schedule, editors, upgrade and version; see `purr help`\n");
         return 2;
     }
 

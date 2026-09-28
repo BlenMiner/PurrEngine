@@ -45,8 +45,12 @@
       "name": "package",
       "inherits": "base",
       "displayName": "Package",
-      "description": "The purr package's native half: optimized, with the C runtime linked statically on Windows.",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded" }
+      "description": "The purr package's native half: optimized, with the C runtime linked statically on Windows, and the editor extensions.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "PURR_EDITOR_EXTENSIONS": "ON"
+      }
     },
     {
       "name": "web-package",

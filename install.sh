@@ -75,6 +75,8 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
 done
 
 echo "Installed purr in $root."
+# PurrLang in VS Code and the editors like it.
+"$bin/purr" editors || true
 if [ "$(uname -s)" = "Darwin" ]; then
     echo "purr builds games with Apple's clang (xcode-select --install), and web games with Homebrew's: brew install llvm lld"
 else

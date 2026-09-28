@@ -60,5 +60,7 @@ if (-not (($path -split ';') -contains $bin)) {
 }
 
 Write-Host "Installed purr in $root."
-Write-Host 'purr needs clang to build games (https://github.com/llvm/llvm-project/releases), and Emscripten for --web.'
+# PurrLang in VS Code and the editors like it.
+& (Join-Path $bin 'purr.exe') editors
+Write-Host 'purr needs clang to build games (https://github.com/llvm/llvm-project/releases).'
 Write-Host 'Open a new terminal, go to a folder with .purr files and run: purr run'

@@ -94,14 +94,19 @@ purr upgrade --stable   # back to stable ones
 
 ## Editors
 
-The install includes editor support in its `editors` folder:
+Open your game's folder, the one you run `purr run` in, and every `.purr` file
+in it is one game: completion, errors as you type, go to definition, rename,
+formatting and more work across all of them.
 
-- **JetBrains IDEs** (CLion, Rider, IntelliJ): install the LSP4IJ plugin, then in
-  Settings > Languages & Frameworks > Language Servers, add one and import the
-  template from `editors/purrlang-lsp4ij`. It gives completion, errors as you
-  type, go to definition, rename, formatting and more. Register
-  `editors/purrlang-syntax` as a TextMate bundle too, for highlighting.
-  See [tools/purrlang-lsp4ij/README.md](tools/purrlang-lsp4ij/README.md) for colors.
+- **VS Code, Cursor, VSCodium and Windsurf:** the installer adds PurrLang to
+  the ones it finds, and `purr upgrade` keeps it up to date. Installed one
+  later? Run `purr editors`.
+- **JetBrains IDEs** (CLion, Rider, IntelliJ and the others, 2024.2 or later):
+  install the [PurrLang plugin](https://plugins.jetbrains.com/plugin/34610-purrlang)
+  from Settings > Plugins > Marketplace. It brings the LSP4IJ plugin it needs.
+  Dark color schemes show type names as plain text; see
+  [tools/purrlang-jetbrains/README.md](tools/purrlang-jetbrains/README.md#colors)
+  to color them.
 
 ## Working on the engine
 

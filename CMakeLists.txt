@@ -63,9 +63,7 @@ set(PURR_REPOSITORY "BlenMiner/PurrEngine" CACHE STRING "The GitHub repository p
 file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/package/VERSION" CONTENT "${PURR_VERSION}\n")
 install(FILES "${CMAKE_BINARY_DIR}/package/VERSION" DESTINATION . COMPONENT purr)
 if(NOT PURR_WEB)
-    # Editor support: highlighting, and the language server through purrls on PATH.
-    install(DIRECTORY tools/purrlang-syntax DESTINATION editors COMPONENT purr)
-    install(FILES tools/purrlang-lsp4ij/installed/template.json DESTINATION editors/purrlang-lsp4ij COMPONENT purr)
+    add_subdirectory(tools) # Editor support
 endif()
 
 add_subdirectory(engine)

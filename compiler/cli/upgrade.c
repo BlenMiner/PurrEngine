@@ -306,6 +306,16 @@ int purr_upgrade(const char *root, const char *channel, const char *version)
     sys_write_text(channel_file, channel);
     sys_remove_tree(work);
     printf("Upgraded purr %s -> %s (%s).\n", PURR_VERSION, next, channel);
+    fflush(stdout);
+    // The new purr updates the editor extension, in the editors that have it.
+#ifdef _WIN32
+    char *purr = path_join(root, "bin/purr.exe");
+#else
+    char *purr = path_join(root, "bin/purr");
+#endif
+    const char *const editors[] = {purr, "editors", "--update", NULL};
+    sys_run(editors, NULL, false);
+    free(purr);
     const char *notes = json_str(json_get(release, "html_url"));
     if (notes) printf("What's new: %s\n", notes);
     return 0;
