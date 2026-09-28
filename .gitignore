@@ -3,4 +3,6 @@ cmake-build-*/
 .cache/
 .idea/
 .vs/
+.claude/
+.codex/
 CMakeUserPresets.json
