@@ -52,7 +52,7 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 - Run the sandbox: `build/debug/bin/sandbox`
 - Run the demo: `build/debug/bin/demo`, or open `build/web-release/bin/demo.html` in a browser after a web build.
 
-There are two presets. `debug` has no optimization. `release` is optimized and keeps debug info for profiling.
+There are two presets for everyday work. `debug` has no optimization. `release` is optimized and keeps debug info for profiling. Web builds, MinGW builds and the package have their own (see below).
 
 Every native build also copies the language server to `build/tools/purrls`, the fixed path editors run: the VS Code extension and the JetBrains plugin use it when the open folder is this repo (see `tools/`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
 
@@ -65,6 +65,11 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 - In the browser, `platform/web/purr.js` runs the program: the canvas, input and frame loop (`platform/web/purr_web.h`), the OpenGL ES 3 functions rlgl calls on WebGL 2, and the few WASI functions wasi-libc needs. raylib gets our platform backend (`platform/web/raylib/rcore_web_purr.c`), patched into its `rcore.c` by `cmake/Raylib.cmake`. A web page is one self-contained `.html` with the program inside (`cmake/web_page.mjs`, or purr).
 - Web builds are single-threaded. Threads need a cross-origin isolated page, and running in parallel never changes results anyway.
 - Before finishing a change, the native and web test suites must both pass.
+
+### MinGW builds
+
+- On Windows, the `mingw-release` preset builds everything for the MinGW-w64 target (`x86_64-w64-windows-gnu`, with the UCRT), which purr builds Windows games for (see Packaging and releases): `cmake --workflow --preset mingw-release`. Everyday Windows builds keep Visual Studio's target.
+- Its headers, C runtime and compiler runtime come from llvm-mingw, downloaded once into `build/llvm-mingw-<version>`, pinned (`cmake/mingw-toolchain.cmake`). clang is the usual one, linking with lld.
 
 ### Cross-platform determinism tests
 
@@ -98,13 +103,15 @@ The generated header is the API between the game and the host. Namespaced declar
 
 Users get PurrEngine as the `purr` command, not this repo: see README.md.
 
-- `purr run`, `purr build [--release] [--web]`, `purr schedule`, `purr editors`, `purr upgrade` and `purr version` (`compiler/cli/`, owned by Claude). It runs purrc's front end in-process, compiles the generated C and the engine's sources with the determinism flags (as separate files, like the CMake build), and links the prebuilt platform layer. It uses an installed clang, for native and web games alike (`--web` needs `wasm-ld` next to it); the package brings wasi-libc for web games. On Windows, games link the C runtime statically, so players need no redistributable.
+- `purr run`, `purr build [--release] [--web]`, `purr schedule`, `purr editors`, `purr upgrade` and `purr version` (`compiler/cli/`, owned by Claude). It runs purrc's front end in-process, compiles the generated C and the engine's sources with the determinism flags (as separate files, like the CMake build), and links the prebuilt platform layer.
+- Packages have clang and lld built into purr (`PURR_EMBED_LLVM`, `compiler/cli/llvm/cc.cpp`), so users need no compiler: `purr cc` is clang, whose compiles run in purr's process and whose links go to lld in it. purr links the static libraries of LLVM's own release, downloaded once into `build/llvm-<version>` and pinned (`cmake/LLVM.cmake`, which also builds the zlib, zstd and libxml2 they were built with; unpacking needs the `zstd` program). macOS's release holds them as LLVM bitcode, so purr links there with that release's lld. Builds of this repo without the option use an installed clang (`--web` needs `wasm-ld` next to it).
+- The package brings the C library for web games (wasi-libc) and for Windows games, which build for MinGW-w64 (see MinGW builds): Microsoft's C runtime can't ship with purr, and the UCRT is part of Windows, so players need nothing else. Linux games use the system's C development files, and macOS games the SDK of Apple's command-line tools (purr sets `SDKROOT`).
 - A game is a folder of `.purr` files. purr keeps its work in `<folder>/.purr/` (it ignores itself in git) and puts `purr build` output in `<folder>/build/`.
-- The package is everything installed as the `purr` component: `bin/` (purr, purrls), `include/`, `src/engine/`, `lib/native/` and `lib/web/` (the prebuilt platform layer and raylib), `wasi/` (wasi-libc and the compiler runtime for wasm), `web/` (the page and `purr.js`), `editors/` and `VERSION`. It comes from the `package` preset (static C runtime on Windows) and the `web-package` preset, put together by `cmake -DNAME=purr-windows-x64 -P cmake/package.cmake` into `build/dist`. Anything purr needs at build time must be installed into the package; a game build can't see this repo. The same goes for `purrls`, which reads the engine headers from the package's `include/`.
+- The package is everything installed as the `purr` component: `bin/` (purr, purrls), `include/`, `src/engine/`, `lib/native/` and `lib/web/` (the prebuilt platform layer and raylib), `wasi/` (wasi-libc and the compiler runtime for wasm), `mingw/` (on Windows: MinGW-w64's headers, C runtime and compiler runtime), `lib/clang/` (clang's own headers), `web/` (the page and `purr.js`), `editors/` and `VERSION`. It comes from the `package` preset (clang and lld built in, static C runtime on Windows), the `web-package` preset and, on Windows, the `mingw-release` preset, put together by `cmake -DNAME=purr-windows-x64 -P cmake/package.cmake` into `build/dist`. Anything purr needs at build time must be installed into the package; a game build can't see this repo. The same goes for `purrls`, which reads the engine headers from the package's `include/`.
 - `editors/purrlang.vsix` is the VS Code extension (`tools/purrlang-vscode`), for VS Code, Cursor, VSCodium and Windsurf. Only the `package` preset builds it (`PURR_EDITOR_EXTENSIONS`), since it needs Node's npm. The installers run `purr editors`, which installs it into every one of those editors it finds, and `purr upgrade` updates it in the editors that have it.
 - The JetBrains plugin (`tools/purrlang-jetbrains`, Gradle and Java; [on Marketplace](https://plugins.jetbrains.com/plugin/34610-purrlang) as `io.github.blenminer.purrlang`) isn't in the package: CI builds it and checks it with the plugin verifier on every push, attaches it to each release, and publishes stable releases to JetBrains Marketplace with the `JETBRAINS_MARKETPLACE_TOKEN` secret. Marketplace installs LSP4IJ, which it needs, along with it.
 - Users install with `install.ps1` or `install.sh` into `%LOCALAPPDATA%\Purr` or `~/.purr`, with `bin` on `PATH`, and `purr upgrade` replaces the installation from GitHub Releases. It checks each download against the release's `SHA256SUMS`, and renames running programs aside instead of overwriting them. Once a day, purr says when a newer version is out. Builds made from this repo are versioned `<VERSION>-dev` and never look for updates.
-- `.github/workflows/build.yml` tests and packages Windows and Linux on every push and pull request. Pushes to `dev` publish nightly pre-releases (`0.2.0-nightly.3`); pushes to `release` publish stable releases, and semantic-release commits the new `VERSION` there. The native demo smoke test is skipped in CI, which has no GPU.
+- `.github/workflows/build.yml` tests and packages Windows, Linux and macOS on every push and pull request (macOS doesn't hold back releases yet), and tests the MinGW target on Windows. Pushes to `dev` publish nightly pre-releases (`0.2.0-nightly.3`); pushes to `release` publish stable releases, and semantic-release commits the new `VERSION` there. The native demo smoke test is skipped in CI, which has no GPU.
 - Versions come from conventional commits (`.releaserc.json`): `fix:` is a patch, `feat:` a minor version. While the version starts with 0, breaking changes (`feat!:`) are minor versions too, and we avoid them until 1.0 anyway.
 
 ## Layout
@@ -120,7 +127,7 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
 - `sandbox/`: the owner's experiments: a game with no C, built by `purr_add_game`.
 - `tests/`: tests built on the harness in `tests/purr_test.h`. New test files are picked up automatically.
 - `.github/workflows/`, `.releaserc.json`, `install.ps1`, `install.sh`: releases and installing (see Packaging and releases).
-- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the package (`package.cmake`), the file that locates clang (`clang-toolchain.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
+- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the package (`package.cmake`), the file that locates clang (`clang-toolchain.cmake`), the web and MinGW toolchains (`wasi-toolchain.cmake`, `mingw-toolchain.cmake`), purr's built-in clang (`LLVM.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
 
 ### Runtime written by Claude for now
 

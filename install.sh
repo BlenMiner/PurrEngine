@@ -78,8 +78,8 @@ echo "Installed purr in $root."
 # PurrLang in VS Code and the editors like it.
 "$bin/purr" editors || true
 if [ "$(uname -s)" = "Darwin" ]; then
-    echo "purr builds games with Apple's clang (xcode-select --install), and web games with Homebrew's: brew install llvm lld"
+    echo "Native games need Apple's command-line tools: xcode-select --install"
 else
-    echo "purr builds games with clang: install clang and lld from your package manager."
+    echo "Native games need your distribution's C development files, which come with gcc (build-essential on Debian and Ubuntu)."
 fi
 echo "Open a new terminal, go to a folder with .purr files and run: purr run"
