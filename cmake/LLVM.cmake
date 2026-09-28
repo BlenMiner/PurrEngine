@@ -52,21 +52,26 @@ if(NOT PURR_LLVM_ROOT)
             endif()
             file(REMOVE "${_purr_llvm_tar}")
         else()
-            # Straight from zstd into tar: the Linux archive unpacks to 12 GB.
+            # Straight from zstd into tar: the Linux archive unpacks to 12 GB. On
+            # macOS, LLVM's lld too, which links purr (see below).
             find_program(PURR_TAR NAMES tar REQUIRED)
+            if(CMAKE_HOST_APPLE)
+                set(_purr_llvm_lld "${_purr_llvm_name}/bin/lld" "${_purr_llvm_name}/bin/ld64.lld")
+            endif()
             execute_process(COMMAND "${PURR_ZSTD}" -d -q -c --long=31 "${_purr_llvm_file}"
                 COMMAND "${PURR_TAR}" -x -f - -C "${_purr_llvm_dir}" --exclude=*.so* --exclude=*.dylib
-                    "${_purr_llvm_name}/include" "${_purr_llvm_name}/lib"
+                    "${_purr_llvm_name}/include" "${_purr_llvm_name}/lib" ${_purr_llvm_lld}
                 RESULT_VARIABLE result)
         endif()
         if(NOT result EQUAL 0)
             message(FATAL_ERROR "Unpacking ${_purr_llvm_file} failed")
         endif()
         file(REMOVE "${_purr_llvm_file}")
-        # Only LLVM's, clang's and lld's libraries, and clang's headers.
+        # Only the libraries of LLVM, clang, lld and Polly (which LLVM's Linux
+        # release links into clang), and clang's headers.
         file(GLOB _purr_llvm_unneeded LIST_DIRECTORIES true "${_purr_llvm_root}/lib/*" "${_purr_llvm_root}/lib/clang/*/*")
         list(FILTER _purr_llvm_unneeded EXCLUDE REGEX
-            "/lib/((lib)?(LLVM|clang|lld)[^/]*\\${CMAKE_STATIC_LIBRARY_SUFFIX}|clang|clang/[^/]+/include)$")
+            "/lib/((lib)?(LLVM|clang|lld|Polly)[^/]*\\${CMAKE_STATIC_LIBRARY_SUFFIX}|clang|clang/[^/]+/include)$")
         file(REMOVE_RECURSE ${_purr_llvm_unneeded})
         file(TOUCH "${_purr_llvm_root}/done")
     endif()
@@ -87,11 +92,12 @@ target_compile_features(purr_cc PRIVATE cxx_std_17)
 # As LLVM is built.
 target_compile_options(purr_cc PRIVATE -fno-rtti -fno-exceptions)
 
-# Every static library of LLVM, clang and lld; the linker takes only what's used.
-# Not LLVM-C, libclang and the like: those import LLVM's DLLs.
+# Every static library of LLVM, clang, lld and Polly; the linker takes only
+# what's used. Not LLVM-C, libclang and the like: those import LLVM's DLLs.
 file(GLOB _purr_llvm_libs "${PURR_LLVM_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}LLVM*${CMAKE_STATIC_LIBRARY_SUFFIX}"
     "${PURR_LLVM_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}clang*${CMAKE_STATIC_LIBRARY_SUFFIX}"
-    "${PURR_LLVM_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}lld*${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    "${PURR_LLVM_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}lld*${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    "${PURR_LLVM_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}Polly*${CMAKE_STATIC_LIBRARY_SUFFIX}")
 list(FILTER _purr_llvm_libs EXCLUDE REGEX "/(lib)?(LLVM-C|LLVM|clang|clang-cpp|LTO|Remarks)\\.[a-z]+$")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # GNU ld reads each library once, and LLVM's depend on each other in circles.
@@ -105,6 +111,16 @@ endif()
 if(NOT WIN32)
     find_package(Threads REQUIRED)
     target_link_libraries(purr_cc PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+if(APPLE)
+    # LLVM's macOS release holds its libraries as LLVM bitcode (it's built with
+    # ThinLTO), which Apple's linker can't read. Its own lld can, and caches
+    # the code it makes from them.
+    if(NOT EXISTS "${PURR_LLVM_ROOT}/bin/ld64.lld")
+        message(FATAL_ERROR "LLVM's lld is missing from ${PURR_LLVM_ROOT}/bin: macOS links purr with it")
+    endif()
+    target_link_options(purr_cc INTERFACE -fuse-ld=lld "--ld-path=${PURR_LLVM_ROOT}/bin/ld64.lld"
+        "LINKER:-cache_path_lto,${CMAKE_BINARY_DIR}/lto-cache")
 endif()
 
 # LLVM's releases are built with zlib and zstd, and on Windows with libxml2
