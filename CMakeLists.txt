@@ -7,7 +7,8 @@ endif()
 
 project(PurrEngine LANGUAGES C)
 
-if(NOT CMAKE_C_COMPILER_ID STREQUAL "Clang" OR NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+# AppleClang is Apple's build of clang.
+if(NOT CMAKE_C_COMPILER_ID MATCHES "^(Apple)?Clang$" OR NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
     message(FATAL_ERROR "PurrEngine builds with clang only (see AGENTS.md). "
                         "Found ${CMAKE_C_COMPILER_ID} (${CMAKE_C_COMPILER_FRONTEND_VARIANT} frontend).")
 endif()

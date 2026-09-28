@@ -522,11 +522,22 @@
 
     try {
         const bytes = Uint8Array.from(atob(PURR_PROGRAM), c => c.charCodeAt(0));
-        const { instance } = await WebAssembly.instantiate(bytes, {
+        const imports = {
             wasi_snapshot_preview1: lenient('WASI', wasi, () => ENOSYS),
             purr: platform,
             env: lenient('env', glFunctions, (module, name) => { throw new Error(`purr.js has no ${name}`); }),
-        });
+        };
+        // Compiles on the spot where the browser allows it (Chrome: up to 8 MB
+        // on the main thread). The page has nothing else to do meanwhile, and
+        // headless tests run on virtual time, which keeps running while a
+        // compile happens in the background, so it can run out before main.
+        let instance;
+        try {
+            instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+        } catch (error) {
+            if (!(error instanceof RangeError)) throw error;
+            ({ instance } = await WebAssembly.instantiate(bytes, imports));
+        }
         exports = instance.exports;
         memory = exports.memory;
         exports._start(); // main; returns only through exit(), or by starting the frame loop
