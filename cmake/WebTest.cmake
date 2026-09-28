@@ -20,6 +20,7 @@ function(purr_add_web_test name)
     cmake_parse_arguments(ARG "" "TARGET;QUERY" "" ${ARGN})
     add_test(NAME ${name}
         COMMAND "${CMAKE_COMMAND}"
+            "-DNODE=${PURR_NODE}"
             "-DBROWSER=${PURR_BROWSER}"
             "-DPAGE=$<TARGET_FILE_DIR:${ARG_TARGET}>/${ARG_TARGET}.html"
             "-DQUERY=${ARG_QUERY}"

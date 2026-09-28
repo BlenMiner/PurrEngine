@@ -99,6 +99,15 @@ jobs:
         with:
           path: build/llvm-[0-9]*
           key: llvm-${{ runner.os }}-${{ hashFiles('cmake/LLVM.cmake') }}
+      # On macOS, LLVM's libraries are bitcode, which lld compiles as it links
+      # purr (minutes); its cache keeps that work between runs. Only LLVM and
+      # the code that calls it decide what's in it.
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS'
+        with:
+          path: build/package/lto-cache
+          key: lto-${{ hashFiles('cmake/LLVM.cmake', 'compiler/cli/llvm/cc.cpp') }}
+          restore-keys: lto-
 
       # The demo's smoke test opens a window, which needs a GPU the runners
       # don't have; the web one runs in headless Chrome.
