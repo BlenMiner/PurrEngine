@@ -125,7 +125,10 @@ static const char *const native_libs[] = {"-lopengl32", "-lglu32", "-lgdi32", "-
 #define EXE_SUFFIX ".exe"
 #else
 static const char *const native_flags[] = {NULL};
-static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", NULL};
+// raylib calls Xlib directly (the rest of X11 and OpenGL it loads at run time).
+// The library itself, not -lX11: every desktop has it, but not every desktop
+// has the development package that provides libX11.so.
+static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-l:libX11.so.6", NULL};
 #define LIB_PREFIX "lib"
 #define LIB_SUFFIX ".a"
 #define EXE_SUFFIX ""
