@@ -812,7 +812,7 @@ static void describe_order(const decl *d, sb *out)
     if (d->waits.count == 0) sb_put(out, "It doesn't wait for any system.");
     else sb_put(out, "It waits for:");
     for (int i = 0; i < d->waits.count; i++) {
-        const wait *w = &d->waits.items[i];
+        const system_wait *w = &d->waits.items[i];
         sb_put(out, "\n- ");
         put_decl_name(out, w->on, "`", d);
         sb_put(out, ": ");
@@ -843,7 +843,7 @@ void analysis_code_lenses(jbuf *out)
         sb title = {0};
         sb_printf(&title, "stage %d", d->stage);
         for (int k = 0; k < d->waits.count; k++) {
-            const wait *w = &d->waits.items[k];
+            const system_wait *w = &d->waits.items[k];
             if (w->through) continue; // Shown on the system it goes through
             sb_put(&title, " \u00B7 after ");
             put_decl_name(&title, w->on, "", d);

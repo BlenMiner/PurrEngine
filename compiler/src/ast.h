@@ -114,12 +114,12 @@ typedef struct conflict {
     conflict_kind kind;
 } conflict;
 
-typedef struct wait {
+typedef struct system_wait {
     struct decl *on;         // A system earlier in the tick
     VEC(conflict) conflicts; // The data they share; empty if only an attribute orders them
     bool ordered;            // [After] or [Before] orders them
     struct decl *through;    // Another system it waits for that already waits for `on`, or NULL
-} wait;
+} system_wait;
 
 typedef enum decl_kind {
     DECL_COMPONENT,
@@ -158,7 +158,7 @@ typedef struct decl {
     VEC(struct decl *) after; // Systems or views that must run first ([After], and [Before] on them)
 
     // Systems in the tick, from analyze_parallelism
-    VEC(wait) waits;              // Earlier systems it must wait for
+    VEC(system_wait) waits;       // Earlier systems it must wait for
     VEC(struct decl *) alongside; // Systems it can run at the same time as
     int stage;                    // 1 + the deepest stage it waits for; 0 before the analysis
 } decl;
@@ -372,7 +372,7 @@ void analyze_parallelism(program *prog);
 
 // Why `sys` waits for `w->on`, like "both write Transform". `quote` wraps names
 // ("`" for Markdown).
-void describe_wait(const decl *sys, const wait *w, const char *quote, sb *out);
+void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb *out);
 
 // A declaration's name as code in `from`'s namespace writes it: short in the
 // same namespace, qualified elsewhere, and always qualified without `from`.
