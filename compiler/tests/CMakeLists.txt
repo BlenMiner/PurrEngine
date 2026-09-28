@@ -41,8 +41,7 @@ foreach(source IN LISTS PURR_ERROR_TESTS)
     get_filename_component(name "${source}" NAME_WE)
     add_test(NAME purrc_error_${name}
         COMMAND "${CMAKE_COMMAND}"
-            "-DPURRC=$<TARGET_FILE:purrc>"
-            "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}"
+            "-DPURRC=${PURRC_PATH}"
             "-DSOURCE=${source}"
             "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/errors"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_error.cmake")
@@ -56,8 +55,7 @@ foreach(source IN LISTS PURR_SCHEDULE_TESTS)
     get_filename_component(dir "${source}" DIRECTORY)
     add_test(NAME purrc_schedule_${name}
         COMMAND "${CMAKE_COMMAND}"
-            "-DPURRC=$<TARGET_FILE:purrc>"
-            "-DEMULATOR=${CMAKE_CROSSCOMPILING_EMULATOR}"
+            "-DPURRC=${PURRC_PATH}"
             "-DSOURCE=${source}"
             "-DEXPECTED=${dir}/${name}.txt"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_schedule.cmake")

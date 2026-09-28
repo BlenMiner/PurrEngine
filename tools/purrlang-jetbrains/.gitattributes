@@ -1,0 +1,3 @@
+# Batch files need CRLF, shell scripts LF.
+gradlew.bat text eol=crlf
+gradlew text eol=lf

@@ -30,6 +30,10 @@ void lsp_free(lsp_server *s)
     free(s->docs);
     s->docs = NULL;
     s->doc_count = s->doc_cap = 0;
+    for (int i = 0; i < s->root_count; i++) free(s->roots[i]);
+    free(s->roots);
+    s->roots = NULL;
+    s->root_count = 0;
     free_kept(s);
     s->analyzed = false;
 }
@@ -172,16 +176,22 @@ static bool is_folder(const char *path)
     return n > 0 && (path[n - 1] == '/' || path[n - 1] == '\\');
 }
 
-// Whether `path` is a .purr file in `folder` (ending in '/') or its subfolders.
-static bool in_folder(const char *path, const char *folder)
+// Whether `path` is in `folder` (ending in '/') or its subfolders.
+static bool under(const char *path, const char *folder)
 {
     const size_t n = strlen(folder);
-    const size_t len = strlen(path);
-    if (len <= n || len < 5 || !same_path(path + len - 5, ".purr")) return false;
+    if (strlen(path) <= n) return false;
     char *start = copy_string(path, n);
     const bool inside = same_path(start, folder);
     free(start);
     return inside;
+}
+
+// Whether `path` is a .purr file in `folder` (ending in '/') or its subfolders.
+static bool in_folder(const char *path, const char *folder)
+{
+    const size_t len = strlen(path);
+    return len >= 5 && same_path(path + len - 5, ".purr") && under(path, folder);
 }
 
 static int compare_paths(const void *a, const void *b)
@@ -189,27 +199,47 @@ static int compare_paths(const void *a, const void *b)
     return path_compare(*(const char *const *)a, *(const char *const *)b);
 }
 
-// A line of the manifest: a game and one of its files, or a folder (ending in
+// Every .purr file in `folder` and its subfolders, with new files the editor
+// hasn't saved yet.
+static void add_folder(const lsp_server *s, path_list *list, const char *folder)
+{
+    folder_find(folder, ".purr", add_path, list);
+    for (int k = 0; k < s->doc_count; k++) {
+        char *open = uri_to_path(s->docs[k].uri);
+        if (in_folder(open, folder)) add_path(list, open);
+        free(open);
+    }
+}
+
+// A line of a manifest: a game and one of its files, or a folder (ending in
 // '/') for every .purr file in it and its subfolders, as purr_add_game lists a
-// game without SOURCES.
+// game without SOURCES. Games of different manifests are different games.
 typedef struct manifest_line {
+    int manifest;
     const char *game;
     const char *path;
 } manifest_line;
 
-// The paths of the game `path` belongs to, from the manifest, in the order
-// purrc compiles them. Returns how many; 0 if it's in no game. The paths are
-// malloc'd.
-static int game_of(const lsp_server *s, const char *path, char ***out)
-{
-    *out = NULL;
-    size_t len;
-    char *manifest = s->manifest ? read_all(s->manifest, &len) : NULL;
-    if (!manifest) return 0;
+typedef struct manifests {
+    char **sources; // Their paths
+    char **texts;
+    int count;
+    manifest_line *lines;
+    int line_count;
+} manifests;
 
-    manifest_line *lines = NULL;
-    int line_count = 0;
-    for (char *line = manifest; *line;) {
+static void read_manifest(manifests *m, const char *source)
+{
+    for (int i = 0; i < m->count; i++)
+        if (same_path(m->sources[i], source)) return;
+    size_t len;
+    char *text = read_all(source, &len);
+    if (!text) return;
+    m->sources = realloc(m->sources, sizeof(char *) * (size_t)(m->count + 1));
+    m->texts = realloc(m->texts, sizeof(char *) * (size_t)(m->count + 1));
+    m->sources[m->count] = copy_string(source, strlen(source));
+    m->texts[m->count] = text;
+    for (char *line = text; *line;) {
         char *end = line + strcspn(line, "\n");
         char *next = *end ? end + 1 : end;
         *end = '\0';
@@ -217,36 +247,70 @@ static int game_of(const lsp_server *s, const char *path, char ***out)
         char *tab = strchr(line, '\t');
         if (tab) {
             *tab = '\0';
-            lines = realloc(lines, sizeof(manifest_line) * (size_t)(line_count + 1));
-            lines[line_count++] = (manifest_line){line, tab + 1};
+            m->lines = realloc(m->lines, sizeof(manifest_line) * (size_t)(m->line_count + 1));
+            m->lines[m->line_count++] = (manifest_line){m->count, line, tab + 1};
         }
         line = next;
     }
+    m->count++;
+}
 
-    const char *game = NULL;
-    for (int i = 0; i < line_count && !game; i++) {
-        const char *file = lines[i].path;
-        if (is_folder(file) ? in_folder(path, file) : same_path(file, path)) game = lines[i].game;
+static void free_manifests(manifests *m)
+{
+    for (int i = 0; i < m->count; i++) {
+        free(m->sources[i]);
+        free(m->texts[i]);
+    }
+    free(m->sources);
+    free(m->texts);
+    free(m->lines);
+}
+
+// The paths of the game `path` belongs to, in the order purrc compiles them.
+// Returns how many; 0 if it's in no game. The paths are malloc'd.
+//
+// Games come from manifests: the one this server was built with, and the one
+// in any open folder that builds games with CMake, where purr_add_game writes
+// it. A file in none of them belongs to the open folder it's in, since that's
+// the game `purr run` builds there; unless a manifest lists games in that
+// folder, whose other files stand alone (tests, for example).
+static int game_of(const lsp_server *s, const char *path, char ***out)
+{
+    *out = NULL;
+    manifests m = {0};
+    for (int i = 0; i < s->root_count; i++) {
+        jbuf source = {0};
+        jb_printf(&source, "%sbuild/tools/games.txt", s->roots[i]);
+        read_manifest(&m, source.data);
+        jb_free(&source);
+    }
+    if (s->manifest) read_manifest(&m, s->manifest);
+
+    const manifest_line *game = NULL;
+    for (int i = 0; i < m.line_count && !game; i++) {
+        const char *file = m.lines[i].path;
+        if (is_folder(file) ? in_folder(path, file) : same_path(file, path)) game = &m.lines[i];
     }
 
     path_list list = {0};
-    for (int i = 0; game && i < line_count; i++) {
-        if (strcmp(lines[i].game, game) != 0) continue;
-        const char *file = lines[i].path;
-        if (!is_folder(file)) {
-            add_path(&list, file);
-            continue;
+    if (game) {
+        for (int i = 0; i < m.line_count; i++) {
+            const manifest_line *line = &m.lines[i];
+            if (line->manifest != game->manifest || strcmp(line->game, game->game) != 0) continue;
+            if (is_folder(line->path)) add_folder(s, &list, line->path);
+            else add_path(&list, line->path);
         }
-        folder_find(file, ".purr", add_path, &list);
-        // New files the editor hasn't saved yet
-        for (int k = 0; k < s->doc_count; k++) {
-            char *open = uri_to_path(s->docs[k].uri);
-            if (in_folder(open, file)) add_path(&list, open);
-            free(open);
+    } else {
+        const char *root = NULL; // The innermost open folder it's in
+        for (int i = 0; i < s->root_count; i++) {
+            if (in_folder(path, s->roots[i]) && (!root || strlen(s->roots[i]) > strlen(root))) root = s->roots[i];
         }
+        for (int i = 0; root && i < m.line_count; i++) {
+            if (under(m.lines[i].path, root)) root = NULL;
+        }
+        if (root) add_folder(s, &list, root);
     }
-    free(lines);
-    free(manifest);
+    free_manifests(&m);
     if (list.count > 0) qsort(list.items, (size_t)list.count, sizeof(char *), compare_paths);
     *out = list.items;
     return list.count;
@@ -365,8 +429,37 @@ static void publish_game_diagnostics(lsp_server *s)
     for (int i = 0; i < analysis_file_count(); i++) publish_diagnostics(s, analysis_file_uri(i), i);
 }
 
-static void initialize(lsp_server *s, const json *id)
+static void add_root(lsp_server *s, const char *uri)
 {
+    char *path = uri_to_path(uri);
+    const size_t n = strlen(path);
+    if (n == 0) {
+        free(path);
+        return;
+    }
+    if (path[n - 1] != '/') {
+        path = realloc(path, n + 2);
+        if (!path) abort();
+        path[n] = '/';
+        path[n + 1] = '\0';
+    }
+    s->roots = realloc(s->roots, sizeof(char *) * (size_t)(s->root_count + 1));
+    if (!s->roots) abort();
+    s->roots[s->root_count++] = path;
+}
+
+static void initialize(lsp_server *s, const json *id, const json *params)
+{
+    const json *folders = json_get(params, "workspaceFolders");
+    if (folders && folders->kind == JSON_ARRAY && folders->count > 0) {
+        for (int i = 0; i < folders->count; i++) {
+            const char *uri = json_str(json_get(folders->items[i], "uri"));
+            if (uri) add_root(s, uri);
+        }
+    } else if (json_str(json_get(params, "rootUri"))) {
+        add_root(s, json_str(json_get(params, "rootUri")));
+    }
+
     jbuf b = {0};
     reply_start(&b, id);
     jb_put(&b, "{\"capabilities\":{"
@@ -479,7 +572,7 @@ void lsp_handle(lsp_server *s, const char *message, const size_t len)
     if (!method) {
         // A response to a request we never make.
     } else if (strcmp(method, "initialize") == 0) {
-        initialize(s, id);
+        initialize(s, id, params);
     } else if (strcmp(method, "shutdown") == 0) {
         s->shutdown = true;
         jbuf b = {0};

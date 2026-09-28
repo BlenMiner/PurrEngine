@@ -18,14 +18,16 @@ if(WIN32)
     target_compile_definitions(purr_flags INTERFACE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-if(EMSCRIPTEN)
-    # Web builds: programs exit with main's return value (tests and purrc rely on
-    # it), worlds live in static memory, and memory may grow. Single-threaded:
-    # threads need a cross-origin isolated page (see AGENTS.md, Platforms).
-    target_link_options(purr_flags INTERFACE
-        -sEXIT_RUNTIME=1
-        -sINITIAL_MEMORY=64MB
-        -sALLOW_MEMORY_GROWTH=1
-        -sSTACK_SIZE=1MB
-    )
+if(UNIX AND NOT PURR_WEB)
+    # Linux keeps the C math library separate. The engine avoids its functions
+    # (see AGENTS.md, Determinism), but clang still calls sqrtf for its error
+    # case, and tests use the library for reference values.
+    target_link_libraries(purr_flags INTERFACE m)
+endif()
+
+if(PURR_WEB)
+    # Web builds: a 1 MB stack like native threads' smallest, and memory that
+    # grows as needed (wasi-libc's malloc). Single-threaded: threads need a
+    # cross-origin isolated page (see AGENTS.md, Platforms).
+    target_link_options(purr_flags INTERFACE -Wl,-z,stack-size=1048576)
 endif()

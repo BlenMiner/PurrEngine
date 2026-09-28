@@ -20,7 +20,7 @@
   const smoke = new URLSearchParams(location.search).has('smoke');
   const log = document.getElementById('log');
   function show(text) { if (smoke) log.textContent += text + '\n'; }
-  var Module = {
+  var Purr = {
     canvas: document.getElementById('canvas'),
     arguments: smoke ? ['--smoke'] : [],
     print: text => { console.log(text); show(text); },

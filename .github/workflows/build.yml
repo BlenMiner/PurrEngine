@@ -1,0 +1,231 @@
+# Builds, tests and publishes purr (see AGENTS.md, Packaging).
+#
+# - Pull requests: build and test on Windows, Linux and macOS.
+# - Pushes to dev: also publish a nightly pre-release, like 0.2.0-nightly.3.
+# - Pushes to release: also publish a stable release, and commit the new VERSION.
+#
+# semantic-release picks the version from conventional commits (feat:, fix:,
+# see .releaserc.json). A push with neither publishes nothing.
+name: Build
+
+on:
+  push:
+    branches: [dev, release]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.new_release_version }}
+      published: ${{ steps.next.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Next version
+        id: next
+        if: github.event_name == 'push'
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          dry_run: true
+          extra_plugins: |
+            @semantic-release/exec
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+          - platform: linux-x64
+            os: ubuntu-latest
+          - platform: macos-arm64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    # macOS is new: until it's reliable, its failures don't hold back releases.
+    continue-on-error: ${{ matrix.platform == 'macos-arm64' }}
+    env:
+      PURR_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+      PURR_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld ninja-build zstd libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl1-mesa-dev
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja zstandard -y --no-progress
+      # Apple's clang builds native code; web builds need Homebrew's LLVM, and its lld for wasm-ld.
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja llvm lld zstd
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+      # Web builds download wasi-sdk's C library (cmake/wasi-toolchain.cmake),
+      # and MinGW builds llvm-mingw's (cmake/mingw-toolchain.cmake).
+      - uses: actions/cache@v4
+        with:
+          path: build/wasi-sdk-*
+          key: wasi-sdk-${{ hashFiles('cmake/wasi-toolchain.cmake') }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: build/llvm-mingw-*
+          key: llvm-mingw-${{ hashFiles('cmake/mingw-toolchain.cmake') }}
+      # The package builds clang and lld into purr from LLVM's release (cmake/LLVM.cmake).
+      - uses: actions/cache@v4
+        with:
+          path: build/llvm-[0-9]*
+          key: llvm-${{ runner.os }}-${{ hashFiles('cmake/LLVM.cmake') }}
+      # On macOS, LLVM's libraries are bitcode, which lld compiles as it links
+      # purr (minutes); its cache keeps that work between runs. Only LLVM and
+      # the code that calls it decide what's in it.
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS'
+        with:
+          path: build/package/lto-cache
+          key: lto-${{ hashFiles('cmake/LLVM.cmake', 'compiler/cli/llvm/cc.cpp') }}
+          restore-keys: lto-
+
+      # The demo's smoke test opens a window, which needs a GPU the runners
+      # don't have; the web one runs in headless Chrome.
+      - name: Test (native)
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --preset release -E demo_smoke
+      - name: Test (web)
+        run: cmake --workflow --preset web-release
+      # The target purr builds Windows games for; its platform layer goes in the package.
+      - name: Test (MinGW)
+        if: runner.os == 'Windows'
+        run: |
+          cmake --preset mingw-release
+          cmake --build --preset mingw-release
+          ctest --preset mingw-release -E demo_smoke
+
+      - name: Package
+        run: |
+          cmake --preset package -DPURR_VERSION="$PURR_VERSION" -DPURR_CHANNEL="$PURR_CHANNEL"
+          cmake --build --preset package
+          cmake --preset web-package -DPURR_VERSION="$PURR_VERSION" -DPURR_CHANNEL="$PURR_CHANNEL"
+          cmake --build --preset web-package
+          cmake -DNAME=purr-${{ matrix.platform }} -P cmake/package.cmake
+      # Build a game with the package, as a user would.
+      - name: Try the package
+        run: |
+          mkdir -p build/try
+          cp demo/demo.purr build/try/
+          build/dist/purr/bin/purr version
+          build/dist/purr/bin/purr build build/try
+          build/dist/purr/bin/purr build build/try --release --web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purr-${{ matrix.platform }}
+          path: build/dist/purr-${{ matrix.platform }}.*
+          if-no-files-found: error
+
+  # The plugin for JetBrains IDEs (tools/purrlang-jetbrains), checked against
+  # the oldest IDE it supports and the newest CLion.
+  jetbrains:
+    name: JetBrains plugin
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      PURR_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/purrlang-jetbrains
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and verify
+        run: |
+          chmod +x gradlew
+          ./gradlew buildPlugin verifyPlugin -PpluginVersion="$PURR_VERSION"
+          mv build/distributions/purrlang-*.zip build/distributions/purrlang-jetbrains.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purrlang-jetbrains
+          path: tools/purrlang-jetbrains/build/distributions/purrlang-jetbrains.zip
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [version, build, jetbrains]
+    if: github.event_name == 'push' && needs.version.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cat dist/*.sha256 > dist/SHA256SUMS && cat dist/SHA256SUMS
+      - name: Publish
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/exec
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Stable releases also go to JetBrains Marketplace, once the repository has a
+  # JETBRAINS_MARKETPLACE_TOKEN secret. Nightlies don't: the plugin only runs
+  # the purrls that purr installed, whichever version that is.
+  marketplace:
+    name: JetBrains Marketplace
+    needs: [version, release]
+    if: github.ref_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Publish
+        shell: bash
+        working-directory: tools/purrlang-jetbrains
+        env:
+          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+        run: |
+          if [ -z "$JETBRAINS_MARKETPLACE_TOKEN" ]; then
+            echo "No JETBRAINS_MARKETPLACE_TOKEN secret: not publishing to Marketplace."
+            exit 0
+          fi
+          chmod +x gradlew
+          ./gradlew publishPlugin -PpluginVersion="${{ needs.version.outputs.version }}"

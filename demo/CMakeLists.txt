@@ -4,7 +4,7 @@ purr_add_game(demo HOST main.c)
 target_link_libraries(demo PRIVATE purr_platform)
 purr_web_page(demo SHELL shell.html)
 
-if(EMSCRIPTEN)
+if(PURR_WEB)
     purr_add_web_test(demo_smoke_web TARGET demo QUERY smoke)
 else()
     # Opens a hidden window, so it needs a desktop session with working OpenGL.

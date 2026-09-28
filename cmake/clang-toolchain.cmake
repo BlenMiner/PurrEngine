@@ -41,6 +41,12 @@ if(NOT PURR_CLANG)
 endif()
 
 set(CMAKE_C_COMPILER "${PURR_CLANG}")
+# purr's built-in clang is C++ (PURR_EMBED_LLVM); clang++ is next to clang.
+get_filename_component(_purr_clang_bin "${PURR_CLANG}" DIRECTORY)
+find_program(PURR_CLANGXX NAMES clang++ HINTS "${_purr_clang_bin}" NO_DEFAULT_PATH)
+if(PURR_CLANGXX)
+    set(CMAKE_CXX_COMPILER "${PURR_CLANGXX}")
+endif()
 
 # CMake's Windows clang setup also requires a resource compiler; llvm-rc ships next to clang.
 if(CMAKE_HOST_WIN32)

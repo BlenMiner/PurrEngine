@@ -27,7 +27,7 @@ A networking-first game engine:
 
 ## Rendering and platform
 
-- raylib handles windows, input and rendering for now. The web build renders with WebGL 2.
+- raylib handles windows, input and rendering for now. The web build renders with WebGL 2, through our own JavaScript (see Web builds).
 - Rendering stays disconnected from the simulation, so it can be replaced later (for example for consoles):
   - The simulation never includes raylib or any platform header.
   - The view reads the world and draws it. It never writes simulation state.
@@ -52,18 +52,24 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 - Run the sandbox: `build/debug/bin/sandbox`
 - Run the demo: `build/debug/bin/demo`, or open `build/web-release/bin/demo.html` in a browser after a web build.
 
-There are two presets. `debug` has no optimization. `release` is optimized and keeps debug info for profiling.
+There are two presets for everyday work. `debug` has no optimization. `release` is optimized and keeps debug info for profiling. Web builds, MinGW builds and the package have their own (see below).
 
-Every native build also copies the language server to `build/tools/purrls`, the fixed path editors run (see `tools/purrlang-lsp4ij`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
+Every native build also copies the language server to `build/tools/purrls`, the fixed path editors run: the VS Code extension and the JetBrains plugin use it when the open folder is this repo (see `tools/`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
 
 The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with `-DPURR_PLATFORM=OFF` to build without the platform layer and the demo, for example offline.
 
 ### Web builds
 
-- The `web-debug` and `web-release` presets build everything as WebAssembly with Emscripten: `cmake --workflow --preset web-debug`. Tests run under Node through CTest. purrc runs as WebAssembly too, under Node, during the build.
-- Emscripten is found through `$EMSDK`, then common emsdk locations such as `D:/Tools/emsdk` (see `cmake/emscripten-toolchain.cmake`).
+- The `web-debug` and `web-release` presets build everything as WebAssembly with clang's own wasm target and wasi-libc, not Emscripten: `cmake --workflow --preset web-debug` (see `cmake/wasi-toolchain.cmake`). They need clang with `wasm-ld` (LLVM's releases have it; on Linux, the distribution's `lld`) and Node. wasi-sdk's C library is downloaded once into `build/wasi-sdk-<version>`, pinned.
+- Tests run under Node's WASI through CTest (`cmake/run_wasi.mjs`), so the determinism hashes cover exactly what ships. Games generate their C with a native purrc, which web builds build first in `<build>/host` (`cmake/HostPurrc.cmake`).
+- In the browser, `platform/web/purr.js` runs the program: the canvas, input and frame loop (`platform/web/purr_web.h`), the OpenGL ES 3 functions rlgl calls on WebGL 2, and the few WASI functions wasi-libc needs. raylib gets our platform backend (`platform/web/raylib/rcore_web_purr.c`), patched into its `rcore.c` by `cmake/Raylib.cmake`. A web page is one self-contained `.html` with the program inside (`cmake/web_page.mjs`, or purr).
 - Web builds are single-threaded. Threads need a cross-origin isolated page, and running in parallel never changes results anyway.
 - Before finishing a change, the native and web test suites must both pass.
+
+### MinGW builds
+
+- On Windows, the `mingw-release` preset builds everything for the MinGW-w64 target (`x86_64-w64-windows-gnu`, with the UCRT), which purr builds Windows games for (see Packaging and releases): `cmake --workflow --preset mingw-release`. Everyday Windows builds keep Visual Studio's target.
+- Its headers, C runtime and compiler runtime come from llvm-mingw, downloaded once into `build/llvm-mingw-<version>`, pinned (`cmake/mingw-toolchain.cmake`). clang is the usual one, linking with lld.
 
 ### Cross-platform determinism tests
 
@@ -81,7 +87,7 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 - With `HOST`, those C files are the program (tests, the demo's smoke test, custom hosts). They include `<name>.h`, where `NAME` defaults to `<target>`.
 - `purrc` compiles all the files together, in order of their paths. The generated files regenerate whenever a `.purr` file or `purrc` changes.
 - `<target>_schedule` is a build target that prints the game's schedule: which systems can run at the same time, and why the others wait.
-- Every game's files are listed in `build/tools/games.txt`, one `<game>\t<path>` per line. A path ending in `/` is a folder: every `.purr` file in it and its subfolders, so editors see new files before the next build. `purrls` reads it to analyze a game's files together, in `purrc`'s order; a file in no game is analyzed alone.
+- Every game's files are listed in `build/tools/games.txt`, one `<game>\t<path>` per line. A path ending in `/` is a folder: every `.purr` file in it and its subfolders, so editors see new files before the next build. `purrls` reads it, and the one in `build/tools/` of any folder open in the editor, to analyze a game's files together, in `purrc`'s order. A file in no game belongs to the open folder it's in, as `purr run` would build that folder, unless a manifest lists games in that folder: then it's analyzed alone.
 
 The generated header is the API between the game and the host. Namespaced declarations have their namespace in their C name: `Combat.Health` is `Combat_Health`, read with `purr_get_Combat_Health`.
 
@@ -93,18 +99,35 @@ The generated header is the API between the game and the host. Namespaced declar
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
 - If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's `Sample` on the client (call `purr_devices_consume(devices)` after it). `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.
 
+## Packaging and releases
+
+Users get PurrEngine as the `purr` command, not this repo: see README.md.
+
+- `purr run`, `purr build [--release] [--web]`, `purr schedule`, `purr editors`, `purr upgrade` and `purr version` (`compiler/cli/`, owned by Claude). It runs purrc's front end in-process, compiles the generated C and the engine's sources with the determinism flags (as separate files, like the CMake build), and links the prebuilt platform layer.
+- Packages have clang and lld built into purr (`PURR_EMBED_LLVM`, `compiler/cli/llvm/cc.cpp`), so users need no compiler: `purr cc` is clang, whose compiles run in purr's process and whose links go to lld in it. purr links the static libraries of LLVM's own release, downloaded once into `build/llvm-<version>` and pinned (`cmake/LLVM.cmake`, which also builds the zlib, zstd and libxml2 they were built with; unpacking needs the `zstd` program). macOS's release holds them as LLVM bitcode, so purr links there with that release's lld. Builds of this repo without the option use an installed clang (`--web` needs `wasm-ld` next to it).
+- The package brings the C library for web games (wasi-libc) and for Windows games, which build for MinGW-w64 (see MinGW builds): Microsoft's C runtime can't ship with purr, and the UCRT is part of Windows, so players need nothing else. Linux games use the system's C development files, and macOS games the SDK of Apple's command-line tools (purr sets `SDKROOT`).
+- A game is a folder of `.purr` files. purr keeps its work in `<folder>/.purr/` (it ignores itself in git) and puts `purr build` output in `<folder>/build/`.
+- The package is everything installed as the `purr` component: `bin/` (purr, purrls), `include/`, `src/engine/`, `lib/native/` and `lib/web/` (the prebuilt platform layer and raylib), `wasi/` (wasi-libc and the compiler runtime for wasm), `mingw/` (on Windows: MinGW-w64's headers, C runtime and compiler runtime), `lib/clang/` (clang's own headers), `web/` (the page and `purr.js`), `editors/` and `VERSION`. It comes from the `package` preset (clang and lld built in, static C runtime on Windows), the `web-package` preset and, on Windows, the `mingw-release` preset, put together by `cmake -DNAME=purr-windows-x64 -P cmake/package.cmake` into `build/dist`. Anything purr needs at build time must be installed into the package; a game build can't see this repo. The same goes for `purrls`, which reads the engine headers from the package's `include/`.
+- `editors/purrlang.vsix` is the VS Code extension (`tools/purrlang-vscode`), for VS Code, Cursor, VSCodium and Windsurf. Only the `package` preset builds it (`PURR_EDITOR_EXTENSIONS`), since it needs Node's npm. The installers run `purr editors`, which installs it into every one of those editors it finds, and `purr upgrade` updates it in the editors that have it.
+- The JetBrains plugin (`tools/purrlang-jetbrains`, Gradle and Java; [on Marketplace](https://plugins.jetbrains.com/plugin/34610-purrlang) as `io.github.blenminer.purrlang`) isn't in the package: CI builds it and checks it with the plugin verifier on every push, attaches it to each release, and publishes stable releases to JetBrains Marketplace with the `JETBRAINS_MARKETPLACE_TOKEN` secret. Marketplace installs LSP4IJ, which it needs, along with it.
+- Users install with `install.ps1` or `install.sh` into `%LOCALAPPDATA%\Purr` or `~/.purr`, with `bin` on `PATH`, and `purr upgrade` replaces the installation from GitHub Releases. It checks each download against the release's `SHA256SUMS`, and renames running programs aside instead of overwriting them. Once a day, purr says when a newer version is out. Builds made from this repo are versioned `<VERSION>-dev` and never look for updates.
+- `.github/workflows/build.yml` tests and packages Windows, Linux and macOS on every push and pull request (macOS doesn't hold back releases yet), and tests the MinGW target on Windows. Pushes to `dev` publish nightly pre-releases (`0.2.0-nightly.3`); pushes to `release` publish stable releases, and semantic-release commits the new `VERSION` there. The native demo smoke test is skipped in CI, which has no GPU.
+- Versions come from conventional commits (`.releaserc.json`): `fix:` is a patch, `feat:` a minor version. While the version starts with 0, breaking changes (`feat!:`) are minor versions too, and we avoid them until 1.0 anyway.
+
 ## Layout
 
 - `engine/`: the engine library (`purr`). Public headers go in `engine/include/purr/`, sources in `engine/src/`. New `.c` files are picked up automatically.
 - `compiler/`: `purrc`, the PurrLang transpiler (owned by Claude). `compiler/tests/e2e/` holds programs compiled and run as tests. `compiler/tests/errors/` holds programs that must fail with the message on their first line.
+- `compiler/cli/`: `purr`, the command users run (owned by Claude; see Packaging and releases).
 - `compiler/lsp/`: `purrls`, the PurrLang language server (owned by Claude). It reuses purrc's front end, with error recovery, to give editors completion, diagnostics, hovers, go to definition, find usages, rename, formatting, parameter hints, the outline and semantic highlighting. Native builds only.
-- `tools/`: editor support. `purrlang-syntax` is a TextMate bundle for highlighting, and `purrlang-lsp4ij` is a template that connects JetBrains IDEs to `purrls` through the LSP4IJ plugin.
+- `tools/`: editor support. `purrlang-vscode` is the VS Code extension and `purrlang-jetbrains` the JetBrains plugin: each is the grammar and a client that runs `purrls`. `purrlang-syntax` is the TextMate grammar they both include, which the package also ships as a bundle for other editors.
 - `docs/purrlang.md`: the language spec.
 - `platform/`: the platform layer (`purr_platform`): window, frame loop and input devices, on raylib. Public header `platform/include/purr/platform.h`.
 - `demo/`: a small game on the platform layer. `demo.purr` is the simulation and the views that draw it, and `main.c` is the host. It builds as `demo.html` on the web.
 - `sandbox/`: the owner's experiments: a game with no C, built by `purr_add_game`.
 - `tests/`: tests built on the harness in `tests/purr_test.h`. New test files are picked up automatically.
-- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the file that locates clang (`clang-toolchain.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
+- `.github/workflows/`, `.releaserc.json`, `install.ps1`, `install.sh`: releases and installing (see Packaging and releases).
+- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the package (`package.cmake`), the file that locates clang (`clang-toolchain.cmake`), the web and MinGW toolchains (`wasi-toolchain.cmake`, `mingw-toolchain.cmake`), purr's built-in clang (`LLVM.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
 
 ### Runtime written by Claude for now
 
@@ -113,7 +136,7 @@ The generated header is the API between the game and the host. Namespaced declar
 - `engine/include/purr/math.h` and `engine/src/math.c` (vectors, quaternions, matrices and transcendental functions) are Claude's too, on the same terms. Generated code calls them by the names `purr_<function>_<type>`. The transcendental functions are in-house, computed in double from basic operations; CORE-MATH remains an option to replace them.
 - `engine/include/purr/color.h`, `engine/include/purr/draw.h` and `engine/src/draw.c` (colors and the draw list) are Claude's too, on the same terms. Generated views call the `purr_draw_*` functions.
 - `platform/` (the platform layer) and `demo/` are Claude's too, on the same terms.
-  - The platform layer reads keys by physical position everywhere. On the web it reads the DOM's `code` itself: Emscripten's GLFW, which raylib uses there, reads the legacy `keyCode`, which follows the keyboard layout. `platform/tests/web_keys.c` guards this with AZERTY-style events. Hosts and views should read input from `Devices` too, never raylib's key functions.
+  - The platform layer reads keys by physical position everywhere. On the web, the page reads the DOM's `code`, never the typed character, which follows the keyboard layout. `platform/tests/web_keys.c` guards this with AZERTY-style events. Hosts and views should read input from `Devices` too, never raylib's key functions.
   - On the web, `purr_platform_run` never returns (the browser drives the frames), so hosts do all their work in the frame function.
 
 ## Language

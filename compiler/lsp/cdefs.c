@@ -23,6 +23,12 @@ typedef struct header {
 
 static header headers[HEADER_COUNT];
 static bool loaded;
+static const char *include_dir = PURR_ENGINE_INCLUDE_DIR;
+
+void cdefs_set_include_dir(const char *dir)
+{
+    include_dir = dir;
+}
 
 static void load(void)
 {
@@ -30,10 +36,10 @@ static void load(void)
     loaded = true;
     for (size_t h = 0; h < HEADER_COUNT; h++) {
         header *hd = &headers[h];
-        const size_t path_len = strlen(PURR_ENGINE_INCLUDE_DIR) + strlen(header_names[h]) + 8;
+        const size_t path_len = strlen(include_dir) + strlen(header_names[h]) + 8;
         hd->path = malloc(path_len);
         if (!hd->path) return;
-        snprintf(hd->path, path_len, "%s/purr/%s", PURR_ENGINE_INCLUDE_DIR, header_names[h]);
+        snprintf(hd->path, path_len, "%s/purr/%s", include_dir, header_names[h]);
 
         FILE *f = fopen(hd->path, "rb");
         if (!f) continue;

@@ -25,20 +25,48 @@
       "name": "web-base",
       "hidden": true,
       "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/emscripten-toolchain.cmake"
+      "toolchainFile": "${sourceDir}/cmake/wasi-toolchain.cmake"
     },
     {
       "name": "web-debug",
       "inherits": "web-base",
       "displayName": "Web Debug",
-      "description": "WebAssembly through Emscripten, no optimization. Tests run under Node.",
+      "description": "WebAssembly through clang and wasi-libc, no optimization. Tests run under Node.",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "web-release",
       "inherits": "web-base",
       "displayName": "Web Release",
-      "description": "WebAssembly through Emscripten, optimized. Tests run under Node.",
+      "description": "WebAssembly through clang and wasi-libc, optimized. Tests run under Node.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "mingw-release",
+      "inherits": "base",
+      "displayName": "MinGW Release",
+      "description": "Windows only: the MinGW-w64 target that purr builds games for, optimized. Its platform layer goes in the package.",
+      "toolchainFile": "${sourceDir}/cmake/mingw-toolchain.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "package",
+      "inherits": "base",
+      "displayName": "Package",
+      "description": "The purr package's native half: optimized, with clang and lld built into purr, the C runtime linked statically on Windows, and the editor extensions.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "PURR_EDITOR_EXTENSIONS": "ON",
+        "PURR_EMBED_LLVM": "ON"
+      }
+    },
+    {
+      "name": "web-package",
+      "inherits": "web-base",
+      "displayName": "Web Package",
+      "description": "The purr package's web half: the platform layer as WebAssembly.",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],
@@ -46,13 +74,17 @@
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
     { "name": "web-debug", "configurePreset": "web-debug" },
-    { "name": "web-release", "configurePreset": "web-release" }
+    { "name": "web-release", "configurePreset": "web-release" },
+    { "name": "mingw-release", "configurePreset": "mingw-release" },
+    { "name": "package", "configurePreset": "package" },
+    { "name": "web-package", "configurePreset": "web-package" }
   ],
   "testPresets": [
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
     { "name": "web-debug", "configurePreset": "web-debug", "output": { "outputOnFailure": true } },
-    { "name": "web-release", "configurePreset": "web-release", "output": { "outputOnFailure": true } }
+    { "name": "web-release", "configurePreset": "web-release", "output": { "outputOnFailure": true } },
+    { "name": "mingw-release", "configurePreset": "mingw-release", "output": { "outputOnFailure": true } }
   ],
   "workflowPresets": [
     {
@@ -85,6 +117,14 @@
         { "type": "configure", "name": "web-release" },
         { "type": "build", "name": "web-release" },
         { "type": "test", "name": "web-release" }
+      ]
+    },
+    {
+      "name": "mingw-release",
+      "steps": [
+        { "type": "configure", "name": "mingw-release" },
+        { "type": "build", "name": "mingw-release" },
+        { "type": "test", "name": "mingw-release" }
       ]
     }
   ]

@@ -34,7 +34,7 @@ static bool share_archetypes(const arch_set *a, const arch_set *b)
 
 // The components and singletons two systems both use, where at least one of
 // them writes. Components only count if the systems can meet the same entity.
-static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, wait *w)
+static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
@@ -88,7 +88,7 @@ void analyze_parallelism(program *prog)
         sys->stage = 1;
         for (int i = 0; i < j; i++) {
             decl *earlier = prog->systems.items[i];
-            wait w = {0};
+            system_wait w = {0};
             w.on = earlier;
             find_conflicts(earlier, sys, share_archetypes(&sets[i], &sets[j]), &w);
             w.ordered = contains((const decl *const *)sys->after.items, sys->after.count, earlier);
@@ -100,7 +100,7 @@ void analyze_parallelism(program *prog)
         }
         // A wait goes through another when that other system already waits for it.
         for (int a = 0; a < sys->waits.count; a++) {
-            wait *w = &sys->waits.items[a];
+            system_wait *w = &sys->waits.items[a];
             for (int b = 0; b < sys->waits.count && !w->through; b++) {
                 decl *other = sys->waits.items[b].on;
                 if (other != w->on && before[position(prog, other) * n + position(prog, w->on)]) w->through = other;
@@ -142,7 +142,7 @@ static bool has_after(const decl *sys, const decl *earlier)
     return false;
 }
 
-void describe_wait(const decl *sys, const wait *w, const char *quote, sb *out)
+void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb *out)
 {
     static const char *const templates[] = {
         [CONFLICT_BOTH_WRITE] = "both write ",
@@ -218,7 +218,7 @@ void print_schedule(const program *prog, const char *game, sb *out)
         put_access(out, sys, false);
         put_access(out, sys, true);
         for (int k = 0; k < sys->waits.count; k++) {
-            const wait *w = &sys->waits.items[k];
+            const system_wait *w = &sys->waits.items[k];
             sb_put(out, "         after ");
             put_decl_name(out, w->on, "", NULL);
             sb_put(out, ": ");

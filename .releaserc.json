@@ -1,0 +1,45 @@
+{
+  "branches": [
+    "release",
+    { "name": "dev", "prerelease": "nightly" }
+  ],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "angular",
+        "releaseRules": [{ "breaking": true, "release": "minor" }]
+      }
+    ],
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "if [ \"${branch.name}\" = \"release\" ]; then echo ${nextRelease.version} > VERSION; fi"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["VERSION"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "dist/purr-windows-x64.zip", "label": "purr for Windows (x64)" },
+          { "path": "dist/purr-linux-x64.tar.gz", "label": "purr for Linux (x64)" },
+          { "path": "dist/purr-macos-arm64.tar.gz", "label": "purr for macOS (Apple Silicon)" },
+          { "path": "dist/purrlang-jetbrains.zip", "label": "PurrLang plugin for JetBrains IDEs" },
+          { "path": "dist/SHA256SUMS", "label": "SHA256SUMS" }
+        ],
+        "successComment": false,
+        "failComment": false,
+        "releasedLabels": false
+      }
+    ]
+  ]
+}

@@ -7,6 +7,10 @@
 // Where PurrLang's built-ins are defined in C: the engine headers generated
 // code includes. Lets "go to definition" land on real code instead of nothing.
 
+// Reads the headers from `dir` (holding purr/math.h and the others) instead of
+// the engine this server was built from. Call it before anything else here.
+void cdefs_set_include_dir(const char *dir);
+
 // Writes an LSP Location for the C definition of `name`: a function, macro or
 // struct, like purr_draw_circle, PURR_COLOR_RED or purr_float3. Vector math that
 // macros generate (purr_sin_f3) resolves to the line that generates it. False

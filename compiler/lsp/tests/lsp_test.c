@@ -63,7 +63,7 @@ static void start(void)
 static int cursor_line;
 static int cursor_character;
 
-static void open(const char *marked)
+static void open_document(const char *marked)
 {
     char text[8192];
     size_t n = 0;
@@ -180,7 +180,7 @@ static const char *apply_reply(const char *original, const char *path)
 
 static const char *complete(const char *marked)
 {
-    open(marked);
+    open_document(marked);
     return request("textDocument/completion");
 }
 
@@ -228,11 +228,11 @@ PURR_TEST(lsp_initialize_advertises_features)
 PURR_TEST(lsp_diagnostics)
 {
     start();
-    open(GAME_TYPES);
+    open_document(GAME_TYPES);
     PURR_CHECK(has(last_sent(), "\"method\":\"textDocument/publishDiagnostics\""));
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
-    open(GAME_TYPES "system Move(mut Body body)\n{\n    body.pos = 1;\n}\n");
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.pos = 1;\n}\n");
     PURR_CHECK(has(last_sent(), "Body has no field 'pos'"));
     PURR_CHECK(has(last_sent(), "\"range\":{\"start\":{\"line\":23,\"character\":9},\"end\":{\"line\":23,\"character\":12}}"));
     PURR_CHECK(has(last_sent(), "\"severity\":1"));
@@ -241,7 +241,7 @@ PURR_TEST(lsp_diagnostics)
 PURR_TEST(lsp_diagnostics_keep_going_after_syntax_errors)
 {
     start();
-    open(GAME_TYPES "system Move(mut Body body)\n{\n    body.position = ;\n    var x = 1 +;\n    body.radius = true;\n}\n");
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.position = ;\n    var x = 1 +;\n    body.radius = true;\n}\n");
     const char *reply = last_sent();
     PURR_CHECK(has(reply, "expected an expression, found ';'"));
     PURR_CHECK(has(reply, "\"line\":24")); // The second syntax error
@@ -286,12 +286,12 @@ PURR_TEST(lsp_sanitize)
     PURR_CHECK(offers(reply, "move"));
     PURR_CHECK(!offers(reply, "devices"));
 
-    open("input PlayerInput\n{\n    float move;\n    Sani$tize() { move = Math.Clamp(move, -1, 1); }\n}\n"
+    open_document("input PlayerInput\n{\n    float move;\n    Sani$tize() { move = Math.Clamp(move, -1, 1); }\n}\n"
          "system Main() { }\n");
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     PURR_CHECK(has(request("textDocument/hover"), "Runs on every input before the simulation reads it"));
 
-    open("input PlayerInput\n{\n    bool jump;\n    Sam$ple(Devices devices) { jump = devices.keyboard.space.pressed; }\n}\n"
+    open_document("input PlayerInput\n{\n    bool jump;\n    Sam$ple(Devices devices) { jump = devices.keyboard.space.pressed; }\n}\n"
          "system Main() { }\n");
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     PURR_CHECK(has(request("textDocument/hover"), "Builds the player's input from the devices"));
@@ -313,7 +313,7 @@ PURR_TEST(lsp_field_attributes)
                                 "system Main() { }\n";
     static const char expected[] = "input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    [Min(0), Max(3)] int gear;\n}\n"
                                    "system Main() { }\n";
-    open(messy);
+    open_document(messy);
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     format_reply(messy);
     const char *formatted = apply_reply(messy, NULL);
@@ -408,16 +408,16 @@ PURR_TEST(lsp_complete_literal_fields)
 PURR_TEST(lsp_hover)
 {
     start();
-    open(GAME_TYPES "system Move(mut Body body)\n{\n    body$.radius = 1;\n}\n");
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body$.radius = 1;\n}\n");
     const char *param = request("textDocument/hover");
     PURR_CHECK(has(param, "mut Body body"));
 
-    open(GAME_TYPES "system Move(mut B$ody body)\n{\n}\n");
+    open_document(GAME_TYPES "system Move(mut B$ody body)\n{\n}\n");
     const char *type = request("textDocument/hover");
     PURR_CHECK(has(type, "component Body"));
     PURR_CHECK(has(type, "float radius = 10;"));
 
-    open(GAME_TYPES "view V(Body body)\n{\n    Draw.Cir$cle(body.position, 1, Color.red);\n}\n");
+    open_document(GAME_TYPES "view V(Body body)\n{\n    Draw.Cir$cle(body.position, 1, Color.red);\n}\n");
     const char *function = request("textDocument/hover");
     PURR_CHECK(has(function, "Draw.Circle(float2 center, float radius, Color color)"));
     PURR_CHECK(has(function, "A filled circle."));
@@ -426,11 +426,11 @@ PURR_TEST(lsp_hover)
 PURR_TEST(lsp_definition)
 {
     start();
-    open(GAME_TYPES "system Move(mut Body body)\n{\n    bo$dy.radius = 1;\n}\n");
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    bo$dy.radius = 1;\n}\n");
     const char *param = request("textDocument/definition");
     PURR_CHECK(has(param, "\"range\":{\"start\":{\"line\":21,\"character\":21}"));
 
-    open(GAME_TYPES "system Move(mut Body body)\n{\n    body.rad$ius = 1;\n}\n");
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.rad$ius = 1;\n}\n");
     const char *field = request("textDocument/definition");
     PURR_CHECK(has(field, "\"range\":{\"start\":{\"line\":3,\"character\":10}"));
 }
@@ -457,7 +457,7 @@ static const char *definition_line(void)
 
 static const char *c_definition(const char *marked)
 {
-    open(marked);
+    open_document(marked);
     request("textDocument/definition");
     return definition_line();
 }
@@ -500,7 +500,7 @@ PURR_TEST(lsp_definition_in_c)
 PURR_TEST(lsp_symbols)
 {
     start();
-    open(GAME_TYPES "view DrawBodies(Body body) { }\n");
+    open_document(GAME_TYPES "view DrawBodies(Body body) { }\n");
     const char *reply = request("textDocument/documentSymbol");
     PURR_CHECK(has(reply, "\"name\":\"Body\""));
     PURR_CHECK(has(reply, "\"name\":\"radius\""));
@@ -510,20 +510,20 @@ PURR_TEST(lsp_symbols)
 PURR_TEST(lsp_semantic_tokens)
 {
     start();
-    open(GAME_TYPES);
+    open_document(GAME_TYPES);
     const char *reply = request("textDocument/semanticTokens/full");
     // `Body` on line 0, column 10: a struct (2), declared (1).
     PURR_CHECK(has(reply, "\"data\":[0,10,4,2,1,"));
 
     // Columns count UTF-16 units: `é` is two bytes but one unit.
-    open("/* \xC3\xA9 */ component Body { float x; }\nsystem Main() { }\n");
+    open_document("/* \xC3\xA9 */ component Body { float x; }\nsystem Main() { }\n");
     PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,18,4,2,1,"));
 
     // Built-in value types are keywords (11), like C#'s float: `float3` 7 columns after `Body`.
-    open("component Body { float3 p; }\nsystem Main() { }\n");
+    open_document("component Body { float3 p; }\nsystem Main() { }\n");
     PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,10,4,2,1,0,7,6,11,0,"));
     // Sample and Sanitize are keywords too, and attributes decorators (12).
-    open("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample(Devices devices) { }\n}\nsystem Main() { }\n");
+    open_document("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample(Devices devices) { }\n}\nsystem Main() { }\n");
     const char *input = request("textDocument/semanticTokens/full");
     PURR_CHECK(has(input, "2,5,5,12,0,")); // Clamp: line +2, column 5
     PURR_CHECK(has(input, "1,4,6,11,0,")); // Sample: line +1, column 4
@@ -537,12 +537,12 @@ PURR_TEST(lsp_semantic_tokens)
 PURR_TEST(lsp_references)
 {
     start();
-    open(USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.rad$ius, Color.red);\n}\n");
+    open_document(USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.rad$ius, Color.red);\n}\n");
     // The declaration, `body.radius += 1`, the literal and the view.
     PURR_CHECK(count(request_with("textDocument/references", "\"context\":{\"includeDeclaration\":true}"), "\"uri\"") == 4);
     PURR_CHECK(count(request_with("textDocument/references", "\"context\":{\"includeDeclaration\":false}"), "\"uri\"") == 3);
 
-    open(GAME_TYPES "system Move(mut Body bo$dy)\n{\n    body.radius = body.radius * 2;\n}\n");
+    open_document(GAME_TYPES "system Move(mut Body bo$dy)\n{\n    body.radius = body.radius * 2;\n}\n");
     const char *highlights = request("textDocument/documentHighlight");
     PURR_CHECK(count(highlights, "\"range\"") == 3);
     PURR_CHECK(count(highlights, "\"kind\":3") == 1); // The declaration
@@ -552,7 +552,7 @@ PURR_TEST(lsp_rename)
 {
     start();
     static const char program[] = USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.radius, Color.red);\n}\n";
-    open(USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.rad$ius, Color.red);\n}\n");
+    open_document(USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.rad$ius, Color.red);\n}\n");
     PURR_CHECK(has(request("textDocument/prepareRename"), "\"result\":{\"start\""));
     request_with("textDocument/rename", "\"newName\":\"size\"");
     const char *renamed = apply_reply(program, "file:///test.purr");
@@ -564,54 +564,54 @@ PURR_TEST(lsp_rename)
     // The result still compiles cleanly.
     char copy[8192];
     snprintf(copy, sizeof copy, "%s", renamed);
-    open(copy);
+    open_document(copy);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 }
 
 PURR_TEST(lsp_rename_refusals)
 {
     start();
-    open(USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.rad$ius, Color.red);\n}\n");
+    open_document(USES_RADIUS "view V(Body body)\n{\n    Draw.Circle(body.position, body.rad$ius, Color.red);\n}\n");
     PURR_CHECK(has(request_with("textDocument/rename", "\"newName\":\"position\""), "'position' is already declared"));
     PURR_CHECK(has(request_with("textDocument/rename", "\"newName\":\"return\""), "keyword"));
     PURR_CHECK(has(request_with("textDocument/rename", "\"newName\":\"float3\""), "built into the language"));
     PURR_CHECK(has(request_with("textDocument/rename", "\"newName\":\"2fast\""), "start with a letter"));
 
-    open(USES_RADIUS "view V(Body body)\n{\n    Draw.Cir$cle(body.position, body.radius, Color.red);\n}\n");
+    open_document(USES_RADIUS "view V(Body body)\n{\n    Draw.Cir$cle(body.position, body.radius, Color.red);\n}\n");
     PURR_CHECK(has(request("textDocument/prepareRename"), "Built-in names can't be renamed"));
 
-    open(GAME_TYPES "system Mo$ve(mut Body body)\n{\n    body.radius = ;\n}\n");
+    open_document(GAME_TYPES "system Mo$ve(mut Body body)\n{\n    body.radius = ;\n}\n");
     PURR_CHECK(has(request("textDocument/prepareRename"), "Fix the syntax errors first"));
 }
 
 PURR_TEST(lsp_signature_help)
 {
     start();
-    open(GAME_TYPES "view V(Body body)\n{\n    Draw.Circle(body.position, $\n}\n");
+    open_document(GAME_TYPES "view V(Body body)\n{\n    Draw.Circle(body.position, $\n}\n");
     const char *circle = request("textDocument/signatureHelp");
     PURR_CHECK(has(circle, "\"label\":\"Draw.Circle(float2 center, float radius, Color color)\""));
     PURR_CHECK(has(circle, "\"activeParameter\":1"));
     // "Draw.Circle(" is 12 characters: `float2 center` is 12 to 25.
     PURR_CHECK(has(circle, "\"parameters\":[{\"label\":[12,25]}"));
 
-    open(GAME_TYPES "system S()\n{\n    var v = float3(float2(1, 2), $\n}\n");
+    open_document(GAME_TYPES "system S()\n{\n    var v = float3(float2(1, 2), $\n}\n");
     const char *vector = request("textDocument/signatureHelp");
     PURR_CHECK(has(vector, "float3(float2 xy, float z)"));
     PURR_CHECK(has(vector, "\"activeSignature\":0,\"activeParameter\":1"));
 
     // Commas inside a component literal don't count.
-    open(GAME_TYPES "system S()\n{\n    Spawn(Body { position = float2(1, 2), radius = 3 }, $\n}\n");
+    open_document(GAME_TYPES "system S()\n{\n    Spawn(Body { position = float2(1, 2), radius = 3 }, $\n}\n");
     const char *spawn = request("textDocument/signatureHelp");
     PURR_CHECK(has(spawn, "Spawn(components...)"));
     PURR_CHECK(has(spawn, "\"activeParameter\":0"));
 
-    open(GAME_TYPES "system S()\n{\n    $\n}\n");
+    open_document(GAME_TYPES "system S()\n{\n    $\n}\n");
     PURR_CHECK(has(request("textDocument/signatureHelp"), "\"result\":null"));
 }
 
 static const char *format_reply(const char *text)
 {
-    open(text);
+    open_document(text);
     return request_with("textDocument/formatting", "\"options\":{\"tabSize\":4,\"insertSpaces\":true}");
 }
 
@@ -652,6 +652,49 @@ PURR_TEST(lsp_format)
                       "system Main()\n{\n    var x = 1\n        + 2;\n    Spawn(Owner,\n          Owner);\n}\n") == 0);
 }
 
+// C#-style braces: a block that spans lines has its braces on lines of their
+// own. Blocks on one line and literals stay as they are.
+PURR_TEST(lsp_format_braces)
+{
+    start();
+    static const char js[] =
+        "component Body {\n    float2 position;\n}\n"
+        "input Keys {\n    bool fire;\n\n    Sample(Devices devices) {\n        fire = devices.keyboard.space.pressed; }\n}\n"
+        "system Move(mut Body body) { // Every body\n"
+        "    if (body.position.x > 1) {\n        body.position.x = 0;\n    } else {\n        body.position.x += 1;\n    }\n"
+        "    if (body.position.y > 1) { return; } else {\n        body.position.y = 0;\n    }\n"
+        "    if (body.position.y < 0) {return;}\n"
+        "    var b = Spawn(Body { position = float2(1) });\n"
+        "    Spawn(Body {\n        position = float2(2)\n    });\n"
+        "}\n"
+        "system Main() { }\n";
+    static const char expected[] =
+        "component Body\n{\n    float2 position;\n}\n"
+        "input Keys\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n        fire = devices.keyboard.space.pressed;\n    }\n}\n"
+        "system Move(mut Body body)\n{ // Every body\n"
+        "    if (body.position.x > 1)\n    {\n        body.position.x = 0;\n    }\n    else\n    {\n        body.position.x += 1;\n    }\n"
+        "    if (body.position.y > 1) { return; }\n    else\n    {\n        body.position.y = 0;\n    }\n"
+        "    if (body.position.y < 0) { return; }\n"
+        "    var b = Spawn(Body { position = float2(1) });\n"
+        "    Spawn(Body {\n        position = float2(2)\n    });\n" // A literal's fields: one level in, even in a call
+        "}\n"
+        "system Main() { }\n";
+    format_reply(js);
+    const char *formatted = apply_reply(js, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+
+    // Formatting what's formatted changes nothing.
+    char again[8192];
+    snprintf(again, sizeof again, "%s", formatted);
+    PURR_CHECK(has(format_reply(again), "\"result\":[]"));
+
+    // New lines match the file's.
+    static const char crlf[] = "system Main() {\r\n    return;\r\n}\r\n";
+    format_reply(crlf);
+    PURR_CHECK(strcmp(apply_reply(crlf, NULL), "system Main()\r\n{\r\n    return;\r\n}\r\n") == 0);
+}
+
 // Formatting keeps every token, in order: only whitespace changes.
 PURR_TEST(lsp_format_keeps_tokens)
 {
@@ -682,7 +725,7 @@ PURR_TEST(lsp_format_keeps_tokens)
     PURR_CHECK(has(formatted, "\"a  b   \\\"c\\\"\"")); // Text keeps its spaces
 
     // It still compiles as before, and formatting again changes nothing.
-    open(formatted);
+    open_document(formatted);
     PURR_CHECK(!has(last_sent(), "\"severity\":1"));
     PURR_CHECK(has(format_reply(formatted), "\"result\":[]"));
 }
@@ -708,7 +751,7 @@ PURR_TEST(lsp_every_prefix_is_safe)
     for (size_t n = 0; n < sizeof program; n++) {
         memcpy(text, program, n);
         text[n] = '\0';
-        open(text);
+        open_document(text);
         int line = 0;
         int character = 0;
         for (size_t i = 0; i < n; i++) {
@@ -944,6 +987,105 @@ PURR_TEST(lsp_game_folder)
     lsp_free(&server);
 }
 
+// Starts the server with `folder` open in the editor, as a URI.
+static void start_in(const char *folder)
+{
+    clear_sent();
+    lsp_free(&server);
+    lsp_init(&server, capture, NULL);
+    char message[1024];
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":"
+             "{\"rootUri\":\"%s\",\"workspaceFolders\":[{\"uri\":\"%s\",\"name\":\"game\"}]}}",
+             folder, folder);
+    handle(message);
+}
+
+// A folder open in the editor is a game, as `purr run` builds it: every .purr
+// file in it and its subfolders, with no manifest.
+PURR_TEST(lsp_open_folder_is_a_game)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_open");
+    make_folder("lsp_open/sub");
+    static const char physics[] = "namespace Physics;\n"
+                                  "component Body { float2 position; }\n"
+                                  "system Gravity(mut Body body) { body.position.y -= 1; }\n";
+    static const char main_file[] = "using Physics;\n"
+                                    "system Main() { Spawn(Body); }\n";
+    write_file("lsp_open/sub/physics.purr", physics);
+    write_file("lsp_open/main.purr", main_file);
+    char root[700], uri_main[700], uri_physics[700];
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_open", dir); // Editors send folders without the last '/'
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_open/main.purr", dir);
+    snprintf(uri_physics, sizeof uri_physics, "file:///%s/lsp_open/sub/physics.purr", dir);
+
+    start_in(root);
+    open_uri(uri_main, main_file);
+    PURR_CHECK(sent_count == 2);
+    PURR_CHECK(has(sent[0], uri_main) && has(sent[0], "\"diagnostics\":[]"));
+    PURR_CHECK(has(sent[1], uri_physics) && has(sent[1], "\"diagnostics\":[]"));
+
+    // Without the folder open, the file stands alone.
+    start();
+    open_uri(uri_main, main_file);
+    PURR_CHECK(sent_count == 1 && !has(sent[0], "\"diagnostics\":[]"));
+
+    remove_game_file("lsp_open/sub/physics.purr");
+    remove_game_file("lsp_open/main.purr");
+    remove_folder("lsp_open/sub");
+    remove_folder("lsp_open");
+    clear_sent();
+    lsp_free(&server);
+}
+
+// An open folder that builds its games with CMake has the manifest
+// purr_add_game writes, in build/tools. Its games come from there, and its
+// other files stand alone instead of making one game of the whole folder.
+PURR_TEST(lsp_open_folder_with_manifest)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_cmake");
+    make_folder("lsp_cmake/build");
+    make_folder("lsp_cmake/build/tools");
+    make_folder("lsp_cmake/game");
+    make_folder("lsp_cmake/tests");
+    static const char physics[] = "component Body { float2 position; }\n";
+    static const char main_file[] = "system Main() { Spawn(Body); }\n";
+    static const char alone[] = "component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n";
+    write_file("lsp_cmake/game/physics.purr", physics);
+    write_file("lsp_cmake/game/main.purr", main_file);
+    write_file("lsp_cmake/tests/alone.purr", alone);
+    char manifest_text[700], root[700], uri_main[700], uri_alone[700];
+    snprintf(manifest_text, sizeof manifest_text, "game\t%s/lsp_cmake/game/\n", game_dir);
+    write_file("lsp_cmake/build/tools/games.txt", manifest_text);
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_cmake", dir);
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_cmake/game/main.purr", dir);
+    snprintf(uri_alone, sizeof uri_alone, "file:///%s/lsp_cmake/tests/alone.purr", dir);
+
+    start_in(root);
+    open_uri(uri_main, main_file);
+    PURR_CHECK(sent_count == 2);
+    for (int i = 0; i < sent_count; i++) PURR_CHECK(has(sent[i], "\"diagnostics\":[]"));
+    // Its own Body doesn't clash with the game's.
+    open_uri(uri_alone, alone);
+    PURR_CHECK(sent_count == 1 && has(sent[0], uri_alone) && has(sent[0], "\"diagnostics\":[]"));
+
+    remove_game_file("lsp_cmake/game/physics.purr");
+    remove_game_file("lsp_cmake/game/main.purr");
+    remove_game_file("lsp_cmake/tests/alone.purr");
+    remove_game_file("lsp_cmake/build/tools/games.txt");
+    remove_folder("lsp_cmake/game");
+    remove_folder("lsp_cmake/tests");
+    remove_folder("lsp_cmake/build/tools");
+    remove_folder("lsp_cmake/build");
+    remove_folder("lsp_cmake");
+    clear_sent();
+    lsp_free(&server);
+}
+
 PURR_TEST(lsp_shutdown_and_exit)
 {
     start();
@@ -966,7 +1108,7 @@ PURR_TEST(lsp_schedule_lenses_and_fixes)
                                   "system Move(mut Body body) { body.position += body.velocity; }\n"
                                   "system Look(mut Body body, mut Score s) { s.total = 0; if (body.position.x > 0) return; }\n"
                                   "system Tag(mut Score s, Body body) { s.total = 1; }\n";
-    open(program);
+    open_document(program);
     PURR_CHECK(has(sent[0], "'body' is declared mut but never written"));
     PURR_CHECK(has(sent[0], "'body' is never used"));
 
@@ -988,7 +1130,7 @@ PURR_TEST(lsp_schedule_lenses_and_fixes)
                                       "\"range\":{\"start\":{\"line\":5,\"character\":0},\"end\":{\"line\":5,\"character\":0}}");
     PURR_CHECK(has(use_with, "\"newText\":\"with Body\""));
 
-    open("component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n"
+    open_document("component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n"
          "system Push(Body body) { body.position.x = 1; }\n");
     const char *add_mut = request_at("file:///test.purr", "textDocument/codeAction", 2, 0,
                                      "\"range\":{\"start\":{\"line\":2,\"character\":25},\"end\":{\"line\":2,\"character\":29}}");

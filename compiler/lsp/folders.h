@@ -1,6 +1,6 @@
 #pragma once
 
-// Lists files on disk, kept apart so the server doesn't see windows.h.
+// Files on disk, kept apart so the server doesn't see windows.h.
 
 typedef void (*folder_file_fn)(void *user, const char *path);
 
@@ -8,3 +8,7 @@ typedef void (*folder_file_fn)(void *user, const char *path);
 // subfolders whose name ends with `extension`, such as ".purr". Paths are the
 // folder followed by forward slashes. Links to other folders aren't followed.
 void folder_find(const char *folder, const char *extension, folder_file_fn found, void *user);
+
+// The folder this program is in, with forward slashes and ending in '/'.
+// malloc'd; NULL if the OS won't say.
+char *folder_of_program(void);

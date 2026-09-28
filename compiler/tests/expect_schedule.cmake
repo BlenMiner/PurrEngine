@@ -1,6 +1,6 @@
 # Runs `purrc --schedule` on SOURCE and checks that it prints EXPECTED exactly.
 execute_process(
-    COMMAND ${EMULATOR} "${PURRC}" "${SOURCE}" --schedule
+    COMMAND "${PURRC}" "${SOURCE}" --schedule
     RESULT_VARIABLE result
     OUTPUT_VARIABLE stdout
     ERROR_VARIABLE stderr)

@@ -10,6 +10,8 @@
 #include <io.h>
 #endif
 
+#include "cdefs.h"
+#include "folders.h"
 #include "server.h"
 
 // Set by the build: the list of games and their files.
@@ -37,6 +39,38 @@ static long read_headers(void)
     }
 }
 
+// Installed, purrls is in <install>/bin and the engine headers are in
+// <install>/include. NULL if they aren't there, as in a build of the repo.
+static char *installed_include_dir(void)
+{
+    char *bin = folder_of_program();
+    if (!bin) return NULL;
+    // "<install>/bin/" -> "<install>"
+    char *last = strrchr(bin, '/');
+    *last = '\0';
+    last = strrchr(bin, '/');
+    if (!last) {
+        free(bin);
+        return NULL;
+    }
+    *last = '\0';
+    const size_t len = strlen(bin) + 32;
+    char *dir = malloc(len);
+    char *probe = malloc(len);
+    if (!dir || !probe) abort();
+    snprintf(dir, len, "%s/include", bin);
+    snprintf(probe, len, "%s/purr/math.h", dir);
+    free(bin);
+    FILE *f = fopen(probe, "rb");
+    free(probe);
+    if (!f) {
+        free(dir);
+        return NULL;
+    }
+    fclose(f);
+    return dir;
+}
+
 int main(void)
 {
 #ifdef _WIN32
@@ -47,6 +81,8 @@ int main(void)
     lsp_server server;
     lsp_init(&server, send_message, NULL);
     server.manifest = PURR_GAMES_MANIFEST; // Written by purr_add_game (see cmake/PurrLang.cmake)
+    char *include_dir = installed_include_dir();
+    if (include_dir) cdefs_set_include_dir(include_dir);
 
     char *body = NULL;
     size_t cap = 0;
@@ -66,5 +102,6 @@ int main(void)
 
     free(body);
     lsp_free(&server);
+    free(include_dir);
     return server.exited ? server.exit_code : 1;
 }
