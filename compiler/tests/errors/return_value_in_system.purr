@@ -1,0 +1,2 @@
+// expect: systems don't return values; use 'return;'
+system Main() { return 1; }

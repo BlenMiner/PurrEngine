@@ -15,7 +15,8 @@
 typedef struct checker {
     program *prog;
     const unit *unit;         // The file being checked: its namespace and `using`s decide what names mean.
-    decl *system;             // Whose parameters are in scope: a system or view, or the input when checking its Sample.
+    decl *system;             // Whose parameters are in scope: a system or view, a method, or the input when checking its Sample.
+    decl *method;             // The method or function being checked: a method's type's fields are in scope.
     bool in_input;      // Checking the input's constructor, which runs outside the simulation.
     bool in_sanitize;         // Checking the input's Sanitize; in_input is set too, for the fields.
     int short_circuit_depth;  // Inside the right side of && or ||, which may not run.
@@ -89,12 +90,26 @@ static bool is_namespace(const program *prog, const str ns)
     return false;
 }
 
-// A type (or with `systems`, a system or view) named exactly `name` in `ns`.
-static decl *find_in(const program *prog, const str ns, const str name, const bool systems)
+// What a name can refer to where it's written.
+typedef enum name_kind {
+    NAME_TYPE,     // Components, singletons, inputs and structs
+    NAME_SYSTEM,   // Systems and views, in [Before] and [After]
+    NAME_FUNCTION,
+} name_kind;
+
+static bool is_kind(const decl *d, const name_kind kind)
+{
+    if (kind == NAME_SYSTEM) return d->kind == DECL_SYSTEM;
+    if (kind == NAME_FUNCTION) return d->kind == DECL_FUNCTION;
+    return d->kind != DECL_SYSTEM && d->kind != DECL_FUNCTION;
+}
+
+// A declaration of that kind named exactly `name` in `ns`.
+static decl *find_in(const program *prog, const str ns, const str name, const name_kind kind)
 {
     for (int i = 0; i < prog->decls.count; i++) {
         decl *d = prog->decls.items[i];
-        if ((d->kind == DECL_SYSTEM) == systems && str_eq(d->name, name) && str_eq(decl_ns(d), ns)) return d;
+        if (is_kind(d, kind) && str_eq(d->name, name) && str_eq(decl_ns(d), ns)) return d;
     }
     return NULL;
 }
@@ -103,15 +118,15 @@ static decl *find_in(const program *prog, const str ns, const str name, const bo
 // exact. A plain one is looked up in the file's namespace, then its parents,
 // then the `using` namespaces, then the global namespace. If two `using`
 // namespaces both have it, *other gets the second: the name is ambiguous.
-static decl *lookup(const program *prog, const unit *from, const str text, const bool systems, decl **other)
+static decl *lookup(const program *prog, const unit *from, const str text, const name_kind kind, decl **other)
 {
     *other = NULL;
     str ns;
     str name;
-    if (split_qualified(text, &ns, &name)) return find_in(prog, ns, name, systems);
+    if (split_qualified(text, &ns, &name)) return find_in(prog, ns, name, kind);
 
     for (ns = from ? from->ns : global_ns; ns.len > 0;) {
-        decl *d = find_in(prog, ns, text, systems);
+        decl *d = find_in(prog, ns, text, kind);
         if (d) return d;
         int dot = ns.len - 1;
         while (dot >= 0 && ns.ptr[dot] != '.') dot--;
@@ -119,23 +134,28 @@ static decl *lookup(const program *prog, const unit *from, const str text, const
     }
     decl *found = NULL;
     for (int i = 0; from && i < from->usings.count; i++) {
-        decl *d = find_in(prog, from->usings.items[i], text, systems);
+        decl *d = find_in(prog, from->usings.items[i], text, kind);
         if (d && !found) found = d;
         else if (d && d != found && !*other) *other = d;
     }
-    return found ? found : find_in(prog, global_ns, text, systems);
+    return found ? found : find_in(prog, global_ns, text, kind);
 }
 
-static decl *find_type(const checker *c, const str name, const loc at)
+static decl *find_named(const checker *c, const str name, const loc at, const name_kind kind)
 {
     decl *other;
-    decl *d = lookup(c->prog, c->unit, name, false, &other);
+    decl *d = lookup(c->prog, c->unit, name, kind, &other);
     if (other) {
         diag_error(at, "'" STR_FMT "' is ambiguous: both " STR_FMT " and " STR_FMT " have it", STR_ARG(name),
                    STR_ARG(decl_ns(d)), STR_ARG(decl_ns(other)));
         diag_note("write which one you mean, like '" STR_FMT "'", STR_ARG(d->qualified));
     }
     return d;
+}
+
+static decl *find_type(const checker *c, const str name, const loc at)
+{
+    return find_named(c, name, at, NAME_TYPE);
 }
 
 // `a.b.c` as the text "a.b.c", if the expression is only names and members.
@@ -234,6 +254,25 @@ static bool field_named(const decl *d, const str name)
     return false;
 }
 
+// The fields named directly by name: the input's in its Sample and Sanitize,
+// and a type's in its methods.
+static field *field_in_scope(const checker *c, const str name)
+{
+    decl *const d = c->method ? c->method->owner : c->in_input ? c->system : NULL;
+    for (int i = 0; d && i < d->fields.count; i++) {
+        if (str_eq(d->fields.items[i].name, name)) return &d->fields.items[i];
+    }
+    return NULL;
+}
+
+static decl *find_method(const decl *d, const str name)
+{
+    for (int i = 0; d && i < d->methods.count; i++) {
+        if (str_eq(d->methods.items[i]->name, name)) return d->methods.items[i];
+    }
+    return NULL;
+}
+
 static param *find_param(const checker *c, const str name)
 {
     if (!c->system) return NULL; // Field defaults are checked outside any system.
@@ -249,6 +288,7 @@ static param *find_param(const checker *c, const str name)
 // Expressions
 
 static type check_expr(checker *c, expr *e);
+static bool check_writable(checker *c, expr *target, const decl *called, const param *arg_of);
 
 static uint64_t bit(const decl *component)
 {
@@ -508,12 +548,72 @@ static bool in_view(const checker *c)
     return c->system && c->system->is_view;
 }
 
+// The arguments of a call of method or function `m`, against its parameters.
+// A mut parameter takes the caller's variable itself, which it changes.
+static void check_method_args(checker *c, expr *e, decl *m)
+{
+    e->call = m->kind == DECL_FUNCTION ? CALL_FUNCTION : CALL_METHOD;
+    e->method = m;
+    for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+    for (int i = 0; i < m->params.count; i++) vec_push(e->arg_want, m->params.items[i].type);
+    if (e->args.count != m->params.count) {
+        diag_error(e->at, "'" STR_FMT "' takes %d argument%s, not %d", STR_ARG(m->name), m->params.count,
+                   m->params.count == 1 ? "" : "s", e->args.count);
+        return;
+    }
+    for (int i = 0; i < e->args.count; i++) {
+        const param *p = &m->params.items[i];
+        expr *arg = e->args.items[i];
+        const bool exact = p->type.kind == arg->type.kind && p->type.decl == arg->type.decl;
+        if (p->mode == PARAM_MUT && arg->type.kind != TY_ERROR && p->type.kind != TY_ERROR && !exact) {
+            diag_error(arg->at, "'" STR_FMT "' changes its '" STR_FMT "', which must be %s, not %s", STR_ARG(m->name),
+                       STR_ARG(p->name), type_name(p->type), type_name(arg->type));
+        } else if (!type_assignable(p->type, arg->type)) {
+            diag_error(arg->at, "'" STR_FMT "' takes %s for '" STR_FMT "', not %s", STR_ARG(m->name), type_name(p->type),
+                       STR_ARG(p->name), type_name(arg->type));
+        } else if (p->mode == PARAM_MUT) {
+            check_writable(c, arg, m, p);
+        }
+    }
+}
+
+// Heal(unit.stats, 5), or Combat.Heal(...) from elsewhere.
+static type check_function_call(checker *c, expr *e, decl *fn)
+{
+    check_method_args(c, e, fn);
+    return fn->return_type;
+}
+
+// "methods" or "functions", for messages about the code being checked.
+static const char *routines(const checker *c)
+{
+    return c->method->kind == DECL_FUNCTION ? "functions" : "methods";
+}
+
+// IsDead() inside another of the type's methods: the same value.
+static type check_self_call(checker *c, expr *e, decl *m)
+{
+    if (m->is_mut_method && !c->method->is_mut_method) {
+        diag_error(e->at, "'" STR_FMT "' changes the fields, so only a mut method can call it", STR_ARG(m->name));
+        diag_note("declare '" STR_FMT "' as 'mut' too", STR_ARG(c->method->name));
+    }
+    check_method_args(c, e, m);
+    return m->return_type;
+}
+
 static type check_call(checker *c, expr *e)
 {
+    decl *const own = c->method ? find_method(c->method->owner, e->name) : NULL;
+    if (own) return check_self_call(c, e, own);
+
     type builtin;
     if (builtin_type_named(e->name, &builtin)) return check_construct(c, e, builtin);
 
     if (str_eq_c(e->name, "Spawn")) {
+        if (c->method) {
+            diag_error(e->at, "%s can't spawn entities; systems do", routines(c));
+            return T_ERR;
+        }
         if (c->in_input) {
             diag_error(e->at, "%s runs outside the simulation, so it can't spawn entities", input_code(c));
             return T_ERR;
@@ -538,6 +638,9 @@ static type check_call(checker *c, expr *e)
         vec_push(c->spawns, e);
         return T_ENTITY_;
     }
+
+    decl *const fn = find_named(c, e->name, e->at, NAME_FUNCTION);
+    if (fn) return check_function_call(c, e, fn);
 
     for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
 
@@ -583,13 +686,48 @@ static type check_method(checker *c, expr *e)
         return result;
     }
 
+    // Combat.Heal(...): a function in a namespace.
+    const expr *root = chain_root(e->object);
+    str ns;
+    if (root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
+        && !field_in_scope(c, root->name) && qualified_text(e->object, &ns) && is_namespace(c->prog, ns)) {
+        char *text = arena_alloc((size_t)ns.len + (size_t)e->name.len + 2);
+        memcpy(text, ns.ptr, (size_t)ns.len);
+        text[ns.len] = '.';
+        memcpy(text + ns.len + 1, e->name.ptr, (size_t)e->name.len);
+        decl *const fn = find_named(c, (str){text, ns.len + 1 + e->name.len}, e->at, NAME_FUNCTION);
+        if (fn) {
+            mark_namespaces(e->object);
+            return check_function_call(c, e, fn);
+        }
+    }
+
     const type obj = check_expr(c, e->object);
     if (obj.kind == TY_ERROR) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         return T_ERR;
     }
+    // stats.IsDead(), unit.Heal(5): a struct's or component's method.
+    if (obj.kind == TY_STRUCT || obj.kind == TY_COMPONENT) {
+        decl *const m = find_method(obj.decl, e->name);
+        if (!m) {
+            for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+            diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
+            suggestion s = suggest_start(e->name);
+            for (int i = 0; i < obj.decl->methods.count; i++) suggest_consider(&s, obj.decl->methods.items[i]->name);
+            suggest_note(&s);
+            return T_ERR;
+        }
+        if (m->is_mut_method) check_writable(c, e->object, m, NULL);
+        check_method_args(c, e, m);
+        return m->return_type;
+    }
     if (obj.kind != TY_ENTITY) {
         diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
+        return T_ERR;
+    }
+    if (c->method) {
+        diag_error(e->at, "%s can't change entities; systems do", routines(c));
         return T_ERR;
     }
     if (c->in_input) {
@@ -787,7 +925,7 @@ static type check_member(checker *c, expr *e)
     const expr *root = chain_root(e);
     str text;
     if (root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
-        && !(c->in_input && field_named(c->system, root->name)) && is_namespace(c->prog, root->name)
+        && !field_in_scope(c, root->name) && is_namespace(c->prog, root->name)
         && qualified_text(e, &text)) {
         return check_namespace_member(c, e);
     }
@@ -888,16 +1026,13 @@ static type check_name(const checker *c, expr *e)
         p->read = true;
         return p->type;
     }
-    // Inside the input's Sample and Sanitize, its fields are in scope by name.
-    if (c->in_input) {
-        for (int i = 0; i < c->system->fields.count; i++) {
-            field *f = &c->system->fields.items[i];
-            if (str_eq(f->name, e->name)) {
-                e->bind = BIND_FIELD;
-                e->field = f;
-                return f->type;
-            }
-        }
+    // Inside the input's Sample and Sanitize, and a type's methods, the fields
+    // are in scope by name.
+    field *f = field_in_scope(c, e->name);
+    if (f) {
+        e->bind = BIND_FIELD;
+        e->field = f;
+        return f->type;
     }
     const decl *d = find_type(c, e->name, e->at);
     if (d) {
@@ -915,6 +1050,7 @@ static type check_name(const checker *c, expr *e)
     for (int i = 0; i < c->locals.count; i++) suggest_consider(&s, c->locals.items[i]->name);
     for (int i = 0; c->system && i < c->system->params.count; i++) suggest_consider(&s, c->system->params.items[i].name);
     if (c->in_input) suggest_fields(&s, c->system);
+    if (c->method && c->method->owner) suggest_fields(&s, c->method->owner);
     suggest_consider_c(&s, "Math");
     suggest_consider_c(&s, "Draw");
     suggest_builtin_types(&s);
@@ -1007,18 +1143,79 @@ static expr *assign_root(expr *target)
     return target->kind == E_NAME ? target : NULL;
 }
 
+// Whether `target` can be changed: by an assignment, by calling mut method
+// `called` on it, or passed to `called`'s mut parameter `arg_of`. Reports why not.
+static bool check_writable(checker *c, expr *target, const decl *called, const param *arg_of)
+{
+    expr *root = assign_root(target);
+    if (!root || root->bind == BIND_NONE || root->bind == BIND_TYPE || root->bind == BIND_NAMESPACE) {
+        if (arg_of) {
+            diag_error(target->at, "'" STR_FMT "' changes its '" STR_FMT "', so pass it a variable or field",
+                       STR_ARG(called->name), STR_ARG(arg_of->name));
+            diag_note("store the value in a 'mut var' first");
+        } else if (called) {
+            diag_error(target->at, "'" STR_FMT "' changes what it's called on, so that needs to be a variable or field",
+                       STR_ARG(called->name));
+            diag_note("store the value in a 'mut var' first");
+        } else {
+            diag_error(target->at, "can't assign to this expression");
+        }
+        return false;
+    }
+    if (root->bind == BIND_PARAM) root->param->written = true;
+
+    if (root->bind == BIND_PARAM && root->param->mode != PARAM_MUT) {
+        diag_error(root->at, "'" STR_FMT "' is read-only", STR_ARG(root->name));
+        if (arg_of) diag_note("'" STR_FMT "' changes its '" STR_FMT "'", STR_ARG(called->name), STR_ARG(arg_of->name));
+        else if (called) diag_note("'" STR_FMT "' is a mut method: it changes what it's called on", STR_ARG(called->name));
+        if (root->param->function_param) {
+            diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to change the caller's variable, or copy "
+                      "it into a 'mut var'", STR_ARG(root->param->type_name), STR_ARG(root->name));
+        } else if (root->param->type.kind == TY_ENTITY) {
+            diag_note("entity handles can't be reassigned");
+        } else if (root->param->type.kind == TY_INPUT) {
+            diag_note("input comes from the players; the simulation can only read it");
+        } else if (root->param->type.kind == TY_RECORD) {
+            diag_note("devices can only be read");
+        } else if (root->param->type.kind == TY_SINGLETON && root->param->type.decl->builtin) {
+            diag_note("'" STR_FMT "' is managed by the engine", STR_ARG(root->param->type_name));
+        } else if (in_view(c)) {
+            diag_note("views only read the world; systems change it");
+        } else {
+            diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to write to it",
+                      STR_ARG(root->param->type_name), STR_ARG(root->name));
+            const fix f = {FIX_ADD_MUT, root->at, root->param};
+            vec_push(c->prog->fixes, f);
+        }
+        return false;
+    }
+    if (root->bind == BIND_LOCAL && !root->local->is_mut) {
+        const stmt *local = root->local;
+        diag_error(root->at, "'" STR_FMT "' is read-only", STR_ARG(root->name));
+        if (arg_of) diag_note("'" STR_FMT "' changes its '" STR_FMT "'", STR_ARG(called->name), STR_ARG(arg_of->name));
+        else if (called) diag_note("'" STR_FMT "' is a mut method: it changes what it's called on", STR_ARG(called->name));
+        if (local->type_name.len > 0) {
+            diag_note("declare it as 'mut " STR_FMT " " STR_FMT " = ...' to change it", STR_ARG(local->type_name), STR_ARG(local->name));
+        } else {
+            diag_note("declare it as 'mut var " STR_FMT " = ...' to change it", STR_ARG(local->name));
+        }
+        return false;
+    }
+    if (root->bind == BIND_FIELD && c->method && !c->method->is_mut_method) {
+        diag_error(root->at, "'" STR_FMT "' is read-only in '" STR_FMT "'", STR_ARG(root->name), STR_ARG(c->method->name));
+        diag_note("declare the method as 'mut " STR_FMT " " STR_FMT "(...)' to change the fields",
+                  STR_ARG(c->method->return_type_name), STR_ARG(c->method->name));
+        return false;
+    }
+    return true;
+}
+
 static void check_assign(checker *c, const stmt *s)
 {
     const type target = check_expr(c, s->target);
     const type value = check_expr(c, s->value);
     if (target.kind == TY_ERROR) return;
-
-    expr *root = assign_root(s->target);
-    if (!root || root->bind == BIND_NONE || root->bind == BIND_TYPE) {
-        diag_error(s->target->at, "can't assign to this expression");
-        return;
-    }
-    if (root->bind == BIND_PARAM) root->param->written = true;
+    if (!check_writable(c, s->target, NULL, NULL)) return;
 
     // Swizzles can be written (v.xz = ...) as long as no component repeats, but
     // only as the last step: in v.xy.x the swizzle is a temporary copy.
@@ -1041,37 +1238,6 @@ static void check_assign(checker *c, const stmt *s)
         }
     }
 
-    if (root->bind == BIND_PARAM && root->param->mode != PARAM_MUT) {
-        diag_error(root->at, "'" STR_FMT "' is read-only", STR_ARG(root->name));
-        if (root->param->type.kind == TY_ENTITY) {
-            diag_note("entity handles can't be reassigned");
-        } else if (root->param->type.kind == TY_INPUT) {
-            diag_note("input comes from the players; the simulation can only read it");
-        } else if (root->param->type.kind == TY_RECORD) {
-            diag_note("devices can only be read");
-        } else if (root->param->type.kind == TY_SINGLETON && root->param->type.decl->builtin) {
-            diag_note("'" STR_FMT "' is managed by the engine", STR_ARG(root->param->type_name));
-        } else if (in_view(c)) {
-            diag_note("views only read the world; systems change it");
-        } else {
-            diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to write to it",
-                      STR_ARG(root->param->type_name), STR_ARG(root->name));
-            const fix f = {FIX_ADD_MUT, root->at, root->param};
-            vec_push(c->prog->fixes, f);
-        }
-        return;
-    }
-    if (root->bind == BIND_LOCAL && !root->local->is_mut) {
-        const stmt *local = root->local;
-        diag_error(root->at, "'" STR_FMT "' is read-only", STR_ARG(root->name));
-        if (local->type_name.len > 0) {
-            diag_note("declare it as 'mut " STR_FMT " " STR_FMT " = ...' to change it", STR_ARG(local->type_name), STR_ARG(local->name));
-        } else {
-            diag_note("declare it as 'mut var " STR_FMT " = ...' to change it", STR_ARG(local->name));
-        }
-        return;
-    }
-
     type result = value;
     if (s->op != T_ASSIGN) {
         result = binary_result(compound_op(s->op), target, value, s->at);
@@ -1083,6 +1249,48 @@ static void check_assign(checker *c, const stmt *s)
 }
 
 static void check_stmt(checker *c, stmt *s);
+
+// `return;` everywhere, and `return value;` in a method that returns one.
+static void check_return(checker *c, const stmt *s)
+{
+    const decl *m = c->method;
+    const type value = s->value ? check_expr(c, s->value) : T_VOID_;
+    if (!m) {
+        if (s->value) {
+            if (c->in_input) diag_error(s->value->at, "%s doesn't return a value; use 'return;'", input_code(c));
+            else diag_error(s->value->at, "systems don't return values; use 'return;'");
+        }
+        return;
+    }
+    if (m->return_type.kind == TY_VOID) {
+        if (s->value) diag_error(s->value->at, "'" STR_FMT "' returns nothing; use 'return;'", STR_ARG(m->name));
+        return;
+    }
+    if (!s->value) {
+        diag_error(s->at, "'" STR_FMT "' returns %s; write 'return value;'", STR_ARG(m->name), type_name(m->return_type));
+        return;
+    }
+    if (!type_assignable(m->return_type, value)) {
+        diag_error(s->value->at, "'" STR_FMT "' returns %s, not %s", STR_ARG(m->name), type_name(m->return_type),
+                   type_name(value));
+    }
+}
+
+// Whether every path through `s` ends in a return.
+static bool always_returns(const stmt *s)
+{
+    if (!s) return false;
+    switch (s->kind) {
+    case S_RETURN: return true;
+    case S_BLOCK:
+        for (int i = 0; i < s->stmts.count; i++) {
+            if (always_returns(s->stmts.items[i])) return true;
+        }
+        return false;
+    case S_IF: return always_returns(s->then_stmt) && always_returns(s->else_stmt);
+    default: return false;
+    }
+}
 
 static void check_var(checker *c, stmt *s)
 {
@@ -1149,6 +1357,7 @@ static void check_stmt(checker *c, stmt *s)
         break;
     }
     case S_RETURN:
+        check_return(c, s);
         break;
     case S_VAR:
         check_var(c, s);
@@ -1161,7 +1370,7 @@ static void check_stmt(checker *c, stmt *s)
         const builtin_call call = s->value->call;
         const bool effect = (s->value->kind == E_METHOD
                              && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
-                         || (s->value->kind == E_CALL && call == CALL_SPAWN);
+                         || (s->value->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION;
         if (!effect && s->value->type.kind != TY_ERROR) diag_error(s->value->at, "this expression does nothing on its own");
         break;
     }
@@ -1373,6 +1582,95 @@ static void check_fields(checker *c, const decl *d)
         if (f->default_value) check_default(c, f);
         check_field_attributes(c, d, f);
     }
+}
+
+// A method's parameter or return type: a built-in type, a struct or a
+// component, or `void` for what it returns.
+static type method_type(const checker *c, const str name, const loc at, const bool is_return)
+{
+    type t;
+    if (is_return && str_eq_c(name, "void")) return T_VOID_;
+    if (builtin_type_named(name, &t)) return t;
+    decl *const d = find_type(c, name, at);
+    if (d && (d->kind == DECL_STRUCT || d->kind == DECL_COMPONENT)) return decl_type(d);
+    if (d) {
+        diag_error(at, "methods take and return built-in types, structs and components, not %s",
+                   d->kind == DECL_SINGLETON ? "singletons" : "inputs");
+    } else if (str_eq_c(name, "void")) {
+        diag_error(at, "'void' only goes before a method that returns nothing");
+    } else {
+        diag_error(at, "unknown type '" STR_FMT "'", STR_ARG(name));
+        suggestion s = suggest_start(name);
+        suggest_builtin_types(&s);
+        suggest_structs(&s, c->prog);
+        if (is_return) suggest_consider_c(&s, "void");
+        suggest_note(&s);
+    }
+    return T_ERR;
+}
+
+// The types in a method's or function's signature.
+static void check_signature(const checker *c, decl *m)
+{
+    m->return_type = method_type(c, m->return_type_name, m->return_type_qual_at, true);
+    for (int k = 0; k < m->params.count; k++) {
+        param *p = &m->params.items[k];
+        check_reserved(p->name, p->at);
+        for (int j = 0; j < k; j++) {
+            if (str_eq(m->params.items[j].name, p->name)) {
+                diag_error(p->name_at, "parameter '" STR_FMT "' is declared twice", STR_ARG(p->name));
+            }
+        }
+        p->type = method_type(c, p->type_name, p->type_qual_at, false);
+    }
+}
+
+// Where methods go (structs and components), their names, and their signatures.
+static void check_method_decls(const checker *c, const decl *d)
+{
+    for (int i = 0; i < d->methods.count; i++) {
+        decl *m = d->methods.items[i];
+        if (d->kind != DECL_STRUCT && d->kind != DECL_COMPONENT) {
+            diag_error(m->at, "methods work on structs and components");
+            if (d->kind == DECL_INPUT) diag_note("an input has Sample and Sanitize");
+            else diag_note("put the data and its methods in a struct, and the struct in the singleton");
+        }
+        check_reserved(m->name, m->at);
+        if (field_named(d, m->name)) {
+            diag_error(m->at, "'" STR_FMT "' already has a field '" STR_FMT "'", STR_ARG(d->name), STR_ARG(m->name));
+        }
+        for (int j = 0; j < i; j++) {
+            if (str_eq(d->methods.items[j]->name, m->name)) {
+                diag_error(m->at, "'" STR_FMT "' already has a method '" STR_FMT "'", STR_ARG(d->name), STR_ARG(m->name));
+                diag_note("methods can't share a name, even with different parameters");
+            }
+        }
+        check_signature(c, m);
+    }
+}
+
+static void check_function_decl(const checker *c, decl *fn)
+{
+    if (fn->is_mut_method) {
+        diag_error(fn->at, "only methods are 'mut': they change their struct's fields");
+        diag_note("a function changes what's passed to its 'mut' parameters, like 'void Heal(mut Stats stats)'");
+    }
+    check_signature(c, fn);
+}
+
+static void check_method_body(checker *c, decl *m)
+{
+    c->method = m;
+    c->system = m; // For its parameters
+    c->unit = m->unit;
+    check_stmt(c, m->body);
+    const type_kind ret = m->return_type.kind;
+    if (ret != TY_VOID && ret != TY_ERROR && !always_returns(m->body)) {
+        diag_error(m->at, "'" STR_FMT "' doesn't return a value on every path", STR_ARG(m->name));
+        diag_note("end every path with 'return value;', as the method returns %s", type_name(m->return_type));
+    }
+    c->method = NULL;
+    c->system = NULL;
 }
 
 static void check_params(const checker *c, decl *sys)
@@ -1622,7 +1920,7 @@ static bool is_builtin_name(const str name)
 {
     type dummy;
     return builtin_type_named(name, &dummy) || str_eq_c(name, "Math") || str_eq_c(name, "Draw")
-        || str_eq_c(name, "Devices");
+        || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn");
 }
 
 // What a declaration is called in generated C: Combat_Health for Combat.Health.
@@ -1654,9 +1952,10 @@ static void collect_decls(program *prog)
             }
             for (int j = 0; j < i; j++) {
                 const decl *other = prog->decls.items[j];
-                bool both_types = d->kind != DECL_SYSTEM && other->kind != DECL_SYSTEM;
-                bool both_systems = d->kind == DECL_SYSTEM && other->kind == DECL_SYSTEM;
-                if (!both_types && !both_systems) continue;
+                const bool both_types = is_kind(d, NAME_TYPE) && is_kind(other, NAME_TYPE);
+                const bool both_systems = d->kind == DECL_SYSTEM && other->kind == DECL_SYSTEM;
+                const bool function = d->kind == DECL_FUNCTION || other->kind == DECL_FUNCTION;
+                if (!both_types && !both_systems && !function) continue;
                 if (str_eq(d->name, other->name) && str_eq(ns, decl_ns(other))) {
                     if (other->builtin) {
                         diag_error(d->at, "'" STR_FMT "' is built into the engine", STR_ARG(d->name));
@@ -1699,6 +1998,8 @@ static void collect_decls(program *prog)
             break;
         case DECL_RECORD:
         case DECL_STRUCT: // Ordered once their fields are known; see order_struct
+        case DECL_METHOD: // Not in prog->decls
+        case DECL_FUNCTION:
             break;
         case DECL_SYSTEM:
             if (d->is_view) {
@@ -1903,7 +2204,7 @@ static void check_attributes(checker *c)
             for (int k = 0; k < attr->args.count; k++) {
                 qname *q = &attr->args.items[k];
                 decl *other;
-                decl *target = lookup(c->prog, d->unit, q->text, true, &other);
+                decl *target = lookup(c->prog, d->unit, q->text, NAME_SYSTEM, &other);
                 if (!target) {
                     diag_error(q->name_at, "unknown %s '" STR_FMT "'", kind, STR_ARG(q->text));
                     suggestion s = suggest_start(q->text);
@@ -2033,6 +2334,18 @@ bool check(program *prog)
         const decl *d = prog->decls.items[i];
         c.unit = d->unit;
         if (d->kind != DECL_SYSTEM) check_fields(&c, d);
+    }
+    // Every signature first, so bodies can call any method or function.
+    for (int i = 0; i < prog->decls.count; i++) {
+        decl *d = prog->decls.items[i];
+        c.unit = d->unit;
+        if (d->kind == DECL_FUNCTION) check_function_decl(&c, d);
+        else if (d->kind != DECL_SYSTEM) check_method_decls(&c, d);
+    }
+    for (int i = 0; i < prog->decls.count; i++) {
+        decl *d = prog->decls.items[i];
+        if (d->kind == DECL_FUNCTION) check_method_body(&c, d);
+        for (int k = 0; k < d->methods.count; k++) check_method_body(&c, d->methods.items[k]);
     }
     if (prog->input) {
         c.unit = prog->input->unit;

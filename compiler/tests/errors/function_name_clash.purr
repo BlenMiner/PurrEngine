@@ -1,0 +1,4 @@
+// expect: 'Health' is already declared
+component Health { int value; }
+int Health() { return 100; }
+system Main() { }

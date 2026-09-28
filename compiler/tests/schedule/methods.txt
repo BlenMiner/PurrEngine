@@ -1,0 +1,11 @@
+methods: 2 systems each tick, 2 stages deep; none can run at the same time.
+A system starts once everything it runs after is done.
+
+stage 1  Hurt  (per entity)
+         writes Unit
+         alongside nothing
+stage 2  Tally  (per entity)
+         reads Unit
+         writes Log
+         after Hurt: it writes Unit, which this reads
+         alongside nothing

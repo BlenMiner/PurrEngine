@@ -102,6 +102,7 @@ typedef struct param {
     loc name_at;
     bool read;    // The body names it
     bool written; // The body assigns through it
+    bool function_param; // A method's or function's: a copy, or with mut, the caller's variable itself
 } param;
 
 // Why a system waits for one that runs before it in the tick (see parallel.c).
@@ -130,6 +131,8 @@ typedef enum decl_kind {
     DECL_INPUT,  // input PlayerInput { fields; PlayerInput(Devices devices) { ... } }
     DECL_RECORD, // Built-in device data; not in program.decls
     DECL_STRUCT, // struct Stats { fields }: a value type for fields and locals
+    DECL_METHOD, // bool IsDead() { ... } in a struct or component; in its `methods`, not program.decls
+    DECL_FUNCTION, // void Heal(mut Stats stats, float amount) { ... }: code other code calls
 } decl_kind;
 
 typedef struct decl {
@@ -147,7 +150,18 @@ typedef struct decl {
     VEC(field) fields;
     int index; // Component bit / singleton index / system order.
 
-    // Systems, views, and an input's Sample
+    // Structs and components: their methods
+    VEC(struct decl *) methods;
+
+    // Methods and functions
+    struct decl *owner;       // A method's struct or component; NULL for a function
+    bool is_mut_method;       // `mut void Damage(...)`: it may change the fields
+    str return_type_name;     // "void" if it returns nothing
+    loc return_type_at;       // Its last part, if it's qualified
+    loc return_type_qual_at;
+    type return_type;
+
+    // Systems, views, methods, functions, and an input's Sample
     VEC(param) params;
     stmt *body;
     loc body_at;
@@ -193,6 +207,8 @@ typedef enum builtin_call {
     CALL_ADD,
     CALL_REMOVE,
     CALL_DESTROY,
+    CALL_METHOD,    // stats.IsDead(), or IsDead() inside another of Stats' methods
+    CALL_FUNCTION,  // Heal(unit.stats, 5), or Combat.Heal(...)
 } builtin_call;
 
 // How a constructor call builds its value.
@@ -266,7 +282,8 @@ struct expr {
     builtin_call call;
     ctor_form ctor;         // CALL_CONSTRUCT
     const char *c_callee;   // CALL_BUILTIN
-    VEC(type) arg_want;     // CALL_BUILTIN: the type each argument converts to.
+    VEC(type) arg_want;     // CALL_BUILTIN, CALL_METHOD and CALL_FUNCTION: the type each argument converts to.
+    struct decl *method;    // CALL_METHOD and CALL_FUNCTION: the method or function called
     uint64_t spawn_mask;  // CALL_SPAWN: components the new entity has.
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
     const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
@@ -316,7 +333,7 @@ struct stmt {
     loc name_at;
     loc type_qual_at; // Where the type starts: its namespace if it's qualified
 
-    // S_VAR initializer, S_ASSIGN value, S_EXPR expression
+    // S_VAR initializer, S_ASSIGN value, S_EXPR expression, S_RETURN value (or NULL)
     expr *value;
 
     // S_ASSIGN

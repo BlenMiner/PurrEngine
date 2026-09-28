@@ -1,0 +1,7 @@
+// expect: 'IsDead' doesn't return a value on every path
+struct Stats
+{
+    float health;
+    bool IsDead() { if (health <= 0) return true; }
+}
+system Main() { }

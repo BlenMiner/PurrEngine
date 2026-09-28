@@ -12,5 +12,5 @@ system Heal(mut Trace trace, mut Health health)
     trace.heal = trace.step;
     trace.step += 1;
     Combat.Hit hit = trace.hit; // A local of a struct from another namespace
-    trace.hit_seen = hit.amount;
+    trace.hit_seen = Combat.Strength(hit); // A function from another namespace
 }

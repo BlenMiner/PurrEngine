@@ -1,0 +1,7 @@
+// expect: declare the parameter as 'mut float amount' to change the caller's variable
+struct Stats
+{
+    float health;
+    mut void Heal(float amount) { amount = Math.Min(amount, 10); health += amount; }
+}
+system Main() { }

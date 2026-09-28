@@ -372,12 +372,31 @@ bool attributes_before_field(const token *toks, int i)
     return t->kind == T_IDENT && (toks[i + 1].kind == T_IDENT || toks[i + 1].kind == T_DOT) && !is_decl_word(t->text);
 }
 
-static bool at_decl_start(const parser *p)
+// [mut] Type Name(: a method or function, rather than a field or a local.
+static bool at_method(const parser *p)
+{
+    int i = at(p, T_MUT) ? 1 : 0;
+    if (peek_at(p, i)->kind != T_IDENT || is_decl_word(peek_at(p, i)->text)) return false; // view Name(...)
+    i++;
+    while (peek_at(p, i)->kind == T_DOT && peek_at(p, i + 1)->kind == T_IDENT) i += 2;
+    return peek_at(p, i)->kind == T_IDENT && peek_at(p, i + 1)->kind == T_LPAREN;
+}
+
+// Where recovery can pick up again: a declaration's start. `Type Name(` at
+// column 1 starts a function, except in a type's body (`functions` false),
+// where it's a method.
+static bool at_decl_start_or_function(const parser *p, const bool functions)
 {
     const token *t = peek(p);
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(p->toks, p->pos);
-    return t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text);
+    if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text)) return true;
+    return functions && (t->kind == T_IDENT || t->kind == T_MUT) && t->at.col == 1 && at_method(p);
+}
+
+static bool at_decl_start(const parser *p)
+{
+    return at_decl_start_or_function(p, true);
 }
 
 // After a syntax error in a statement or field: skips to the end of it (a ';'
@@ -483,11 +502,8 @@ static stmt *parse_stmt(parser *p)
     case T_RETURN: {
         advance(p);
         stmt *s = new_stmt(S_RETURN, t->at);
-        if (!at(p, T_SEMI)) {
-            diag_error(peek(p)->at, "systems don't return values; use 'return;'");
-            longjmp(p->fail, 1);
-        }
-        advance(p);
+        if (!at(p, T_SEMI)) s->value = parse_expr(p); // Only methods return values; the checker says so
+        expect(p, T_SEMI, "';'");
         return s;
     }
 
@@ -630,6 +646,43 @@ static void parse_field(parser *p, decl *d)
     vec_push(d->fields, f);
 }
 
+// [mut] ReturnType Name(Type name, ...) { ... }: a method of `owner`, or with
+// no owner, a function. The checker says where methods are allowed.
+static decl *parse_method(parser *p, decl *owner)
+{
+    const bool is_mut = accept(p, T_MUT);
+    const qname ret = parse_qname(p, "return type");
+    const token *name = expect_ident(p, owner ? "method name" : "function name");
+    decl *m = new_decl(owner ? DECL_METHOD : DECL_FUNCTION, name);
+    m->unit = p->unit;
+    m->owner = owner;
+    m->is_mut_method = is_mut;
+    m->return_type_name = ret.text;
+    m->return_type_at = ret.name_at;
+    m->return_type_qual_at = ret.at;
+    expect(p, T_LPAREN, "'('");
+    if (!at(p, T_RPAREN)) {
+        do {
+            param prm = {0};
+            prm.at = peek(p)->at;
+            prm.mode = accept(p, T_MUT) ? PARAM_MUT : PARAM_READ;
+            prm.function_param = true;
+            const qname type = parse_qname(p, "parameter type");
+            prm.type_name = type.text;
+            prm.type_qual_at = type.at;
+            prm.type_at = type.name_at;
+            prm.name_at = peek(p)->at;
+            prm.name = expect_ident(p, "parameter name")->text;
+            vec_push(m->params, prm);
+        } while (accept(p, T_COMMA));
+    }
+    expect(p, T_RPAREN, "')' after parameters");
+    m->body_at = name->at;
+    m->body = parse_block(p);
+    m->end = m->body->end;
+    return m;
+}
+
 // component Name { Type field; ... }, and the same for singletons, inputs and structs.
 static decl *parse_data_decl(parser *p, const decl_kind kind)
 {
@@ -641,7 +694,7 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
     decl *d = new_decl(kind, name);
     expect(p, T_LBRACE, "'{'");
     while (!at(p, T_RBRACE)) {
-        if (p->recover && (at(p, T_EOF) || at_decl_start(p))) {
+        if (p->recover && (at(p, T_EOF) || at_decl_start_or_function(p, false))) {
             diag_error(peek(p)->at, "expected '}' to close '" STR_FMT "'", STR_ARG(name->text));
             d->end = peek(p)->at;
             return d;
@@ -651,7 +704,7 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
             else parse_field_attributes(p);
             continue;
         }
-        if (p->field_pending.count > 0 && at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN) {
+        if (p->field_pending.count > 0 && ((at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN) || at_method(p))) {
             diag_error(p->field_pending.items[0].at, "field attributes go right before a field");
             p->field_pending.count = 0;
         }
@@ -665,6 +718,11 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
         if (at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN
             && (str_eq_c(peek(p)->text, "Sanitize") || str_eq_c(peek(p)->text, "sanitize"))) {
             parse_sanitize(p, d, advance(p));
+            continue;
+        }
+        if (at_method(p)) {
+            if (p->recover) RECOVERING(p, vec_push(d->methods, parse_method(p, d)));
+            else vec_push(d->methods, parse_method(p, d));
             continue;
         }
         if (p->recover) RECOVERING(p, parse_field(p, d));
@@ -800,15 +858,17 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
             parse_attributes(&p);
             continue;
         }
-        advance(&p);
         decl *d;
-        if (t->kind == T_COMPONENT) d = parse_data_decl(&p, DECL_COMPONENT);
+        const bool function = at_method(&p);
+        if (!function) advance(&p);
+        if (function) d = parse_method(&p, NULL);
+        else if (t->kind == T_COMPONENT) d = parse_data_decl(&p, DECL_COMPONENT);
         else if (t->kind == T_SINGLETON) d = parse_data_decl(&p, DECL_SINGLETON);
         else if (t->kind == T_SYSTEM) d = parse_system(&p, false);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "input")) d = parse_data_decl(&p, DECL_INPUT);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "view")) d = parse_system(&p, true);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "struct")) d = parse_data_decl(&p, DECL_STRUCT);
-        else fail_at(&p, t, "'component', 'singleton', 'struct', 'input', 'system' or 'view'"); // Consumed, so recovery skips it
+        else fail_at(&p, t, "'component', 'singleton', 'struct', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
         d->unit = p.unit;
         d->attributes.items = p.pending.items;
         d->attributes.count = p.pending.count;

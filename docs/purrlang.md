@@ -38,6 +38,7 @@ PurrLang is a working name and may change.
 - `singleton` declares world-wide state (what other ECSs call a resource). There is exactly one instance **per world**, not per process.
 - `struct` declares a value type for fields and locals (see Structs).
 - `system` declares a system.
+- A function, `ReturnType Name(parameters) { ... }` with no keyword, declares code that other code calls (see Functions).
 
 ### Field defaults
 
@@ -71,7 +72,7 @@ component Health
 - Namespaces apply as to every declaration: another namespace names it `Combat.Stats`.
 - `[Clamp]`, `[Min]` and `[Max]` on a struct's field are enforced where untrusted data enters the simulation: in an input that holds the struct, before `Sanitize`, as on the input's own fields. Elsewhere they only describe the field.
 - `==` doesn't compare structs; compare their fields.
-- Next, in this order: methods, read-only unless marked `mut` (calling a `mut` method needs write access to what holds the struct, as with parameters), on components too; then custom operators, in C#'s form.
+- Structs have methods (see Methods). Custom operators, in C#'s form, come next.
 
 ```csharp
 struct Range
@@ -95,6 +96,57 @@ component Unit
 system Hurt(mut Unit unit)
 {
     unit.stats.health -= unit.stats.damage.hi;
+}
+```
+
+### Methods
+
+- Structs and components can have methods. Their fields are in scope by name, and so are their other methods.
+- A method only reads the fields, unless it's `mut`. Calling a `mut` method changes what it's called on, so it needs write access, like an assignment: `unit.stats.Hurt(5)` needs `mut Unit unit`, and the system's signature still says what it writes. A read-only method can't call a `mut` one.
+- A method returns a value with `return value;`, on every path, unless it returns `void`.
+- A method sees its fields, its parameters and `Math`. It can't spawn, change entities or draw: systems do.
+- Methods can't share a name, even with different parameters, and a method can't share one with a field.
+- Singletons and inputs have no methods (an input has `Sample` and `Sanitize`): keep the data and its methods in a struct, and the struct in them.
+- Parameters work as in functions.
+
+```csharp
+struct Stats
+{
+    float health = 100;
+
+    bool IsDead() { return health <= 0; }
+
+    mut void Hurt(float amount)
+    {
+        health -= amount;
+        if (IsDead()) health = 0;
+    }
+}
+
+system Burn(mut Unit unit)
+{
+    unit.stats.Hurt(1);
+}
+```
+
+### Functions
+
+- A function is code that other code calls: systems, views, the input's `Sample` and `Sanitize`, methods and other functions. The engine never runs one by itself.
+- A parameter is a copy, read-only. A `mut` parameter is the caller's variable itself, which the function changes: the caller passes something it can write, and its signature still shows the write, so `Heal(unit.stats, 5)` needs `mut Unit unit`. The argument's type matches exactly.
+- Parameters and return values are built-in types, structs and components.
+- Functions follow the rules of methods: they see their parameters and `Math`, can't spawn, change entities or draw, and return a value on every path unless they return `void`.
+- Namespaces apply: another namespace calls it `Combat.Heal(...)`. A function shares its name with nothing else in its namespace.
+
+```csharp
+float Heal(mut Stats stats, float amount)
+{
+    stats.health = Math.Min(stats.health + amount, 100);
+    return stats.health;
+}
+
+system Regenerate(mut Unit unit)
+{
+    Heal(unit.stats, 0.5);
 }
 ```
 

@@ -1,0 +1,8 @@
+// expect: 'Hurt' changes the fields, so only a mut method can call it
+struct Stats
+{
+    float health;
+    mut void Hurt() { health -= 1; }
+    bool Check() { Hurt(); return health > 0; }
+}
+system Main() { }

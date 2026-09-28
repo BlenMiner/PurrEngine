@@ -28,9 +28,9 @@ typedef enum occ_kind {
     OCC_PARAM,
     OCC_LOCAL,
     OCC_OWNER,    // Math, Draw
-    OCC_FUNCTION, // Math.Dot, Draw.Circle, Spawn
+    OCC_FUNCTION, // Math.Dot, Draw.Circle, Spawn, and the game's functions (with `decl`)
     OCC_CONSTANT, // Math.PI, Color.red
-    OCC_METHOD,   // e.Add, e.Remove, e.Destroy
+    OCC_METHOD,   // e.Add, e.Remove, e.Destroy, and methods of structs and components (with `decl`)
     OCC_MEMBER,   // Swizzles, color channels, quaternion.value, matrix columns, input .down/.up
     OCC_NAMESPACE, // Combat in `namespace Combat;` or Combat.Health
     OCC_ATTRIBUTE, // Before, After, Clamp, Min, Max
@@ -41,7 +41,7 @@ typedef struct occurrence {
     int len;
     occ_kind kind;
     bool declaration;
-    const decl *decl;   // The type, the system, or a field's owner. NULL for built-in value types.
+    const decl *decl;   // The type, system, method or function, or a field's owner. NULL for built-in value types.
     const field *field;
     const param *param;
     const decl *param_of;
@@ -219,6 +219,16 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
     add_occ(o);
 }
 
+// Whose fields plain names refer to in the code being walked: the input in its
+// Sample and Sanitize, a type in its methods.
+static const decl *walk_fields_of;
+
+// A game's method or function, which calls and declarations point at.
+static bool is_routine(const decl *d)
+{
+    return d && (d->kind == DECL_METHOD || d->kind == DECL_FUNCTION);
+}
+
 static void walk_expr(const expr *e)
 {
     if (!e) return;
@@ -247,7 +257,7 @@ static void walk_expr(const expr *e)
         case BIND_FIELD:
             o.kind = OCC_FIELD;
             o.field = e->field;
-            o.decl = A.prog->input;
+            o.decl = walk_fields_of;
             break;
         case BIND_NAMESPACE:
             o.kind = OCC_NAMESPACE;
@@ -301,6 +311,10 @@ static void walk_expr(const expr *e)
         } else if (e->call == CALL_SPAWN) {
             o.kind = OCC_FUNCTION;
             add_occ(o);
+        } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // IsDead() in a method, or Heal(...)
+            o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
+            o.decl = e->method;
+            add_occ(o);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
         break;
@@ -316,6 +330,10 @@ static void walk_expr(const expr *e)
             add_occ(o);
         } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY) {
             o.kind = OCC_METHOD;
+            add_occ(o);
+        } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // stats.IsDead(), Combat.Heal(...)
+            o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
+            o.decl = e->method;
             add_occ(o);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
@@ -397,6 +415,18 @@ static void walk_params(const decl *d)
     }
 }
 
+// A method or function: its name, signature and body.
+static void walk_routine(const decl *m)
+{
+    add_occ((occurrence){.at = m->at, .len = m->name.len, .kind = m->owner ? OCC_METHOD : OCC_FUNCTION,
+                         .declaration = true, .decl = m, .name = m->name});
+    if (!str_eq_c(m->return_type_name, "void")) {
+        type_ref(m->return_type_qual_at, m->return_type_at, m->return_type_name, m->return_type);
+    }
+    walk_params(m);
+    walk_stmt(m->body);
+}
+
 static int occ_order(const void *a, const void *b)
 {
     return loc_cmp(((const occurrence *)a)->at, ((const occurrence *)b)->at);
@@ -440,6 +470,10 @@ static void index_program(void)
             walk_stmt(d->body);
             continue;
         }
+        if (d->kind == DECL_FUNCTION) {
+            walk_routine(d);
+            continue;
+        }
         add_occ((occurrence){.at = d->at, .len = d->name.len, .kind = OCC_TYPE, .declaration = true, .decl = d,
                              .name = d->name});
         for (int f = 0; f < d->fields.count; f++) {
@@ -454,6 +488,7 @@ static void index_program(void)
                 for (int v = 0; v < at->values.count; v++) walk_expr(at->values.items[v]);
             }
         }
+        walk_fields_of = d;
         if (d->body) { // The input's Sample
             add_occ((occurrence){.at = d->body_at, .len = 6, .kind = OCC_METHOD, .decl = d, .name = str_from("Sample")});
             walk_params(d);
@@ -464,6 +499,8 @@ static void index_program(void)
                                  .name = str_from("Sanitize")});
             walk_stmt(d->sanitize);
         }
+        for (int k = 0; k < d->methods.count; k++) walk_routine(d->methods.items[k]);
+        walk_fields_of = NULL;
     }
 
     // In source order, one per position.
@@ -585,6 +622,8 @@ static const char *decl_keyword(const decl *d)
     case DECL_INPUT: return "input";
     case DECL_RECORD: return "record";
     case DECL_STRUCT: return "struct";
+    case DECL_METHOD: return "method";
+    case DECL_FUNCTION: return "function";
     case DECL_SYSTEM: return d->is_view ? "view" : "system";
     }
     return "";
@@ -608,6 +647,18 @@ static void format_header(const decl *d, sb *out)
     for (int i = 0; i < d->params.count; i++) {
         if (i) sb_put(out, ", ");
         format_param(&d->params.items[i], out);
+    }
+    sb_put(out, ")");
+}
+
+// `mut void Damage(float amount)`: a method's or function's signature.
+static void format_routine(const decl *m, sb *out)
+{
+    sb_printf(out, "%s" STR_FMT " " STR_FMT "(", m->is_mut_method ? "mut " : "", STR_ARG(m->return_type_name),
+              STR_ARG(m->name));
+    for (int i = 0; i < m->params.count; i++) {
+        if (i) sb_put(out, ", ");
+        format_param(&m->params.items[i], out);
     }
     sb_put(out, ")");
 }
@@ -639,6 +690,11 @@ static void format_data_decl(const decl *d, sb *out)
         if (type) sb_printf(out, "    %s " STR_FMT, type, STR_ARG(f->name));
         else sb_printf(out, "    " STR_FMT " " STR_FMT, STR_ARG(f->type_name), STR_ARG(f->name));
         if (!d->builtin) format_default(f, out);
+        sb_put(out, ";\n");
+    }
+    for (int i = 0; i < d->methods.count; i++) {
+        sb_put(out, i == 0 && d->fields.count > 0 ? "\n    " : "    ");
+        format_routine(d->methods.items[i], out);
         sb_put(out, ";\n");
     }
     sb_put(out, "}");
@@ -716,6 +772,12 @@ static void describe(const occurrence *o, sb *out)
         break;
     case OCC_FUNCTION:
     case OCC_CONSTANT:
+        if (is_routine(o->decl)) {
+            format_routine(o->decl, &code);
+            code_block(out, code.data);
+            sb_put(out, "\n\nFunction: runs when it's called.");
+            break;
+        }
         if (o->kind == OCC_FUNCTION && o->owner.len == 0) {
             code_block(out, "Spawn(components...) -> Entity");
             sb_put(out, "\n\nCreates an entity with these components. It's added at the end of the tick; the "
@@ -729,6 +791,14 @@ static void describe(const occurrence *o, sb *out)
         }
         break;
     case OCC_METHOD:
+        if (is_routine(o->decl)) {
+            format_routine(o->decl, &code);
+            code_block(out, code.data);
+            sb_printf(out, "\n\nMethod of %s `" STR_FMT "`. %s", decl_keyword(o->decl->owner), STR_ARG(o->decl->owner->name),
+                      o->decl->is_mut_method ? "It changes the fields, so it's called on something writable."
+                                             : "It only reads the fields.");
+            break;
+        }
         if (str_eq_c(o->name, "Sample")) {
             code_block(out, "Sample(Devices devices)");
             sb_put(out, "\n\nBuilds the player's input from the devices, once per tick on their machine. Fields "
@@ -1007,7 +1077,7 @@ void analysis_definition(const char *uri, const int line, const int character, j
         if (o->kind == OCC_FIELD && o->decl && !o->decl->builtin) {
             target = o->field->at;
             len = o->field->name.len;
-        } else if ((o->kind == OCC_TYPE || o->kind == OCC_SYSTEM) && o->decl && !o->decl->builtin) {
+        } else if ((o->kind == OCC_TYPE || o->kind == OCC_SYSTEM || is_routine(o->decl)) && o->decl && !o->decl->builtin) {
             target = o->decl->at;
             len = o->decl->name.len;
         } else if (o->kind == OCC_PARAM) {
@@ -1042,7 +1112,8 @@ void analysis_definition(const char *uri, const int line, const int character, j
 // ---------------------------------------------------------------------------
 // Document symbols: the outline
 
-enum { SYMBOL_CLASS = 5, SYMBOL_FIELD = 8, SYMBOL_INTERFACE = 11, SYMBOL_FUNCTION = 12, SYMBOL_STRUCT = 23 };
+enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_FIELD = 8, SYMBOL_INTERFACE = 11, SYMBOL_FUNCTION = 12,
+       SYMBOL_STRUCT = 23 };
 
 void analysis_symbols(jbuf *out)
 {
@@ -1078,6 +1149,23 @@ void analysis_symbols(jbuf *out)
             write_range(out, fl->at, fl->name.len);
             jb_put(out, ",\"selectionRange\":");
             write_range(out, fl->at, fl->name.len);
+            jb_put(out, "}");
+        }
+        for (int k = 0; k < d->methods.count; k++) {
+            const decl *m = d->methods.items[k];
+            sb detail = {0};
+            format_routine(m, &detail);
+            if (d->fields.count > 0 || k > 0) jb_put(out, ",");
+            jb_put(out, "{\"name\":");
+            jb_string_n(out, m->name.ptr, (size_t)m->name.len);
+            jb_put(out, ",\"detail\":");
+            jb_string(out, detail.data);
+            jb_printf(out, ",\"kind\":%d,\"range\":{\"start\":", SYMBOL_METHOD);
+            write_position(out, m->at);
+            jb_put(out, ",\"end\":");
+            write_position(out, (loc){m->end.line, m->end.col + 1, m->end.file});
+            jb_put(out, "},\"selectionRange\":");
+            write_range(out, m->at, m->name.len);
             jb_put(out, "}");
         }
         jb_put(out, "]}");
@@ -1157,10 +1245,15 @@ static void classify(const occurrence *o, int *type, int *mods)
         if (!o->local->is_mut) *mods |= SM_READONLY;
         break;
     case OCC_OWNER: *type = ST_NAMESPACE; *mods |= SM_DEFAULT_LIBRARY; break;
-    case OCC_FUNCTION: *type = ST_FUNCTION; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC; break;
+    case OCC_FUNCTION:
+        *type = ST_FUNCTION;
+        if (!is_routine(o->decl)) *mods |= SM_DEFAULT_LIBRARY | SM_STATIC;
+        break;
     case OCC_CONSTANT: *type = ST_ENUM_MEMBER; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC | SM_READONLY; break;
     case OCC_METHOD:
-        if (str_eq_c(o->name, "Sample") || str_eq_c(o->name, "Sanitize")) { // The input's own members
+        if (is_routine(o->decl)) {
+            *type = ST_METHOD;
+        } else if (str_eq_c(o->name, "Sample") || str_eq_c(o->name, "Sanitize")) { // The input's own members
             *type = ST_KEYWORD;
             *mods = 0;
         } else {
@@ -1239,7 +1332,8 @@ static void item(completion *c, const char *label, const int kind, const char *d
 
 // What surrounds the cursor.
 typedef struct scope {
-    const decl *decl;           // The system, view or input whose body holds the cursor, or NULL
+    const decl *decl;           // The system, view, method, function or input whose body holds the cursor, or NULL
+    const decl *fields_of;      // Whose fields plain names refer to: the input in Sample, a type in its methods
     bool in_input;
     bool in_sanitize; // Sets in_input too, for the fields
     VEC(const stmt *) locals;   // Locals declared before the cursor, still in scope
@@ -1270,10 +1364,18 @@ static scope scope_at(const loc at)
     scope sc = {0};
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
+        for (int k = 0; k < d->methods.count; k++) {
+            const decl *m = d->methods.items[k];
+            if (!block_contains(m->body, at)) continue;
+            sc.decl = m;
+            sc.fields_of = d;
+            collect_locals(m->body, at, &sc);
+        }
         const bool sanitize = block_contains(d->sanitize, at);
         if (d->builtin || (!block_contains(d->body, at) && !sanitize)) continue;
         sc.decl = d;
         sc.in_input = d->kind == DECL_INPUT;
+        sc.fields_of = sc.in_input ? d : NULL;
         sc.in_sanitize = sanitize;
         collect_locals(sanitize ? d->sanitize : d->body, at, &sc);
     }
@@ -1295,9 +1397,9 @@ static type name_type(const scope *sc, const str name, const param **param_out)
             return p->type;
         }
     }
-    if (sc->in_input) {
-        for (int i = 0; i < sc->decl->fields.count; i++) {
-            if (str_eq(sc->decl->fields.items[i].name, name)) return sc->decl->fields.items[i].type;
+    if (sc->fields_of) {
+        for (int i = 0; i < sc->fields_of->fields.count; i++) {
+            if (str_eq(sc->fields_of->fields.items[i].name, name)) return sc->fields_of->fields.items[i].type;
         }
     }
     return (type){TY_ERROR, NULL};
@@ -1333,6 +1435,16 @@ static type member_type(const type t, const str member)
     return (type){TY_ERROR, NULL};
 }
 
+// A method or function, with its signature, as `name` (its name by default).
+static void complete_routine(completion *c, const decl *m, const char *name)
+{
+    sb detail = {0};
+    format_routine(m, &detail);
+    sb snippet = {0};
+    sb_printf(&snippet, "%s(%s)", name ? name : str_to_cstr(m->name), m->params.count > 0 ? "$1" : "");
+    item(c, name ? name : str_to_cstr(m->name), m->owner ? CK_METHOD : CK_FUNCTION, detail.data, NULL, snippet.data);
+}
+
 static void list_members(completion *c, const type t, const bool edges, const scope *sc)
 {
     if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
@@ -1341,6 +1453,7 @@ static void list_members(completion *c, const type t, const bool edges, const sc
             const field *f = &t.decl->fields.items[i];
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
         }
+        for (int i = 0; i < t.decl->methods.count; i++) complete_routine(c, t.decl->methods.items[i], NULL);
     }
     const int dim = type_dim(t);
     if (dim >= 2) {
@@ -1367,7 +1480,7 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         static const char *const columns[] = {"c0", "c1", "c2", "c3"};
         item(c, columns[i], CK_PROPERTY, type_name(vector_type(true, n)), "A column.", NULL);
     }
-    if (t.kind == TY_ENTITY && sc->decl && !sc->decl->is_view && !sc->in_input) {
+    if (t.kind == TY_ENTITY && sc->decl && sc->decl->kind == DECL_SYSTEM && !sc->decl->is_view) {
         item(c, "Add", CK_METHOD, "entity.Add(components...)", "Adds components, or replaces their values.", "Add($1)");
         item(c, "Remove", CK_METHOD, "entity.Remove(components...)", "Removes components.", "Remove($1)");
         item(c, "Destroy", CK_METHOD, "entity.Destroy()", "Destroys the entity at the end of the tick.", "Destroy()");
@@ -1572,15 +1685,21 @@ static void complete_expression(completion *c, const loc at, const bool statemen
             format_param(p, &detail);
             item(c, str_to_cstr(p->name), CK_VARIABLE, detail.data, NULL, NULL);
         }
-        if (sc.in_input) {
-            for (int i = 0; i < sc.decl->fields.count; i++) {
-                const field *f = &sc.decl->fields.items[i];
+        if (sc.fields_of) {
+            for (int i = 0; i < sc.fields_of->fields.count; i++) {
+                const field *f = &sc.fields_of->fields.items[i];
                 item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), NULL, NULL);
             }
+            for (int i = 0; i < sc.fields_of->methods.count; i++) complete_routine(c, sc.fields_of->methods.items[i], NULL);
         }
     }
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->kind == DECL_FUNCTION) complete_routine(c, d, name_for(d));
+    }
 
-    if (sc.decl && !view && !sc.in_input) {
+    const bool routine = sc.decl && (sc.decl->kind == DECL_METHOD || sc.decl->kind == DECL_FUNCTION);
+    if (sc.decl && !view && !sc.in_input && !routine) {
         item(c, "Spawn", CK_FUNCTION, "Spawn(components...) -> Entity", "Creates an entity with these components.",
              "Spawn($1)");
         complete_types(c, true, false, false);
@@ -1629,14 +1748,28 @@ typedef struct frame {
     int open; // The token that opened it
 } frame;
 
+// Type Name( at column 1, the type maybe qualified: a function, or in a
+// type's body, a method.
+static bool starts_function(const int i)
+{
+    const token *t = &DOC->toks[i];
+    if (t->kind != T_IDENT || t->at.col != 1) return false;
+    int k = i + 1;
+    while (DOC->toks[k].kind == T_DOT && DOC->toks[k + 1].kind == T_IDENT) k += 2;
+    return DOC->toks[k].kind == T_IDENT && DOC->toks[k + 1].kind == T_LPAREN;
+}
+
 static bool starts_declaration(const int i)
 {
     const token *t = &DOC->toks[i];
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(DOC->toks, i); // Attributes
-    return t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
+    if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "struct")
-            || str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"));
+            || str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"))) {
+        return true;
+    }
+    return starts_function(i);
 }
 
 static bool is_word(const token *t)
@@ -1663,7 +1796,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
     frame stack[64] = {{CTX_TOP, -1}};
     int depth = 0;
     for (int i = 0; i <= last; i++) {
-        if (starts_declaration(i)) {
+        if (starts_declaration(i) && !(stack[depth].kind == CTX_DATA && starts_function(i))) {
             depth = 0;
             if (DOC->toks[i].kind != T_LBRACKET) continue;
         }
@@ -1832,8 +1965,12 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_LOCAL: return a->local == b->local;
     case OCC_OWNER: return str_eq(a->owner, b->owner);
     case OCC_FUNCTION:
-    case OCC_CONSTANT: return str_eq(a->owner, b->owner) && str_eq(a->name, b->name);
+    case OCC_CONSTANT:
+        if (is_routine(a->decl) || is_routine(b->decl)) return a->decl == b->decl;
+        return str_eq(a->owner, b->owner) && str_eq(a->name, b->name);
     case OCC_METHOD:
+        if (is_routine(a->decl) || is_routine(b->decl)) return a->decl == b->decl;
+        return str_eq(a->name, b->name);
     case OCC_MEMBER:
     case OCC_NAMESPACE:
     case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
@@ -2181,6 +2318,23 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
         for (size_t i = 0; i < sizeof call_forms / sizeof call_forms[0]; i++) {
             if (!str_eq_c(name, call_forms[i].name)) continue;
             for (int f = 0; f < 3 && call_forms[i].forms[f]; f++) add_signature(&s, call_forms[i].forms[f], call_forms[i].doc);
+        }
+    }
+    if (s.shown == 0) {
+        // The game's methods and functions: the one the call resolved to, or
+        // while it's half written, every one with that name.
+        const occurrence *o = occurrence_at(DOC->toks[open - 1].at);
+        for (int i = 0; i < A.prog->decls.count && !(o && is_routine(o->decl) && i > 0); i++) {
+            const decl *d = A.prog->decls.items[i];
+            for (int k = -1; k < d->methods.count; k++) {
+                const decl *m = k < 0 ? d : d->methods.items[k];
+                const bool match = o && is_routine(o->decl) ? m == o->decl
+                                                            : is_routine(m) && str_eq(m->name, name) && (m->owner != NULL) == method;
+                if (!match) continue;
+                sb label = {0};
+                format_routine(m, &label);
+                add_signature(&s, label.data, NULL);
+            }
         }
     }
     if (s.shown == 0) {

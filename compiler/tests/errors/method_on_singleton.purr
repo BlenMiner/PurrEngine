@@ -1,0 +1,7 @@
+// expect: methods work on structs and components
+singleton Score
+{
+    int value;
+    mut void Add(int points) { value += points; }
+}
+system Main() { }

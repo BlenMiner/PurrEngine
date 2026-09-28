@@ -26,6 +26,7 @@ typedef struct gen {
     VEC(transition) moves;
     int indent;
     bool in_input; // Generating the input's constructor: fields live in purr_self.
+    const decl *routine; // The method or function being generated: a mut method's fields are purr_self->
     int spawn_temps;     // Temporaries for hoisted spawns, numbered per function.
 } gen;
 
@@ -146,11 +147,22 @@ static const char *arch_label(const gen *g, const int index)
     return b.data;
 }
 
-// Components, singletons, input and devices are passed by pointer.
+// A system's components, singletons, input and devices are passed by pointer,
+// and so is what a method's or function's mut parameter changes.
 static bool is_pointer_param(const param *p)
 {
+    if (p->function_param) return p->mode == PARAM_MUT;
     const type_kind k = p->type.kind;
     return k == TY_COMPONENT || k == TY_SINGLETON || k == TY_INPUT || k == TY_RECORD;
+}
+
+// purr_method_Stats_IsDead for Stats.IsDead, purr_function_Combat_Heal for Combat.Heal.
+static const char *routine_cname(const decl *m)
+{
+    sb b = {0};
+    if (m->owner) sb_printf(&b, "purr_method_%s_" STR_FMT, decl_cname(m->owner), STR_ARG(m->name));
+    else sb_printf(&b, "purr_function_%s", decl_cname(m));
+    return b.data;
 }
 
 // The hidden parameter holding last tick's input, for .pressed and .released.
@@ -603,6 +615,37 @@ static void gen_string(sb *o, const str text)
     sb_put(o, "\"");
 }
 
+// A call of a method or function. A method gets its value as the first
+// argument: a copy, or for a mut method its address. A mut parameter gets the
+// caller's variable by address, and the others copies.
+static void gen_routine_call(gen *g, sb *o, const expr *e)
+{
+    const decl *m = e->method;
+    sb_printf(o, "%s(", routine_cname(m));
+    int args = 0;
+    if (m->owner && e->kind == E_CALL) { // IsDead() inside another method: the same value
+        const bool have_address = g->routine->is_mut_method;
+        sb_put(o, m->is_mut_method ? "purr_self" : have_address ? "*purr_self" : "purr_self");
+        args++;
+    } else if (m->owner) {
+        if (m->is_mut_method) sb_put(o, "&(");
+        gen_expr(g, o, e->object);
+        if (m->is_mut_method) sb_put(o, ")");
+        args++;
+    }
+    for (int i = 0; i < e->args.count; i++) {
+        if (args++) sb_put(o, ", ");
+        if (m->params.items[i].mode == PARAM_MUT) {
+            sb_put(o, "&(");
+            gen_expr(g, o, e->args.items[i]);
+            sb_put(o, ")");
+        } else {
+            gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
+        }
+    }
+    sb_put(o, ")");
+}
+
 // input.buttons.jump on last tick's input: purr_prev_input->buttons.jump.
 static const char *prev_input_access(gen *g, const expr *field_access)
 {
@@ -635,7 +678,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         break;
     case E_NAME:
         if (e->bind == BIND_FIELD) {
-            sb_printf(o, "purr_self.%s", field_cname(e->field)); // Inside the input's Sample or Sanitize
+            // Inside the input's Sample or Sanitize, or a method: a mut method has its value by address.
+            const bool by_address = g->routine && g->routine->is_mut_method;
+            sb_printf(o, "purr_self%s%s", by_address ? "->" : ".", field_cname(e->field));
         } else if (e->bind == BIND_LOCAL) {
             sb_put(o, local_cname(g, e->name));
         } else if (e->bind == BIND_PARAM && is_pointer_param(e->param)) {
@@ -672,7 +717,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         break;
     }
     case E_CALL:
-        if (e->call == CALL_CONSTRUCT) {
+        if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) {
+            gen_routine_call(g, o, e);
+        } else if (e->call == CALL_CONSTRUCT) {
             gen_construct(g, o, e);
         } else if (e->call == CALL_SPAWN) {
             if (e->hoisted) sb_put(o, e->hoisted); // Already ran, before the statement
@@ -724,7 +771,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         // Math.Dot(a, b) and friends, and Draw calls, which record into the
         // view's draw list. Entity methods (Add, Remove, Destroy) are
         // statements; see gen_method.
-        if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
+        if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) {
+            gen_routine_call(g, o, e);
+        } else if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
             sb_printf(o, "%s(%s", e->c_callee, e->call == CALL_DRAW ? "purr_draw" : "");
             for (int i = 0; i < e->args.count; i++) {
                 if (i || e->call == CALL_DRAW) sb_put(o, ", ");
@@ -880,7 +929,14 @@ static void gen_stmt(gen *g, const stmt *s)
         break;
 
     case S_RETURN:
-        line(g, o, g->in_input ? "return purr_self;" : "return;");
+        if (s->value) {
+            indent(g, o);
+            sb_put(o, "return ");
+            gen_as(g, o, s->value, g->routine->return_type);
+            sb_put(o, ";\n");
+        } else {
+            line(g, o, g->in_input ? "return purr_self;" : "return;");
+        }
         break;
 
     case S_VAR: {
@@ -921,7 +977,7 @@ static void gen_stmt(gen *g, const stmt *s)
     }
 
     case S_EXPR:
-        if (s->value->kind == E_METHOD && s->value->call == CALL_DRAW) {
+        if (s->value->call == CALL_METHOD || s->value->call == CALL_FUNCTION || s->value->call == CALL_DRAW) {
             indent(g, o);
             gen_expr(g, o, s->value);
             sb_put(o, ";\n");
@@ -1485,6 +1541,64 @@ static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const
 
 // The input's Sample, as purr_input_sample: fields start at their defaults
 // and the body assigns them from the devices.
+// A method's or function's C signature: its value first for a method (by
+// address if it's mut), then the parameters, mut ones by address.
+static void gen_routine_signature(gen *g, sb *o, const decl *m)
+{
+    sb_printf(o, "PURR_HELPER %s %s(", m->return_type.kind == TY_VOID ? "void" : c_type(m->return_type), routine_cname(m));
+    int n = 0;
+    if (m->owner) {
+        sb_printf(o, m->is_mut_method ? "%s *purr_self" : "const %s purr_self", type_cname(m->owner));
+        n++;
+    }
+    for (int i = 0; i < m->params.count; i++) {
+        const param *p = &m->params.items[i];
+        sb_printf(o, p->mode == PARAM_MUT ? "%s%s *%s" : "%sconst %s %s", n++ ? ", " : "", c_type(p->type),
+                  local_cname(g, p->name));
+    }
+    if (n == 0) sb_put(o, "void");
+    sb_put(o, ")");
+}
+
+static void gen_routine(gen *g, const decl *m)
+{
+    sb *o = &g->c;
+    if (m->owner) sb_printf(o, "// " STR_FMT "." STR_FMT "\n", STR_ARG(m->owner->qualified), STR_ARG(m->name));
+    else sb_printf(o, "// " STR_FMT "\n", STR_ARG(m->qualified));
+    gen_routine_signature(g, o, m);
+    sb_put(o, "\n{\n");
+    g->indent = 1;
+    g->routine = m;
+    if (m->owner) line(g, o, "(void)purr_self;");
+    for (int i = 0; i < m->params.count; i++) line(g, o, "(void)%s;", local_cname(g, m->params.items[i].name));
+    for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);
+    g->routine = NULL;
+    g->indent = 0;
+    sb_put(o, "}\n");
+    line_reset(g);
+    sb_put(o, "\n");
+}
+
+// Every method and function, declared first so they can call each other.
+static void gen_routines(gen *g)
+{
+    VEC(const decl *) all = {0};
+    for (int i = 0; i < g->prog->decls.count; i++) {
+        const decl *d = g->prog->decls.items[i];
+        if (d->kind == DECL_FUNCTION) vec_push(all, d);
+        for (int k = 0; k < d->methods.count; k++) vec_push(all, d->methods.items[k]);
+    }
+    if (all.count == 0) return;
+    sb *o = &g->c;
+    sb_put(o, "// Methods and functions\n\n");
+    for (int i = 0; i < all.count; i++) {
+        gen_routine_signature(g, o, all.items[i]);
+        sb_put(o, ";\n");
+    }
+    sb_put(o, "\n");
+    for (int i = 0; i < all.count; i++) gen_routine(g, all.items[i]);
+}
+
 static void gen_sample(gen *g)
 {
     const decl *input = g->prog->input;
@@ -1965,6 +2079,7 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_moves(&g);
     gen_command_recorders(&g);
     gen_apply(&g);
+    gen_routines(&g);
     if (prog->input) gen_sample(&g);
     if (prog->input && prog->input->sanitize) gen_sanitize(&g);
     if (prog->input && input_needs_repair(prog->input)) gen_repair(&g);

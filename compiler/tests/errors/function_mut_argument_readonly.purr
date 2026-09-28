@@ -1,0 +1,5 @@
+// expect: 'Bump' changes its 'counter'
+void Bump(mut int counter) { counter += 1; }
+singleton Log { int count; }
+system Main() { }
+system Count(Log log) { Bump(log.count); }

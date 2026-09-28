@@ -11,6 +11,9 @@ struct Hit
     int amount = 2;
 }
 
+// Other files call it Combat.Strength.
+int Strength(Hit hit) { return hit.amount * 2; }
+
 [Before(Physics.Move)]
 system Damage(mut Trace trace, with Health)
 {

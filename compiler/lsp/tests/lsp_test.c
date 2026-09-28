@@ -570,6 +570,68 @@ PURR_TEST(lsp_structs)
     PURR_CHECK(strcmp(apply_reply(messy, NULL), "struct Stats\n{\n    float health = 100;\n}\nsystem Main() { }\n") == 0);
 }
 
+#define METHODS                                                                \
+    "struct Stats\n"                                                           \
+    "{\n"                                                                      \
+    "    float health = 100;\n"                                                \
+    "\n"                                                                       \
+    "    bool IsDead() { return health <= 0; }\n"                              \
+    "    mut void Hurt(float amount) { health -= amount; }\n"                  \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "component Unit { Stats stats; }\n"                                        \
+    "\n"                                                                       \
+    "float Heal(mut Stats stats, float amount)\n"                              \
+    "{\n"                                                                      \
+    "    stats.health += amount;\n"                                            \
+    "    return stats.health;\n"                                               \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "system Main() { Spawn(Unit); }\n"
+
+PURR_TEST(lsp_methods_and_functions)
+{
+    start();
+    open_document(METHODS);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    const char *symbols = request("textDocument/documentSymbol");
+    PURR_CHECK(has(symbols, "\"name\":\"IsDead\",\"detail\":\"bool IsDead()\",\"kind\":6"));
+    PURR_CHECK(has(symbols, "\"name\":\"Heal\",\"detail\":\"function\",\"kind\":12"));
+
+    // After a dot, methods with their signatures; in code, functions; in a method, its type's fields.
+    const char *members = complete(METHODS "system Fight(mut Unit unit)\n{\n    unit.stats.$\n}\n");
+    PURR_CHECK(offers(members, "IsDead") && offers(members, "Hurt") && offers(members, "health"));
+    PURR_CHECK(has(members, "mut void Hurt(float amount)"));
+    PURR_CHECK(offers(complete(METHODS "system Fight(mut Unit unit)\n{\n    $\n}\n"), "Heal"));
+    PURR_CHECK(offers(complete("struct Stats\n{\n    float health;\n    bool IsDead() { return $ }\n}\nsystem Main() { }\n"),
+                      "health"));
+
+    // Hover, definition and references go to the method itself.
+    open_document(METHODS "system Fight(mut Unit unit)\n{\n    unit.stats.Hu$rt(1);\n}\n");
+    const char *hover = request("textDocument/hover");
+    PURR_CHECK(has(hover, "mut void Hurt(float amount)"));
+    PURR_CHECK(has(hover, "Method of struct `Stats`"));
+    PURR_CHECK(has(request("textDocument/definition"), "\"range\":{\"start\":{\"line\":5,\"character\":13}"));
+
+    open_document(METHODS "system Fight(mut Unit unit)\n{\n    He$al(unit.stats, 1);\n}\n");
+    PURR_CHECK(has(request("textDocument/hover"), "float Heal(mut Stats stats, float amount)"));
+    open_document(METHODS "system Fight(mut Unit unit)\n{\n    Heal(unit.stats, $\n}\n");
+    const char *signature = request("textDocument/signatureHelp");
+    PURR_CHECK(has(signature, "float Heal(mut Stats stats, float amount)"));
+    PURR_CHECK(has(signature, "\"activeParameter\":1"));
+
+    // Laid out like other code: braces on their own lines, one-liners kept.
+    static const char messy[] = "struct Stats {\nfloat health;\nbool IsDead() { return health <= 0; }\n"
+                                "mut void Hurt() {\nhealth -= 1; }\n}\nvoid Reset(mut Stats s) {\ns.health = 0; }\n"
+                                "system Main() { }\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, "struct Stats\n{\n    float health;\n    bool IsDead() { return health <= 0; }\n"
+                                 "    mut void Hurt()\n    {\n        health -= 1;\n    }\n}\n"
+                                 "void Reset(mut Stats s)\n{\n    s.health = 0;\n}\nsystem Main() { }\n") == 0);
+    if (strcmp(formatted, "") != 0 && !has(formatted, "    mut void Hurt()\n    {\n")) printf("--- got:\n%s---\n", formatted);
+}
+
 #define USES_RADIUS                                                            \
     GAME_TYPES                                                                 \
     "system Grow(mut Body body)\n{\n    body.radius += 1;\n}\n"                  \
@@ -777,6 +839,9 @@ PURR_TEST(lsp_every_prefix_is_safe)
 {
     static const char program[] =
         GAME_TYPES
+        "struct Range\n{\n    float lo;\n    float hi = 1;\n\n    float Width() { return hi - lo; }\n"
+        "    mut void Scale(float by) { lo *= by; hi *= by; }\n}\n"
+        "float Grow(mut Range range, float by)\n{\n    range.Scale(by);\n    return range.Width();\n}\n"
         "input Controls\n{\n    float2 aim;\n\n    Controls(Devices devices)\n    {\n"
         "        var keys = devices.keyboard;\n        if (keys.w.pressed) aim.y += 1;\n    }\n}\n"
         "system Move(Controls controls, Time time, mut Body body, without Arena)\n{\n"

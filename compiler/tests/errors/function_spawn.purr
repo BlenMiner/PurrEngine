@@ -1,0 +1,4 @@
+// expect: functions can't spawn entities; systems do
+component Enemy { int hp; }
+void Wave() { Spawn(Enemy); }
+system Main() { Wave(); }
