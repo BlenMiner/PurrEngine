@@ -54,11 +54,12 @@
       "name": "package",
       "inherits": "base",
       "displayName": "Package",
-      "description": "The purr package's native half: optimized, with the C runtime linked statically on Windows, and the editor extensions.",
+      "description": "The purr package's native half: optimized, with clang and lld built into purr, the C runtime linked statically on Windows, and the editor extensions.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
-        "PURR_EDITOR_EXTENSIONS": "ON"
+        "PURR_EDITOR_EXTENSIONS": "ON",
+        "PURR_EMBED_LLVM": "ON"
       }
     },
     {

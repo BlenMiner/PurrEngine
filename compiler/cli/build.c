@@ -197,6 +197,16 @@ static void config_flags(args *a, const build_options *opts)
 #endif
 }
 
+// The C compiler: an installed clang, or purr itself as `purr cc` when clang
+// is built in (compiler/cli/llvm).
+static void arg_compiler(args *a, const char *compiler)
+{
+    arg(a, compiler);
+#ifdef PURR_EMBEDDED_CLANG
+    arg(a, "cc");
+#endif
+}
+
 // One line with everything that decides the engine objects, so a change in
 // any of it rebuilds them.
 static char *stamp_of(const char *compiler, const build_options *opts)
@@ -220,7 +230,7 @@ static bool compile_c(const char *compiler, const build_options *opts, const cha
                       const char *include, const char *gen)
 {
     args a = {0};
-    arg(&a, compiler);
+    arg_compiler(&a, compiler);
     arg(&a, "-c");
     arg(&a, source);
     arg(&a, "-o");
@@ -341,6 +351,19 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
         return NULL;
     }
 
+#ifdef PURR_EMBEDDED_CLANG
+    char *bin = sys_exe_dir();
+    char *compiler = path_join(bin, "purr" EXE_SUFFIX);
+#ifdef __APPLE__
+    // macOS's headers and libraries come with Apple's command line tools,
+    // which clang finds through SDKROOT.
+    if (!opts->web && !find_macos_sdk()) {
+        fprintf(stderr, "purr: building for macOS needs Apple's command line tools\n");
+        fprintf(stderr, "  = note: install them with `xcode-select --install`\n");
+        return NULL;
+    }
+#endif
+#else
     char *compiler = opts->web ? find_web_clang() : find_clang();
     if (!compiler) {
         fprintf(stderr, "purr: clang isn't installed, and purr needs it to build games\n");
@@ -358,6 +381,7 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
             return NULL;
         }
     }
+#endif
     if (!find_target(root, opts)) return NULL;
 
     // Everything purr makes goes in <folder>/.purr/<configuration>.
@@ -417,7 +441,7 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
     }
 
     args a = {0};
-    arg(&a, compiler);
+    arg_compiler(&a, compiler);
     if (build_target.flag) {
         arg(&a, build_target.flag);
         arg(&a, build_target.sysroot_flag);
@@ -436,8 +460,13 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
     arg_list(&a, opts->release ? release_flags : debug_flags);
     if (opts->web) {
         arg_list(&a, web_link_flags);
+#ifndef PURR_EMBEDDED_CLANG
         arg(&a, format("-fuse-ld=%s", wasm_ld, NULL)); // It may be elsewhere than clang, as with Homebrew
+#endif
     } else {
+#if defined(PURR_EMBEDDED_CLANG) && !defined(_WIN32)
+        arg(&a, "-fuse-ld=lld"); // The built-in linker
+#endif
 #ifdef _WIN32
         arg(&a, "-fuse-ld=lld");
         // A release game opens its window without a console next to it; a

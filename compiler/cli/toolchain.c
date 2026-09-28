@@ -120,3 +120,18 @@ char *find_wasm_ld(const char *clang)
 #endif
     return found;
 }
+
+#ifdef __APPLE__
+bool find_macos_sdk(void)
+{
+    if (sys_env("SDKROOT")) return true;
+    static const char *const sdks[] = {
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+    };
+    for (size_t i = 0; i < sizeof sdks / sizeof sdks[0]; i++) {
+        if (sys_exists(sdks[i])) return setenv("SDKROOT", sdks[i], 1) == 0;
+    }
+    return false;
+}
+#endif

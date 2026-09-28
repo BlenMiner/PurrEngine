@@ -72,16 +72,16 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld ninja-build libx11-dev libxrandr-dev libxinerama-dev \
+          sudo apt-get install -y clang lld ninja-build zstd libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libgl1-mesa-dev
       - name: Install tools (Windows)
         if: runner.os == 'Windows'
-        run: choco install ninja -y --no-progress
+        run: choco install ninja zstandard -y --no-progress
       # Apple's clang builds native code; web builds need Homebrew's LLVM, and its lld for wasm-ld.
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install ninja llvm lld
+          brew install ninja llvm lld zstd
           echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
       # Web builds download wasi-sdk's C library (cmake/wasi-toolchain.cmake),
       # and MinGW builds llvm-mingw's (cmake/mingw-toolchain.cmake).
@@ -94,6 +94,11 @@ jobs:
         with:
           path: build/llvm-mingw-*
           key: llvm-mingw-${{ hashFiles('cmake/mingw-toolchain.cmake') }}
+      # The package builds clang and lld into purr from LLVM's release (cmake/LLVM.cmake).
+      - uses: actions/cache@v4
+        with:
+          path: build/llvm-[0-9]*
+          key: llvm-${{ runner.os }}-${{ hashFiles('cmake/LLVM.cmake') }}
 
       # The demo's smoke test opens a window, which needs a GPU the runners
       # don't have; the web one runs in headless Chrome.

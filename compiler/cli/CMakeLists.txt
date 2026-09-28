@@ -11,3 +11,12 @@ target_compile_definitions(purr_cli PRIVATE
     "PURR_CHANNEL=\"${PURR_CHANNEL}\""
     "PURR_REPOSITORY=\"${PURR_REPOSITORY}\"")
 install(TARGETS purr_cli RUNTIME DESTINATION bin COMPONENT purr)
+
+# Packages build clang and lld into purr, so users need no compiler of their
+# own (see cmake/LLVM.cmake).
+option(PURR_EMBED_LLVM "Build clang and lld into purr, from LLVM's static libraries" OFF)
+if(PURR_EMBED_LLVM)
+    include("${PROJECT_SOURCE_DIR}/cmake/LLVM.cmake")
+    target_link_libraries(purr_cli PRIVATE purr_cc)
+    target_compile_definitions(purr_cli PRIVATE PURR_EMBEDDED_CLANG "PURR_LLVM_VERSION=\"${PURR_LLVM_VERSION}\"")
+endif()

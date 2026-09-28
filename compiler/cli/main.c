@@ -10,6 +10,10 @@
 #include "toolchain.h"
 #include "upgrade.h"
 
+#ifdef PURR_EMBEDDED_CLANG
+#include "cc.h"
+#endif
+
 #ifndef PURR_VERSION
 #define PURR_VERSION "0.0.0-dev"
 #endif
@@ -67,17 +71,28 @@ static int open_in_browser(const char *page)
 static int version(const char *root)
 {
     printf("purr %s (%s)\ninstalled in %s\n", PURR_VERSION, purr_channel(root), root);
+#ifdef PURR_EMBEDDED_CLANG
+    printf("clang:   built in (LLVM %s)\n", PURR_LLVM_VERSION);
+#else
     char *clang = find_clang();
     char *web_clang = find_web_clang();
     char *wasm_ld = web_clang ? find_wasm_ld(web_clang) : NULL;
     printf("clang:   %s\n", clang ? clang : "not found (purr needs it to build games)");
     if (web_clang && clang && strcmp(web_clang, clang) != 0) printf("web:     %s\n", web_clang);
     printf("wasm-ld: %s\n", wasm_ld ? wasm_ld : "not found (needed for --web)");
+#endif
     return 0;
 }
 
 int main(const int argc, char **argv)
 {
+#ifdef PURR_EMBEDDED_CLANG
+    // purr is its own C compiler: `purr cc` is clang, which runs itself again
+    // as `purr -cc1` when it compiles in another process.
+    if (argc > 1 && (strcmp(argv[1], "cc") == 0 || strcmp(argv[1], "-cc1") == 0)) {
+        return purr_cc(argc, (const char **)argv);
+    }
+#endif
     if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
         usage();
         return argc < 2 ? 2 : 0;

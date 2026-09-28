@@ -13,3 +13,11 @@ char *find_web_clang(void);
 
 // wasm-ld, the WebAssembly linker: next to clang, on PATH, or Homebrew's lld.
 char *find_wasm_ld(const char *clang);
+
+#ifdef __APPLE__
+#include <stdbool.h>
+
+// Apple's SDK, macOS's headers and libraries, from its command line tools or
+// Xcode. Sets SDKROOT, where clang looks for it, unless it's set already.
+bool find_macos_sdk(void);
+#endif
