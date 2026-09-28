@@ -83,10 +83,40 @@ char *find_clang(void)
     return NULL;
 }
 
+#ifdef __APPLE__
+// Homebrew's kegs: Apple Silicon, then Intel.
+static char *homebrew(const char *keg_bin, const char *name)
+{
+    const char *const prefixes[] = {"/opt/homebrew/opt", "/usr/local/opt"};
+    for (size_t i = 0; i < sizeof prefixes / sizeof prefixes[0]; i++) {
+        char *dir = path_join(prefixes[i], keg_bin);
+        char *found = existing(dir, name);
+        free(dir);
+        if (found) return found;
+    }
+    return NULL;
+}
+#endif
+
+char *find_web_clang(void)
+{
+    const char *root = sys_env("LLVM_ROOT");
+    if (root) return find_clang();
+#ifdef __APPLE__
+    char *brew = homebrew("llvm/bin", "clang");
+    if (brew) return brew;
+#endif
+    return find_clang();
+}
+
 char *find_wasm_ld(const char *clang)
 {
     char *dir = path_dir(clang);
     char *found = existing(dir, "wasm-ld" EXE);
     free(dir);
-    return found ? found : sys_which("wasm-ld");
+    if (!found) found = sys_which("wasm-ld");
+#ifdef __APPLE__
+    if (!found) found = homebrew("lld/bin", "wasm-ld");
+#endif
+    return found;
 }

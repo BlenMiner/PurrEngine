@@ -32,6 +32,7 @@
         "assets": [
           { "path": "dist/purr-windows-x64.zip", "label": "purr for Windows (x64)" },
           { "path": "dist/purr-linux-x64.tar.gz", "label": "purr for Linux (x64)" },
+          { "path": "dist/purr-macos-arm64.tar.gz", "label": "purr for macOS (Apple Silicon)" },
           { "path": "dist/SHA256SUMS", "label": "SHA256SUMS" }
         ],
         "successComment": false,

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs purr for this user, on Linux:
+# Installs purr for this user, on Linux or macOS (Apple Silicon):
 #
 #     curl -fsSL https://raw.githubusercontent.com/BlenMiner/PurrEngine/release/install.sh | sh
 #
@@ -9,7 +9,11 @@
 set -eu
 
 repo="BlenMiner/PurrEngine"
-package="purr-linux-x64.tar.gz"
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) package="purr-linux-x64.tar.gz" ;;
+    Darwin-arm64) package="purr-macos-arm64.tar.gz" ;;
+    *) echo "There's no purr package for $(uname -s) on $(uname -m) yet." >&2; exit 1 ;;
+esac
 channel="stable"
 [ "${PURR_CHANNEL:-}" = "nightly" ] && channel="nightly"
 root="$HOME/.purr"
@@ -48,7 +52,11 @@ curl -fsSL "$base/SHA256SUMS" -o "$work/SHA256SUMS"
 
 # The download must match the checksum published with it.
 expected="$(grep " $package\$" "$work/SHA256SUMS" | cut -d' ' -f1)"
-actual="$(sha256sum "$work/$package" | cut -d' ' -f1)"
+if command -v sha256sum >/dev/null; then
+    actual="$(sha256sum "$work/$package" | cut -d' ' -f1)"
+else
+    actual="$(shasum -a 256 "$work/$package" | cut -d' ' -f1)" # macOS
+fi
 if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
     echo "The download is damaged (its checksum doesn't match). Nothing was installed." >&2
     exit 1
@@ -67,5 +75,9 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
 done
 
 echo "Installed purr in $root."
-echo "purr needs clang to build games (your package manager's clang), and Emscripten for --web."
+if [ "$(uname -s)" = "Darwin" ]; then
+    echo "purr builds games with Apple's clang (xcode-select --install), and web games with Homebrew's: brew install llvm lld"
+else
+    echo "purr builds games with clang: install clang and lld from your package manager."
+fi
 echo "Open a new terminal, go to a folder with .purr files and run: purr run"

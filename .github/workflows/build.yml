@@ -54,7 +54,11 @@ jobs:
             os: windows-latest
           - platform: linux-x64
             os: ubuntu-latest
+          - platform: macos-arm64
+            os: macos-latest
     runs-on: ${{ matrix.os }}
+    # macOS is new: until it's reliable, its failures don't hold back releases.
+    continue-on-error: ${{ matrix.platform == 'macos-arm64' }}
     env:
       PURR_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
       PURR_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
@@ -73,6 +77,12 @@ jobs:
       - name: Install tools (Windows)
         if: runner.os == 'Windows'
         run: choco install ninja -y --no-progress
+      # Apple's clang builds native code; web builds need Homebrew's LLVM, and its lld for wasm-ld.
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja llvm lld
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
       # Web builds download wasi-sdk's C library (cmake/wasi-toolchain.cmake).
       - uses: actions/cache@v4
         with:

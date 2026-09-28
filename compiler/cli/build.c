@@ -123,6 +123,15 @@ static const char *const native_libs[] = {"-lopengl32", "-lglu32", "-lgdi32", "-
 #define LIB_PREFIX ""
 #define LIB_SUFFIX ".lib"
 #define EXE_SUFFIX ".exe"
+#elif defined(__APPLE__)
+static const char *const native_flags[] = {NULL};
+// What raylib and its GLFW link on macOS.
+static const char *const native_libs[] = {"-framework", "Cocoa", "-framework", "IOKit", "-framework", "CoreFoundation",
+                                          "-framework", "CoreVideo", "-framework", "OpenGL", "-framework", "CoreAudio",
+                                          "-framework", "AudioToolbox", NULL};
+#define LIB_PREFIX "lib"
+#define LIB_SUFFIX ".a"
+#define EXE_SUFFIX ""
 #else
 static const char *const native_flags[] = {NULL};
 // raylib calls Xlib directly (the rest of X11 and OpenGL it loads at run time).
@@ -301,21 +310,29 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
         return NULL;
     }
 
-    char *compiler = find_clang();
+    char *compiler = opts->web ? find_web_clang() : find_clang();
     if (!compiler) {
         fprintf(stderr, "purr: clang isn't installed, and purr needs it to build games\n");
         fprintf(stderr, "  = note: install LLVM (https://github.com/llvm/llvm-project/releases), add it to PATH, "
                         "or set LLVM_ROOT\n");
         return NULL;
     }
+    char *wasm_ld = NULL;
     if (opts->web) {
-        if (!find_wasm_ld(compiler)) {
+        wasm_ld = find_wasm_ld(compiler);
+        if (!wasm_ld) {
             fprintf(stderr, "purr: web builds need wasm-ld, the WebAssembly linker, and it isn't next to clang\n");
-            fprintf(stderr, "  = note: LLVM's releases include it; on Linux, install your distribution's lld\n");
+            fprintf(stderr, "  = note: LLVM's releases include it; on Linux install your distribution's lld, and on "
+                            "macOS `brew install llvm lld`\n");
             return NULL;
         }
         web_sysroot = format("--sysroot=%s/wasi/sysroot", root, NULL);
         web_builtins = format("%s/wasi/libclang_rt.builtins.a", root, NULL);
+        if (!sys_exists(web_builtins)) {
+            fprintf(stderr, "purr: this installation can't build web games: %s/wasi is missing\n", root);
+            fprintf(stderr, "  = note: reinstall purr, or for a build of this repo package the web-package preset too\n");
+            return NULL;
+        }
     }
 
     // Everything purr makes goes in <folder>/.purr/<configuration>.
@@ -397,6 +414,7 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
         arg_list(&a, web_link_flags);
         arg(&a, "-lc");
         arg(&a, web_builtins);
+        arg(&a, format("-fuse-ld=%s", wasm_ld, NULL)); // It may be elsewhere than clang, as with Homebrew
     } else {
         arg_list(&a, native_flags);
 #ifdef _WIN32

@@ -12,7 +12,7 @@ Windows, in PowerShell:
 irm https://raw.githubusercontent.com/BlenMiner/PurrEngine/release/install.ps1 | iex
 ```
 
-Linux:
+Linux and macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/BlenMiner/PurrEngine/release/install.sh | sh
@@ -29,8 +29,12 @@ script.
   `winget install LLVM.LLVM`), and Visual Studio or its Build Tools with
   *Desktop development with C++*, for the system libraries programs link with.
 - **Linux:** clang and lld from your package manager.
+- **macOS** (Apple Silicon): Apple's command-line tools (`xcode-select --install`)
+  for native games. Apple's clang can't build WebAssembly, so web games use
+  Homebrew's: `brew install llvm lld`.
 
-Web games need nothing more: the same clang builds them for WebAssembly.
+On Windows and Linux, web games need nothing more: the same clang builds them for
+WebAssembly.
 
 `purr version` shows which compilers it found.
 

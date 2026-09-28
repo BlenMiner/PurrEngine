@@ -57,7 +57,7 @@ if(PURR_WEB)
     install(DIRECTORY "${PURR_WASI_SYSROOT}/include/wasm32-wasip1" DESTINATION wasi/sysroot/include COMPONENT purr)
     install(FILES "${PURR_WASI_SYSROOT}/lib/wasm32-wasip1/crt1-command.o" "${PURR_WASI_SYSROOT}/lib/wasm32-wasip1/libc.a"
         "${PURR_WASI_SYSROOT}/lib/wasm32-wasip1/libm.a" DESTINATION wasi/sysroot/lib/wasm32-wasip1 COMPONENT purr)
-    install(FILES "${PURR_WASI_BUILTINS}" DESTINATION wasi COMPONENT purr)
+    install(FILES "${PURR_WASI_BUILTINS}" DESTINATION wasi RENAME libclang_rt.builtins.a COMPONENT purr)
 else()
     set(PURR_PACKAGE_LIBS lib/native)
 endif()

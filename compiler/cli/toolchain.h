@@ -7,5 +7,9 @@
 // too, with its WebAssembly target.
 char *find_clang(void);
 
-// wasm-ld, the WebAssembly linker clang runs: next to clang, or on PATH.
+// The clang for web games: the same one, except on macOS, where Apple's clang
+// has no WebAssembly target and Homebrew's LLVM does.
+char *find_web_clang(void);
+
+// wasm-ld, the WebAssembly linker: next to clang, on PATH, or Homebrew's lld.
 char *find_wasm_ld(const char *clang);

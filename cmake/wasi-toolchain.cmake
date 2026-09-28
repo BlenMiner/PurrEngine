@@ -15,6 +15,10 @@ set(PURR_WASI_TARGET wasm32-wasip1)
 
 set(CMAKE_SYSTEM_NAME WASI)
 set(CMAKE_SYSTEM_PROCESSOR wasm32)
+# Apple's clang has no WebAssembly target; Homebrew's LLVM does (with lld for wasm-ld).
+if(CMAKE_HOST_APPLE AND NOT DEFINED ENV{LLVM_ROOT})
+    find_program(PURR_CLANG NAMES clang PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin NO_DEFAULT_PATH)
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/clang-toolchain.cmake")
 set(CMAKE_C_COMPILER_TARGET ${PURR_WASI_TARGET})
 

@@ -1,4 +1,5 @@
-#if !defined(_WIN32)
+// clock_gettime under strict C. macOS declares it anyway, and would hide it.
+#if !defined(_WIN32) && !defined(__APPLE__)
 #define _POSIX_C_SOURCE 199309L
 #endif
 

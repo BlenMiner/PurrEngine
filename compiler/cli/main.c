@@ -66,8 +66,10 @@ static int version(const char *root)
 {
     printf("purr %s (%s)\ninstalled in %s\n", PURR_VERSION, purr_channel(root), root);
     char *clang = find_clang();
-    char *wasm_ld = clang ? find_wasm_ld(clang) : NULL;
+    char *web_clang = find_web_clang();
+    char *wasm_ld = web_clang ? find_wasm_ld(web_clang) : NULL;
     printf("clang:   %s\n", clang ? clang : "not found (purr needs it to build games)");
+    if (web_clang && clang && strcmp(web_clang, clang) != 0) printf("web:     %s\n", web_clang);
     printf("wasm-ld: %s\n", wasm_ld ? wasm_ld : "not found (needed for --web)");
     return 0;
 }
