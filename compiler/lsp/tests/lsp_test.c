@@ -944,6 +944,105 @@ PURR_TEST(lsp_game_folder)
     lsp_free(&server);
 }
 
+// Starts the server with `folder` open in the editor, as a URI.
+static void start_in(const char *folder)
+{
+    clear_sent();
+    lsp_free(&server);
+    lsp_init(&server, capture, NULL);
+    char message[1024];
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":"
+             "{\"rootUri\":\"%s\",\"workspaceFolders\":[{\"uri\":\"%s\",\"name\":\"game\"}]}}",
+             folder, folder);
+    handle(message);
+}
+
+// A folder open in the editor is a game, as `purr run` builds it: every .purr
+// file in it and its subfolders, with no manifest.
+PURR_TEST(lsp_open_folder_is_a_game)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_open");
+    make_folder("lsp_open/sub");
+    static const char physics[] = "namespace Physics;\n"
+                                  "component Body { float2 position; }\n"
+                                  "system Gravity(mut Body body) { body.position.y -= 1; }\n";
+    static const char main_file[] = "using Physics;\n"
+                                    "system Main() { Spawn(Body); }\n";
+    write_file("lsp_open/sub/physics.purr", physics);
+    write_file("lsp_open/main.purr", main_file);
+    char root[700], uri_main[700], uri_physics[700];
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_open", dir); // Editors send folders without the last '/'
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_open/main.purr", dir);
+    snprintf(uri_physics, sizeof uri_physics, "file:///%s/lsp_open/sub/physics.purr", dir);
+
+    start_in(root);
+    open_uri(uri_main, main_file);
+    PURR_CHECK(sent_count == 2);
+    PURR_CHECK(has(sent[0], uri_main) && has(sent[0], "\"diagnostics\":[]"));
+    PURR_CHECK(has(sent[1], uri_physics) && has(sent[1], "\"diagnostics\":[]"));
+
+    // Without the folder open, the file stands alone.
+    start();
+    open_uri(uri_main, main_file);
+    PURR_CHECK(sent_count == 1 && !has(sent[0], "\"diagnostics\":[]"));
+
+    remove_game_file("lsp_open/sub/physics.purr");
+    remove_game_file("lsp_open/main.purr");
+    remove_folder("lsp_open/sub");
+    remove_folder("lsp_open");
+    clear_sent();
+    lsp_free(&server);
+}
+
+// An open folder that builds its games with CMake has the manifest
+// purr_add_game writes, in build/tools. Its games come from there, and its
+// other files stand alone instead of making one game of the whole folder.
+PURR_TEST(lsp_open_folder_with_manifest)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_cmake");
+    make_folder("lsp_cmake/build");
+    make_folder("lsp_cmake/build/tools");
+    make_folder("lsp_cmake/game");
+    make_folder("lsp_cmake/tests");
+    static const char physics[] = "component Body { float2 position; }\n";
+    static const char main_file[] = "system Main() { Spawn(Body); }\n";
+    static const char alone[] = "component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n";
+    write_file("lsp_cmake/game/physics.purr", physics);
+    write_file("lsp_cmake/game/main.purr", main_file);
+    write_file("lsp_cmake/tests/alone.purr", alone);
+    char manifest_text[700], root[700], uri_main[700], uri_alone[700];
+    snprintf(manifest_text, sizeof manifest_text, "game\t%s/lsp_cmake/game/\n", game_dir);
+    write_file("lsp_cmake/build/tools/games.txt", manifest_text);
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_cmake", dir);
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_cmake/game/main.purr", dir);
+    snprintf(uri_alone, sizeof uri_alone, "file:///%s/lsp_cmake/tests/alone.purr", dir);
+
+    start_in(root);
+    open_uri(uri_main, main_file);
+    PURR_CHECK(sent_count == 2);
+    for (int i = 0; i < sent_count; i++) PURR_CHECK(has(sent[i], "\"diagnostics\":[]"));
+    // Its own Body doesn't clash with the game's.
+    open_uri(uri_alone, alone);
+    PURR_CHECK(sent_count == 1 && has(sent[0], uri_alone) && has(sent[0], "\"diagnostics\":[]"));
+
+    remove_game_file("lsp_cmake/game/physics.purr");
+    remove_game_file("lsp_cmake/game/main.purr");
+    remove_game_file("lsp_cmake/tests/alone.purr");
+    remove_game_file("lsp_cmake/build/tools/games.txt");
+    remove_folder("lsp_cmake/game");
+    remove_folder("lsp_cmake/tests");
+    remove_folder("lsp_cmake/build/tools");
+    remove_folder("lsp_cmake/build");
+    remove_folder("lsp_cmake");
+    clear_sent();
+    lsp_free(&server);
+}
+
 PURR_TEST(lsp_shutdown_and_exit)
 {
     start();

@@ -18,8 +18,10 @@ typedef struct lsp_server {
     lsp_send_fn send;
     void *user;
     // Which files make up each game: lines of "<game>\t<path>", written by
-    // purr_add_game. A document in no game is analysed alone. May be NULL.
+    // purr_add_game. Open folders can have their own (see game_of). May be NULL.
     const char *manifest;
+    char **roots; // The folders open in the editor, ending in '/'
+    int root_count;
     lsp_document *docs;
     int doc_count;
     int doc_cap;

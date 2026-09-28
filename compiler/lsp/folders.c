@@ -1,10 +1,11 @@
 #ifndef _WIN32
-#define _POSIX_C_SOURCE 200809L // lstat under strict C
+#define _DEFAULT_SOURCE // lstat and readlink under strict C
 #endif
 
 #include "folders.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,10 @@
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 static bool ends_with(const char *name, const char *extension)
@@ -83,4 +88,28 @@ void folder_find(const char *folder, const char *extension, const folder_file_fn
     }
     closedir(dir);
 #endif
+}
+
+char *folder_of_program(void)
+{
+    char path[4096] = "";
+#ifdef _WIN32
+    const DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
+    if (n == 0 || n == sizeof path) return NULL;
+#elif defined(__APPLE__)
+    uint32_t size = sizeof path;
+    if (_NSGetExecutablePath(path, &size) != 0) return NULL;
+#else
+    const ssize_t n = readlink("/proc/self/exe", path, sizeof path - 1);
+    if (n <= 0) return NULL;
+    path[n] = '\0';
+#endif
+    char *slash = NULL;
+    for (char *p = path; *p; p++) {
+        if (*p == '\\') *p = '/';
+        if (*p == '/') slash = p;
+    }
+    if (!slash) return NULL;
+    slash[1] = '\0';
+    return join(path, "", "");
 }
