@@ -6,8 +6,11 @@
 # build/wasi-sdk-<version> and pinned. clang is found like native builds find
 # it (clang-toolchain.cmake); it needs its WebAssembly target and wasm-ld, which
 # LLVM's releases include (Linux distributions ship wasm-ld in `lld`).
+#
+# wasi-sdk 24 is built with LLVM 18, so any clang from 18 on can link its C
+# library; newer releases need a newer wasm-ld than many systems have.
 
-set(PURR_WASI_SDK_VERSION 34)
+set(PURR_WASI_SDK_VERSION 24)
 set(PURR_WASI_TARGET wasm32-wasip1)
 
 set(CMAKE_SYSTEM_NAME WASI)
@@ -32,11 +35,17 @@ function(_purr_wasi_fetch file hash)
     file(REMOVE "${_purr_wasi_dir}/${file}")
     file(TOUCH "${_purr_wasi_dir}/${file}.done")
 endfunction()
-_purr_wasi_fetch(wasi-sysroot-${PURR_WASI_SDK_VERSION}.0.tar.gz 9d813544eeebe38b7b8f2244ed591de46b6db812c6dd1a257ff9f0d2a905a2be)
-_purr_wasi_fetch(libclang_rt-${PURR_WASI_SDK_VERSION}.0.tar.gz eee3e634dcf71aa22b1333391623cf5c9965a637dc428a27b1a858c026c587f1)
+_purr_wasi_fetch(wasi-sysroot-${PURR_WASI_SDK_VERSION}.0.tar.gz 35172f7d2799485b15a46b1d87f50a585d915ec662080f005d99153a50888f08)
+_purr_wasi_fetch(libclang_rt.builtins-wasm32-wasi-${PURR_WASI_SDK_VERSION}.0.tar.gz
+    7e33c0df758b90469b1de3ca158e2d0a7f71934d5884525ba6a372de0b3b0ec7)
 
 set(PURR_WASI_SYSROOT "${_purr_wasi_dir}/wasi-sysroot-${PURR_WASI_SDK_VERSION}.0")
-set(PURR_WASI_BUILTINS "${_purr_wasi_dir}/libclang_rt-${PURR_WASI_SDK_VERSION}.0/wasm32-unknown-wasip1/libclang_rt.builtins.a")
+set(PURR_WASI_BUILTINS "${_purr_wasi_dir}/libclang_rt.builtins-wasm32-wasi-${PURR_WASI_SDK_VERSION}.0/libclang_rt.builtins-wasm32.a")
+# This wasi-sdk keeps its libraries under the target's older name, wasm32-wasi,
+# which newer clang calls deprecated; give them the current one.
+if(NOT EXISTS "${PURR_WASI_SYSROOT}/lib/${PURR_WASI_TARGET}")
+    file(COPY "${PURR_WASI_SYSROOT}/lib/wasm32-wasi/" DESTINATION "${PURR_WASI_SYSROOT}/lib/${PURR_WASI_TARGET}")
+endif()
 set(CMAKE_SYSROOT "${PURR_WASI_SYSROOT}")
 
 # The compiler runtime is passed by path: clang looks for it in its own install,
