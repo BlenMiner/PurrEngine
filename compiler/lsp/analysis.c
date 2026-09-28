@@ -33,6 +33,7 @@ typedef enum occ_kind {
     OCC_METHOD,   // e.Add, e.Remove, e.Destroy
     OCC_MEMBER,   // Swizzles, color channels, quaternion.value, matrix columns, input .down/.up
     OCC_NAMESPACE, // Combat in `namespace Combat;` or Combat.Health
+    OCC_ATTRIBUTE, // Before, After, Clamp, Min, Max
 } occ_kind;
 
 typedef struct occurrence {
@@ -418,8 +419,10 @@ static void index_program(void)
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->builtin) continue;
-        // [After(Physics.Integrate)]: the systems it names
+        // [After(Physics.Integrate)]: the attribute, and the systems it names
         for (int a = 0; a < d->attributes.count; a++) {
+            const attribute *at = &d->attributes.items[a];
+            add_occ((occurrence){.at = at->at, .len = at->name.len, .kind = OCC_ATTRIBUTE, .name = at->name});
             for (int k = 0; k < d->attributes.items[a].args.count; k++) {
                 const qname *q = &d->attributes.items[a].args.items[k];
                 if (!q->decl) continue;
@@ -445,7 +448,9 @@ static void index_program(void)
                                  .decl = d, .name = fl->name, .type = fl->type});
             walk_expr(fl->default_value);
             for (int a = 0; a < fl->attributes.count; a++) {
-                for (int v = 0; v < fl->attributes.items[a].values.count; v++) walk_expr(fl->attributes.items[a].values.items[v]);
+                const attribute *at = &fl->attributes.items[a];
+                add_occ((occurrence){.at = at->at, .len = at->name.len, .kind = OCC_ATTRIBUTE, .name = at->name});
+                for (int v = 0; v < at->values.count; v++) walk_expr(at->values.items[v]);
             }
         }
         if (d->body) { // The input's Sample
@@ -746,6 +751,26 @@ static void describe(const occurrence *o, sb *out)
         if (str_eq_c(o->name, "down")) sb_put(out, "\n\nTrue on the tick it became true.");
         if (str_eq_c(o->name, "up")) sb_put(out, "\n\nTrue on the tick it became false.");
         break;
+    case OCC_ATTRIBUTE: {
+        static const struct {
+            const char *name;
+            const char *form;
+            const char *doc;
+        } attributes[] = {
+            {"Before", "[Before(System, ...)]", "This system runs before the ones named, every tick."},
+            {"After", "[After(System, ...)]", "This system runs after the ones named, every tick."},
+            {"Clamp", "[Clamp(lo, hi)]", "Keeps this input field between lo and hi. The engine applies it to every "
+                                         "input, after repairing NaN and before Sanitize."},
+            {"Min", "[Min(x)]", "Keeps this input field at least x, before Sanitize runs."},
+            {"Max", "[Max(x)]", "Keeps this input field at most x, before Sanitize runs."},
+        };
+        for (size_t i = 0; i < sizeof attributes / sizeof attributes[0]; i++) {
+            if (!str_eq_c(o->name, attributes[i].name)) continue;
+            code_block(out, attributes[i].form);
+            sb_printf(out, "\n\n%s", attributes[i].doc);
+        }
+        break;
+    }
     case OCC_NAMESPACE: {
         sb_printf(&code, "namespace " STR_FMT, STR_ARG(o->name));
         code_block(out, code.data);
@@ -1061,10 +1086,24 @@ void analysis_symbols(jbuf *out)
 // ---------------------------------------------------------------------------
 // Semantic tokens: highlighting from what names mean, not how they look
 
-static const char *const token_types[] = {"namespace", "type", "struct", "class", "interface", "parameter",
-                                          "variable", "property", "enumMember", "function", "method"};
+static const char *const token_types[] = {"namespace", "type",     "struct", "class",   "interface", "parameter",
+                                          "variable",  "property", "enumMember", "function", "method", "keyword",
+                                          "decorator"};
 enum { ST_NAMESPACE, ST_TYPE, ST_STRUCT, ST_CLASS, ST_INTERFACE, ST_PARAMETER, ST_VARIABLE, ST_PROPERTY,
-       ST_ENUM_MEMBER, ST_FUNCTION, ST_METHOD };
+       ST_ENUM_MEMBER, ST_FUNCTION, ST_METHOD, ST_KEYWORD, ST_DECORATOR };
+
+// Lowercase built-in value types (float3, int, bool, ...) read as keywords,
+// like C#'s float and int.
+static bool is_keyword_type(const type t)
+{
+    switch (t.kind) {
+    case TY_BOOL: case TY_INT: case TY_INT2: case TY_INT3: case TY_INT4: case TY_FLOAT: case TY_FLOAT2:
+    case TY_FLOAT3: case TY_FLOAT4: case TY_QUATERNION: case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4:
+        return true;
+    default:
+        return false;
+    }
+}
 
 static const char *const token_modifiers[] = {"declaration", "readonly", "static", "defaultLibrary"};
 enum { SM_DECLARATION = 1, SM_READONLY = 2, SM_STATIC = 4, SM_DEFAULT_LIBRARY = 8 };
@@ -1090,11 +1129,16 @@ static void classify(const occurrence *o, int *type, int *mods)
     switch (o->kind) {
     case OCC_TYPE:
         if (!o->decl) {
-            *type = ST_TYPE;
-            *mods |= SM_DEFAULT_LIBRARY;
+            *type = is_keyword_type(o->type) ? ST_KEYWORD : ST_TYPE; // Color, Entity, PlayerID are types
+            *mods = is_keyword_type(o->type) ? 0 : *mods | SM_DEFAULT_LIBRARY;
             break;
         }
-        *type = o->decl->kind == DECL_COMPONENT ? ST_STRUCT : o->decl->kind == DECL_INPUT ? ST_INTERFACE : ST_CLASS;
+        // Components are structs, singletons classes, inputs interfaces, and the
+        // device records types: editors can color each kind.
+        *type = o->decl->kind == DECL_COMPONENT ? ST_STRUCT
+              : o->decl->kind == DECL_INPUT     ? ST_INTERFACE
+              : o->decl->kind == DECL_RECORD    ? ST_TYPE
+                                                : ST_CLASS;
         if (o->decl->builtin) *mods |= SM_DEFAULT_LIBRARY;
         break;
     case OCC_SYSTEM: *type = ST_FUNCTION; break;
@@ -1113,7 +1157,16 @@ static void classify(const occurrence *o, int *type, int *mods)
     case OCC_OWNER: *type = ST_NAMESPACE; *mods |= SM_DEFAULT_LIBRARY; break;
     case OCC_FUNCTION: *type = ST_FUNCTION; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC; break;
     case OCC_CONSTANT: *type = ST_ENUM_MEMBER; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC | SM_READONLY; break;
-    case OCC_METHOD: *type = ST_METHOD; *mods |= SM_DEFAULT_LIBRARY; break;
+    case OCC_METHOD:
+        if (str_eq_c(o->name, "Sample") || str_eq_c(o->name, "Sanitize")) { // The input's own members
+            *type = ST_KEYWORD;
+            *mods = 0;
+        } else {
+            *type = ST_METHOD;
+            *mods |= SM_DEFAULT_LIBRARY;
+        }
+        break;
+    case OCC_ATTRIBUTE: *type = ST_DECORATOR; *mods = 0; break;
     case OCC_MEMBER: *type = ST_PROPERTY; *mods |= SM_DEFAULT_LIBRARY; break;
     case OCC_NAMESPACE: *type = ST_NAMESPACE; break;
     }
@@ -1762,7 +1815,8 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_CONSTANT: return str_eq(a->owner, b->owner) && str_eq(a->name, b->name);
     case OCC_METHOD:
     case OCC_MEMBER:
-    case OCC_NAMESPACE: return str_eq(a->name, b->name);
+    case OCC_NAMESPACE:
+    case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
     }
     return false;
 }

@@ -135,6 +135,13 @@
           "match": "\\b(if|else|return)\\b"
         },
         {
+          "comment": "An input's Sample(Devices devices) and Sanitize()",
+          "match": "^\\s*(Sample|Sanitize)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.other.purrlang" }
+          }
+        },
+        {
           "comment": "Parameter and local modifiers",
           "name": "storage.modifier.purrlang",
           "match": "\\b(mut|with|without)\\b"

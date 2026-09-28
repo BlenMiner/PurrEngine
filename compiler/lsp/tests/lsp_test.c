@@ -518,6 +518,15 @@ PURR_TEST(lsp_semantic_tokens)
     // Columns count UTF-16 units: `é` is two bytes but one unit.
     open("/* \xC3\xA9 */ component Body { float x; }\nsystem Main() { }\n");
     PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,18,4,2,1,"));
+
+    // Built-in value types are keywords (11), like C#'s float: `float3` 7 columns after `Body`.
+    open("component Body { float3 p; }\nsystem Main() { }\n");
+    PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,10,4,2,1,0,7,6,11,0,"));
+    // Sample and Sanitize are keywords too, and attributes decorators (12).
+    open("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample(Devices devices) { }\n}\nsystem Main() { }\n");
+    const char *input = request("textDocument/semanticTokens/full");
+    PURR_CHECK(has(input, "2,5,5,12,0,")); // Clamp: line +2, column 5
+    PURR_CHECK(has(input, "1,4,6,11,0,")); // Sample: line +1, column 4
 }
 
 #define USES_RADIUS                                                            \
