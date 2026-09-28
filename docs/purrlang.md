@@ -30,6 +30,7 @@ PurrLang is a working name and may change.
 - Fields, parameters and locals use camelCase (PurrNet style): `trs.position`, not `trs.Position`.
 - Public properties use camelCase too, even static ones: `Color.red`, `quaternion.identity`. True constants use FULL_CASE: `Math.PI`, `Math.TAU`.
 - Attributes (`[...]`) are only for metadata, such as when a system runs or the bounds of an input field, not for what code does. The engine may enforce what an attribute declares, as it clamps an input field to its `[Clamp]`.
+- Braces go on lines of their own, as in C#, and so does an `else` after a block. A block that fits on one line can stay there (`system Main() { }`, `if (dead) { return; }`), and so do literals (`Body { position = p }`). The language server's formatter lays code out this way, indenting as the editor is set to (four spaces by default).
 
 ### Declarations
 
@@ -203,7 +204,7 @@ system Main()
 - Otherwise the default order holds: of the systems whose constraints are met, the earliest in the default order runs next.
 - Constraints that form a loop are an error naming the loop. Systems and views are ordered separately, and `Main` isn't ordered: it runs once, before everything.
 - The language server shows a system's place in the order when hovering it.
-- Systems that share no data they write can run at the same time; the others wait, in this order. Above each system, the language server shows its stage and why it waits ("stage 2 · after Move: both write Body"), and `purrc --schedule` prints the whole plan.
+- Systems that share no data they write can run at the same time; the others wait, in this order. Above each system, the language server shows its stage and why it waits ("stage 2 Â· after Move: both write Body"), and `purrc --schedule` prints the whole plan.
 
 ```csharp
 [After(Physics.Gravity)]

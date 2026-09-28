@@ -2174,8 +2174,9 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
 }
 
 // ---------------------------------------------------------------------------
-// Formatting: indentation and spacing only. Tokens and comments stay on their
-// lines, in their order, so formatting can't change what the code means.
+// Formatting: indentation, spacing, and C#-style braces: those of a block that
+// spans lines go on lines of their own. Otherwise tokens and comments stay on
+// their lines, in their order, so formatting can't change what the code means.
 
 typedef struct fmt_item {
     const char *text; // Verbatim: a token (strings with their quotes) or a comment
@@ -2230,6 +2231,54 @@ static bool space_between(const fmt_item *a, const fmt_item *b)
     if (a->unary || x == T_NOT || x == T_TILDE) return false;
     if (y == T_LPAREN || y == T_LBRACKET) return x != T_IDENT; // Calls, but `if (` and `* (`
     return true;
+}
+
+// Whether the `{` at token `i` starts a literal, like Body { position = p } or
+// Combat.Health { amount = 1 }: it follows a name where an expression goes.
+// Declarations have a word before their name (component Body {, input Keys {).
+static bool opens_literal(const int i)
+{
+    int k = i - 1;
+    if (k < 0 || DOC->toks[k].kind != T_IDENT) return false;
+    while (k >= 2 && DOC->toks[k - 1].kind == T_DOT && DOC->toks[k - 2].kind == T_IDENT) k -= 2;
+    if (k == 0) return false;
+    const tok_kind before = DOC->toks[k - 1].kind;
+    return before != T_IDENT && before != T_COMPONENT && before != T_SINGLETON && before != T_SEMI
+        && before != T_LBRACE && before != T_RBRACE && before != T_RBRACKET;
+}
+
+enum { BREAK_BEFORE = 1, BREAK_AFTER = 2 };
+
+// Where lines break for C#-style braces, per token: around both braces of a
+// block that spans lines (or isn't closed yet), and before an `else` that
+// follows a block when its own block spans lines. Literals, and blocks on one
+// line, stay as they are.
+static unsigned char *brace_breaks(void)
+{
+    unsigned char *breaks = arena_alloc((size_t)DOC->tok_count + 1);
+    int *open = arena_alloc(sizeof(int) * ((size_t)DOC->tok_count + 1));
+    int depth = 0;
+    for (int i = 0; i < DOC->tok_count; i++) {
+        const tok_kind k = DOC->toks[i].kind;
+        if (k == T_LBRACE) {
+            open[depth++] = i;
+        } else if (k == T_RBRACE && depth > 0) {
+            const int o = open[--depth];
+            if (opens_literal(o) || DOC->toks[o].at.line == DOC->toks[i].at.line) continue;
+            breaks[o] = BREAK_BEFORE | BREAK_AFTER;
+            breaks[i] = BREAK_BEFORE | BREAK_AFTER;
+        }
+    }
+    while (depth > 0) {
+        const int o = open[--depth];
+        if (!opens_literal(o)) breaks[o] = BREAK_BEFORE | BREAK_AFTER;
+    }
+    for (int i = 1; i + 1 < DOC->tok_count; i++) {
+        if (DOC->toks[i].kind == T_ELSE && DOC->toks[i - 1].kind == T_RBRACE && (breaks[i + 1] & BREAK_BEFORE)) {
+            breaks[i] |= BREAK_BEFORE;
+        }
+    }
+    return breaks;
 }
 
 static void write_edit(jbuf *out, int *count, const loc start, const loc end, const char *text, const size_t len)
@@ -2294,11 +2343,17 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
     for (int l = 1; l <= line_count; l++) {
         if (lines[l].count > 0 || verbatim[l]) last_content = l;
     }
+    const unsigned char *breaks = brace_breaks();
+    const char *first_break = memchr(DOC->src.text, '\n', DOC->src.len);
+    const char *newline = first_break && first_break > DOC->src.text && first_break[-1] == '\r' ? "\r\n" : "\n";
 
     jb_put(out, "[");
     int edits = 0;
     int depth = 0;
     int parens = 0;
+    // `parens` at each brace depth: inside a literal in a call, like
+    // Spawn(Body {, only parentheses opened since the brace continue a line.
+    int *parens_at = arena_alloc(sizeof(int) * ((size_t)DOC->tok_count + 1));
     int pending = 0; // Extra indents for the statement after `if (...)` or `else` without braces
     bool blank_before = true; // Drops blank lines at the start of the file
     // The last line with code: did it end a statement or block, or open a braceless if?
@@ -2323,83 +2378,105 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
         }
         blank_before = false;
 
-        int last_tok = -1;
-        bool has_if = false;
-        for (int k = 0; k < items->count; k++) {
-            if (items->items[k].tok < 0) continue;
-            last_tok = items->items[k].tok;
-            if (DOC->toks[items->items[k].tok].kind == T_IF) has_if = true;
-        }
-
+        // The line's pieces: it breaks before a token that must start a line,
+        // and after one that must end it (comments stay behind it).
+        int *starts = arena_alloc(sizeof(int) * ((size_t)items->count + 1));
+        int pieces = 1;
         if (!verbatim[l]) {
-            const tok_kind first = items->items[0].tok >= 0 ? DOC->toks[items->items[0].tok].kind : T_EOF;
-            int level = depth;
-            if (first == T_RBRACE) level--;
-            if (first != T_LBRACE) level += pending;
-            if (level < 0) level = 0;
-
-            // A line that continues an expression or an argument list goes one
-            // level deeper, or keeps its own indentation if that's deeper
-            // still: code aligned under an opening parenthesis stays aligned.
-            const bool continuation = first != T_LBRACE && first != T_RBRACE && (depth > 0 || parens > 0)
-                                   && ((parens > 0 && first != T_RPAREN) || (statement_open && !opened_pending));
-            sb text = {0};
-            int own_width = 0;
-            for (const char *c = original.ptr; c < items->items[0].text; c++) own_width += *c == '\t' ? tab_size : 1;
-            if (continuation && own_width > (level + 1) * tab_size) {
-                sb_putn(&text, original.ptr, (size_t)(items->items[0].text - original.ptr));
-            } else {
-                if (continuation) level++;
-                for (int k = 0; k < level; k++) {
-                    if (insert_spaces) sb_printf(&text, "%*s", tab_size, "");
-                    else sb_put(&text, "\t");
-                }
-            }
-            for (int k = 0; k < items->count; k++) {
-                const fmt_item *item = &items->items[k];
-                if (k > 0 && item->tok < 0) {
-                    // Before a trailing comment, keep the author's spacing (often alignment).
-                    const fmt_item *before = &items->items[k - 1];
-                    const char *gap = before->text + before->len;
-                    if (item->text > gap) sb_putn(&text, gap, (size_t)(item->text - gap));
-                    else sb_put(&text, " ");
-                } else if (k > 0 && space_between(&items->items[k - 1], item)) {
-                    sb_put(&text, " ");
-                }
-                sb_putn(&text, item->text, (size_t)item->len);
-            }
-            if (text.len != (size_t)original.len || memcmp(text.data, original.ptr, text.len) != 0) {
-                write_edit(out, &edits, start, end, text.data, text.len);
+            int prev_tok = items->items[0].tok;
+            for (int k = 1; k < items->count; k++) {
+                const int tok = items->items[k].tok;
+                if (tok < 0) continue;
+                if ((breaks[tok] & BREAK_BEFORE) || (prev_tok >= 0 && (breaks[prev_tok] & BREAK_AFTER))) starts[pieces++] = k;
+                prev_tok = tok;
             }
         }
+        starts[pieces] = items->count;
 
-        for (int k = 0; k < items->count; k++) {
-            if (items->items[k].tok < 0) continue;
-            switch (DOC->toks[items->items[k].tok].kind) {
-            case T_LBRACE: depth++; break;
-            case T_RBRACE: if (depth > 0) depth--; break;
-            case T_LPAREN: parens++; break;
-            case T_RPAREN: if (parens > 0) parens--; break;
-            default: break;
+        sb text = {0};
+        for (int piece = 0; piece < pieces; piece++) {
+            const fmt_item *from = &items->items[starts[piece]];
+            const fmt_item *to = &items->items[starts[piece + 1]];
+
+            int last_tok = -1;
+            bool has_if = false;
+            for (const fmt_item *item = from; item < to; item++) {
+                if (item->tok < 0) continue;
+                last_tok = item->tok;
+                if (DOC->toks[item->tok].kind == T_IF) has_if = true;
+            }
+
+            if (!verbatim[l]) {
+                if (piece > 0) sb_put(&text, newline);
+                const tok_kind first = from->tok >= 0 ? DOC->toks[from->tok].kind : T_EOF;
+                int level = depth;
+                if (first == T_RBRACE) level--;
+                if (first != T_LBRACE) level += pending;
+                if (level < 0) level = 0;
+
+                // A line that continues an expression or an argument list goes one
+                // level deeper, or keeps its own indentation if that's deeper
+                // still: code aligned under an opening parenthesis stays aligned.
+                const bool continuation = first != T_LBRACE && first != T_RBRACE && (depth > 0 || parens > 0)
+                                       && ((parens > parens_at[depth] && first != T_RPAREN)
+                                           || (statement_open && !opened_pending));
+                int own_width = 0;
+                if (piece == 0) {
+                    for (const char *c = original.ptr; c < from->text; c++) own_width += *c == '\t' ? tab_size : 1;
+                }
+                if (continuation && own_width > (level + 1) * tab_size) {
+                    sb_putn(&text, original.ptr, (size_t)(from->text - original.ptr));
+                } else {
+                    if (continuation) level++;
+                    for (int k = 0; k < level; k++) {
+                        if (insert_spaces) sb_printf(&text, "%*s", tab_size, "");
+                        else sb_put(&text, "\t");
+                    }
+                }
+                for (const fmt_item *item = from; item < to; item++) {
+                    if (item > from && item->tok < 0) {
+                        // Before a trailing comment, keep the author's spacing (often alignment).
+                        const char *gap = item[-1].text + item[-1].len;
+                        if (item->text > gap) sb_putn(&text, gap, (size_t)(item->text - gap));
+                        else sb_put(&text, " ");
+                    } else if (item > from && space_between(item - 1, item)) {
+                        sb_put(&text, " ");
+                    }
+                    sb_putn(&text, item->text, (size_t)item->len);
+                }
+            }
+
+            for (const fmt_item *item = from; item < to; item++) {
+                if (item->tok < 0) continue;
+                switch (DOC->toks[item->tok].kind) {
+                case T_LBRACE: parens_at[++depth] = parens; break;
+                case T_RBRACE: if (depth > 0) depth--; break;
+                case T_LPAREN: parens++; break;
+                case T_RPAREN: if (parens > 0) parens--; break;
+                default: break;
+                }
+            }
+            if (last_tok >= 0) {
+                const tok_kind k = DOC->toks[last_tok].kind;
+                opened_pending = false;
+                if (k == T_SEMI || k == T_LBRACE || k == T_RBRACE) {
+                    pending = 0;
+                } else if ((k == T_RPAREN && has_if && parens == 0) || k == T_ELSE) {
+                    pending++;
+                    opened_pending = true;
+                }
+                statement_open = k != T_SEMI && k != T_LBRACE && k != T_RBRACE;
             }
         }
-        if (last_tok >= 0) {
-            const tok_kind k = DOC->toks[last_tok].kind;
-            opened_pending = false;
-            if (k == T_SEMI || k == T_LBRACE || k == T_RBRACE) {
-                pending = 0;
-            } else if ((k == T_RPAREN && has_if && parens == 0) || k == T_ELSE) {
-                pending++;
-                opened_pending = true;
-            }
-            statement_open = k != T_SEMI && k != T_LBRACE && k != T_RBRACE;
+        if (!verbatim[l] && (text.len != (size_t)original.len || memcmp(text.data, original.ptr, text.len) != 0)) {
+            write_edit(out, &edits, start, end, text.data, text.len);
         }
     }
 
     // End with exactly one line break.
     if (!final_newline && last_content > 0 && last_content == line_count) {
         const loc end = {line_count, line_text(line_count).len + 1, A.doc};
-        write_edit(out, &edits, end, end, "\n", 1);
+        write_edit(out, &edits, end, end, newline, strlen(newline));
     }
     jb_put(out, "]");
     return NULL;

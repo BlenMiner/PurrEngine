@@ -652,6 +652,49 @@ PURR_TEST(lsp_format)
                       "system Main()\n{\n    var x = 1\n        + 2;\n    Spawn(Owner,\n          Owner);\n}\n") == 0);
 }
 
+// C#-style braces: a block that spans lines has its braces on lines of their
+// own. Blocks on one line and literals stay as they are.
+PURR_TEST(lsp_format_braces)
+{
+    start();
+    static const char js[] =
+        "component Body {\n    float2 position;\n}\n"
+        "input Keys {\n    bool fire;\n\n    Sample(Devices devices) {\n        fire = devices.keyboard.space.pressed; }\n}\n"
+        "system Move(mut Body body) { // Every body\n"
+        "    if (body.position.x > 1) {\n        body.position.x = 0;\n    } else {\n        body.position.x += 1;\n    }\n"
+        "    if (body.position.y > 1) { return; } else {\n        body.position.y = 0;\n    }\n"
+        "    if (body.position.y < 0) {return;}\n"
+        "    var b = Spawn(Body { position = float2(1) });\n"
+        "    Spawn(Body {\n        position = float2(2)\n    });\n"
+        "}\n"
+        "system Main() { }\n";
+    static const char expected[] =
+        "component Body\n{\n    float2 position;\n}\n"
+        "input Keys\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n        fire = devices.keyboard.space.pressed;\n    }\n}\n"
+        "system Move(mut Body body)\n{ // Every body\n"
+        "    if (body.position.x > 1)\n    {\n        body.position.x = 0;\n    }\n    else\n    {\n        body.position.x += 1;\n    }\n"
+        "    if (body.position.y > 1) { return; }\n    else\n    {\n        body.position.y = 0;\n    }\n"
+        "    if (body.position.y < 0) { return; }\n"
+        "    var b = Spawn(Body { position = float2(1) });\n"
+        "    Spawn(Body {\n        position = float2(2)\n    });\n" // A literal's fields: one level in, even in a call
+        "}\n"
+        "system Main() { }\n";
+    format_reply(js);
+    const char *formatted = apply_reply(js, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+
+    // Formatting what's formatted changes nothing.
+    char again[8192];
+    snprintf(again, sizeof again, "%s", formatted);
+    PURR_CHECK(has(format_reply(again), "\"result\":[]"));
+
+    // New lines match the file's.
+    static const char crlf[] = "system Main() {\r\n    return;\r\n}\r\n";
+    format_reply(crlf);
+    PURR_CHECK(strcmp(apply_reply(crlf, NULL), "system Main()\r\n{\r\n    return;\r\n}\r\n") == 0);
+}
+
 // Formatting keeps every token, in order: only whitespace changes.
 PURR_TEST(lsp_format_keeps_tokens)
 {
