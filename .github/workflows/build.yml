@@ -1,0 +1,138 @@
+# Builds, tests and publishes purr (see AGENTS.md, Packaging).
+#
+# - Pull requests: build and test on Windows and Linux.
+# - Pushes to dev: also publish a nightly pre-release, like 0.2.0-nightly.3.
+# - Pushes to release: also publish a stable release, and commit the new VERSION.
+#
+# semantic-release picks the version from conventional commits (feat:, fix:,
+# see .releaserc.json). A push with neither publishes nothing.
+name: Build
+
+on:
+  push:
+    branches: [dev, release]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+
+env:
+  EMSDK_VERSION: 6.0.10
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.new_release_version }}
+      published: ${{ steps.next.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Next version
+        id: next
+        if: github.event_name == 'push'
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          dry_run: true
+          extra_plugins: |
+            @semantic-release/exec
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+          - platform: linux-x64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      PURR_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+      PURR_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang ninja-build libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libgl1-mesa-dev
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y --no-progress
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      # The demo's smoke test opens a window, which needs a GPU the runners
+      # don't have; the web one runs in headless Chrome.
+      - name: Test (native)
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --preset release -E demo_smoke
+      - name: Test (web)
+        run: cmake --workflow --preset web-release
+
+      - name: Package
+        run: |
+          cmake --preset package -DPURR_VERSION="$PURR_VERSION" -DPURR_CHANNEL="$PURR_CHANNEL"
+          cmake --build --preset package
+          cmake --preset web-package -DPURR_VERSION="$PURR_VERSION" -DPURR_CHANNEL="$PURR_CHANNEL"
+          cmake --build --preset web-package
+          cmake -DNAME=purr-${{ matrix.platform }} -P cmake/package.cmake
+      # Build a game with the package, as a user would.
+      - name: Try the package
+        run: |
+          mkdir -p build/try
+          cp demo/demo.purr build/try/
+          build/dist/purr/bin/purr version
+          build/dist/purr/bin/purr build build/try
+          build/dist/purr/bin/purr build build/try --release --web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purr-${{ matrix.platform }}
+          path: build/dist/purr-${{ matrix.platform }}.*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [version, build]
+    if: github.event_name == 'push' && needs.version.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cat dist/*.sha256 > dist/SHA256SUMS && cat dist/SHA256SUMS
+      - name: Publish
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/exec
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

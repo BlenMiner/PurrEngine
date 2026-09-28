@@ -93,18 +93,31 @@ The generated header is the API between the game and the host. Namespaced declar
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
 - If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's `Sample` on the client (call `purr_devices_consume(devices)` after it). `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.
 
+## Packaging and releases
+
+Users get PurrEngine as the `purr` command, not this repo: see README.md.
+
+- `purr run`, `purr build [--release] [--web]`, `purr schedule`, `purr upgrade` and `purr version` (`compiler/cli/`, owned by Claude). It runs purrc's front end in-process, compiles the generated C and the engine's sources with the determinism flags (as separate files, like the CMake build), and links the prebuilt platform layer. It uses an installed clang, and an installed Emscripten for `--web`. On Windows, games link the C runtime statically, so players need no redistributable.
+- A game is a folder of `.purr` files. purr keeps its work in `<folder>/.purr/` (it ignores itself in git) and puts `purr build` output in `<folder>/build/`.
+- The package is everything installed as the `purr` component: `bin/` (purr, purrls), `include/`, `src/engine/`, `lib/native/` and `lib/web/` (the prebuilt platform layer and raylib), `web/shell.html`, `editors/` and `VERSION`. It comes from the `package` preset (static C runtime on Windows) and the `web-package` preset, put together by `cmake -DNAME=purr-windows-x64 -P cmake/package.cmake` into `build/dist`. Anything purr needs at build time must be installed into the package; a game build can't see this repo.
+- Users install with `install.ps1` or `install.sh` into `%LOCALAPPDATA%\Purr` or `~/.purr`, with `bin` on `PATH`, and `purr upgrade` replaces the installation from GitHub Releases. It checks each download against the release's `SHA256SUMS`, and renames running programs aside instead of overwriting them. Once a day, purr says when a newer version is out. Builds made from this repo are versioned `<VERSION>-dev` and never look for updates.
+- `.github/workflows/build.yml` tests and packages Windows and Linux on every push and pull request. Pushes to `dev` publish nightly pre-releases (`0.2.0-nightly.3`); pushes to `release` publish stable releases, and semantic-release commits the new `VERSION` there. The native demo smoke test is skipped in CI, which has no GPU.
+- Versions come from conventional commits (`.releaserc.json`): `fix:` is a patch, `feat:` a minor version. While the version starts with 0, breaking changes (`feat!:`) are minor versions too, and we avoid them until 1.0 anyway.
+
 ## Layout
 
 - `engine/`: the engine library (`purr`). Public headers go in `engine/include/purr/`, sources in `engine/src/`. New `.c` files are picked up automatically.
 - `compiler/`: `purrc`, the PurrLang transpiler (owned by Claude). `compiler/tests/e2e/` holds programs compiled and run as tests. `compiler/tests/errors/` holds programs that must fail with the message on their first line.
+- `compiler/cli/`: `purr`, the command users run (owned by Claude; see Packaging and releases).
 - `compiler/lsp/`: `purrls`, the PurrLang language server (owned by Claude). It reuses purrc's front end, with error recovery, to give editors completion, diagnostics, hovers, go to definition, find usages, rename, formatting, parameter hints, the outline and semantic highlighting. Native builds only.
-- `tools/`: editor support. `purrlang-syntax` is a TextMate bundle for highlighting, and `purrlang-lsp4ij` is a template that connects JetBrains IDEs to `purrls` through the LSP4IJ plugin.
+- `tools/`: editor support. `purrlang-syntax` is a TextMate bundle for highlighting, and `purrlang-lsp4ij` is a template that connects JetBrains IDEs to `purrls` through the LSP4IJ plugin (`installed/` is the package's copy, which runs `purrls` from `PATH`).
 - `docs/purrlang.md`: the language spec.
 - `platform/`: the platform layer (`purr_platform`): window, frame loop and input devices, on raylib. Public header `platform/include/purr/platform.h`.
 - `demo/`: a small game on the platform layer. `demo.purr` is the simulation and the views that draw it, and `main.c` is the host. It builds as `demo.html` on the web.
 - `sandbox/`: the owner's experiments: a game with no C, built by `purr_add_game`.
 - `tests/`: tests built on the harness in `tests/purr_test.h`. New test files are picked up automatically.
-- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the file that locates clang (`clang-toolchain.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
+- `.github/workflows/`, `.releaserc.json`, `install.ps1`, `install.sh`: releases and installing (see Packaging and releases).
+- `cmake/`: shared compiler flags (`PurrFlags.cmake`), the package (`package.cmake`), the file that locates clang (`clang-toolchain.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
 
 ### Runtime written by Claude for now
 

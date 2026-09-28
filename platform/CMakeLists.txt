@@ -31,6 +31,17 @@ function(purr_web_page target)
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${shell}")
 endfunction()
 
+# In the package, the platform layer is prebuilt: purr links games with it and
+# raylib, native or web.
+install(DIRECTORY include/purr DESTINATION include COMPONENT purr)
+install(FILES web/shell.html DESTINATION web COMPONENT purr)
+if(EMSCRIPTEN)
+    set(PURR_PACKAGE_LIBS lib/web)
+else()
+    set(PURR_PACKAGE_LIBS lib/native)
+endif()
+install(FILES $<TARGET_FILE:purr_platform> $<TARGET_FILE:raylib> DESTINATION ${PURR_PACKAGE_LIBS} COMPONENT purr)
+
 if(EMSCRIPTEN)
     # Keys by physical position on the web, where raylib alone gets them wrong.
     add_executable(purr_platform_web_keys tests/web_keys.c)

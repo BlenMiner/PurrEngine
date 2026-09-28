@@ -2,9 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ast.h"
-#include "codegen.h"
-#include "lexer.h"
+#include "compile.h"
 
 static void usage(void)
 {
@@ -18,43 +16,6 @@ static void usage(void)
             "  --no-line      don't map generated code back to .purr lines for debuggers\n"
             "  --schedule     print which systems can run at the same time and why the others\n"
             "                 wait, instead of generating code\n");
-}
-
-static char *read_file(const char *path, size_t *len)
-{
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    const long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size < 0) {
-        fclose(f);
-        return NULL;
-    }
-    char *text = arena_alloc((size_t)size + 1);
-    *len = fread(text, 1, (size_t)size, f);
-    fclose(f);
-    return text;
-}
-
-// "dir/game.purr" -> "game"
-static const char *stem(const char *path)
-{
-    const char *base = path;
-    for (const char *p = path; *p; p++) {
-        if (*p == '/' || *p == '\\') base = p + 1;
-    }
-    const char *dot = strrchr(base, '.');
-    const size_t n = dot ? (size_t)(dot - base) : strlen(base);
-    char *out = arena_alloc(n + 1);
-    memcpy(out, base, n);
-    return out;
-}
-
-// Files are compiled in order of their paths (see path_compare).
-static int path_order(const void *a, const void *b)
-{
-    return path_compare(*(const char *const *)a, *(const char *const *)b);
 }
 
 int main(const int argc, char **argv)
@@ -84,34 +45,10 @@ int main(const int argc, char **argv)
         usage();
         return 2;
     }
-    qsort(inputs, (size_t)input_count, sizeof(char *), path_order);
-    if (!opts.name) opts.name = stem(inputs[0]);
 
-    diag_reset();
-    program *prog = program_new();
-    for (int i = 0; i < input_count; i++) {
-        source *src = NEW(source);
-        src->path = inputs[i];
-        char *text = read_file(inputs[i], &src->len);
-        if (!text) {
-            fprintf(stderr, "purrc: can't read %s\n", inputs[i]);
-            return 1;
-        }
-        src->text = text;
-        diag_add_source(src);
-
-        token *toks = lex(src);
-        if (!toks) return 1;
-        if (!parse_file(prog, src, toks, false)) return 1;
-    }
-
-    if (!check(prog)) return 1;
-
-    if (schedule) {
-        sb text = {0};
-        print_schedule(prog, opts.name, &text);
-        fputs(text.data, stdout);
-        return 0;
-    }
-    return codegen(prog, &opts) ? 0 : 1;
+    if (!schedule) return compile_program(inputs, input_count, &opts, NULL) ? 0 : 1;
+    sb text = {0};
+    if (!compile_program(inputs, input_count, &opts, &text)) return 1;
+    fputs(text.data, stdout);
+    return 0;
 }

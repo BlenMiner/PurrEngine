@@ -24,6 +24,25 @@ include(cmake/WebTest.cmake)
 
 option(PURR_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
 
+# What the purr command says it is, and where it looks for updates. Release
+# builds get the version semantic-release picked (.github/workflows/build.yml);
+# anything else is a development build, which never looks for updates.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" PURR_BASE_VERSION LIMIT_COUNT 1)
+set(PURR_VERSION "${PURR_BASE_VERSION}-dev" CACHE STRING "purr's version")
+set(PURR_CHANNEL "nightly" CACHE STRING "The update channel purr starts on: stable or nightly")
+set(PURR_REPOSITORY "BlenMiner/PurrEngine" CACHE STRING "The GitHub repository purr updates from")
+
+# The package (see cmake/package.cmake) is everything installed as the `purr`
+# component: purr and purrls, the engine's headers and sources, and the
+# prebuilt platform layer.
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/package/VERSION" CONTENT "${PURR_VERSION}\n")
+install(FILES "${CMAKE_BINARY_DIR}/package/VERSION" DESTINATION . COMPONENT purr)
+if(NOT EMSCRIPTEN)
+    # Editor support: highlighting, and the language server through purrls on PATH.
+    install(DIRECTORY tools/purrlang-syntax DESTINATION editors COMPONENT purr)
+    install(FILES tools/purrlang-lsp4ij/installed/template.json DESTINATION editors/purrlang-lsp4ij COMPONENT purr)
+endif()
+
 add_subdirectory(engine)
 
 enable_testing()

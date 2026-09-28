@@ -1,0 +1,18 @@
+{
+  "id": "purrls",
+  "name": "PurrLang",
+  "programArgs": {
+    "windows": "purrls.exe",
+    "default": "purrls"
+  },
+  "fileTypeMappings": [
+    {
+      "fileType": {
+        "patterns": [
+          "*.purr"
+        ]
+      },
+      "languageId": "purrlang"
+    }
+  ]
+}

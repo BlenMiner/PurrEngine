@@ -8,6 +8,7 @@ target_compile_definitions(purrls_core PRIVATE "PURR_ENGINE_INCLUDE_DIR=\"${PROJ
 
 add_executable(purrls main.c)
 target_link_libraries(purrls PRIVATE purrls_core)
+install(TARGETS purrls RUNTIME DESTINATION bin COMPONENT purr)
 # Which files make up each game, for analysing them together (see cmake/PurrLang.cmake).
 target_compile_definitions(purrls PRIVATE "PURR_GAMES_MANIFEST=\"${PURR_GAMES_MANIFEST}\"")
 

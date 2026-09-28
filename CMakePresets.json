@@ -40,13 +40,29 @@
       "displayName": "Web Release",
       "description": "WebAssembly through Emscripten, optimized. Tests run under Node.",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "package",
+      "inherits": "base",
+      "displayName": "Package",
+      "description": "The purr package's native half: optimized, with the C runtime linked statically on Windows.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded" }
+    },
+    {
+      "name": "web-package",
+      "inherits": "web-base",
+      "displayName": "Web Package",
+      "description": "The purr package's web half: the platform layer as WebAssembly.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
     { "name": "web-debug", "configurePreset": "web-debug" },
-    { "name": "web-release", "configurePreset": "web-release" }
+    { "name": "web-release", "configurePreset": "web-release" },
+    { "name": "package", "configurePreset": "package" },
+    { "name": "web-package", "configurePreset": "web-package" }
   ],
   "testPresets": [
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },

@@ -16,8 +16,10 @@ if(EMSCRIPTEN)
     # (CMake adds the emulator automatically). It needs the real file system.
     target_link_options(purrc PRIVATE -sNODERAWFS=1)
 else()
-    # The language server is for editors, so only native builds have it.
+    # The language server is for editors, and purr runs natively, so only
+    # native builds have them.
     add_subdirectory(lsp)
+    add_subdirectory(cli)
 endif()
 
 add_subdirectory(tests)
