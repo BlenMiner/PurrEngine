@@ -89,8 +89,9 @@ purr upgrade --stable   # back to stable ones
 ## Editors
 
 Open your game's folder, the one you run `purr run` in, and every `.purr` file
-in it is one game: completion, errors as you type, go to definition, rename,
-formatting and more work across all of them.
+in it is one game: completion, errors as you type with quick fixes, go to
+definition, rename, formatting, moving a declaration to a file of its own and
+more work across all of them.
 
 - **VS Code, Cursor, VSCodium and Windsurf:** the installer adds PurrLang to
   the ones it finds, and `purr upgrade` keeps it up to date. Installed one

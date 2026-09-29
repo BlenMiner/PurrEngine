@@ -1,9 +1,10 @@
 # PurrLang for VS Code
 
-Completion, errors as you type, hover, go to definition, find usages, rename,
-formatting, parameter hints, the outline, semantic highlighting, and each
-system's schedule above it, for `.purr` files. It works in VS Code, Cursor,
-VSCodium and Windsurf.
+Completion, errors as you type with quick fixes, hover, go to definition, find
+usages, rename, formatting, parameter hints, inlay hints, the outline, symbols
+across the game, folding, semantic highlighting, moving a declaration to a file
+of its own, and each system's schedule above it, for `.purr` files. It works in
+VS Code, Cursor, VSCodium and Windsurf.
 
 purr's installer adds this extension to the editors it finds, and `purr
 editors` adds it again, for example after installing a new editor. The

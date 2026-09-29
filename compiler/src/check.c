@@ -258,7 +258,7 @@ static bool field_named(const decl *d, const str name)
 // and a type's in its methods.
 static field *field_in_scope(const checker *c, const str name)
 {
-    decl *const d = c->method ? c->method->owner : c->in_input ? c->system : NULL;
+    decl *const d = c->method ? (c->method->is_operator ? NULL : c->method->owner) : c->in_input ? c->system : NULL;
     for (int i = 0; d && i < d->fields.count; i++) {
         if (str_eq(d->fields.items[i].name, name)) return &d->fields.items[i];
     }
@@ -596,6 +596,8 @@ static type check_self_call(checker *c, expr *e, decl *m)
     if (m->is_mut_method && !c->method->is_mut_method) {
         diag_error(e->at, "'" STR_FMT "' changes the fields, so only a mut method can call it", STR_ARG(m->name));
         diag_note("declare '" STR_FMT "' as 'mut' too", STR_ARG(c->method->name));
+        const fix f = {.kind = FIX_MUT_METHOD, .at = e->at, .method = c->method};
+        vec_push(c->prog->fixes, f);
     }
     check_method_args(c, e, m);
     return m->return_type;
@@ -603,7 +605,7 @@ static type check_self_call(checker *c, expr *e, decl *m)
 
 static type check_call(checker *c, expr *e)
 {
-    decl *const own = c->method ? find_method(c->method->owner, e->name) : NULL;
+    decl *const own = c->method && !c->method->is_operator ? find_method(c->method->owner, e->name) : NULL;
     if (own) return check_self_call(c, e, own);
 
     type builtin;
@@ -651,6 +653,8 @@ static type check_call(checker *c, expr *e)
         return T_ERR;
     }
     diag_error(e->at, "unknown function '" STR_FMT "'", STR_ARG(e->name));
+    const fix f = {.kind = FIX_CREATE_FUNCTION, .at = e->at, .call = e};
+    vec_push(c->prog->fixes, f);
     const char *owner = builtin_function_owner(e->name);
     if (owner) {
         diag_note("it's '%s." STR_FMT "'", owner, STR_ARG(e->name)); // Sin(x) for Math.Sin(x)
@@ -786,10 +790,83 @@ static const char *op_str(const tok_kind op)
     return tok_kind_name(op);
 }
 
-// Result type of `lhs op rhs`, or TY_ERROR after reporting.
-static type binary_result(const tok_kind op, const type l, const type r, const loc at)
+// The operator itself, without op_str's quotes: + for '+'.
+static const char *op_symbol(const tok_kind op)
 {
+    static char buf[4][8];
+    static int next;
+    char *b = buf[next++ % 4];
+    const char *quoted = tok_kind_name(op);
+    snprintf(b, sizeof buf[0], "%s", quoted[0] == '\'' ? quoted + 1 : quoted);
+    const size_t n = strlen(b);
+    if (n > 0 && b[n - 1] == '\'') b[n - 1] = '\0';
+    return b;
+}
+
+// Result type of `lhs op rhs`, or TY_ERROR after reporting.
+static bool same_type(const type a, const type b)
+{
+    return a.kind == b.kind && a.decl == b.decl;
+}
+
+// The operator `op` a struct declares for operands of these types (`r` unused
+// when `unary`), found in either operand's struct. Exact matches win over ones
+// that need int to float.
+static decl *find_operator(const tok_kind op, const type l, const type r, const bool unary, const loc at)
+{
+    const decl *owners[2] = {l.kind == TY_STRUCT ? l.decl : NULL,
+                             !unary && r.kind == TY_STRUCT && r.decl != l.decl ? r.decl : NULL};
+    decl *best = NULL;
+    int best_score = -1;
+    bool ambiguous = false;
+    for (int o = 0; o < 2; o++) {
+        for (int i = 0; owners[o] && i < owners[o]->methods.count; i++) {
+            decl *m = owners[o]->methods.items[i];
+            if (!m->is_operator || m->op != op || m->params.count != (unary ? 1 : 2)) continue;
+            if (!type_assignable(m->params.items[0].type, l)) continue;
+            if (!unary && !type_assignable(m->params.items[1].type, r)) continue;
+            const int score = same_type(m->params.items[0].type, l) + (!unary && same_type(m->params.items[1].type, r));
+            if (score > best_score) {
+                best = m;
+                best_score = score;
+                ambiguous = false;
+            } else if (score == best_score) {
+                ambiguous = true;
+            }
+        }
+    }
+    if (ambiguous) {
+        if (unary) diag_error(at, "operator %s is ambiguous for %s", op_str(op), type_name(l));
+        else diag_error(at, "operator %s is ambiguous for %s and %s", op_str(op), type_name(l), type_name(r));
+        diag_note("more than one operator takes these types; convert an operand so one fits exactly");
+    }
+    return best;
+}
+
+// What to declare when a struct has no operator for this.
+static void note_missing_operator(const tok_kind op, const type l, const type r, const bool unary)
+{
+    const type t = l.kind == TY_STRUCT ? l : r;
+    const bool comparison = op == T_EQ || op == T_NE || op == T_LT || op == T_LE || op == T_GT || op == T_GE;
+    if (unary) {
+        diag_note("declare it in the struct, like '%s operator %s(%s value)'", type_name(t), op_symbol(op), type_name(t));
+    } else if (op == T_EQ || op == T_NE) {
+        diag_note("compare their fields instead, or declare 'bool operator %s(%s a, %s b)' in %s", op_symbol(op),
+                  type_name(l), type_name(r), type_name(t));
+    } else {
+        diag_note("declare it in %s, like '%s operator %s(%s a, %s b)'", type_name(t), comparison ? "bool" : type_name(t),
+                  op_symbol(op), type_name(l), type_name(r));
+    }
+}
+
+static type binary_result(const tok_kind op, const type l, const type r, const loc at, decl **overload)
+{
+    *overload = NULL;
     if (l.kind == TY_ERROR || r.kind == TY_ERROR) return T_ERR;
+    if (l.kind == TY_STRUCT || r.kind == TY_STRUCT) {
+        *overload = find_operator(op, l, r, false, at);
+        if (*overload) return (*overload)->return_type;
+    }
 
     switch (op) {
     case T_PLUS:
@@ -856,7 +933,7 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
         break;
     }
     diag_error(at, "operator %s can't be used with %s and %s", op_str(op), type_name(l), type_name(r));
-    if ((op == T_EQ || op == T_NE) && l.kind == TY_STRUCT && r.kind == TY_STRUCT) diag_note("compare their fields instead");
+    if (l.kind == TY_STRUCT || r.kind == TY_STRUCT) note_missing_operator(op, l, r, false);
     return T_ERR;
 }
 
@@ -1114,14 +1191,22 @@ static type check_expr(checker *c, expr *e)
         if (short_circuit) c->short_circuit_depth++;
         const type r = check_expr(c, e->rhs);
         if (short_circuit) c->short_circuit_depth--;
-        t = binary_result(e->op, l, r, e->at);
+        t = binary_result(e->op, l, r, e->at, &e->method);
         break;
     }
     case E_CONDITIONAL: t = check_conditional(c, e); break;
     case E_UNARY: {
         const type operand = check_expr(c, e->lhs);
         if (operand.kind == TY_ERROR) break;
-        if (e->op == T_NOT && operand.kind == TY_BOOL) t = T_BOOL_;
+        if (operand.kind == TY_STRUCT) {
+            e->method = find_operator(e->op, operand, T_ERR, true, e->at);
+            if (e->method) {
+                t = e->method->return_type;
+            } else {
+                diag_error(e->at, "operator %s can't be used with %s", op_str(e->op), type_name(operand));
+                note_missing_operator(e->op, operand, T_ERR, true);
+            }
+        } else if (e->op == T_NOT && operand.kind == TY_BOOL) t = T_BOOL_;
         else if (e->op == T_TILDE && operand.kind == TY_INT) t = T_INT_;
         else if (e->op == T_MINUS && (type_is_numeric(operand) || matrix_dim(operand))) t = operand;
         else diag_error(e->at, "operator %s can't be used with %s", op_str(e->op), type_name(operand));
@@ -1171,6 +1256,8 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         if (root->param->function_param) {
             diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to change the caller's variable, or copy "
                       "it into a 'mut var'", STR_ARG(root->param->type_name), STR_ARG(root->name));
+            const fix f = {.kind = FIX_ADD_MUT, .at = root->at, .param = root->param};
+            vec_push(c->prog->fixes, f);
         } else if (root->param->type.kind == TY_ENTITY) {
             diag_note("entity handles can't be reassigned");
         } else if (root->param->type.kind == TY_INPUT) {
@@ -1184,7 +1271,7 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         } else {
             diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to write to it",
                       STR_ARG(root->param->type_name), STR_ARG(root->name));
-            const fix f = {FIX_ADD_MUT, root->at, root->param};
+            const fix f = {.kind = FIX_ADD_MUT, .at = root->at, .param = root->param};
             vec_push(c->prog->fixes, f);
         }
         return false;
@@ -1199,12 +1286,16 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         } else {
             diag_note("declare it as 'mut var " STR_FMT " = ...' to change it", STR_ARG(local->name));
         }
+        const fix f = {.kind = FIX_MUT_LOCAL, .at = root->at, .local = local};
+        vec_push(c->prog->fixes, f);
         return false;
     }
     if (root->bind == BIND_FIELD && c->method && !c->method->is_mut_method) {
         diag_error(root->at, "'" STR_FMT "' is read-only in '" STR_FMT "'", STR_ARG(root->name), STR_ARG(c->method->name));
         diag_note("declare the method as 'mut " STR_FMT " " STR_FMT "(...)' to change the fields",
                   STR_ARG(c->method->return_type_name), STR_ARG(c->method->name));
+        const fix f = {.kind = FIX_MUT_METHOD, .at = root->at, .method = c->method};
+        vec_push(c->prog->fixes, f);
         return false;
     }
     return true;
@@ -1240,7 +1331,7 @@ static void check_assign(checker *c, const stmt *s)
 
     type result = value;
     if (s->op != T_ASSIGN) {
-        result = binary_result(compound_op(s->op), target, value, s->at);
+        result = binary_result(compound_op(s->op), target, value, s->at, &((stmt *)s)->operator_decl);
         if (result.kind == TY_ERROR) return;
     }
     if (!type_assignable(target, result)) {
@@ -1319,6 +1410,8 @@ static void check_var(checker *c, stmt *s)
             suggest_decls(&sg, c->prog, true, true, true);
             suggest_structs(&sg, c->prog);
             suggest_note(&sg);
+            const fix create = {.kind = FIX_CREATE_STRUCT, .at = s->type_qual_at.line ? s->type_qual_at : s->at, .name = s->type_name};
+            vec_push(c->prog->fixes, create);
             s->type = T_ERR;
         }
         if (!type_assignable(s->type, value)) {
@@ -1537,6 +1630,8 @@ static void resolve_field_types(const checker *c, const decl *d)
             suggest_builtin_types(&s);
             suggest_structs(&s, c->prog);
             suggest_note(&s);
+            const fix create = {.kind = FIX_CREATE_STRUCT, .at = at, .name = f->type_name};
+            vec_push(c->prog->fixes, create);
         }
     }
 }
@@ -1605,6 +1700,8 @@ static type method_type(const checker *c, const str name, const loc at, const bo
         suggest_structs(&s, c->prog);
         if (is_return) suggest_consider_c(&s, "void");
         suggest_note(&s);
+        const fix create = {.kind = FIX_CREATE_STRUCT, .at = at, .name = name};
+        vec_push(c->prog->fixes, create);
     }
     return T_ERR;
 }
@@ -1625,11 +1722,88 @@ static void check_signature(const checker *c, decl *m)
     }
 }
 
+static bool is_comparison(const tok_kind op)
+{
+    return op == T_EQ || op == T_NE || op == T_LT || op == T_LE || op == T_GT || op == T_GE;
+}
+
+// Whether two operators take the same types.
+static bool same_params(const decl *a, const decl *b)
+{
+    if (a->params.count != b->params.count) return false;
+    for (int i = 0; i < a->params.count; i++) {
+        if (!same_type(a->params.items[i].type, b->params.items[i].type)) return false;
+    }
+    return true;
+}
+
+// `Money operator +(Money a, Money b)`: in a struct, taking it, with C#'s rules.
+static void check_operator_decl(const checker *c, const decl *d, decl *m, const int index)
+{
+    if (d->kind != DECL_STRUCT) diag_error(m->at, "operators go in structs");
+    check_signature(c, m);
+    const bool one = m->op == T_NOT || m->op == T_TILDE;
+    const int n = m->params.count;
+    if (one && n != 1) {
+        diag_error(m->at, "'" STR_FMT "' takes one parameter", STR_ARG(m->name));
+    } else if (m->op == T_MINUS && n != 1 && n != 2) {
+        diag_error(m->at, "'operator -' takes one parameter, to negate, or two, to subtract");
+    } else if (!one && m->op != T_MINUS && n != 2) {
+        diag_error(m->at, "'" STR_FMT "' takes two parameters", STR_ARG(m->name));
+    }
+    bool takes_it = false;
+    for (int i = 0; i < n; i++) {
+        const param *p = &m->params.items[i];
+        if (p->type.kind == TY_ERROR || same_type(p->type, (type){TY_STRUCT, (decl *)d})) takes_it = true;
+        if (p->mode == PARAM_MUT) diag_error(p->at, "operator parameters can't be 'mut'");
+    }
+    if (!takes_it && n > 0) {
+        diag_error(m->at, "an operator of '" STR_FMT "' takes a '" STR_FMT "'", STR_ARG(d->name), STR_ARG(d->name));
+        diag_note("at least one of its parameters is the struct it's in");
+    }
+    if (is_comparison(m->op) && m->return_type.kind != TY_BOOL && m->return_type.kind != TY_ERROR) {
+        diag_error(m->return_type_qual_at, "'" STR_FMT "' compares, so it returns bool", STR_ARG(m->name));
+    }
+    for (int j = 0; j < index; j++) {
+        const decl *other = d->methods.items[j];
+        if (other->is_operator && other->op == m->op && same_params(other, m)) {
+            diag_error(m->at, "'" STR_FMT "' is already declared for these types", STR_ARG(m->name));
+        }
+    }
+}
+
+// As in C#, == and != come in pairs, and so do < and >, and <= and >=.
+static void check_operator_pairs(const decl *d)
+{
+    static const tok_kind pairs[][2] = {{T_EQ, T_NE}, {T_NE, T_EQ}, {T_LT, T_GT}, {T_GT, T_LT}, {T_LE, T_GE}, {T_GE, T_LE}};
+    for (int i = 0; i < d->methods.count; i++) {
+        const decl *m = d->methods.items[i];
+        if (!m->is_operator) continue;
+        for (size_t k = 0; k < sizeof pairs / sizeof pairs[0]; k++) {
+            if (m->op != pairs[k][0]) continue;
+            bool found = false;
+            for (int j = 0; j < d->methods.count && !found; j++) {
+                const decl *other = d->methods.items[j];
+                found = other->is_operator && other->op == pairs[k][1] && same_params(other, m);
+            }
+            if (!found) {
+                diag_error(m->at, "'" STR_FMT "' needs a matching 'operator %s', as in C#", STR_ARG(m->name),
+                           op_symbol(pairs[k][1]));
+                diag_note("declare 'bool operator %s' with the same parameters", op_symbol(pairs[k][1]));
+            }
+        }
+    }
+}
+
 // Where methods go (structs and components), their names, and their signatures.
 static void check_method_decls(const checker *c, const decl *d)
 {
     for (int i = 0; i < d->methods.count; i++) {
         decl *m = d->methods.items[i];
+        if (m->is_operator) {
+            check_operator_decl(c, d, m, i);
+            continue;
+        }
         if (d->kind != DECL_STRUCT && d->kind != DECL_COMPONENT) {
             diag_error(m->at, "methods work on structs and components");
             if (d->kind == DECL_INPUT) diag_note("an input has Sample and Sanitize");
@@ -1647,6 +1821,7 @@ static void check_method_decls(const checker *c, const decl *d)
         }
         check_signature(c, m);
     }
+    if (diag_error_count() == 0) check_operator_pairs(d);
 }
 
 static void check_function_decl(const checker *c, decl *fn)
@@ -1724,6 +1899,8 @@ static void check_params(const checker *c, decl *sys)
             suggest_decls(&s, prog, true, p->mode != PARAM_WITH && p->mode != PARAM_WITHOUT, true);
             suggest_consider_c(&s, "Entity");
             suggest_note(&s);
+            const fix create = {.kind = FIX_CREATE_COMPONENT, .at = p->type_at.line ? p->type_at : p->at, .name = p->type_name};
+            vec_push(c->prog->fixes, create);
             p->type = T_ERR;
             continue;
         }
@@ -1804,7 +1981,7 @@ static void warn_unused_params(checker *c, const decl *sys)
             diag_note("to only require the component, write 'with " STR_FMT "': a filter doesn't make other "
                       "systems wait",
                       STR_ARG(type));
-            const fix f = {FIX_USE_WITH, p->name_at, p};
+            const fix f = {.kind = FIX_USE_WITH, .at = p->name_at, .param = p};
             vec_push(c->prog->fixes, f);
         } else if (!p->read) {
             diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
@@ -1812,7 +1989,7 @@ static void warn_unused_params(checker *c, const decl *sys)
         } else if (p->mode == PARAM_MUT && !p->written && !sys->is_view) {
             diag_warning(p->at, "'" STR_FMT "' is declared mut but never written", STR_ARG(p->name));
             diag_note("without 'mut', systems that read " STR_FMT " can run alongside this one", STR_ARG(type));
-            const fix f = {FIX_REMOVE_MUT, p->at, p};
+            const fix f = {.kind = FIX_REMOVE_MUT, .at = p->at, .param = p};
             vec_push(c->prog->fixes, f);
         }
     }

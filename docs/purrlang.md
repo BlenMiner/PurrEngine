@@ -71,8 +71,8 @@ component Health
 - A struct can't contain itself, even through other structs: it would be infinitely big.
 - Namespaces apply as to every declaration: another namespace names it `Combat.Stats`.
 - `[Clamp]`, `[Min]` and `[Max]` on a struct's field are enforced where untrusted data enters the simulation: in an input that holds the struct, before `Sanitize`, as on the input's own fields. Elsewhere they only describe the field.
-- `==` doesn't compare structs; compare their fields.
-- Structs have methods (see Methods). Custom operators, in C#'s form, come next.
+- `==` compares structs only if the struct declares it (see Operators).
+- Structs have methods and operators (see Methods and Operators).
 
 ```csharp
 struct Range
@@ -147,6 +147,27 @@ float Heal(mut Stats stats, float amount)
 system Regenerate(mut Unit unit)
 {
     Heal(unit.stats, 0.5);
+}
+```
+
+### Operators
+
+- A struct can declare operators, in C#'s form: `Money operator +(Money a, Money b) { ... }`. They compile to plain function calls.
+- The operators are `+ - * / % & | ^ << >>`, the comparisons `== != < <= > >=`, which return `bool`, and `-` (negation), `!` and `~` with one parameter.
+- At least one parameter is the struct itself. Parameters are copies, and an operator has no fields in scope: it only sees its parameters.
+- As in C#, `==` and `!=` come in pairs, and so do `<` and `>`, and `<=` and `>=`.
+- A compound assignment uses its operator: `total += price` uses `+`.
+- Several operators with the same symbol can take different types, like `Money * int` and `int * Money`. The one whose parameters match the operands exactly wins over one that needs `int` to `float`; if two match as well, it's an error.
+
+```csharp
+struct Money
+{
+    int cents;
+
+    Money operator +(Money a, Money b) { return Money { cents = a.cents + b.cents }; }
+    Money operator *(Money a, int times) { return Money { cents = a.cents * times }; }
+    bool operator ==(Money a, Money b) { return a.cents == b.cents; }
+    bool operator !=(Money a, Money b) { return !(a == b); }
 }
 ```
 

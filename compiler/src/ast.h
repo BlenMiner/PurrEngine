@@ -156,6 +156,8 @@ typedef struct decl {
     // Methods and functions
     struct decl *owner;       // A method's struct or component; NULL for a function
     bool is_mut_method;       // `mut void Damage(...)`: it may change the fields
+    bool is_operator;         // `Money operator +(Money a, Money b)`: in a struct, with no value of its own
+    tok_kind op;              // An operator's: T_PLUS, T_EQ, ...; T_MINUS is negation with one parameter
     str return_type_name;     // "void" if it returns nothing
     loc return_type_at;       // Its last part, if it's qualified
     loc return_type_qual_at;
@@ -288,7 +290,8 @@ struct expr {
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
     const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
 
-    // E_BINARY, E_UNARY; E_CONDITIONAL's two sides
+    // E_BINARY, E_UNARY; E_CONDITIONAL's two sides. `method` is the struct's
+    // operator, if one is used.
     tok_kind op;
     expr *lhs;
     expr *rhs;
@@ -339,6 +342,7 @@ struct stmt {
     // S_ASSIGN
     expr *target;
     tok_kind op;
+    struct decl *operator_decl; // A compound assignment's struct operator: `money += tip` uses `+`
 };
 
 // ---------------------------------------------------------------------------
@@ -374,12 +378,21 @@ typedef enum fix_kind {
     FIX_ADD_MUT,    // Writing through a read-only parameter: declare it mut
     FIX_REMOVE_MUT, // A mut parameter that's never written
     FIX_USE_WITH,   // A component parameter that's never used: filter with `with` instead
+    FIX_MUT_LOCAL,  // Writing a read-only local: declare it mut
+    FIX_MUT_METHOD, // A read-only method that changes a field or calls a mut method: declare it mut
+    FIX_CREATE_FUNCTION,  // A call of an unknown function: declare it, taking the arguments' types
+    FIX_CREATE_STRUCT,    // An unknown type where a struct fits: declare one
+    FIX_CREATE_COMPONENT, // An unknown type where a component fits: declare one
 } fix_kind;
 
 typedef struct fix {
     fix_kind kind;
     loc at; // Where the diagnostic points
     const param *param;
+    const stmt *local;   // FIX_MUT_LOCAL
+    const decl *method;  // FIX_MUT_METHOD
+    const expr *call;    // FIX_CREATE_FUNCTION
+    str name;            // FIX_CREATE_STRUCT and FIX_CREATE_COMPONENT
 } fix;
 
 program *program_new(void);

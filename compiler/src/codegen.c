@@ -156,13 +156,62 @@ static bool is_pointer_param(const param *p)
     return k == TY_COMPONENT || k == TY_SINGLETON || k == TY_INPUT || k == TY_RECORD;
 }
 
-// purr_method_Stats_IsDead for Stats.IsDead, purr_function_Combat_Heal for Combat.Heal.
+// What an operator is called in C: add for +, negate for - with one parameter.
+static const char *operator_word(const decl *m)
+{
+    switch (m->op) {
+    case T_PLUS: return "add";
+    case T_MINUS: return m->params.count == 1 ? "negate" : "subtract";
+    case T_STAR: return "multiply";
+    case T_SLASH: return "divide";
+    case T_PERCENT: return "remainder";
+    case T_AMP: return "and";
+    case T_PIPE: return "or";
+    case T_CARET: return "xor";
+    case T_SHL: return "shift_left";
+    case T_SHR: return "shift_right";
+    case T_EQ: return "equal";
+    case T_NE: return "not_equal";
+    case T_LT: return "less";
+    case T_LE: return "less_equal";
+    case T_GT: return "greater";
+    case T_GE: return "greater_equal";
+    case T_NOT: return "not";
+    case T_TILDE: return "complement";
+    default: return "operator";
+    }
+}
+
+// purr_method_Stats_IsDead for Stats.IsDead, purr_function_Combat_Heal for
+// Combat.Heal, and purr_operator_Money_add_2 for Money's + (numbered, as a
+// struct can have several).
 static const char *routine_cname(const decl *m)
 {
     sb b = {0};
-    if (m->owner) sb_printf(&b, "purr_method_%s_" STR_FMT, decl_cname(m->owner), STR_ARG(m->name));
-    else sb_printf(&b, "purr_function_%s", decl_cname(m));
+    if (m->is_operator) {
+        int index = 0;
+        while (m->owner->methods.items[index] != m) index++;
+        sb_printf(&b, "purr_operator_%s_%s_%d", decl_cname(m->owner), operator_word(m), index);
+    } else if (m->owner) {
+        sb_printf(&b, "purr_method_%s_" STR_FMT, decl_cname(m->owner), STR_ARG(m->name));
+    } else {
+        sb_printf(&b, "purr_function_%s", decl_cname(m));
+    }
     return b.data;
+}
+
+static void gen_as(gen *g, sb *o, expr *e, type want);
+
+// A struct's operator applied to `l` and `r` (NULL for one operand).
+static void gen_operator_call(gen *g, sb *o, const decl *m, expr *l, expr *r)
+{
+    sb_printf(o, "%s(", routine_cname(m));
+    gen_as(g, o, l, m->params.items[0].type);
+    if (r) {
+        sb_put(o, ", ");
+        gen_as(g, o, r, m->params.items[1].type);
+    }
+    sb_put(o, ")");
 }
 
 // The hidden parameter holding last tick's input, for .pressed and .released.
@@ -384,8 +433,12 @@ static const char *c_op(const tok_kind op)
     }
 }
 
-static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const type result)
+static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const type result, const decl *overload)
 {
+    if (overload) {
+        gen_operator_call(g, o, overload, l, r);
+        return;
+    }
     const type lt = l->type;
     const type rt = r->type;
     const type float_t = {TY_FLOAT, NULL};
@@ -730,7 +783,7 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         gen_literal(g, o, e);
         break;
     case E_BINARY:
-        gen_binary(g, o, e->op, e->lhs, e->rhs, e->type);
+        gen_binary(g, o, e->op, e->lhs, e->rhs, e->type, e->method);
         break;
     case E_CONDITIONAL:
         // C runs only the chosen side too. Both sides convert to the result type,
@@ -744,7 +797,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         sb_put(o, ")");
         break;
     case E_UNARY:
-        if (e->op == T_NOT || e->op == T_TILDE) {
+        if (e->method) {
+            gen_operator_call(g, o, e->method, e->lhs, NULL);
+        } else if (e->op == T_NOT || e->op == T_TILDE) {
             sb_put(o, e->op == T_NOT ? "(!" : "(~");
             gen_expr(g, o, e->lhs);
             sb_put(o, ")");
@@ -962,7 +1017,7 @@ static void gen_stmt(gen *g, const stmt *s)
         if (s->op == T_ASSIGN) {
             gen_as(g, o, s->value, target->type);
         } else {
-            gen_binary(g, o, compound_op(s->op), s->target, s->value, target->type);
+            gen_binary(g, o, compound_op(s->op), s->target, s->value, target->type, s->operator_decl);
         }
         sb_put(o, ";");
         if (target->kind == E_MEMBER && target->swizzle_len > 1) {
@@ -1547,7 +1602,7 @@ static void gen_routine_signature(gen *g, sb *o, const decl *m)
 {
     sb_printf(o, "PURR_HELPER %s %s(", m->return_type.kind == TY_VOID ? "void" : c_type(m->return_type), routine_cname(m));
     int n = 0;
-    if (m->owner) {
+    if (m->owner && !m->is_operator) {
         sb_printf(o, m->is_mut_method ? "%s *purr_self" : "const %s purr_self", type_cname(m->owner));
         n++;
     }
@@ -1569,7 +1624,7 @@ static void gen_routine(gen *g, const decl *m)
     sb_put(o, "\n{\n");
     g->indent = 1;
     g->routine = m;
-    if (m->owner) line(g, o, "(void)purr_self;");
+    if (m->owner && !m->is_operator) line(g, o, "(void)purr_self;");
     for (int i = 0; i < m->params.count; i++) line(g, o, "(void)%s;", local_cname(g, m->params.items[i].name));
     for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);
     g->routine = NULL;

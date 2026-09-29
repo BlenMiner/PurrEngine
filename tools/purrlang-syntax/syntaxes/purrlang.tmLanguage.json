@@ -125,6 +125,23 @@
             "1": { "name": "storage.type.purrlang" },
             "2": { "name": "entity.name.function.purrlang" }
           }
+        },
+        {
+          "comment": "Money operator +(Money a, Money b), in a struct",
+          "match": "\\b(operator)\\s*(==|!=|<=|>=|<<|>>|\\+|-|\\*|/|%|<|>|&|\\||\\^|!|~)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.other.operator.purrlang" },
+            "2": { "name": "keyword.operator.purrlang" }
+          }
+        },
+        {
+          "comment": "Methods and functions: [mut] Type Name(, at the start of a line",
+          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|namespace|using)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "storage.modifier.purrlang" },
+            "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
+            "3": { "name": "entity.name.function.purrlang" }
+          }
         }
       ]
     },
@@ -190,9 +207,9 @@
     "builtins": {
       "patterns": [
         {
-          "comment": "Built-in value types",
+          "comment": "Built-in value types, and void for what a method or function returns",
           "name": "storage.type.primitive.purrlang",
-          "match": "\\b(bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|PlayerID|Color)\\b"
+          "match": "\\b(void|bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|PlayerID|Color)\\b"
         },
         {
           "comment": "Built-in singletons, components, records and function groups",

@@ -35,6 +35,9 @@ void analysis_completion(int line, int character, jbuf *out);                // 
 void analysis_hover(int line, int character, jbuf *out);                     // Hover or null
 void analysis_definition(const char *uri, int line, int character, jbuf *out); // Location or null
 void analysis_symbols(jbuf *out);                                            // DocumentSymbol[]
+void analysis_workspace_symbols(const char *query, jbuf *out);               // SymbolInformation[], the whole game
+void analysis_inlay_hints(int start_line, int end_line, jbuf *out);          // InlayHint[]
+void analysis_folding_ranges(jbuf *out);                                     // FoldingRange[]
 void analysis_semantic_tokens(jbuf *out);                                    // SemanticTokens
 void analysis_semantic_legend(jbuf *out);                                    // SemanticTokensLegend
 void analysis_references(const char *uri, int line, int character, bool declaration, jbuf *out); // Location[]
@@ -48,3 +51,7 @@ const char *analysis_rename(const char *uri, int line, int character, const char
 const char *analysis_format(int tab_size, bool insert_spaces, jbuf *out);   // TextEdit[]
 void analysis_code_lenses(jbuf *out);                                        // CodeLens[]
 void analysis_code_actions(int start_line, int end_line, jbuf *out);         // CodeAction[]
+
+// Whether the editor can create files in an edit, which moving a declaration
+// to a file of its own needs. From its capabilities, at initialization.
+void analysis_set_can_create_files(bool can);

@@ -119,7 +119,7 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
 - `engine/`: the engine library (`purr`). Public headers go in `engine/include/purr/`, sources in `engine/src/`. New `.c` files are picked up automatically.
 - `compiler/`: `purrc`, the PurrLang transpiler (owned by Claude). `compiler/tests/e2e/` holds programs compiled and run as tests. `compiler/tests/errors/` holds programs that must fail with the message on their first line.
 - `compiler/cli/`: `purr`, the command users run (owned by Claude; see Packaging and releases).
-- `compiler/lsp/`: `purrls`, the PurrLang language server (owned by Claude). It reuses purrc's front end, with error recovery, to give editors completion, diagnostics, hovers, go to definition, find usages, rename, formatting, parameter hints, the outline and semantic highlighting. Native builds only.
+- `compiler/lsp/`: `purrls`, the PurrLang language server (owned by Claude). It reuses purrc's front end, with error recovery, to give editors completion, diagnostics, quick fixes, hovers, go to definition, find usages, rename, formatting, parameter hints, inlay hints, the outline, workspace symbols, folding, semantic highlighting, and moving a declaration to a file of its own. Native builds only.
 - `tools/`: editor support. `purrlang-vscode` is the VS Code extension and `purrlang-jetbrains` the JetBrains plugin: each is the grammar and a client that runs `purrls`. `purrlang-syntax` is the TextMate grammar they both include, which the package also ships as a bundle for other editors.
 - `docs/purrlang.md`: the language spec.
 - `platform/`: the platform layer (`purr_platform`): window, frame loop and input devices, on raylib. Public header `platform/include/purr/platform.h`.

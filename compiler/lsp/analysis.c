@@ -71,6 +71,7 @@ static struct {
     program *prog;
     VEC(diagnostic) diags;
     VEC(occurrence) occs;
+    VEC(const expr *) calls; // Calls of the game's methods and functions, for inlay hints
 } A;
 
 // The document requests are about.
@@ -223,10 +224,30 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
 // Sample and Sanitize, a type in its methods.
 static const decl *walk_fields_of;
 
-// A game's method or function, which calls and declarations point at.
+// A game's method, function or operator, which calls and declarations point at.
 static bool is_routine(const decl *d)
 {
     return d && (d->kind == DECL_METHOD || d->kind == DECL_FUNCTION);
+}
+
+static bool is_operator_decl(const decl *d)
+{
+    return is_routine(d) && d->is_operator;
+}
+
+// How many characters an operator token has: 1 for +, 2 for == and +=, 3 for <<=.
+static int operator_len(const tok_kind kind)
+{
+    switch (kind) {
+    case T_EQ: case T_NE: case T_LE: case T_GE: case T_SHL: case T_SHR: case T_AND: case T_OR: case T_PLUS_ASSIGN:
+    case T_MINUS_ASSIGN: case T_STAR_ASSIGN: case T_SLASH_ASSIGN: case T_PERCENT_ASSIGN: case T_AMP_ASSIGN:
+    case T_PIPE_ASSIGN: case T_CARET_ASSIGN:
+        return 2;
+    case T_SHL_ASSIGN: case T_SHR_ASSIGN:
+        return 3;
+    default:
+        return 1;
+    }
 }
 
 static void walk_expr(const expr *e)
@@ -315,6 +336,7 @@ static void walk_expr(const expr *e)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
             o.decl = e->method;
             add_occ(o);
+            vec_push(A.calls, e);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
         break;
@@ -335,6 +357,7 @@ static void walk_expr(const expr *e)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
             o.decl = e->method;
             add_occ(o);
+            vec_push(A.calls, e);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
         break;
@@ -357,12 +380,13 @@ static void walk_expr(const expr *e)
         break;
 
     case E_BINARY:
+    case E_UNARY:
+        if (e->method) { // A struct's operator
+            add_occ((occurrence){.at = e->at, .len = operator_len(e->op), .kind = OCC_METHOD, .decl = e->method,
+                                 .name = e->method->name, .type = e->type});
+        }
         walk_expr(e->lhs);
         walk_expr(e->rhs);
-        break;
-
-    case E_UNARY:
-        walk_expr(e->lhs);
         break;
 
     case E_CONDITIONAL:
@@ -394,6 +418,10 @@ static void walk_stmt(const stmt *s)
         walk_expr(s->value);
         break;
     case S_ASSIGN:
+        if (s->operator_decl) { // `+=` with a struct's +
+            add_occ((occurrence){.at = s->at, .len = operator_len(s->op), .kind = OCC_METHOD, .decl = s->operator_decl,
+                                 .name = s->operator_decl->name});
+        }
         walk_expr(s->target);
         walk_expr(s->value);
         break;
@@ -418,7 +446,8 @@ static void walk_params(const decl *d)
 // A method or function: its name, signature and body.
 static void walk_routine(const decl *m)
 {
-    add_occ((occurrence){.at = m->at, .len = m->name.len, .kind = m->owner ? OCC_METHOD : OCC_FUNCTION,
+    // An operator's `at` is its `operator` keyword.
+    add_occ((occurrence){.at = m->at, .len = m->is_operator ? 8 : m->name.len, .kind = m->owner ? OCC_METHOD : OCC_FUNCTION,
                          .declaration = true, .decl = m, .name = m->name});
     if (!str_eq_c(m->return_type_name, "void")) {
         type_ref(m->return_type_qual_at, m->return_type_at, m->return_type_name, m->return_type);
@@ -794,6 +823,10 @@ static void describe(const occurrence *o, sb *out)
         if (is_routine(o->decl)) {
             format_routine(o->decl, &code);
             code_block(out, code.data);
+            if (o->decl->is_operator) {
+                sb_printf(out, "\n\nOperator of struct `" STR_FMT "`.", STR_ARG(o->decl->owner->name));
+                break;
+            }
             sb_printf(out, "\n\nMethod of %s `" STR_FMT "`. %s", decl_keyword(o->decl->owner), STR_ARG(o->decl->owner->name),
                       o->decl->is_mut_method ? "It changes the fields, so it's called on something writable."
                                              : "It only reads the fields.");
@@ -960,6 +993,136 @@ static void write_edit_range(jbuf *out, const loc start, const loc end)
     jb_put(out, "}");
 }
 
+// The text of line `line` (1-based) of the document, without its line break.
+static str doc_line(const int line)
+{
+    if (line < 1 || line > DOC->lines.count) return (str){"", 0};
+    const char *start = DOC->lines.items[line - 1];
+    const char *end = start;
+    const char *text_end = DOC->src.text + DOC->src.len;
+    while (end < text_end && *end != '\n') end++;
+    if (end > start && end[-1] == '\r') end--;
+    return (str){start, (int)(end - start)};
+}
+
+static bool blank_line(const int line)
+{
+    const str text = doc_line(line);
+    for (int i = 0; i < text.len; i++) {
+        if (!isspace((unsigned char)text.ptr[i])) return false;
+    }
+    return true;
+}
+
+static bool comment_line(const int line)
+{
+    str text = doc_line(line);
+    while (text.len > 0 && isspace((unsigned char)text.ptr[0])) {
+        text.ptr++;
+        text.len--;
+    }
+    return text.len >= 2 && text.ptr[0] == '/' && text.ptr[1] == '/';
+}
+
+static bool can_create_files = true;
+
+void analysis_set_can_create_files(const bool can)
+{
+    can_create_files = can;
+}
+
+// Refactoring: moves a type or function into a file of its own, named after
+// it, next to this one. A game is every .purr file in its folder, so the
+// program stays the same. Systems and views stay put: moving one would change
+// the order they run in, which follows the files.
+static void move_to_file_action(const int line, jbuf *out, int *written)
+{
+    for (int i = 0; can_create_files && i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->builtin || d->at.file != A.doc || d->kind == DECL_SYSTEM) continue;
+        // Its lines: the attributes and comments just above it, to its closing brace.
+        int first = d->at.line;
+        for (int a = 0; a < d->attributes.count; a++) {
+            if (d->attributes.items[a].at.line < first) first = d->attributes.items[a].at.line;
+        }
+        while (first > 1 && comment_line(first - 1)) first--;
+        const int last = d->end.line > 0 ? d->end.line : d->at.line;
+        if (line + 1 < first || line + 1 > last) continue;
+
+        // Beside this file: file:///D:/game/main.purr -> file:///D:/game/Health.purr
+        const char *uri = DOC->uri;
+        const char *slash = strrchr(uri, '/');
+        if (!slash) return;
+        sb target = {0};
+        sb_printf(&target, "%.*s/" STR_FMT ".purr", (int)(slash - uri), uri, STR_ARG(d->name));
+        if (strcmp(target.data, uri) == 0) return; // Already in its own file
+        for (int f = 0; f < A.file_count; f++) {
+            if (A.files[f].uri && strcmp(A.files[f].uri, target.data) == 0) return; // Taken
+        }
+
+        // The new file: this file's namespace and usings, then the declaration.
+        sb text = {0};
+        const unit *u = d->unit;
+        if (u && u->ns.len > 0) sb_printf(&text, "namespace " STR_FMT ";\n", STR_ARG(u->ns));
+        for (int k = 0; u && k < u->usings.count; k++) sb_printf(&text, "using " STR_FMT ";\n", STR_ARG(u->usings.items[k]));
+        if (text.len > 0) sb_put(&text, "\n");
+        for (int l = first; l <= last; l++) {
+            const str line_text = doc_line(l);
+            sb_putn(&text, line_text.ptr, (size_t)line_text.len);
+            sb_put(&text, "\n");
+        }
+        // What's left here: no double blank line where it was.
+        int remove_to = last + 1;
+        if (blank_line(remove_to) && (first == 1 || blank_line(first - 1))) remove_to++;
+
+        if ((*written)++) jb_put(out, ",");
+        sb title = {0};
+        sb_printf(&title, "Move '" STR_FMT "' to " STR_FMT ".purr", STR_ARG(d->name), STR_ARG(d->name));
+        jb_put(out, "{\"title\":");
+        jb_string(out, title.data);
+        jb_put(out, ",\"kind\":\"refactor.move\",\"edit\":{\"documentChanges\":[{\"kind\":\"create\",\"uri\":");
+        jb_string(out, target.data);
+        jb_put(out, ",\"options\":{\"overwrite\":false,\"ignoreIfExists\":false}},{\"textDocument\":{\"uri\":");
+        jb_string(out, target.data);
+        jb_put(out, ",\"version\":null},\"edits\":[{\"range\":");
+        write_edit_range(out, (loc){1, 1, A.doc}, (loc){1, 1, A.doc});
+        jb_put(out, ",\"newText\":");
+        jb_string(out, text.data);
+        jb_put(out, "}]},{\"textDocument\":{\"uri\":");
+        jb_string(out, uri);
+        jb_put(out, ",\"version\":null},\"edits\":[{\"range\":");
+        write_edit_range(out, (loc){first, 1, A.doc}, (loc){remove_to, 1, A.doc});
+        jb_put(out, ",\"newText\":\"\"}]}]}}");
+        return;
+    }
+}
+
+// Where text added at the end of the document goes, and what comes before it
+// so a declaration there stands apart from what's above.
+static loc doc_end(const char **separator)
+{
+    const int last = DOC->lines.count > 0 ? DOC->lines.count : 1;
+    const bool ends_with_newline = DOC->src.len > 0 && DOC->src.text[DOC->src.len - 1] == '\n';
+    *separator = DOC->src.len == 0 ? "" : ends_with_newline ? "\n" : "\n\n";
+    return (loc){last, doc_line(last).len + 1, A.doc};
+}
+
+// A parameter name for an argument of a function to create: the name of what's
+// passed (unit.stats: stats), or its type's (Stats: stats, float: value).
+static void argument_name(const expr *arg, sb *out)
+{
+    if (arg->kind == E_NAME) {
+        sb_printf(out, STR_FMT, STR_ARG(arg->name));
+    } else if (arg->kind == E_MEMBER && arg->field) {
+        sb_printf(out, STR_FMT, STR_ARG(arg->member));
+    } else if (arg->type.decl) {
+        const str name = arg->type.decl->name;
+        sb_printf(out, "%c%.*s", tolower((unsigned char)name.ptr[0]), name.len - 1, name.ptr + 1);
+    } else {
+        sb_put(out, "value");
+    }
+}
+
 void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
 {
     jb_put(out, "[");
@@ -970,8 +1133,10 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
         const param *p = f->param;
         sb title = {0};
         sb text = {0};
-        loc start = type_start(p);
+        loc start = p ? type_start(p) : f->at;
         loc end = start;
+        bool preferred = true;
+        const char *separator = "";
         switch (f->kind) {
         case FIX_ADD_MUT:
             sb_printf(&title, "Declare '" STR_FMT "' as mut", STR_ARG(p->name));
@@ -988,11 +1153,54 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
             end = (loc){p->name_at.line, p->name_at.col + p->name.len, p->name_at.file};
             sb_printf(&text, "with " STR_FMT, STR_ARG(p->type_name));
             break;
+        case FIX_MUT_LOCAL:
+            sb_printf(&title, "Declare '" STR_FMT "' as mut", STR_ARG(f->local->name));
+            start = end = f->local->at;
+            sb_put(&text, "mut ");
+            break;
+        case FIX_MUT_METHOD:
+            if (f->method->at.file != A.doc) continue;
+            sb_printf(&title, "Make '" STR_FMT "' mut", STR_ARG(f->method->name));
+            start = end = f->method->return_type_qual_at;
+            sb_put(&text, "mut ");
+            break;
+        case FIX_CREATE_FUNCTION: {
+            const expr *call = f->call;
+            bool known = true;
+            for (int k = 0; k < call->args.count; k++) known &= call->args.items[k]->type.kind != TY_ERROR;
+            if (!known) continue;
+            sb_printf(&title, "Create function '" STR_FMT "'", STR_ARG(call->name));
+            start = end = doc_end(&separator);
+            sb_printf(&text, "%svoid " STR_FMT "(", separator, STR_ARG(call->name));
+            VEC(char *) names = {0};
+            for (int k = 0; k < call->args.count; k++) {
+                sb name = {0};
+                argument_name(call->args.items[k], &name);
+                for (int j = 0; j < names.count; j++) {
+                    if (strcmp(names.items[j], name.data) == 0) sb_printf(&name, "%d", k + 1); // Two of the same
+                }
+                vec_push(names, name.data);
+                sb_printf(&text, "%s%s %s", k ? ", " : "", type_name(call->args.items[k]->type), name.data);
+            }
+            sb_put(&text, ")\n{\n}\n");
+            preferred = false;
+            break;
+        }
+        case FIX_CREATE_STRUCT:
+        case FIX_CREATE_COMPONENT: {
+            if (memchr(f->name.ptr, '.', (size_t)f->name.len)) continue; // Another namespace's
+            const char *keyword = f->kind == FIX_CREATE_STRUCT ? "struct" : "component";
+            sb_printf(&title, "Create %s '" STR_FMT "'", keyword, STR_ARG(f->name));
+            start = end = doc_end(&separator);
+            sb_printf(&text, "%s%s " STR_FMT "\n{\n}\n", separator, keyword, STR_ARG(f->name));
+            preferred = false;
+            break;
+        }
         }
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"title\":");
         jb_string(out, title.data);
-        jb_put(out, ",\"kind\":\"quickfix\",\"isPreferred\":true,\"edit\":{\"changes\":{");
+        jb_printf(out, ",\"kind\":\"quickfix\",\"isPreferred\":%s,\"edit\":{\"changes\":{", preferred ? "true" : "false");
         jb_string(out, A.files[A.doc].uri);
         jb_put(out, ":[{\"range\":");
         write_edit_range(out, start, end);
@@ -1000,6 +1208,7 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
         jb_string(out, text.data ? text.data : "");
         jb_put(out, "}]}}}");
     }
+    move_to_file_action(start_line, out, &written);
     jb_put(out, "]");
 }
 
@@ -1174,6 +1383,158 @@ void analysis_symbols(jbuf *out)
 }
 
 // ---------------------------------------------------------------------------
+// Folding: blocks and literals over several lines, and runs of comment lines
+
+static void folding_range(jbuf *out, int *written, const int first, const int last, const char *kind)
+{
+    if (last <= first) return;
+    if ((*written)++) jb_put(out, ",");
+    jb_printf(out, "{\"startLine\":%d,\"endLine\":%d%s%s%s}", first - 1, last - 1, kind ? ",\"kind\":\"" : "",
+              kind ? kind : "", kind ? "\"" : "");
+}
+
+void analysis_folding_ranges(jbuf *out)
+{
+    jb_put(out, "[");
+    int written = 0;
+    // A block folds from the line that introduces it, even when its `{` is on
+    // a line of its own below, and keeps its `}` in sight.
+    int *open = arena_alloc(sizeof(int) * ((size_t)DOC->tok_count + 1));
+    int depth = 0;
+    for (int i = 0; i < DOC->tok_count; i++) {
+        const token *t = &DOC->toks[i];
+        if (t->kind == T_LBRACE) {
+            open[depth++] = i;
+        } else if (t->kind == T_RBRACE && depth > 0) {
+            const int o = open[--depth];
+            int first = DOC->toks[o].at.line;
+            if (o > 0 && DOC->toks[o - 1].at.line == first - 1 && DOC->toks[o - 1].kind != T_RBRACE
+                && DOC->toks[o - 1].kind != T_SEMI) {
+                first--; // component Body\n{
+            }
+            folding_range(out, &written, first, t->at.line - 1, NULL);
+        }
+    }
+    // Comment lines one after another, three or more.
+    for (int line = 1; line <= DOC->lines.count;) {
+        int end = line;
+        while (end <= DOC->lines.count && comment_line(end)) end++;
+        if (end - line >= 3) folding_range(out, &written, line, end - 1, "comment");
+        line = end > line ? end : line + 1;
+    }
+    jb_put(out, "]");
+}
+
+// ---------------------------------------------------------------------------
+// Inlay hints: the type a `var` gets, and parameter names at literal arguments
+
+static bool is_literal(const expr *e)
+{
+    if (e->kind == E_UNARY && e->op == T_MINUS) e = e->lhs;
+    return e->kind == E_INT || e->kind == E_FLOAT || e->kind == E_BOOL || e->kind == E_STRING;
+}
+
+// Where an expression starts: its leftmost token.
+static loc expr_start(const expr *e)
+{
+    for (;;) {
+        if ((e->kind == E_MEMBER || e->kind == E_METHOD) && e->object) e = e->object;
+        else if (e->kind == E_BINARY || e->kind == E_CONDITIONAL) e = e->kind == E_BINARY ? e->lhs : e->cond;
+        else break;
+    }
+    return e->kind == E_LITERAL && e->qual_at.line ? e->qual_at : e->at;
+}
+
+static void inlay_hint(jbuf *out, int *written, const loc at, const char *label, const int kind, const bool before)
+{
+    if ((*written)++) jb_put(out, ",");
+    jb_put(out, "{\"position\":");
+    write_position(out, at);
+    jb_put(out, ",\"label\":");
+    jb_string(out, label);
+    jb_printf(out, ",\"kind\":%d,\"%s\":true}", kind, before ? "paddingRight" : "paddingLeft");
+}
+
+void analysis_inlay_hints(const int start_line, const int end_line, jbuf *out)
+{
+    enum { HINT_TYPE = 1, HINT_PARAMETER = 2 };
+    jb_put(out, "[");
+    int written = 0;
+    for (int i = 0; i < A.occs.count; i++) { // `var speed = ...`: speed's type
+        const occurrence *o = &A.occs.items[i];
+        if (o->at.file != A.doc || o->kind != OCC_LOCAL || !o->declaration || o->local->type_name.len > 0) continue;
+        if (o->at.line - 1 < start_line || o->at.line - 1 > end_line || o->type.kind == TY_ERROR) continue;
+        sb label = {0};
+        sb_printf(&label, ": %s", type_name(o->type));
+        inlay_hint(out, &written, (loc){o->at.line, o->at.col + o->len, o->at.file}, label.data, HINT_TYPE, false);
+    }
+    for (int i = 0; i < A.calls.count; i++) { // Heal(unit.stats, amount: 2)
+        const expr *call = A.calls.items[i];
+        if (call->at.file != A.doc || call->at.line - 1 < start_line || call->at.line - 1 > end_line) continue;
+        for (int k = 0; k < call->args.count && k < call->method->params.count; k++) {
+            if (!is_literal(call->args.items[k])) continue;
+            sb label = {0};
+            sb_printf(&label, STR_FMT ":", STR_ARG(call->method->params.items[k].name));
+            inlay_hint(out, &written, expr_start(call->args.items[k]), label.data, HINT_PARAMETER, true);
+        }
+    }
+    jb_put(out, "]");
+}
+
+// Whether `name` holds the letters of `query` in order, ignoring case, as
+// editors match symbols: "stHp" finds "StatsHelp".
+static bool fuzzy_match(const str name, const char *query)
+{
+    int k = 0;
+    for (const char *q = query; *q; q++) {
+        while (k < name.len && tolower((unsigned char)name.ptr[k]) != tolower((unsigned char)*q)) k++;
+        if (k == name.len) return false;
+        k++;
+    }
+    return true;
+}
+
+static void workspace_symbol(jbuf *out, int *written, const str name, const int kind, const loc at, const int len,
+                             const str container)
+{
+    if ((*written)++) jb_put(out, ",");
+    jb_put(out, "{\"name\":");
+    jb_string_n(out, name.ptr, (size_t)name.len);
+    jb_printf(out, ",\"kind\":%d,\"location\":{\"uri\":", kind);
+    jb_string(out, A.files[at.file].uri);
+    jb_put(out, ",\"range\":");
+    write_range(out, at, len);
+    jb_put(out, "}");
+    if (container.len > 0) {
+        jb_put(out, ",\"containerName\":");
+        jb_string_n(out, container.ptr, (size_t)container.len);
+    }
+    jb_put(out, "}");
+}
+
+void analysis_workspace_symbols(const char *query, jbuf *out)
+{
+    jb_put(out, "[");
+    int written = 0;
+    for (int i = 0; A.prog && i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->builtin) continue;
+        const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? SYMBOL_STRUCT
+                       : d->kind == DECL_SINGLETON ? SYMBOL_CLASS
+                       : d->kind == DECL_INPUT ? SYMBOL_INTERFACE
+                                               : SYMBOL_FUNCTION;
+        const str ns = d->unit ? d->unit->ns : (str){"", 0};
+        if (fuzzy_match(d->name, query)) workspace_symbol(out, &written, d->name, kind, d->at, d->name.len, ns);
+        for (int k = 0; k < d->methods.count; k++) {
+            const decl *m = d->methods.items[k];
+            if (m->is_operator || !fuzzy_match(m->name, query)) continue;
+            workspace_symbol(out, &written, m->name, SYMBOL_METHOD, m->at, m->name.len, d->qualified);
+        }
+    }
+    jb_put(out, "]");
+}
+
+// ---------------------------------------------------------------------------
 // Semantic tokens: highlighting from what names mean, not how they look
 
 static const char *const token_types[] = {"namespace", "type",     "struct", "class",   "interface", "parameter",
@@ -1251,7 +1612,10 @@ static void classify(const occurrence *o, int *type, int *mods)
         break;
     case OCC_CONSTANT: *type = ST_ENUM_MEMBER; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC | SM_READONLY; break;
     case OCC_METHOD:
-        if (is_routine(o->decl)) {
+        if (is_operator_decl(o->decl)) {
+            *type = ST_KEYWORD;
+            *mods = 0;
+        } else if (is_routine(o->decl)) {
             *type = ST_METHOD;
         } else if (str_eq_c(o->name, "Sample") || str_eq_c(o->name, "Sanitize")) { // The input's own members
             *type = ST_KEYWORD;
@@ -1275,6 +1639,7 @@ void analysis_semantic_tokens(jbuf *out)
     for (int i = 0, written = 0; i < A.occs.count; i++) {
         const occurrence *o = &A.occs.items[i];
         if (o->at.file != A.doc) continue;
+        if (is_operator_decl(o->decl) && !o->declaration) continue; // `+` in code: the editor colors it as an operator
         int type;
         int mods;
         classify(o, &type, &mods);
@@ -1368,7 +1733,7 @@ static scope scope_at(const loc at)
             const decl *m = d->methods.items[k];
             if (!block_contains(m->body, at)) continue;
             sc.decl = m;
-            sc.fields_of = d;
+            sc.fields_of = m->is_operator ? NULL : d;
             collect_locals(m->body, at, &sc);
         }
         const bool sanitize = block_contains(d->sanitize, at);
@@ -1453,7 +1818,9 @@ static void list_members(completion *c, const type t, const bool edges, const sc
             const field *f = &t.decl->fields.items[i];
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
         }
-        for (int i = 0; i < t.decl->methods.count; i++) complete_routine(c, t.decl->methods.items[i], NULL);
+        for (int i = 0; i < t.decl->methods.count; i++) {
+            if (!t.decl->methods.items[i]->is_operator) complete_routine(c, t.decl->methods.items[i], NULL);
+        }
     }
     const int dim = type_dim(t);
     if (dim >= 2) {
@@ -1690,7 +2057,9 @@ static void complete_expression(completion *c, const loc at, const bool statemen
                 const field *f = &sc.fields_of->fields.items[i];
                 item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), NULL, NULL);
             }
-            for (int i = 0; i < sc.fields_of->methods.count; i++) complete_routine(c, sc.fields_of->methods.items[i], NULL);
+            for (int i = 0; i < sc.fields_of->methods.count; i++) {
+                if (!sc.fields_of->methods.items[i]->is_operator) complete_routine(c, sc.fields_of->methods.items[i], NULL);
+            }
         }
     }
     for (int i = 0; i < A.prog->decls.count; i++) {
@@ -1722,6 +2091,8 @@ static void complete_declarations(completion *c)
          "view ${1:Name}($2)\n{\n    $0\n}");
     item(c, "input", CK_SNIPPET, "input Name { fields; Sample }", "What a player sends each tick.",
          "input ${1:Name}\n{\n    $0\n\n    Sample(Devices devices)\n    {\n    }\n}");
+    item(c, "function", CK_SNIPPET, "Type Name(parameters) { ... }", "Code other code calls, like 'float Heal(mut Stats stats)'.",
+         "${1:void} ${2:Name}($3)\n{\n    $0\n}");
     item(c, "namespace", CK_KEYWORD, "namespace Name;", "The namespace of everything in this file. Goes at the top.",
          "namespace ${1:Name};");
     item(c, "using", CK_KEYWORD, "using Name;", "Names from another namespace, without writing it. Goes at the top.",
@@ -1901,11 +2272,35 @@ void analysis_completion(const int line, const int character, jbuf *out)
         break;
     }
 
-    case CTX_DATA:
+    case CTX_DATA: {
+        // What the body belongs to: `struct Name {`, `component Name {`, ...
+        const token *keyword = f.open >= 2 ? &DOC->toks[f.open - 2] : NULL;
+        const bool is_struct = keyword && keyword->kind == T_IDENT && str_eq_c(keyword->text, "struct");
+        const bool has_methods = is_struct || (keyword && keyword->kind == T_COMPONENT);
+        const bool member_start = last >= 1 && (DOC->toks[last - 1].kind == T_LBRACE || DOC->toks[last - 1].kind == T_SEMI
+                                                || DOC->toks[last - 1].kind == T_RBRACE);
         if (pk == T_LBRACE || pk == T_SEMI || pk == T_RBRACE) {
             complete_value_types(&c, false);
             complete_structs(&c);
             complete_namespaces(&c, false);
+            if (has_methods) {
+                item(&c, "void", CK_KEYWORD, "Returns nothing", NULL, NULL);
+                item(&c, "mut", CK_KEYWORD, "A method that changes the fields", NULL, NULL);
+                item(&c, "method", CK_SNIPPET, "Type Name(parameters) { ... }", "Reads the fields, which are in scope by name.",
+                     "${1:void} ${2:Name}($3)\n{\n    $0\n}");
+                item(&c, "mut method", CK_SNIPPET, "mut void Name(parameters) { ... }", "Changes the fields.",
+                     "mut void ${1:Name}($2)\n{\n    $0\n}");
+            }
+            if (is_struct) {
+                sb snippet = {0};
+                const str name = DOC->toks[f.open - 1].text;
+                sb_printf(&snippet, STR_FMT " operator ${1:+}(" STR_FMT " a, " STR_FMT " b)\n{\n    return $0;\n}",
+                          STR_ARG(name), STR_ARG(name), STR_ARG(name));
+                item(&c, "operator", CK_SNIPPET, "Type operator +(Type a, Type b) { ... }", "Lets '+' and the others work on the struct.",
+                     snippet.data);
+            }
+        } else if (pk == T_IDENT && member_start && is_struct) {
+            item(&c, "operator", CK_KEYWORD, "Type operator +(Type a, Type b)", NULL, NULL); // After the return type
         } else if (pk != T_IDENT || (last >= 1 && DOC->toks[last - 1].kind != T_LBRACE && DOC->toks[last - 1].kind != T_SEMI
                                    && DOC->toks[last - 1].kind != T_RBRACE)) {
             // A default value: constants only.
@@ -1914,6 +2309,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
         }
         break;
+    }
 
     case CTX_LITERAL:
         if ((pk == T_LBRACE || pk == T_COMMA) && f.open >= 1) {
@@ -2038,6 +2434,11 @@ static const char *rename_target(const int line, const int character, const occu
         return NULL;
     case OCC_NAMESPACE:
         return "Renaming namespaces isn't supported yet: change the `namespace` line in each of its files.";
+    case OCC_METHOD:
+    case OCC_FUNCTION:
+        if (is_operator_decl(o->decl)) return "Operators are named by their symbol, so they can't be renamed.";
+        if (is_routine(o->decl)) return NULL;
+        return "Built-in names can't be renamed.";
     default:
         return "Built-in names can't be renamed.";
     }
@@ -2069,6 +2470,10 @@ static const decl *decl_of_local(const stmt *local)
 {
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
+        for (int k = 0; k < d->methods.count; k++) {
+            const stmt *body = d->methods.items[k]->body;
+            if (body && loc_cmp(body->at, local->at) < 0 && loc_cmp(local->at, body->end) < 0) return d->methods.items[k];
+        }
         if (d->body && loc_cmp(d->body->at, local->at) < 0 && loc_cmp(local->at, d->body->end) < 0) return d;
         if (d->sanitize && loc_cmp(d->sanitize->at, local->at) < 0 && loc_cmp(local->at, d->sanitize->end) < 0) {
             return d;
@@ -2084,6 +2489,12 @@ static const decl *decl_of_param(const param *p)
         const decl *d = A.prog->decls.items[i];
         for (int k = 0; k < d->params.count; k++) {
             if (&d->params.items[k] == p) return d;
+        }
+        for (int m = 0; m < d->methods.count; m++) {
+            const decl *method = d->methods.items[m];
+            for (int k = 0; k < method->params.count; k++) {
+                if (&method->params.items[k] == p) return method;
+            }
         }
     }
     return NULL;
@@ -2123,11 +2534,29 @@ static const char *check_new_name(const occurrence *target, const str name)
     switch (target->kind) {
     case OCC_TYPE:
     case OCC_SYSTEM:
-        // Types share one namespace; systems and views share another.
+        // Types share one namespace, and systems and views another; a function
+        // shares its name with nothing.
         for (int i = 0; i < A.prog->decls.count; i++) {
             const decl *d = A.prog->decls.items[i];
-            const bool same_namespace = (d->kind == DECL_SYSTEM) == (target->kind == OCC_SYSTEM);
+            const bool same_namespace = d->kind == DECL_FUNCTION || (d->kind == DECL_SYSTEM) == (target->kind == OCC_SYSTEM);
             if (d != target->decl && same_namespace && str_eq(d->name, name)) clash = true;
+        }
+        break;
+    case OCC_METHOD:
+    case OCC_FUNCTION:
+        if (target->decl->owner) { // A method: its type's other methods and fields
+            const decl *owner = target->decl->owner;
+            for (int i = 0; i < owner->methods.count; i++) {
+                if (owner->methods.items[i] != target->decl && str_eq(owner->methods.items[i]->name, name)) clash = true;
+            }
+            for (int i = 0; i < owner->fields.count; i++) {
+                if (str_eq(owner->fields.items[i].name, name)) clash = true;
+            }
+        } else {
+            for (int i = 0; i < A.prog->decls.count; i++) {
+                const decl *d = A.prog->decls.items[i];
+                if (d != target->decl && str_eq(d->name, name)) clash = true;
+            }
         }
         break;
     case OCC_FIELD:
@@ -2403,6 +2832,10 @@ static bool space_between(const fmt_item *a, const fmt_item *b)
     if (y == T_RPAREN || y == T_RBRACKET || y == T_COMMA || y == T_SEMI || y == T_DOT) return false;
     if (x == T_LPAREN || x == T_LBRACKET || x == T_DOT) return false;
     if (a->unary || x == T_NOT || x == T_TILDE) return false;
+    // `operator +(`: the symbol names the operator, like a method's name.
+    const bool operator_name = a->tok > 0 && DOC->toks[a->tok - 1].kind == T_IDENT
+                            && str_eq_c(DOC->toks[a->tok - 1].text, "operator");
+    if (y == T_LPAREN && operator_name) return false;
     if (y == T_LPAREN || y == T_LBRACKET) return x != T_IDENT; // Calls, but `if (` and `* (`
     return true;
 }

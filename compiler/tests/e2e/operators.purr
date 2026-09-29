@@ -1,0 +1,47 @@
+// Operators of structs, in C#'s form: they compile to plain function calls.
+
+struct Money
+{
+    int cents;
+
+    Money operator +(Money a, Money b) { return Money { cents = a.cents + b.cents }; }
+    Money operator -(Money a, Money b) { return Money { cents = a.cents - b.cents }; }
+    Money operator -(Money a) { return Money { cents = -a.cents }; }
+    Money operator *(Money a, int times) { return Money { cents = a.cents * times }; }
+    Money operator *(int times, Money a) { return a * times; } // Either order
+    bool operator ==(Money a, Money b) { return a.cents == b.cents; }
+    bool operator !=(Money a, Money b) { return !(a == b); }
+    bool operator <(Money a, Money b) { return a.cents < b.cents; }
+    bool operator >(Money a, Money b) { return a.cents > b.cents; }
+}
+
+struct Length
+{
+    float meters;
+
+    Length operator *(Length l, float k) { return Length { meters = l.meters * k }; }
+}
+
+singleton Wallet
+{
+    Money price = Money { cents = 250 };
+    Money total;
+    Money negated;
+    bool equal;
+    bool unequal;
+    bool ordered;
+    float stretched;
+}
+
+system Main(mut Wallet wallet)
+{
+    wallet.total = wallet.price * 2 + Money { cents = 1 }; // 501
+    wallet.total += wallet.price;                          // 751: += uses +
+    wallet.total -= Money { cents = 1 };                   // 750
+    wallet.negated = -wallet.price;
+    wallet.equal = 3 * wallet.price == wallet.total;
+    wallet.unequal = wallet.total != wallet.price;
+    wallet.ordered = wallet.price < wallet.total && wallet.total > wallet.price;
+    var stretched = Length { meters = 2 } * 3;             // The int widens to float
+    wallet.stretched = stretched.meters;
+}

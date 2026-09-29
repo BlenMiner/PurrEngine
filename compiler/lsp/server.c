@@ -448,8 +448,23 @@ static void add_root(lsp_server *s, const char *uri)
     s->roots[s->root_count++] = path;
 }
 
+// Whether the editor applies edits that create files.
+static bool client_creates_files(const json *params)
+{
+    const json *edit = json_path(params, "capabilities", "workspace", "workspaceEdit", NULL);
+    const json *changes = json_get(edit, "documentChanges");
+    const json *operations = json_get(edit, "resourceOperations");
+    if (!changes || changes->kind != JSON_TRUE || !operations || operations->kind != JSON_ARRAY) return false;
+    for (int i = 0; i < operations->count; i++) {
+        const char *op = json_str(operations->items[i]);
+        if (op && strcmp(op, "create") == 0) return true;
+    }
+    return false;
+}
+
 static void initialize(lsp_server *s, const json *id, const json *params)
 {
+    analysis_set_can_create_files(client_creates_files(params));
     const json *folders = json_get(params, "workspaceFolders");
     if (folders && folders->kind == JSON_ARRAY && folders->count > 0) {
         for (int i = 0; i < folders->count; i++) {
@@ -473,8 +488,11 @@ static void initialize(lsp_server *s, const json *id, const json *params)
                "\"documentFormattingProvider\":true,"
                "\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"],\"retriggerCharacters\":[\",\"]},"
                "\"documentSymbolProvider\":true,"
+               "\"workspaceSymbolProvider\":true,"
+               "\"inlayHintProvider\":true,"
+               "\"foldingRangeProvider\":true,"
                "\"codeLensProvider\":{},"
-               "\"codeActionProvider\":{\"codeActionKinds\":[\"quickfix\"]},"
+               "\"codeActionProvider\":{\"codeActionKinds\":[\"quickfix\",\"refactor.move\"]},"
                "\"semanticTokensProvider\":{\"legend\":");
     analysis_semantic_legend(&b);
     jb_put(&b, ",\"full\":true}},\"serverInfo\":{\"name\":\"purrls\",\"version\":\"0.1\"}}}");
@@ -525,6 +543,11 @@ static void document_request(lsp_server *s, const char *method, const json *id, 
         analysis_symbols(&b);
     } else if (strcmp(method, "textDocument/codeLens") == 0) {
         analysis_code_lenses(&b);
+    } else if (strcmp(method, "textDocument/foldingRange") == 0) {
+        analysis_folding_ranges(&b);
+    } else if (strcmp(method, "textDocument/inlayHint") == 0) {
+        analysis_inlay_hints(json_int(json_path(params, "range", "start", "line", NULL), 0),
+                             json_int(json_path(params, "range", "end", "line", NULL), 0), &b);
     } else if (strcmp(method, "textDocument/codeAction") == 0) {
         analysis_code_actions(json_int(json_path(params, "range", "start", "line", NULL), 0),
                               json_int(json_path(params, "range", "end", "line", NULL), 0), &b);
@@ -547,7 +570,7 @@ static bool is_document_request(const char *method)
         "textDocument/completion", "textDocument/hover", "textDocument/definition", "textDocument/references",
         "textDocument/documentHighlight", "textDocument/signatureHelp", "textDocument/prepareRename",
         "textDocument/rename", "textDocument/formatting", "textDocument/documentSymbol",
-        "textDocument/codeLens", "textDocument/codeAction",
+        "textDocument/codeLens", "textDocument/codeAction", "textDocument/inlayHint", "textDocument/foldingRange",
         "textDocument/semanticTokens/full",
     };
     for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
@@ -606,6 +629,20 @@ void lsp_handle(lsp_server *s, const char *message, const size_t len)
         }
     } else if (is_document_request(method)) {
         document_request(s, method, id, params);
+    } else if (strcmp(method, "workspace/symbol") == 0) {
+        // The game of the document opened last: every declaration in its files.
+        jbuf b = {0};
+        reply_start(&b, id);
+        if (s->doc_count > 0) {
+            analyze(s, &s->docs[s->doc_count - 1]);
+            const char *query = json_str(json_get(params, "query"));
+            analysis_workspace_symbols(query ? query : "", &b);
+        } else {
+            jb_put(&b, "[]");
+        }
+        jb_put(&b, "}");
+        send_buf(s, &b);
+        jb_free(&b);
     } else if (id) {
         reply_error(s, id, METHOD_NOT_FOUND, method);
     }

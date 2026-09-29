@@ -51,12 +51,24 @@ static bool has(const char *haystack, const char *needle)
     return strstr(haystack, needle) != NULL;
 }
 
-static void start(void)
+// An editor like VS Code: it applies edits that create files.
+#define EDITOR_CAPABILITIES                                                                                        \
+    "{\"capabilities\":{\"workspace\":{\"workspaceEdit\":{\"documentChanges\":true,"                                \
+    "\"resourceOperations\":[\"create\",\"rename\",\"delete\"]}}}}"
+
+static void start_with(const char *params)
 {
     clear_sent();
     lsp_free(&server);
     lsp_init(&server, capture, NULL);
-    handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    char message[512];
+    snprintf(message, sizeof message, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":%s}", params);
+    handle(message);
+}
+
+static void start(void)
+{
+    start_with(EDITOR_CAPABILITIES);
 }
 
 // Opens `text` as the document, first removing the `$` that marks the cursor.
@@ -298,6 +310,7 @@ PURR_TEST(lsp_sanitize)
 }
 
 static const char *format_reply(const char *text);
+static const char *request_at(const char *uri, const char *method, int line, int character, const char *extra);
 
 // [Clamp], [Min] and [Max] on input fields: completion, and formatting.
 PURR_TEST(lsp_field_attributes)
@@ -620,16 +633,164 @@ PURR_TEST(lsp_methods_and_functions)
     PURR_CHECK(has(signature, "float Heal(mut Stats stats, float amount)"));
     PURR_CHECK(has(signature, "\"activeParameter\":1"));
 
+    // Inlay hints: what a var is, and parameter names at literal arguments.
+    open_document(METHODS "system Fight(mut Unit unit)\n{\n    var left = Heal(unit.stats, 2);\n}\n");
+    const char *hints = request_at("file:///test.purr", "textDocument/inlayHint", 0, 0,
+                                   "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":30,\"character\":0}}");
+    PURR_CHECK(has(hints, "{\"position\":{\"line\":19,\"character\":12},\"label\":\": float\",\"kind\":1"));
+    PURR_CHECK(has(hints, "{\"position\":{\"line\":19,\"character\":32},\"label\":\"amount:\",\"kind\":2"));
+    PURR_CHECK(!has(hints, "\"stats:\"")); // Not for arguments that already say what they are
+
+    // Workspace symbols: every declaration of the game, methods with their type, by fuzzy name.
+    open_document(METHODS);
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"hrt\"}}");
+    PURR_CHECK(has(last_sent(), "\"name\":\"Hurt\",\"kind\":6") && has(last_sent(), "\"containerName\":\"Stats\""));
+    PURR_CHECK(!has(last_sent(), "\"name\":\"Heal\""));
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"\"}}");
+    PURR_CHECK(has(last_sent(), "\"name\":\"Heal\",\"kind\":12") && has(last_sent(), "\"name\":\"Unit\",\"kind\":23"));
+
     // Laid out like other code: braces on their own lines, one-liners kept.
     static const char messy[] = "struct Stats {\nfloat health;\nbool IsDead() { return health <= 0; }\n"
                                 "mut void Hurt() {\nhealth -= 1; }\n}\nvoid Reset(mut Stats s) {\ns.health = 0; }\n"
                                 "system Main() { }\n";
+    static const char expected[] = "struct Stats\n{\n    float health;\n    bool IsDead() { return health <= 0; }\n"
+                                   "    mut void Hurt()\n    {\n        health -= 1;\n    }\n}\n"
+                                   "void Reset(mut Stats s)\n{\n    s.health = 0;\n}\nsystem Main() { }\n";
     format_reply(messy);
     const char *formatted = apply_reply(messy, NULL);
-    PURR_CHECK(strcmp(formatted, "struct Stats\n{\n    float health;\n    bool IsDead() { return health <= 0; }\n"
-                                 "    mut void Hurt()\n    {\n        health -= 1;\n    }\n}\n"
-                                 "void Reset(mut Stats s)\n{\n    s.health = 0;\n}\nsystem Main() { }\n") == 0);
-    if (strcmp(formatted, "") != 0 && !has(formatted, "    mut void Hurt()\n    {\n")) printf("--- got:\n%s---\n", formatted);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
+#define OPERATORS                                                              \
+    "struct Money\n"                                                           \
+    "{\n"                                                                      \
+    "    int cents;\n"                                                         \
+    "\n"                                                                       \
+    "    Money operator +(Money a, Money b) { return Money { cents = a.cents + b.cents }; }\n" \
+    "    int Dollars() { return cents / 100; }\n"                              \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "singleton Wallet { Money total; }\n"                                      \
+    "\n"                                                                       \
+    "system Main(mut Wallet wallet)\n"                                         \
+    "{\n"                                                                      \
+    "    wallet.total = wallet.total + Money { cents = 5 };\n"                 \
+    "}\n"
+
+PURR_TEST(lsp_operators)
+{
+    start();
+    open_document(OPERATORS);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    // `+` in code goes to the operator.
+    const char *hover = request_at("file:///test.purr", "textDocument/hover", 12, 32, "");
+    PURR_CHECK(has(hover, "Money operator +(Money a, Money b)") && has(hover, "Operator of struct `Money`."));
+    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/definition", 12, 32, ""),
+                   "\"range\":{\"start\":{\"line\":4,\"character\":10}"));
+    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/prepareRename", 12, 32, ""),
+                   "Operators are named by their symbol"));
+    // Methods are listed after a dot; operators aren't.
+    const char *members = complete(OPERATORS "system S(Wallet wallet)\n{\n    var d = wallet.total.$\n}\n");
+    PURR_CHECK(offers(members, "Dollars") && !has(members, "operator"));
+
+    // Methods rename, at their declaration and every call.
+    open_document(OPERATORS "system S(Wallet wallet)\n{\n    var d = wallet.total.Dol$lars();\n}\n");
+    request_with("textDocument/rename", "\"newName\":\"Whole\"");
+    const char *renamed = apply_reply(OPERATORS "system S(Wallet wallet)\n{\n    var d = wallet.total.Dollars();\n}\n",
+                                      "file:///test.purr");
+    PURR_CHECK(has(renamed, "int Whole() {") && has(renamed, "wallet.total.Whole();"));
+
+    // Snippets for what goes where: functions at the top, methods in structs
+    // and components, operators in structs.
+    PURR_CHECK(offers(complete("$"), "function"));
+    const char *in_struct = complete("struct Money\n{\n    int cents;\n    $\n}\nsystem Main() { }\n");
+    PURR_CHECK(offers(in_struct, "method") && offers(in_struct, "mut method") && offers(in_struct, "operator"));
+    PURR_CHECK(has(in_struct, "Money operator ${1:+}(Money a, Money b)"));
+    const char *in_component = complete("component Unit\n{\n    int kills;\n    $\n}\nsystem Main() { }\n");
+    PURR_CHECK(offers(in_component, "method") && !offers(in_component, "operator"));
+    PURR_CHECK(offers(complete("struct Money\n{\n    int cents;\n    Money $\n}\nsystem Main() { }\n"), "operator"));
+
+    // Laid out like C#: `operator +(`, and unary minus stays unary.
+    static const char messy[] = "struct Money\n{\nint cents;\nMoney operator+(Money a,Money b) { return a; }\n"
+                                "Money operator - (Money a) { return Money { cents = -a.cents }; }\n}\nsystem Main() { }\n";
+    static const char expected[] = "struct Money\n{\n    int cents;\n    Money operator +(Money a, Money b) { return a; }\n"
+                                   "    Money operator -(Money a) { return Money { cents = -a.cents }; }\n}\n"
+                                   "system Main() { }\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
+PURR_TEST(lsp_folding)
+{
+    start();
+    open_document("// One\n// Two\n// Three\ncomponent Body\n{\n    float x;\n}\nsystem Main()\n{\n    Spawn(Body);\n}\n");
+    const char *folds = request("textDocument/foldingRange");
+    PURR_CHECK(has(folds, "{\"startLine\":0,\"endLine\":2,\"kind\":\"comment\"}"));
+    PURR_CHECK(has(folds, "{\"startLine\":3,\"endLine\":5}")); // From `component Body`, keeping `}` in sight
+    PURR_CHECK(has(folds, "{\"startLine\":7,\"endLine\":9}"));
+}
+
+// A code action at a 0-based line.
+static const char *actions_at(const int line)
+{
+    char range[160];
+    snprintf(range, sizeof range, "\"range\":{\"start\":{\"line\":%d,\"character\":0},\"end\":{\"line\":%d,\"character\":0}}",
+             line, line);
+    return request_at("file:///test.purr", "textDocument/codeAction", line, 0, range);
+}
+
+PURR_TEST(lsp_quick_fixes)
+{
+    start();
+    open_document("struct Stats\n{\n    float health;\n    void Heal(float amount) { health += amount; }\n}\n"
+                  "component Unit { Stats stats; Armor armor; }\n"
+                  "void Bump(int count) { count += 1; }\n"
+                  "system Main() { var x = 1; x = 2; Spawn(Unit); Grow(x, 2.5); }\n"
+                  "system Move(mut Velocity velocity) { }\n");
+    const char *method = actions_at(3);
+    PURR_CHECK(has(method, "Make 'Heal' mut") && has(method, "\"start\":{\"line\":3,\"character\":4}"));
+    PURR_CHECK(has(actions_at(5), "Create struct 'Armor'"));
+    const char *param = actions_at(6);
+    PURR_CHECK(has(param, "Declare 'count' as mut") && has(param, "\"start\":{\"line\":6,\"character\":10}"));
+    const char *main = actions_at(7);
+    PURR_CHECK(has(main, "Declare 'x' as mut") && has(main, "\"start\":{\"line\":7,\"character\":16}"));
+    PURR_CHECK(has(main, "Create function 'Grow'") && has(main, "\"newText\":\"\\nvoid Grow(int x, float value)\\n{\\n}\\n\""));
+    PURR_CHECK(has(main, "\"start\":{\"line\":9,\"character\":0}")); // At the end of the file
+    PURR_CHECK(has(actions_at(8), "Create component 'Velocity'"));
+}
+
+PURR_TEST(lsp_move_to_file)
+{
+    start();
+    open_document("namespace Combat;\n\n// How much damage it takes.\ncomponent Health\n{\n    int value;\n}\n\n"
+                  "system Main() { Spawn(Health); }\n");
+    const char *move = request_at("file:///test.purr", "textDocument/codeAction", 4, 0,
+                                  "\"range\":{\"start\":{\"line\":4,\"character\":0},\"end\":{\"line\":4,\"character\":0}}");
+    PURR_CHECK(has(move, "\"title\":\"Move 'Health' to Health.purr\",\"kind\":\"refactor.move\""));
+    PURR_CHECK(has(move, "{\"kind\":\"create\",\"uri\":\"file:///Health.purr\""));
+    // The new file: the namespace, then the declaration with its comment.
+    PURR_CHECK(has(move, "\"newText\":\"namespace Combat;\\n\\n// How much damage it takes.\\ncomponent Health\\n{\\n"
+                         "    int value;\\n}\\n\""));
+    // Removed here, with the blank line after it.
+    PURR_CHECK(has(move, "{\"range\":{\"start\":{\"line\":2,\"character\":0},\"end\":{\"line\":8,\"character\":0}},"
+                         "\"newText\":\"\"}"));
+
+    // Systems stay: files decide the order they run in.
+    const char *system = request_at("file:///test.purr", "textDocument/codeAction", 8, 0,
+                                    "\"range\":{\"start\":{\"line\":8,\"character\":0},\"end\":{\"line\":8,\"character\":0}}");
+    PURR_CHECK(!has(system, "Move '"));
+
+    // An editor that can't create files isn't offered it.
+    start_with("{}");
+    open_document("component Health\n{\n    int value;\n}\nsystem Main() { Spawn(Health); }\n");
+    const char *unable = request_at("file:///test.purr", "textDocument/codeAction", 1, 0,
+                                    "\"range\":{\"start\":{\"line\":1,\"character\":0},\"end\":{\"line\":1,\"character\":0}}");
+    PURR_CHECK(!has(unable, "Move '"));
 }
 
 #define USES_RADIUS                                                            \

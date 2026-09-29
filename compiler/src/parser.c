@@ -646,20 +646,9 @@ static void parse_field(parser *p, decl *d)
     vec_push(d->fields, f);
 }
 
-// [mut] ReturnType Name(Type name, ...) { ... }: a method of `owner`, or with
-// no owner, a function. The checker says where methods are allowed.
-static decl *parse_method(parser *p, decl *owner)
+// (Type name, ...) { ... }: the rest of a method, function or operator.
+static void parse_routine_rest(parser *p, decl *m, const token *name)
 {
-    const bool is_mut = accept(p, T_MUT);
-    const qname ret = parse_qname(p, "return type");
-    const token *name = expect_ident(p, owner ? "method name" : "function name");
-    decl *m = new_decl(owner ? DECL_METHOD : DECL_FUNCTION, name);
-    m->unit = p->unit;
-    m->owner = owner;
-    m->is_mut_method = is_mut;
-    m->return_type_name = ret.text;
-    m->return_type_at = ret.name_at;
-    m->return_type_qual_at = ret.at;
     expect(p, T_LPAREN, "'('");
     if (!at(p, T_RPAREN)) {
         do {
@@ -680,6 +669,70 @@ static decl *parse_method(parser *p, decl *owner)
     m->body_at = name->at;
     m->body = parse_block(p);
     m->end = m->body->end;
+}
+
+// [mut] ReturnType Name(Type name, ...) { ... }: a method of `owner`, or with
+// no owner, a function. The checker says where methods are allowed.
+static decl *parse_method(parser *p, decl *owner)
+{
+    const bool is_mut = accept(p, T_MUT);
+    const qname ret = parse_qname(p, "return type");
+    const token *name = expect_ident(p, owner ? "method name" : "function name");
+    decl *m = new_decl(owner ? DECL_METHOD : DECL_FUNCTION, name);
+    m->unit = p->unit;
+    m->owner = owner;
+    m->is_mut_method = is_mut;
+    m->return_type_name = ret.text;
+    m->return_type_at = ret.name_at;
+    m->return_type_qual_at = ret.at;
+    parse_routine_rest(p, m, name);
+    return m;
+}
+
+// Type operator: an operator of a struct, rather than a field or method.
+static bool at_operator(const parser *p)
+{
+    if (peek(p)->kind != T_IDENT) return false;
+    int i = 1;
+    while (peek_at(p, i)->kind == T_DOT && peek_at(p, i + 1)->kind == T_IDENT) i += 2;
+    return peek_at(p, i)->kind == T_IDENT && str_eq_c(peek_at(p, i)->text, "operator");
+}
+
+// The operators a struct can declare, as in C#.
+static bool is_overloadable(const tok_kind kind)
+{
+    switch (kind) {
+    case T_PLUS: case T_MINUS: case T_STAR: case T_SLASH: case T_PERCENT: case T_AMP: case T_PIPE: case T_CARET:
+    case T_SHL: case T_SHR: case T_EQ: case T_NE: case T_LT: case T_LE: case T_GT: case T_GE: case T_NOT: case T_TILDE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// ReturnType operator +(Type a, Type b) { ... } in a struct.
+static decl *parse_operator(parser *p, decl *owner)
+{
+    const qname ret = parse_qname(p, "return type");
+    const token *keyword = advance(p);
+    const token *op = advance(p);
+    if (!is_overloadable(op->kind)) {
+        diag_error(op->at, "expected an operator a struct can declare after 'operator'");
+        diag_note("these can: + - * / %% & | ^ << >> == != < <= > >= ! ~");
+        longjmp(p->fail, 1);
+    }
+    decl *m = new_decl(DECL_METHOD, keyword);
+    sb name = {0};
+    sb_printf(&name, "operator " STR_FMT, STR_ARG(op->text));
+    m->name = (str){name.data, (int)name.len};
+    m->unit = p->unit;
+    m->owner = owner;
+    m->is_operator = true;
+    m->op = op->kind;
+    m->return_type_name = ret.text;
+    m->return_type_at = ret.name_at;
+    m->return_type_qual_at = ret.at;
+    parse_routine_rest(p, m, keyword);
     return m;
 }
 
@@ -718,6 +771,11 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
         if (at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN
             && (str_eq_c(peek(p)->text, "Sanitize") || str_eq_c(peek(p)->text, "sanitize"))) {
             parse_sanitize(p, d, advance(p));
+            continue;
+        }
+        if (at_operator(p)) {
+            if (p->recover) RECOVERING(p, vec_push(d->methods, parse_operator(p, d)));
+            else vec_push(d->methods, parse_operator(p, d));
             continue;
         }
         if (at_method(p)) {

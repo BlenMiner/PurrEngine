@@ -4,8 +4,9 @@
     <vendor url="https://github.com/BlenMiner/PurrEngine">PurrEngine</vendor>
     <description><![CDATA[
         <p>PurrLang, the language of the <a href="https://github.com/BlenMiner/PurrEngine">PurrEngine</a> game engine.</p>
-        <p>Highlighting, completion, errors as you type, hover, go to definition, find usages, rename, formatting,
-        parameter hints, the structure view, and each system's schedule above it, for <code>.purr</code> files.</p>
+        <p>Highlighting, completion, errors as you type with quick fixes, hover, go to definition, find usages, rename,
+        formatting, parameter hints, inlay hints, the structure view, symbols across the game, folding, moving a
+        declaration to a file of its own, and each system's schedule above it, for <code>.purr</code> files.</p>
         <p>It runs <code>purrls</code>, the language server that comes with purr: install purr first
         (see the <a href="https://github.com/BlenMiner/PurrEngine#install">install steps</a>). Then open your game's
         folder, the one you'd run <code>purr run</code> in: every <code>.purr</code> file in it is one game.</p>

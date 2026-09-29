@@ -1,0 +1,7 @@
+// expect: 'operator ==' needs a matching 'operator !=', as in C#
+struct Money
+{
+    int cents;
+    bool operator ==(Money a, Money b) { return a.cents == b.cents; }
+}
+system Main() { }
