@@ -2,6 +2,10 @@
 // purr/platform.h). A file of its own, since it includes the operating
 // system's headers, which raylib's clash with.
 
+#if !defined(_WIN32) && !defined(__wasi__)
+#define _DEFAULT_SOURCE // getaddrinfo and struct addrinfo under strict C
+#endif
+
 #include "purr/platform.h"
 
 #include <stdlib.h>

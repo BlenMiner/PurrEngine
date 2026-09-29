@@ -193,7 +193,8 @@ static void print_excerpt(const source *src, const loc at)
     fputs("^\n", stderr);
 }
 
-static void report(const loc at, const char *kind, const char *fmt, const va_list args)
+// Not const: va_list is an array on some targets, and vfprintf takes it as is.
+static void report(const loc at, const char *kind, const char *fmt, va_list args)
 {
     const source *src = diag_source(at.file);
     if (src) fprintf(stderr, "%s:%d:%d: %s: ", src->path, at.line, at.col, kind);

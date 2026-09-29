@@ -42,6 +42,12 @@ static loc here(const lexer *lx)
     return (loc){lx->line, (int)(lx->p - lx->line_start) + 1, lx->file};
 }
 
+// A line ends at "\n", or "\r\n" in files saved on Windows.
+static bool is_line_end(const char *p, const char *end)
+{
+    return *p == '\n' || (*p == '\r' && p + 1 < end && p[1] == '\n');
+}
+
 static bool is_ident_start(const char c)
 {
     return isalpha((unsigned char)c) || c == '_';
@@ -160,7 +166,7 @@ static tok_kind lex_number(lexer *lx)
 // `start` is where the token starts, for the error about a missing quote.
 static char lex_text(lexer *lx, const bool values, const loc start)
 {
-    while (lx->p < lx->end && *lx->p != '\n') {
+    while (lx->p < lx->end && !is_line_end(lx->p, lx->end)) {
         const unsigned char ch = (unsigned char)*lx->p;
         if (ch == '"') {
             lx->p++;
@@ -185,7 +191,7 @@ static char lex_text(lexer *lx, const bool values, const loc start)
         }
         if (ch == '\\') {
             const char esc = lx->p + 1 < lx->end ? lx->p[1] : '\0';
-            if (esc == '\n' || esc == '\0') break;
+            if (esc == '\0' || is_line_end(lx->p + 1, lx->end)) break;
             if (esc != '"' && esc != '\\' && esc != 'n') {
                 diag_error(here(lx), "unknown escape '\\%c'; text can use \\\", \\\\ and \\n", esc);
                 lx->p += 2;
@@ -343,7 +349,7 @@ static token *lex_impl(const source *src, const bool tolerant)
                 continue;
             }
             if (c == ':' && v->braces == 0 && v->parens == 0) {
-                while (lx.p < lx.end && *lx.p != '}' && *lx.p != '"' && *lx.p != '\n') lx.p++;
+                while (lx.p < lx.end && *lx.p != '}' && *lx.p != '"' && !is_line_end(lx.p, lx.end)) lx.p++;
                 t.kind = T_INTERP_FORMAT;
                 t.text = (str){start, (int)(lx.p - start)};
                 vec_push(toks, t);

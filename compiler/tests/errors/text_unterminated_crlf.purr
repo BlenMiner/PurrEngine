@@ -1,0 +1,7 @@
+// expect: text is missing its closing '"'
+// Saved with Windows line endings on purpose (see .gitattributes).
+scene Main { }
+view Label()
+{
+    Draw.Text("oops, float2(0, 0), 1, Color.white);
+}

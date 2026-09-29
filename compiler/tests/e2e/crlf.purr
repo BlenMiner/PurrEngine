@@ -1,0 +1,16 @@
+// Saved with Windows line endings on purpose (see .gitattributes): text and
+// its formats end where the line does, without its carriage return.
+
+component Label
+{
+    string text = "line end"; // A comment after text
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var score = 7;
+    Spawn(Label);
+    Spawn(Label { text = $"score {score:D3}" + " " + "done" });
+}
