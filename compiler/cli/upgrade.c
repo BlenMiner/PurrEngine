@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "json.h"
+#include "release.h"
 #include "sha256.h"
 #include "sys.h"
 
@@ -74,12 +75,26 @@ static bool download(const char *url, const char *path, const bool quiet)
     return sys_run(argv, NULL, quiet) == 0;
 }
 
-// The GitHub releases list, newest first.
+#define RELEASES_API "https://api.github.com/repos/" PURR_REPOSITORY "/releases"
+
+// JSON from `url`, saved in `work` as `name`; NULL if it didn't come.
+static const json *fetch_json(const char *work, const char *url, const char *name)
+{
+    char *path = path_join(work, name);
+    const bool ok = download(url, path, true);
+    size_t len = 0;
+    char *text = ok ? sys_read_file(path, &len) : NULL;
+    free(path);
+    return text ? json_parse(text, len) : NULL;
+}
+
+// The GitHub releases list, newest first: the last 100 published, which
+// always include the newest nightly.
 static const json *fetch_releases(const char *work, const bool quiet)
 {
     char *list = path_join(work, "releases.json");
     const char *custom = sys_env("PURR_RELEASES_URL"); // For tests: a file:// URL to a releases list
-    const char *url = custom ? custom : "https://api.github.com/repos/" PURR_REPOSITORY "/releases?per_page=30";
+    const char *url = custom ? custom : RELEASES_API "?per_page=100";
     const bool ok = download(url, list, quiet);
     if (!ok) {
         if (!quiet) fprintf(stderr, "purr: couldn't reach GitHub to look for new versions\n");
@@ -97,33 +112,24 @@ static const json *fetch_releases(const char *work, const bool quiet)
     return releases;
 }
 
-static const char *version_of(const json *release)
+// The newest version of `channel` (see purr_release_pick). Stable asks GitHub
+// for its latest release too: nightly ones can push it out of the list.
+static const json *newest(const char *work, const json *releases, const char *channel)
 {
-    const char *tag = json_str(json_get(release, "tag_name"));
-    return tag && tag[0] == 'v' ? tag + 1 : tag;
+    const bool ask = strcmp(channel, "stable") == 0 && !sys_env("PURR_RELEASES_URL");
+    const json *latest = ask ? fetch_json(work, RELEASES_API "/latest", "latest.json") : NULL;
+    return purr_release_pick(releases, latest, channel);
 }
 
-static bool is_true(const json *v)
+// The release of `version`, in the list or, for an older one, asked by its tag.
+static const json *exactly(const char *work, const json *releases, const char *version)
 {
-    return v && v->kind == JSON_TRUE;
-}
-
-// The newest release of `channel`, or the one named `version`. Nightly takes
-// stable releases too, when they're newer.
-static const json *pick(const json *releases, const char *channel, const char *version)
-{
-    for (int i = 0; i < releases->count; i++) {
-        const json *r = releases->items[i];
-        const char *v = version_of(r);
-        if (!v || is_true(json_get(r, "draft"))) continue;
-        if (version) {
-            if (strcmp(v, version) == 0) return r;
-            continue;
-        }
-        if (strcmp(channel, "stable") == 0 && is_true(json_get(r, "prerelease"))) continue;
-        return r;
-    }
-    return NULL;
+    const json *found = purr_release_find(releases, version);
+    if (found || sys_env("PURR_RELEASES_URL")) return found;
+    char url[512];
+    snprintf(url, sizeof url, RELEASES_API "/tags/v%s", version);
+    const json *release = fetch_json(work, url, "tag.json");
+    return purr_release_is(release, version) ? release : NULL;
 }
 
 static const char *asset_url(const json *release, const char *name)
@@ -232,6 +238,14 @@ void purr_cleanup(const char *root)
 
 int purr_upgrade(const char *root, const char *channel, const char *version)
 {
+    if (version && version[0] == 'v') version++;
+    if (version && !purr_version_valid(version)) {
+        fprintf(stderr, "purr: '%s' isn't a version\n", version);
+        fprintf(stderr, "  = note: versions look like 0.2.0, or 0.2.0-nightly.3 for nightly ones\n");
+        return 2;
+    }
+    // Switching channels, it installs the other one's newest even if it's older.
+    const bool switching = channel && strcmp(channel, purr_channel(root)) != 0;
     if (!channel) channel = purr_channel(root);
     char *work = path_join(root, ".upgrade");
     sys_remove_tree(work);
@@ -242,15 +256,19 @@ int purr_upgrade(const char *root, const char *channel, const char *version)
 
     const json *releases = fetch_releases(work, false);
     if (!releases) return 1;
-    const json *release = pick(releases, channel, version);
+    const json *release = version ? exactly(work, releases, version) : newest(work, releases, channel);
     if (!release) {
         if (version) fprintf(stderr, "purr: there's no release called %s\n", version);
         else fprintf(stderr, "purr: there's no %s release yet\n", channel);
         return 1;
     }
-    const char *next = version_of(release);
-    if (strcmp(next, PURR_VERSION) == 0) {
-        printf("purr %s is the newest %s version.\n", PURR_VERSION, channel);
+    const char *next = purr_release_version(release);
+    // Upgrading only ever goes forward; an exact version or another channel is what was asked for.
+    const int order = purr_version_compare(next, PURR_VERSION);
+    if (order == 0 || (order < 0 && !version && !switching)) {
+        if (order == 0 && version) printf("purr %s is already installed.\n", PURR_VERSION);
+        else if (order == 0) printf("purr %s is the newest %s version.\n", PURR_VERSION, channel);
+        else printf("purr %s is newer than any %s version out (%s).\n", PURR_VERSION, channel, next);
         char *channel_file = path_join(root, "channel");
         sys_write_text(channel_file, channel);
         sys_remove_tree(work);
@@ -341,9 +359,9 @@ void purr_check_for_update(const char *root)
     sys_mkdirs(work);
     const json *releases = fetch_releases(work, true);
     const char *channel = purr_channel(root);
-    const json *release = releases ? pick(releases, channel, NULL) : NULL;
-    if (release && strcmp(version_of(release), PURR_VERSION) != 0) {
-        fprintf(stderr, "\npurr %s is out (you have %s): run `purr upgrade`\n", version_of(release), PURR_VERSION);
+    const json *release = releases ? newest(work, releases, channel) : NULL;
+    if (release && purr_version_compare(purr_release_version(release), PURR_VERSION) > 0) {
+        fprintf(stderr, "\npurr %s is out (you have %s): run `purr upgrade`\n", purr_release_version(release), PURR_VERSION);
     }
     sys_remove_tree(work);
 }

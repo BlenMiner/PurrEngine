@@ -1,6 +1,6 @@
 # purr: the command users run to build, run and upgrade games. It runs purrc's
 # front end in-process and calls clang (see AGENTS.md, Packaging and releases).
-add_executable(purr_cli main.c build.c editors.c sha256.c sys.c toolchain.c upgrade.c
+add_executable(purr_cli main.c build.c editors.c release.c sha256.c sys.c toolchain.c upgrade.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/folders.c" "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c")
 target_include_directories(purr_cli PRIVATE . ../lsp)
 target_link_libraries(purr_cli PRIVATE purrc_core)
@@ -11,6 +11,13 @@ target_compile_definitions(purr_cli PRIVATE
     "PURR_CHANNEL=\"${PURR_CHANNEL}\""
     "PURR_REPOSITORY=\"${PURR_REPOSITORY}\"")
 install(TARGETS purr_cli RUNTIME DESTINATION bin COMPONENT purr)
+
+# Versions and picking releases, without the network.
+add_executable(purr_cli_tests tests/release_test.c release.c "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c"
+    "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+target_include_directories(purr_cli_tests PRIVATE . ../lsp "${PROJECT_SOURCE_DIR}/tests")
+target_link_libraries(purr_cli_tests PRIVATE purr)
+add_test(NAME purr_cli_tests COMMAND purr_cli_tests)
 
 # Packages build clang and lld into purr, so users need no compiler of their
 # own (see cmake/LLVM.cmake).

@@ -19,10 +19,52 @@ if (Test-Path (Join-Path $bin 'purr.exe')) {
     return
 }
 
-# The newest release of the channel. Nightly takes stable releases too, when they're newer.
-$releases = Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=30"
-$release = $releases | Where-Object { -not $_.draft -and ($channel -eq 'nightly' -or -not $_.prerelease) } |
-    Select-Object -First 1
+# Semantic versioning's order of two tags: -1, 0 or 1. A pre-release comes
+# before its release, and its parts compare as numbers when they are, before words.
+$versionPattern = '^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$'
+function Compare-Version([string]$a, [string]$b) {
+    $x = [regex]::Match($a, $versionPattern)
+    $y = [regex]::Match($b, $versionPattern)
+    for ($i = 1; $i -le 3; $i++) {
+        $c = ([bigint]$x.Groups[$i].Value).CompareTo([bigint]$y.Groups[$i].Value)
+        if ($c -ne 0) { return [Math]::Sign($c) }
+    }
+    if (-not $x.Groups[4].Success -or -not $y.Groups[4].Success) {
+        return [int]$y.Groups[4].Success - [int]$x.Groups[4].Success
+    }
+    $xs = $x.Groups[4].Value.Split('.')
+    $ys = $y.Groups[4].Value.Split('.')
+    for ($i = 0; $i -lt [Math]::Min($xs.Count, $ys.Count); $i++) {
+        $xNumber = $xs[$i] -match '^\d+$'
+        $yNumber = $ys[$i] -match '^\d+$'
+        if ($xNumber -and $yNumber) { $c = ([bigint]$xs[$i]).CompareTo([bigint]$ys[$i]) }
+        elseif ($xNumber) { $c = -1 }
+        elseif ($yNumber) { $c = 1 }
+        else { $c = [string]::CompareOrdinal($xs[$i], $ys[$i]) }
+        if ($c -ne 0) { return [Math]::Sign($c) }
+    }
+    return [Math]::Sign($xs.Count - $ys.Count)
+}
+
+# The channel's highest version, not the last one published (as purr upgrade
+# picks, compiler/cli/release.c). Nightly takes stable releases too, when
+# they're newer. Stable also asks for GitHub's latest release, since nightly
+# ones can push it out of the list.
+function Select-Release($releases, [string]$channel) {
+    $best = $null
+    foreach ($r in $releases) {
+        if ($r.draft -or ($channel -eq 'stable' -and $r.prerelease) -or $r.tag_name -notmatch $versionPattern) { continue }
+        if (-not $best -or (Compare-Version $r.tag_name $best.tag_name) -gt 0) { $best = $r }
+    }
+    return $best
+}
+
+# ForEach-Object unrolls the list: Windows PowerShell returns a JSON array as one object.
+$releases = @(Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=100" | ForEach-Object { $_ })
+if ($channel -eq 'stable') {
+    try { $releases += Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" } catch { }
+}
+$release = Select-Release $releases $channel
 if (-not $release) { throw "There's no $channel release of purr yet." }
 $zipUrl = ($release.assets | Where-Object name -eq $package).browser_download_url
 $sumsUrl = ($release.assets | Where-Object name -eq 'SHA256SUMS').browser_download_url

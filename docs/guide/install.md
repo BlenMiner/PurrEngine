@@ -65,3 +65,5 @@ purr upgrade --stable   # back to stable ones
 ```
 
 `purr` also tells you, at most once a day, when a new version is out. Upgrades check every download against the release's checksums.
+
+`purr upgrade` only ever moves forward. Switching channels, or `purr upgrade --version <v>`, installs what you ask for, even an older version.
