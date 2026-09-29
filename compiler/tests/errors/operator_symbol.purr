@@ -4,4 +4,4 @@ struct Money
     int cents;
     bool operator &&(Money a, Money b) { return true; }
 }
-system Main() { }
+scene Main { }

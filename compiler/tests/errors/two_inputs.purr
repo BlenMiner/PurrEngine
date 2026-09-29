@@ -1,4 +1,4 @@
 // expect: a game has one input declaration
 input PlayerInput { bool jump; }
 input OtherInput { bool fire; }
-system Main() { }
+scene Main { }

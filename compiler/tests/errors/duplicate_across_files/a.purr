@@ -1,2 +1,4 @@
 component Body { float2 position; }
-system Main() { Spawn(Body); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }

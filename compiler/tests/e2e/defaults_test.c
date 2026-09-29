@@ -3,10 +3,10 @@
 
 static purr_world world;
 
-// Main spawns these first, so they get slots 0, 1 and 2.
-static const purr_entity BARE = {0, 1};
-static const purr_entity PARTIAL = {1, 1};
-static const purr_entity BITS = {2, 1};
+// The Main scene is slot 0, and its Setup spawns these first, so they get slots 1, 2 and 3.
+static const purr_entity BARE = {1, 1};
+static const purr_entity PARTIAL = {2, 1};
+static const purr_entity BITS = {3, 1};
 
 PURR_TEST(defaults_singletons_start_with_declared_values)
 {

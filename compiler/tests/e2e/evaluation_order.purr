@@ -17,7 +17,9 @@ component Link
     Entity target;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     // Siblings, left to right: Thing 1, then Thing 2, then the Pair around them.
     Spawn(Pair { a = Spawn(Thing { id = 1 }), b = Spawn(Thing { id = 2 }) });

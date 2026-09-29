@@ -29,7 +29,7 @@ input Controls
     Weapon weapon = Weapon.Sword;
 }
 
-system Main() { }
+scene Main { }
 
 system Advance(mut Match match, Time time)
 {

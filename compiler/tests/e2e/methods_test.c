@@ -3,8 +3,8 @@
 
 static purr_world world;
 
-static const purr_entity first = {0, 1};
-static const purr_entity second = {1, 1};
+static const purr_entity first = {1, 1};
+static const purr_entity second = {2, 1};
 
 // One tick: Fight, Rage, Record, Mend, ReadInput.
 static void one_tick(void)

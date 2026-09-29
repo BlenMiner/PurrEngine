@@ -1,6 +1,6 @@
 // expect: input comes from the players; the simulation can only read it
 input PlayerInput { bool jump; }
-system Main() { }
+scene Main { }
 system Cheat(PlayerInput input)
 {
     input.jump = true;

@@ -1,5 +1,7 @@
 // expect: a view can't change the match, and 'Ping' is a match event
 component Body { float2 position; }
 event Ping { }
-system Main() { Spawn(Body); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
 view Show(Body body) { Send(Ping); }

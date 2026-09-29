@@ -4,4 +4,4 @@ singleton Score
     int value;
     mut void Add(int points) { value += points; }
 }
-system Main() { }
+scene Main { }

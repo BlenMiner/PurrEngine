@@ -5,4 +5,4 @@ input PlayerInput
     Sample(Devices devices) { jump = devices.keyboard.space.pressed; }
     Sanitize() { jump = devices.keyboard.space.pressed; }
 }
-system Main() { }
+scene Main { }

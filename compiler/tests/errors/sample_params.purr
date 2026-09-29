@@ -4,4 +4,4 @@ input PlayerInput
     bool jump;
     Sample(int x) { }
 }
-system Main() { }
+scene Main { }

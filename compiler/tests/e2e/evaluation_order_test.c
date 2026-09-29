@@ -3,9 +3,10 @@
 
 static purr_world world;
 
+// The index-th entity Main's Setup spawns: the Main scene itself is the first entity.
 static purr_entity slot(const uint32_t index)
 {
-    return (purr_entity){index, 1};
+    return (purr_entity){index + 1, 1};
 }
 
 static int32_t thing_id(const uint32_t index)

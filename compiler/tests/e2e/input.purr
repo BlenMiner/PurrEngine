@@ -44,7 +44,9 @@ input PlayerInput
     }
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Transform, Jumps, Owner { player = PlayerID(0) });
     Spawn(Transform, Jumps, Owner { player = PlayerID(1) });

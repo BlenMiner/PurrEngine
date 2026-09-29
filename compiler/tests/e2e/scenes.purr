@@ -1,0 +1,83 @@
+// Scenes: groups of entities that load and unload together.
+
+scene Arena
+{
+    int size = 20;
+    int round;
+}
+
+// One player's cards, which only they see.
+scene Hand
+{
+    PlayerID player;
+}
+
+component Floor
+{
+    int size;
+}
+
+component Enemy
+{
+    int hp = 3;
+}
+
+component Loot
+{
+    int from;
+}
+
+singleton Stats
+{
+    int arenasSetUp;
+    int destroyed;
+    int lootDropped;
+    Entity arena;
+    Entity hand;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Stats stats)
+{
+    stats.arena = Scene.Load(Arena { size = 30 });
+    stats.hand = Scene.Load(Hand { player = PlayerID(1) }, SceneVisibility.Private);
+    Scene.AddPlayer(stats.hand, PlayerID(1));
+    Scene.AddPlayer(stats.hand, PlayerID(3));
+    Scene.RemovePlayer(stats.hand, PlayerID(3));
+}
+
+// Runs for each arena as it loads: what it spawns joins that arena.
+event(Spawned) SetupArena(Arena arena, mut Stats stats)
+{
+    stats.arenasSetUp += 1;
+    Spawn(Floor { size = arena.size });
+    Spawn(Enemy);
+    Spawn(Enemy);
+}
+
+// Runs once per loaded arena, and unloads it on its third round.
+system Rounds(Entity self, mut Arena arena)
+{
+    arena.round += 1;
+    if (arena.round == 3) Scene.Unload(self);
+}
+
+// A spawn joins the scene of the entity the code runs for: this loot, the arena.
+system Drops(Enemy enemy, Time time)
+{
+    if (time.tick == 0 && enemy.hp > 0) Spawn(Loot { from = 1 });
+}
+
+event(Destroyed) CountDestroyed(mut Stats stats)
+{
+    stats.destroyed += 1;
+}
+
+// As the arena unloads, its enemies drop loot into it. By the loot's turn the
+// arena is gone, so the loot is never made.
+event(Destroyed) DropLoot(with Enemy, mut Stats stats)
+{
+    stats.lootDropped += 1;
+    Spawn(Loot { from = 2 });
+}

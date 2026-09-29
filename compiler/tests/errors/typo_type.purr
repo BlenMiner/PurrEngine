@@ -1,5 +1,7 @@
 // expect: did you mean 'float3'?
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     flaot3 v = float3(1);
 }

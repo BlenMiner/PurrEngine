@@ -5,4 +5,4 @@ struct Stats
     mut void Hurt() { health -= 1; }
     bool Check() { Hurt(); return health > 0; }
 }
-system Main() { }
+scene Main { }

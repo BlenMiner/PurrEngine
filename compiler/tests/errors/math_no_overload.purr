@@ -1,5 +1,7 @@
 // expect: no version of Math.Dot takes (float2, float3)
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var d = Math.Dot(float2(1, 2), float3(1, 2, 3));
 }

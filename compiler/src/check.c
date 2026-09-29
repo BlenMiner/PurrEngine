@@ -347,7 +347,7 @@ static type check_literal(checker *c, expr *e)
         field_init *init = &e->inits.items[i];
         const type value = check_expr(c, init->value);
         for (int j = 0; j < d->fields.count; j++) {
-            if (str_eq(d->fields.items[j].name, init->name)) init->field = &d->fields.items[j];
+            if (str_eq(d->fields.items[j].name, init->name) && !d->fields.items[j].hidden) init->field = &d->fields.items[j];
         }
         if (!init->field) {
             diag_error(init->at, "%s '" STR_FMT "' has no field '" STR_FMT "'",
@@ -371,12 +371,25 @@ static type check_literal(checker *c, expr *e)
     return decl_type(d);
 }
 
+// A scene where Spawn, Add or Remove wants a component: scenes are loaded and
+// unloaded with their own calls.
+static void scene_not_component(const expr *arg, const decl *d, const char *fn)
+{
+    diag_error(arg->at, "'" STR_FMT "' is a scene, so %s can't take it", STR_ARG(d->name), fn);
+    if (str_eq_c(str_from(fn), "Remove")) diag_note("unload the scene instead: 'Scene.Unload(scene)'");
+    else diag_note("load it instead: 'Scene.Load(" STR_FMT " { ... })'", STR_ARG(d->name));
+}
+
 // A component argument to Spawn or Add: `Player` (defaults) or `Player { ... }`.
 // Returns the component, or NULL after reporting an error.
 static decl *check_component_arg(checker *c, expr *arg, const char *fn)
 {
     if (arg->kind == E_LITERAL) {
         const type t = check_literal(c, arg);
+        if (t.kind == TY_COMPONENT && t.decl->is_scene) {
+            scene_not_component(arg, t.decl, fn);
+            return NULL;
+        }
         if (t.kind == TY_STRUCT) {
             diag_error(arg->at, "%s takes components, and '" STR_FMT "' is a struct", fn, STR_ARG(t.decl->name));
             diag_note("put it in a component, like 'component Name { " STR_FMT " value; }'", STR_ARG(t.decl->name));
@@ -397,6 +410,10 @@ static decl *check_component_arg(checker *c, expr *arg, const char *fn)
             arg->bind = BIND_TYPE;
             arg->type_decl = d;
             arg->type = (type){TY_COMPONENT, d};
+            if (d->is_scene) {
+                scene_not_component(arg, d, fn);
+                return NULL;
+            }
             return d;
         }
         if (d && (d->kind == DECL_STRUCT || d->kind == DECL_EVENT)) {
@@ -861,8 +878,140 @@ static bool names_builtin_owner(const checker *c, const expr *e)
     return e->kind == E_NAME && builtin_owner(e->name) && !find_local(c, e->name) && !find_param(c, e->name);
 }
 
+// Scene.Load(Arena { ... }), Scene.Load(Hand { ... }, SceneVisibility.Private),
+// Scene.Unload(scene), Scene.AddPlayer(scene, player) and
+// Scene.RemovePlayer(scene, player).
+static type check_scene_call(checker *c, expr *e)
+{
+    const bool load = str_eq_c(e->name, "Load");
+    const bool unload = str_eq_c(e->name, "Unload");
+    const bool players = str_eq_c(e->name, "AddPlayer") || str_eq_c(e->name, "RemovePlayer");
+    if (!load && !unload && !players) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        diag_error(e->at, "Scene has no '" STR_FMT "'; it has Load, Unload, AddPlayer and RemovePlayer", STR_ARG(e->name));
+        suggestion s = suggest_start(e->name);
+        suggest_consider_c(&s, "Load");
+        suggest_consider_c(&s, "Unload");
+        suggest_consider_c(&s, "AddPlayer");
+        suggest_consider_c(&s, "RemovePlayer");
+        suggest_note(&s);
+        return T_ERR;
+    }
+    const char *error = NULL;
+    if (c->method) error = "%s can't load or unload scenes; systems, views and event handlers do";
+    else if (c->in_input) error = "%s runs outside the simulation, so it can't load or unload scenes";
+    if (error) {
+        diag_error(e->at, error, c->method ? routines(c) : input_code(c));
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        return T_ERR;
+    }
+    const bool local = local_code(c);
+    e->local_world = local;
+
+    if (load) {
+        if (e->args.count < 1 || e->args.count > 2) {
+            for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+            diag_error(e->at, "Scene.Load takes a scene, like 'Scene.Load(Arena { size = 30 })', and maybe its visibility");
+            return T_ERR;
+        }
+        // Like Spawn, it creates an entity, so it runs first in its statement (see Evaluation order).
+        if (c->branch_depth > 0 || c->short_circuit_depth > 0) {
+            diag_error(e->at, "Scene.Load can't be %s", c->branch_depth > 0 ? "inside '?:'" : "on the right side of && or ||");
+            diag_note("that part only runs sometimes; load in an if/else instead");
+        }
+        expr *arg = e->args.items[0];
+        decl *scene = NULL;
+        if (arg->kind == E_LITERAL) {
+            const type t = check_literal(c, arg);
+            if (t.kind == TY_COMPONENT && t.decl->is_scene) scene = t.decl;
+            else if (t.kind != TY_ERROR) diag_error(arg->at, "Scene.Load takes a scene, and '" STR_FMT "' is %s", STR_ARG(t.decl->name), decl_what(t.decl));
+        } else {
+            str name;
+            decl *d = (arg->kind == E_NAME || arg->kind == E_MEMBER) && qualified_text(arg, &name) ? find_type(c, name, arg->at) : NULL;
+            if (d) {
+                if (arg->kind == E_MEMBER) mark_namespaces(arg->object);
+                arg->bind = BIND_TYPE;
+                arg->type_decl = d;
+                arg->type = decl_type(d);
+                if (d->kind == DECL_COMPONENT && d->is_scene) scene = d;
+                else diag_error(arg->at, "Scene.Load takes a scene, and '" STR_FMT "' is %s", STR_ARG(d->name), decl_what(d));
+            } else if (check_expr(c, arg).kind != TY_ERROR) {
+                diag_error(arg->at, "Scene.Load takes a scene, like 'Scene.Load(Arena)' or 'Scene.Load(Arena { size = 30 })'");
+            }
+        }
+        if (e->args.count == 2) {
+            const type t = check_expr(c, e->args.items[1]);
+            if (t.kind != TY_ERROR && !(t.kind == TY_ENUM && t.decl == c->prog->scene_visibility)) {
+                diag_error(e->args.items[1]->at, "a scene's visibility is 'SceneVisibility.Public' or 'SceneVisibility.Private', not %s",
+                           type_name(t));
+            } else if (scene && scene->is_local) {
+                diag_error(e->args.items[1]->at, "'" STR_FMT "' is local, and only the match's scenes have a visibility",
+                           STR_ARG(scene->name));
+                diag_note("local scenes are only on this machine, so no other player sees them anyway");
+            }
+        }
+        if (!scene) return T_ERR;
+        if (scene->is_local != local) {
+            if (scene->is_local) {
+                diag_error(arg->at, "'" STR_FMT "' is local, and the match can't use local state", STR_ARG(scene->name));
+            } else {
+                diag_error(arg->at, "%s can't change the match, and '" STR_FMT "' is one of its scenes",
+                           local_code_what(c->system), STR_ARG(scene->name));
+                diag_note("start a match with it through the session instead");
+            }
+            return T_ERR;
+        }
+        e->call = CALL_LOAD;
+        e->type_decl = scene;
+        e->spawn_mask = bit(scene);
+        vec_push(c->spawns, e);
+        return local ? (type){TY_LOCAL_ENTITY, NULL} : T_ENTITY_;
+    }
+
+    const int want = unload ? 1 : 2;
+    for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+    if (e->args.count != want) {
+        diag_error(e->at, unload ? "Scene.Unload takes the scene's entity: 'Scene.Unload(scene)'"
+                                 : "Scene.%s takes the scene's entity and a player: 'Scene." STR_FMT "(scene, player)'",
+                   str_to_cstr(e->name), STR_ARG(e->name));
+        return T_ERR;
+    }
+    const type scene = e->args.items[0]->type;
+    const type_kind own = local ? TY_LOCAL_ENTITY : TY_ENTITY;
+    if (scene.kind != TY_ERROR && scene.kind != own) {
+        if (scene.kind == TY_ENTITY && local) {
+            diag_error(e->args.items[0]->at, "%s can't change the match, and this entity belongs to it", local_code_what(c->system));
+        } else if (scene.kind == TY_LOCAL_ENTITY && !local) {
+            diag_error(e->args.items[0]->at, "a LocalEntity is local, and the match can't use local state");
+        } else {
+            diag_error(e->args.items[0]->at, "Scene." STR_FMT " takes the scene's entity, not %s", STR_ARG(e->name), type_name(scene));
+        }
+        return T_ERR;
+    }
+    if (players) {
+        if (local) {
+            diag_error(e->at, "which players see a scene is the match's to decide, so local code can't change it");
+            return T_ERR;
+        }
+        const type player = e->args.items[1]->type;
+        if (player.kind != TY_ERROR && player.kind != TY_PLAYER) {
+            diag_error(e->args.items[1]->at, "Scene." STR_FMT " takes a PlayerID, not %s", STR_ARG(e->name), type_name(player));
+            return T_ERR;
+        }
+        e->call = CALL_SCENE_PLAYER;
+        return T_VOID_;
+    }
+    e->call = CALL_UNLOAD;
+    return T_VOID_;
+}
+
 static type check_method(checker *c, expr *e)
 {
+    if (e->object->kind == E_NAME && str_eq_c(e->object->name, "Scene") && !find_local(c, e->object->name)
+        && !find_param(c, e->object->name)) {
+        return check_scene_call(c, e);
+    }
+
     // Math.Dot(a, b), quaternion.AxisAngle(axis, angle), Draw.Circle(center, radius, color)
     if (names_builtin_owner(c, e->object)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
@@ -1300,7 +1449,7 @@ static type check_member(checker *c, expr *e)
     if (has_fields(obj)) {
         for (int i = 0; i < obj.decl->fields.count; i++) {
             field *f = &obj.decl->fields.items[i];
-            if (str_eq(f->name, e->member)) {
+            if (str_eq(f->name, e->member) && !f->hidden) {
                 e->field = f;
                 return f->type;
             }
@@ -1801,7 +1950,7 @@ static void check_stmt(checker *c, stmt *s)
         const bool effect = (s->value->kind == E_METHOD
                              && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
                          || (s->value->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION
-                         || call == CALL_SEND;
+                         || call == CALL_SEND || call == CALL_LOAD || call == CALL_UNLOAD || call == CALL_SCENE_PLAYER;
         if (!effect && s->value->type.kind != TY_ERROR) diag_error(s->value->at, "this expression does nothing on its own");
         break;
     }
@@ -2058,6 +2207,7 @@ static void check_fields(checker *c, const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) {
         field *f = &d->fields.items[i];
+        if (f->hidden) continue;
         check_reserved(f->name, f->at);
         for (int j = 0; j < i; j++) {
             if (str_eq(d->fields.items[j].name, f->name)) {
@@ -2483,12 +2633,6 @@ static void check_params(const checker *c, decl *sys)
         }
     }
 
-    if (sys->is_main && has_input) {
-        diag_error(sys->at, "Main runs once when the world is created, before any input arrives");
-        diag_note("read the input in a system; it runs every tick");
-    } else if (sys->is_main && sys->per_entity) {
-        diag_error(sys->at, "Main runs once when the world is created, so it can only take singletons");
-    }
 }
 
 // Access a system declares but doesn't use makes other systems wait for
@@ -2542,8 +2686,8 @@ static void add_builtins(program *prog)
     time->kind = DECL_SINGLETON;
     time->name = str_from("Time");
     time->builtin = true;
-    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
-    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
+    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false};
+    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false};
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
@@ -2552,7 +2696,7 @@ static void add_builtins(program *prog)
     owner->kind = DECL_COMPONENT;
     owner->name = str_from("Owner");
     owner->builtin = true;
-    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false};
     vec_push(owner->fields, player);
     prog->owner = owner;
 
@@ -2565,9 +2709,21 @@ static void add_builtins(program *prog)
     vec_push(prog->player_joined->fields, player);
     vec_push(prog->player_left->fields, player);
 
+    // enum SceneVisibility { Public, Private }: who sees a scene the match loads.
+    decl *visibility = NEW(decl);
+    visibility->kind = DECL_ENUM;
+    visibility->name = str_from("SceneVisibility");
+    visibility->builtin = true;
+    const enum_member public_member = {str_from("Public"), {0, 0, 0}, NULL, 0};
+    const enum_member private_member = {str_from("Private"), {0, 0, 0}, NULL, 1};
+    vec_push(visibility->members, public_member);
+    vec_push(visibility->members, private_member);
+    prog->scene_visibility = visibility;
+
     VEC(decl *) decls = {0};
     vec_push(decls, time);
     vec_push(decls, owner);
+    vec_push(decls, visibility);
     vec_push(decls, prog->spawned);
     vec_push(decls, prog->destroyed);
     vec_push(decls, prog->player_joined);
@@ -2591,7 +2747,7 @@ static decl *new_record(program *prog, const char *name, const char *c_name)
 
 static void record_field(decl *d, const char *name, const type t)
 {
-    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}};
+    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false};
     vec_push(d->fields, f);
 }
 
@@ -2650,7 +2806,7 @@ static bool is_builtin_name(const str name)
 {
     type dummy;
     return builtin_type_named(name, &dummy) || str_eq_c(name, "Math") || str_eq_c(name, "Draw")
-        || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn") || str_eq_c(name, "Send");
+        || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn") || str_eq_c(name, "Send") || str_eq_c(name, "Scene");
 }
 
 // What a declaration is called in generated C: Combat_Health for Combat.Health.
@@ -2732,6 +2888,26 @@ static void collect_decls(program *prog)
 
         switch (d->kind) {
         case DECL_COMPONENT:
+            if (d->is_scene) {
+                // A scene's visibility and the players who see it, in generated C only.
+                field visibility = {0};
+                visibility.name = str_from("purr_visibility");
+                visibility.type_name = str_from("int");
+                visibility.hidden = true;
+                field players = visibility;
+                players.name = str_from("purr_players");
+                vec_push(d->fields, visibility);
+                vec_push(d->fields, players);
+            }
+            if (d->is_scene && str_eq_c(d->name, "Main")) {
+                if (prog->main) {
+                    diag_error(d->at, "there can only be one 'scene Main'");
+                    const source *src = diag_source(prog->main->at.file);
+                    if (src) diag_note("the other one is in %s", src->path);
+                } else {
+                    prog->main = d;
+                }
+            }
             d->index = prog->components.count;
             if (d->index == MAX_COMPONENTS) {
                 diag_error(d->at, "too many components; the limit is %d for now", MAX_COMPONENTS);
@@ -2765,14 +2941,8 @@ static void collect_decls(program *prog)
                 d->index = prog->handlers.count;
                 vec_push(prog->handlers, d);
             } else if (str_eq_c(d->name, "Main")) {
-                d->is_main = true;
-                if (prog->main) {
-                    diag_error(d->at, "there can only be one 'system Main()'");
-                    const source *src = diag_source(prog->main->at.file);
-                    if (src) diag_note("the other one is in %s", src->path);
-                } else {
-                    prog->main = d;
-                }
+                diag_error(d->at, "the program starts in the scene named Main, not a system");
+                diag_note("write 'scene Main { }', and create what it starts with in 'event(Spawned) Setup(with Main) { ... }'");
             } else {
                 d->index = prog->systems.count;
                 vec_push(prog->systems, d);
@@ -2834,7 +3004,22 @@ static void derive_archetypes(const checker *c)
             if ((prog->removed_mask & b) && !add_archetype(prog, current & ~b, local)) goto too_many;
         }
     }
+    // The Main scene, which the engine loads, after every other archetype so
+    // theirs keep their order. What Add and Remove derive from it comes after.
+    if (!add_archetype(prog, bit(prog->main), prog->main->is_local)) goto too_many;
+    prog->main_archetype = find_archetype(prog, bit(prog->main), prog->main->is_local);
+    for (int i = prog->main_archetype; i < prog->archetypes.count; i++) {
+        for (int bit_index = 0; bit_index < prog->components.count; bit_index++) {
+            const uint64_t b = (uint64_t)1 << bit_index;
+            const uint64_t current = prog->archetypes.items[i];
+            const bool local = prog->archetype_local.items[i];
+            if (prog->components.items[bit_index]->is_local != local) continue;
+            if ((prog->added_mask & b) && !add_archetype(prog, current | b, local)) goto too_many;
+            if ((prog->removed_mask & b) && !add_archetype(prog, current & ~b, local)) goto too_many;
+        }
+    }
     for (int i = 0; i < prog->archetypes.count; i++) vec_push(prog->spawn_target, false);
+    prog->spawn_target.items[prog->main_archetype] = true;
     for (int i = 0; i < c->spawns.count; i++) {
         const int a = find_archetype(prog, c->spawns.items[i]->spawn_mask, c->spawns.items[i]->local_world);
         c->spawns.items[i]->spawn_archetype = a;
@@ -2990,10 +3175,6 @@ static void check_attributes(checker *c)
                            STR_ARG(attr->name), STR_ARG(d->name));
                 continue;
             }
-            if (d->is_main) {
-                diag_error(attr->at, "Main runs once when the world is created, before any system, so it isn't ordered");
-                continue;
-            }
             const char *kind = system_what(d);
             if (attr->args.count == 0) {
                 diag_error(attr->at, "'" STR_FMT "' needs the %ss it runs %s, like [" STR_FMT "(Movement)]",
@@ -3010,7 +3191,7 @@ static void check_attributes(checker *c)
                     for (int j = 0; j < c->prog->decls.count; j++) {
                         const decl *candidate = c->prog->decls.items[j];
                         if (candidate->kind == DECL_SYSTEM && candidate->is_view == d->is_view
-                            && candidate->is_handler == d->is_handler && !candidate->is_main) {
+                            && candidate->is_handler == d->is_handler) {
                             suggest_consider(&s, candidate->name);
                         }
                     }
@@ -3026,8 +3207,6 @@ static void check_attributes(checker *c)
                 q->decl = target;
                 if (target == d) {
                     diag_error(q->name_at, "a %s can't run %s itself", kind, before ? "before" : "after");
-                } else if (target->is_main) {
-                    diag_error(q->name_at, "Main runs once when the world is created, before every system");
                 } else if (target->is_handler != d->is_handler) {
                     diag_error(q->name_at, "%s and event handlers are ordered separately: handlers run when their event "
                                            "is sent, at the end of the tick", d->is_view || target->is_view ? "views" : "systems");
@@ -3187,20 +3366,24 @@ bool check(program *prog)
         }
     }
 
-    if (!prog->main) {
+    if (!prog->main && diag_error_count() == 0) {
         const decl *misspelled = NULL;
-        for (int i = 0; i < prog->systems.count; i++) {
-            const str name = prog->systems.items[i]->name;
+        for (int i = 0; i < prog->decls.count; i++) {
+            const str name = prog->decls.items[i]->name;
             if (name.len == 4 && (name.ptr[0] == 'm' || name.ptr[0] == 'M') && memcmp(name.ptr + 1, "ain", 3) == 0) {
-                misspelled = prog->systems.items[i];
+                misspelled = prog->decls.items[i];
             }
         }
-        if (misspelled) {
+        if (misspelled && misspelled->kind == DECL_COMPONENT && misspelled->is_scene) {
             diag_error(misspelled->at, "the program has no entry point");
             diag_note("the entry point is spelled 'Main', with a capital M");
-        } else {
+        } else if (misspelled && !str_eq_c(misspelled->name, "Main")) {
+            diag_error(misspelled->at, "the program has no entry point");
+            diag_note("it's the scene named 'Main', with a capital M: 'scene Main { }'");
+        } else if (!misspelled) {
             diag_error((loc){1, 1, 0}, "the program has no entry point");
-            diag_note("add 'system Main() { ... }' to create the starting entities");
+            diag_note("add 'scene Main { }', the scene the program starts in, and create what it starts with in "
+                      "'event(Spawned) Setup(with Main) { ... }'");
         }
     }
 

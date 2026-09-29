@@ -1,4 +1,4 @@
 // expect: 'Phase' is an enum; systems take components and singletons
 enum Phase { Warmup, Playing }
-system Main() { }
+scene Main { }
 system S(Phase phase) { }

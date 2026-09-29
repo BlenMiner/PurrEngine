@@ -3,4 +3,4 @@ input PlayerInput
 {
     [Clamp(1)] float move;
 }
-system Main() { }
+scene Main { }

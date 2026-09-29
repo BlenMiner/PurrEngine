@@ -1,3 +1,5 @@
 // expect: Spawn takes components, and 'Stats' is a struct
 struct Stats { float health = 100; }
-system Main() { Spawn(Stats); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Stats); }

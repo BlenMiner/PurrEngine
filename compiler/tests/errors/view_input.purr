@@ -1,7 +1,9 @@
 // expect: views can't read input yet
 input PlayerInput { float2 aim; }
 component Body { float2 position; }
-system Main() { Spawn(Body, Owner); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body, Owner); }
 view Aim(PlayerInput input, Body body)
 {
     Draw.Line(body.position, body.position + input.aim, Color.white);

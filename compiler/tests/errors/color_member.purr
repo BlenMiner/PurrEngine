@@ -1,6 +1,8 @@
 // expect: Color has r, g, b and a, not 'x'
 component Tint { Color color; }
-system Main() { Spawn(Tint); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Tint); }
 system Fade(mut Tint tint)
 {
     tint.color.x = 0;

@@ -4,4 +4,4 @@ input PlayerInput
     bool jump;
     PlayerInput(Devices devices) { jump = devices.keyboard.space.pressed; }
 }
-system Main() { }
+scene Main { }

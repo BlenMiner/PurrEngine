@@ -4,4 +4,4 @@ component Health
     int value;
     Sanitize() { }
 }
-system Main() { }
+scene Main { }

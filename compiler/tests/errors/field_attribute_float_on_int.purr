@@ -3,4 +3,4 @@ input PlayerInput
 {
     [Max(1.5)] int count;
 }
-system Main() { }
+scene Main { }

@@ -222,7 +222,8 @@ static bool offers(const char *reply, const char *label)
     "    bool fire;\n"                                                         \
     "}\n"                                                                      \
     "\n"                                                                       \
-    "system Main()\n"                                                          \
+    "scene Main { }\n"                                                         \
+    "event(Spawned) Setup(with Main)\n"                                        \
     "{\n"                                                                      \
     "    Spawn(Body, Owner);\n"                                                \
     "}\n"
@@ -246,7 +247,7 @@ PURR_TEST(lsp_diagnostics)
 
     open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.pos = 1;\n}\n");
     PURR_CHECK(has(last_sent(), "Body has no field 'pos'"));
-    PURR_CHECK(has(last_sent(), "\"range\":{\"start\":{\"line\":23,\"character\":9},\"end\":{\"line\":23,\"character\":12}}"));
+    PURR_CHECK(has(last_sent(), "\"range\":{\"start\":{\"line\":24,\"character\":9},\"end\":{\"line\":24,\"character\":12}}"));
     PURR_CHECK(has(last_sent(), "\"severity\":1"));
 }
 
@@ -293,18 +294,18 @@ PURR_TEST(lsp_sanitize)
     start();
     static const char program[] = "input PlayerInput\n{\n    float move;\n\n    Sample(Devices devices) { }\n\n"
                                   "    Sanitize()\n    {\n        move = Math.Clamp($, -1, 1);\n    }\n}\n"
-                                  "system Main() { }\n";
+                                  "scene Main { }\n";
     const char *reply = complete(program);
     PURR_CHECK(offers(reply, "move"));
     PURR_CHECK(!offers(reply, "devices"));
 
     open_document("input PlayerInput\n{\n    float move;\n    Sani$tize() { move = Math.Clamp(move, -1, 1); }\n}\n"
-         "system Main() { }\n");
+         "scene Main { }\n");
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     PURR_CHECK(has(request("textDocument/hover"), "Runs on every input before the simulation reads it"));
 
     open_document("input PlayerInput\n{\n    bool jump;\n    Sam$ple(Devices devices) { jump = devices.keyboard.space.pressed; }\n}\n"
-         "system Main() { }\n");
+         "scene Main { }\n");
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     PURR_CHECK(has(request("textDocument/hover"), "Builds the player's input from the devices"));
 }
@@ -316,16 +317,16 @@ static const char *request_at(const char *uri, const char *method, int line, int
 PURR_TEST(lsp_field_attributes)
 {
     start();
-    const char *names = complete("input PlayerInput\n{\n    [$] float move;\n}\nsystem Main() { }\n");
+    const char *names = complete("input PlayerInput\n{\n    [$] float move;\n}\nscene Main { }\n");
     PURR_CHECK(offers(names, "Clamp") && offers(names, "Min") && offers(names, "Max"));
     PURR_CHECK(!offers(names, "Before"));
-    const char *bounds = complete("input PlayerInput\n{\n    [Clamp(float2(0, 0), $)] float2 aim;\n}\nsystem Main() { }\n");
+    const char *bounds = complete("input PlayerInput\n{\n    [Clamp(float2(0, 0), $)] float2 aim;\n}\nscene Main { }\n");
     PURR_CHECK(offers(bounds, "Math") && offers(bounds, "float2"));
 
     static const char messy[] = "input PlayerInput\n{\n[Clamp(-1,1)]float move;\n    [Min(0),Max(3)]   int gear;\n}\n"
-                                "system Main() { }\n";
+                                "scene Main { }\n";
     static const char expected[] = "input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    [Min(0), Max(3)] int gear;\n}\n"
-                                   "system Main() { }\n";
+                                   "scene Main { }\n";
     open_document(messy);
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     format_reply(messy);
@@ -378,12 +379,12 @@ PURR_TEST(lsp_complete_in_constructor)
 {
     start();
     const char *devices = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample(Devices devices)\n    {\n"
-                                   "        var keys = devices.$\n    }\n}\nsystem Main() { }\n");
+                                   "        var keys = devices.$\n    }\n}\nscene Main { }\n");
     PURR_CHECK(offers(devices, "keyboard"));
     PURR_CHECK(offers(devices, "gamepad"));
 
     const char *keys = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample(Devices devices)\n    {\n"
-                                "        var keys = devices.keyboard;\n        if (keys.$\n    }\n}\nsystem Main() { }\n");
+                                "        var keys = devices.keyboard;\n        if (keys.$\n    }\n}\nscene Main { }\n");
     PURR_CHECK(offers(keys, "space"));
     PURR_CHECK(offers(keys, "leftShift"));
 }
@@ -441,7 +442,7 @@ PURR_TEST(lsp_definition)
     start();
     open_document(GAME_TYPES "system Move(mut Body body)\n{\n    bo$dy.radius = 1;\n}\n");
     const char *param = request("textDocument/definition");
-    PURR_CHECK(has(param, "\"range\":{\"start\":{\"line\":21,\"character\":21}"));
+    PURR_CHECK(has(param, "\"range\":{\"start\":{\"line\":22,\"character\":21}"));
 
     open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.rad$ius = 1;\n}\n");
     const char *field = request("textDocument/definition");
@@ -497,14 +498,14 @@ PURR_TEST(lsp_definition_in_c)
 
     static const char constructor[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
                                       "        var keys = devices.key$board;\n        fire = keys.space.pressed;\n    }\n}\n"
-                                      "system Main() { }\n";
+                                      "scene Main { }\n";
     PURR_CHECK(has(c_definition(constructor), "purr_keyboard keyboard;"));
     static const char key[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
                               "        var keys = devices.keyboard;\n        fire = keys.spa$ce.pressed;\n    }\n}\n"
-                              "system Main() { }\n";
+                              "scene Main { }\n";
     PURR_CHECK(has(c_definition(key), "X(space)"));
     static const char button[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
-                                 "        fire = devices.mouse.left.pre$ssed;\n    }\n}\nsystem Main() { }\n";
+                                 "        fire = devices.mouse.left.pre$ssed;\n    }\n}\nscene Main { }\n";
     PURR_CHECK(has(c_definition(button), "bool pressed;"));
 #undef IN_SYSTEM
 #undef IN_VIEW
@@ -529,14 +530,14 @@ PURR_TEST(lsp_semantic_tokens)
     PURR_CHECK(has(reply, "\"data\":[0,10,4,2,1,"));
 
     // Columns count UTF-16 units: `é` is two bytes but one unit.
-    open_document("/* \xC3\xA9 */ component Body { float x; }\nsystem Main() { }\n");
+    open_document("/* \xC3\xA9 */ component Body { float x; }\nscene Main { }\n");
     PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,18,4,2,1,"));
 
     // Built-in value types are keywords (11), like C#'s float: `float3` 7 columns after `Body`.
-    open_document("component Body { float3 p; }\nsystem Main() { }\n");
+    open_document("component Body { float3 p; }\nscene Main { }\n");
     PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,10,4,2,1,0,7,6,11,0,"));
     // Sample and Sanitize are keywords too, and attributes decorators (12).
-    open_document("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample(Devices devices) { }\n}\nsystem Main() { }\n");
+    open_document("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample(Devices devices) { }\n}\nscene Main { }\n");
     const char *input = request("textDocument/semanticTokens/full");
     PURR_CHECK(has(input, "2,5,5,12,0,")); // Clamp: line +2, column 5
     PURR_CHECK(has(input, "1,4,6,11,0,")); // Sample: line +1, column 4
@@ -644,22 +645,22 @@ PURR_TEST(lsp_local_state)
 PURR_TEST(lsp_enums_and_switch)
 {
     start();
-    static const char game[] = "enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; int n; }\nsystem Main() { }\n"
+    static const char game[] = "enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; int n; }\nscene Main { }\n"
                                "system S(mut Match match)\n{\n    switch (match.phase)\n    {\n        case Phase.Warmup:\n"
                                "            match.n = 1;\n            break;\n        default:\n            break;\n    }\n}\n";
     open_document(game);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
-    open_document("enum Pha$se { Warmup, Playing = 5 }\nsystem Main() { }\n");
+    open_document("enum Pha$se { Warmup, Playing = 5 }\nscene Main { }\n");
     const char *type = request("textDocument/hover");
     PURR_CHECK(has(type, "enum Phase"));
     PURR_CHECK(has(type, "Playing = 5,"));
 
-    open_document("enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; }\nsystem Main() { }\n"
+    open_document("enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; }\nscene Main { }\n"
                   "system S(mut Match match) { match.phase = Phase.Play$ing; }\n");
     PURR_CHECK(has(request("textDocument/hover"), "Phase.Playing = 5"));
 
-    const char *members = complete("enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; }\nsystem Main() { }\n"
+    const char *members = complete("enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; }\nscene Main { }\n"
                                    "system S(mut Match match)\n{\n    match.phase = Phase.$\n}\n");
     PURR_CHECK(offers(members, "Warmup"));
     PURR_CHECK(offers(members, "Playing"));
@@ -690,6 +691,38 @@ PURR_TEST(lsp_format_switch)
 }
 
 
+PURR_TEST(lsp_scenes)
+{
+    start();
+    static const char game[] = "scene Arena { int size = 20; }\nscene Main { }\n"
+                               "event(Spawned) Setup(with Main) { Scene.Load(Arena { size = 30 }); }\n"
+                               "system Close(Entity self, Arena arena) { if (arena.size > 40) Scene.Unload(self); }\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    open_document("scene Are$na { int size = 20; }\nscene Main { }\nevent(Spawned) Setup(with Main) { Scene.Load(Arena); }\n");
+    const char *type = request("textDocument/hover");
+    PURR_CHECK(has(type, "scene Arena"));
+    PURR_CHECK(has(type, "int size = 20;"));
+    PURR_CHECK(!has(type, "purr_players")); // The engine's own fields stay hidden
+
+    open_document("scene Arena { }\nscene Main { }\nevent(Spawned) Setup(with Main) { Scene.Lo$ad(Arena); }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Loads a scene and returns its entity"));
+
+    const char *calls = complete("scene Arena { }\nscene Main { }\nevent(Spawned) Setup(with Main)\n{\n    Scene.$\n}\n");
+    PURR_CHECK(offers(calls, "Load"));
+    PURR_CHECK(offers(calls, "Unload"));
+    const char *fields = complete("scene Arena { int size; }\nscene Main { }\nsystem S(Arena arena)\n{\n    var x = arena.$\n}\n");
+    PURR_CHECK(offers(fields, "size"));
+    PURR_CHECK(!offers(fields, "purr_visibility"));
+
+    open_document(game);
+    const char *symbols = request("textDocument/documentSymbol");
+    PURR_CHECK(has(symbols, "\"name\":\"Arena\",\"detail\":\"scene\""));
+    PURR_CHECK(!has(symbols, "purr_players"));
+}
+
+
 PURR_TEST(lsp_format_events)
 {
     start();
@@ -714,7 +747,8 @@ PURR_TEST(lsp_format_events)
     "    Stats stats;\n"                                                       \
     "}\n"                                                                      \
     "\n"                                                                       \
-    "system Main()\n"                                                          \
+    "scene Main { }\n"                                                         \
+    "event(Spawned) Setup(with Main)\n"                                        \
     "{\n"                                                                      \
     "    Spawn(Unit);\n"                                                       \
     "}\n"
@@ -733,15 +767,15 @@ PURR_TEST(lsp_structs)
     PURR_CHECK(offers(complete(STRUCTS "system Hurt(mut Unit unit)\n{\n    unit.stats.$\n}\n"), "health"));
     PURR_CHECK(offers(complete(STRUCTS "system Hurt(mut Unit unit)\n{\n    unit.stats = Stats { $ };\n}\n"), "health"));
 
-    open_document("struct St$ats\n{\n    float health = 100;\n}\nsystem Main() { }\n");
+    open_document("struct St$ats\n{\n    float health = 100;\n}\nscene Main { }\n");
     const char *hover = request("textDocument/hover");
     PURR_CHECK(has(hover, "struct Stats"));
     PURR_CHECK(has(hover, "float health = 100;"));
 
     // Laid out like the other declarations.
-    static const char messy[] = "struct Stats {\nfloat health = 100;\n}\nsystem Main() { }\n";
+    static const char messy[] = "struct Stats {\nfloat health = 100;\n}\nscene Main { }\n";
     format_reply(messy);
-    PURR_CHECK(strcmp(apply_reply(messy, NULL), "struct Stats\n{\n    float health = 100;\n}\nsystem Main() { }\n") == 0);
+    PURR_CHECK(strcmp(apply_reply(messy, NULL), "struct Stats\n{\n    float health = 100;\n}\nscene Main { }\n") == 0);
 }
 
 #define METHODS                                                                \
@@ -761,7 +795,7 @@ PURR_TEST(lsp_structs)
     "    return stats.health;\n"                                               \
     "}\n"                                                                      \
     "\n"                                                                       \
-    "system Main() { Spawn(Unit); }\n"
+    "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Unit); }\n"
 
 PURR_TEST(lsp_methods_and_functions)
 {
@@ -777,7 +811,7 @@ PURR_TEST(lsp_methods_and_functions)
     PURR_CHECK(offers(members, "IsDead") && offers(members, "Hurt") && offers(members, "health"));
     PURR_CHECK(has(members, "mut void Hurt(float amount)"));
     PURR_CHECK(offers(complete(METHODS "system Fight(mut Unit unit)\n{\n    $\n}\n"), "Heal"));
-    PURR_CHECK(offers(complete("struct Stats\n{\n    float health;\n    bool IsDead() { return $ }\n}\nsystem Main() { }\n"),
+    PURR_CHECK(offers(complete("struct Stats\n{\n    float health;\n    bool IsDead() { return $ }\n}\nscene Main { }\n"),
                       "health"));
 
     // Hover, definition and references go to the method itself.
@@ -798,8 +832,8 @@ PURR_TEST(lsp_methods_and_functions)
     open_document(METHODS "system Fight(mut Unit unit)\n{\n    var left = Heal(unit.stats, 2);\n}\n");
     const char *hints = request_at("file:///test.purr", "textDocument/inlayHint", 0, 0,
                                    "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":30,\"character\":0}}");
-    PURR_CHECK(has(hints, "{\"position\":{\"line\":19,\"character\":12},\"label\":\": float\",\"kind\":1"));
-    PURR_CHECK(has(hints, "{\"position\":{\"line\":19,\"character\":32},\"label\":\"amount:\",\"kind\":2"));
+    PURR_CHECK(has(hints, "{\"position\":{\"line\":20,\"character\":12},\"label\":\": float\",\"kind\":1"));
+    PURR_CHECK(has(hints, "{\"position\":{\"line\":20,\"character\":32},\"label\":\"amount:\",\"kind\":2"));
     PURR_CHECK(!has(hints, "\"stats:\"")); // Not for arguments that already say what they are
 
     // Workspace symbols: every declaration of the game, methods with their type, by fuzzy name.
@@ -815,10 +849,10 @@ PURR_TEST(lsp_methods_and_functions)
     // Laid out like other code: braces on their own lines, one-liners kept.
     static const char messy[] = "struct Stats {\nfloat health;\nbool IsDead() { return health <= 0; }\n"
                                 "mut void Hurt() {\nhealth -= 1; }\n}\nvoid Reset(mut Stats s) {\ns.health = 0; }\n"
-                                "system Main() { }\n";
+                                "scene Main { }\n";
     static const char expected[] = "struct Stats\n{\n    float health;\n    bool IsDead() { return health <= 0; }\n"
                                    "    mut void Hurt()\n    {\n        health -= 1;\n    }\n}\n"
-                                   "void Reset(mut Stats s)\n{\n    s.health = 0;\n}\nsystem Main() { }\n";
+                                   "void Reset(mut Stats s)\n{\n    s.health = 0;\n}\nscene Main { }\n";
     format_reply(messy);
     const char *formatted = apply_reply(messy, NULL);
     PURR_CHECK(strcmp(formatted, expected) == 0);
@@ -836,7 +870,8 @@ PURR_TEST(lsp_methods_and_functions)
     "\n"                                                                       \
     "singleton Wallet { Money total; }\n"                                      \
     "\n"                                                                       \
-    "system Main(mut Wallet wallet)\n"                                         \
+    "scene Main { }\n"                                                         \
+    "event(Spawned) Setup(with Main, mut Wallet wallet)\n"                     \
     "{\n"                                                                      \
     "    wallet.total = wallet.total + Money { cents = 5 };\n"                 \
     "}\n"
@@ -847,11 +882,11 @@ PURR_TEST(lsp_operators)
     open_document(OPERATORS);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
     // `+` in code goes to the operator.
-    const char *hover = request_at("file:///test.purr", "textDocument/hover", 12, 32, "");
+    const char *hover = request_at("file:///test.purr", "textDocument/hover", 13, 32, "");
     PURR_CHECK(has(hover, "Money operator +(Money a, Money b)") && has(hover, "Operator of struct `Money`."));
-    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/definition", 12, 32, ""),
+    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/definition", 13, 32, ""),
                    "\"range\":{\"start\":{\"line\":4,\"character\":10}"));
-    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/prepareRename", 12, 32, ""),
+    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/prepareRename", 13, 32, ""),
                    "Operators are named by their symbol"));
     // Methods are listed after a dot; operators aren't.
     const char *members = complete(OPERATORS "system S(Wallet wallet)\n{\n    var d = wallet.total.$\n}\n");
@@ -867,19 +902,19 @@ PURR_TEST(lsp_operators)
     // Snippets for what goes where: functions at the top, methods in structs
     // and components, operators in structs.
     PURR_CHECK(offers(complete("$"), "function"));
-    const char *in_struct = complete("struct Money\n{\n    int cents;\n    $\n}\nsystem Main() { }\n");
+    const char *in_struct = complete("struct Money\n{\n    int cents;\n    $\n}\nscene Main { }\n");
     PURR_CHECK(offers(in_struct, "method") && offers(in_struct, "mut method") && offers(in_struct, "operator"));
     PURR_CHECK(has(in_struct, "Money operator ${1:+}(Money a, Money b)"));
-    const char *in_component = complete("component Unit\n{\n    int kills;\n    $\n}\nsystem Main() { }\n");
+    const char *in_component = complete("component Unit\n{\n    int kills;\n    $\n}\nscene Main { }\n");
     PURR_CHECK(offers(in_component, "method") && !offers(in_component, "operator"));
-    PURR_CHECK(offers(complete("struct Money\n{\n    int cents;\n    Money $\n}\nsystem Main() { }\n"), "operator"));
+    PURR_CHECK(offers(complete("struct Money\n{\n    int cents;\n    Money $\n}\nscene Main { }\n"), "operator"));
 
     // Laid out like C#: `operator +(`, and unary minus stays unary.
     static const char messy[] = "struct Money\n{\nint cents;\nMoney operator+(Money a,Money b) { return a; }\n"
-                                "Money operator - (Money a) { return Money { cents = -a.cents }; }\n}\nsystem Main() { }\n";
+                                "Money operator - (Money a) { return Money { cents = -a.cents }; }\n}\nscene Main { }\n";
     static const char expected[] = "struct Money\n{\n    int cents;\n    Money operator +(Money a, Money b) { return a; }\n"
                                    "    Money operator -(Money a) { return Money { cents = -a.cents }; }\n}\n"
-                                   "system Main() { }\n";
+                                   "scene Main { }\n";
     format_reply(messy);
     const char *formatted = apply_reply(messy, NULL);
     PURR_CHECK(strcmp(formatted, expected) == 0);
@@ -911,17 +946,18 @@ PURR_TEST(lsp_quick_fixes)
     open_document("struct Stats\n{\n    float health;\n    void Heal(float amount) { health += amount; }\n}\n"
                   "component Unit { Stats stats; Armor armor; }\n"
                   "void Bump(int count) { count += 1; }\n"
-                  "system Main() { var x = 1; x = 2; Spawn(Unit); Grow(x, 2.5); }\n"
-                  "system Move(mut Velocity velocity) { }\n");
+                  "event(Spawned) Setup(with Main) { var x = 1; x = 2; Spawn(Unit); Grow(x, 2.5); }\n"
+                  "system Move(mut Velocity velocity) { }\n"
+                  "scene Main { }\n");
     const char *method = actions_at(3);
     PURR_CHECK(has(method, "Make 'Heal' mut") && has(method, "\"start\":{\"line\":3,\"character\":4}"));
     PURR_CHECK(has(actions_at(5), "Create struct 'Armor'"));
     const char *param = actions_at(6);
     PURR_CHECK(has(param, "Declare 'count' as mut") && has(param, "\"start\":{\"line\":6,\"character\":10}"));
     const char *main = actions_at(7);
-    PURR_CHECK(has(main, "Declare 'x' as mut") && has(main, "\"start\":{\"line\":7,\"character\":16}"));
+    PURR_CHECK(has(main, "Declare 'x' as mut") && has(main, "\"start\":{\"line\":7,\"character\":34}"));
     PURR_CHECK(has(main, "Create function 'Grow'") && has(main, "\"newText\":\"\\nvoid Grow(int x, float value)\\n{\\n}\\n\""));
-    PURR_CHECK(has(main, "\"start\":{\"line\":9,\"character\":0}")); // At the end of the file
+    PURR_CHECK(has(main, "\"start\":{\"line\":10,\"character\":0}")); // At the end of the file
     PURR_CHECK(has(actions_at(8), "Create component 'Velocity'"));
 }
 
@@ -929,7 +965,7 @@ PURR_TEST(lsp_move_to_file)
 {
     start();
     open_document("namespace Combat;\n\n// How much damage it takes.\ncomponent Health\n{\n    int value;\n}\n\n"
-                  "system Main() { Spawn(Health); }\n");
+                  "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Health); }\n");
     const char *move = request_at("file:///test.purr", "textDocument/codeAction", 4, 0,
                                   "\"range\":{\"start\":{\"line\":4,\"character\":0},\"end\":{\"line\":4,\"character\":0}}");
     PURR_CHECK(has(move, "\"title\":\"Move 'Health' to Health.purr\",\"kind\":\"refactor.move\""));
@@ -941,14 +977,14 @@ PURR_TEST(lsp_move_to_file)
     PURR_CHECK(has(move, "{\"range\":{\"start\":{\"line\":2,\"character\":0},\"end\":{\"line\":8,\"character\":0}},"
                          "\"newText\":\"\"}"));
 
-    // Systems stay: files decide the order they run in.
-    const char *system = request_at("file:///test.purr", "textDocument/codeAction", 8, 0,
-                                    "\"range\":{\"start\":{\"line\":8,\"character\":0},\"end\":{\"line\":8,\"character\":0}}");
+    // Systems and handlers stay: files decide the order they run in.
+    const char *system = request_at("file:///test.purr", "textDocument/codeAction", 9, 0,
+                                    "\"range\":{\"start\":{\"line\":9,\"character\":0},\"end\":{\"line\":9,\"character\":0}}");
     PURR_CHECK(!has(system, "Move '"));
 
     // An editor that can't create files isn't offered it.
     start_with("{}");
-    open_document("component Health\n{\n    int value;\n}\nsystem Main() { Spawn(Health); }\n");
+    open_document("component Health\n{\n    int value;\n}\nscene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Health); }\n");
     const char *unable = request_at("file:///test.purr", "textDocument/codeAction", 1, 0,
                                     "\"range\":{\"start\":{\"line\":1,\"character\":0},\"end\":{\"line\":1,\"character\":0}}");
     PURR_CHECK(!has(unable, "Move '"));
@@ -1279,9 +1315,10 @@ PURR_TEST(lsp_game_of_several_files)
                                   "component Body { float2 position; }\n"
                                   "system Gravity(mut Body body) { body.position.y -= 1; }\n";
     static const char main_file[] = "using Physics;\n"
-                                    "system Main() { Spawn(Body); }\n"
+                                    "event(Spawned) Setup(with Main) { Spawn(Body); }\n"
                                     "[After(Physics.Gravity)]\n"
-                                    "system Move(mut Body body) { body.position.x += 1; }\n";
+                                    "system Move(mut Body body) { body.position.x += 1; }\n"
+                                    "scene Main { }\n";
     write_file("lsp_game_physics.purr", physics);
     write_file("lsp_game_main.purr", main_file);
     char a[640], b[640], manifest[640], manifest_text[1400], uri_a[700], uri_b[700];
@@ -1303,8 +1340,8 @@ PURR_TEST(lsp_game_of_several_files)
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]") && has(sent[1], "\"diagnostics\":[]"));
 
     // `Body` leads to the other file.
-    PURR_CHECK(has(request_at(uri_b, "textDocument/definition", 1, 22, ""), uri_a));
-    PURR_CHECK(count(request_at(uri_b, "textDocument/references", 1, 22, "\"context\":{\"includeDeclaration\":true}"),
+    PURR_CHECK(has(request_at(uri_b, "textDocument/definition", 1, 40, ""), uri_a));
+    PURR_CHECK(count(request_at(uri_b, "textDocument/references", 1, 40, "\"context\":{\"includeDeclaration\":true}"),
                      uri_a) >= 2); // The declaration and Gravity's parameter
     PURR_CHECK(has(last_sent(), uri_b));
 
@@ -1317,8 +1354,8 @@ PURR_TEST(lsp_game_of_several_files)
     PURR_CHECK(count(rename, "\"newText\":\"Fall\"") == 2);
 
     // Completion after `Physics.` lists what's inside it.
-    open_uri(uri_b, "using Physics;\nsystem Main() { Spawn(Physics.); }\n");
-    const char *completion = request_at(uri_b, "textDocument/completion", 1, 30, "");
+    open_uri(uri_b, "using Physics;\nevent(Spawned) Setup(with Main) { Spawn(Physics.); }\nscene Main { }\n");
+    const char *completion = request_at(uri_b, "textDocument/completion", 1, 48, "");
     PURR_CHECK(offers(completion, "Body"));
     PURR_CHECK(!offers(completion, "Gravity")); // Systems only in Before and After
 
@@ -1376,8 +1413,9 @@ PURR_TEST(lsp_game_folder)
                                   "component Body { float2 position; }\n"
                                   "system Gravity(mut Body body) { body.position.y -= 1; }\n";
     static const char main_file[] = "using Physics;\n"
-                                    "system Main() { Spawn(Body); }\n"
-                                    "system Move(mut Body body) { body.position.x += 1; }\n";
+                                    "event(Spawned) Setup(with Main) { Spawn(Body); }\n"
+                                    "system Move(mut Body body) { body.position.x += 1; }\n"
+                                    "scene Main { }\n";
     write_file("lsp_folder/sub/physics.purr", physics);
     write_file("lsp_folder/main.purr", main_file);
     write_file("lsp_folder/notes.txt", "not PurrLang");
@@ -1442,7 +1480,7 @@ PURR_TEST(lsp_open_folder_is_a_game)
                                   "component Body { float2 position; }\n"
                                   "system Gravity(mut Body body) { body.position.y -= 1; }\n";
     static const char main_file[] = "using Physics;\n"
-                                    "system Main() { Spawn(Body); }\n";
+                                    "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
     write_file("lsp_open/sub/physics.purr", physics);
     write_file("lsp_open/main.purr", main_file);
     char root[700], uri_main[700], uri_physics[700];
@@ -1482,8 +1520,8 @@ PURR_TEST(lsp_open_folder_with_manifest)
     make_folder("lsp_cmake/game");
     make_folder("lsp_cmake/tests");
     static const char physics[] = "component Body { float2 position; }\n";
-    static const char main_file[] = "system Main() { Spawn(Body); }\n";
-    static const char alone[] = "component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n";
+    static const char main_file[] = "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
+    static const char alone[] = "component Body { float2 position; }\nscene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
     write_file("lsp_cmake/game/physics.purr", physics);
     write_file("lsp_cmake/game/main.purr", main_file);
     write_file("lsp_cmake/tests/alone.purr", alone);
@@ -1534,10 +1572,11 @@ PURR_TEST(lsp_schedule_lenses_and_fixes)
     start();
     static const char program[] = "component Body { float2 position; float2 velocity; }\n"
                                   "singleton Score { int total; }\n"
-                                  "system Main() { Spawn(Body); }\n"
+                                  "event(Spawned) Setup(with Main) { Spawn(Body); }\n"
                                   "system Move(mut Body body) { body.position += body.velocity; }\n"
                                   "system Look(mut Body body, mut Score s) { s.total = 0; if (body.position.x > 0) return; }\n"
-                                  "system Tag(mut Score s, Body body) { s.total = 1; }\n";
+                                  "system Tag(mut Score s, Body body) { s.total = 1; }\n"
+                                  "scene Main { }\n";
     open_document(program);
     PURR_CHECK(has(sent[0], "'body' is declared mut but never written"));
     PURR_CHECK(has(sent[0], "'body' is never used"));
@@ -1560,8 +1599,8 @@ PURR_TEST(lsp_schedule_lenses_and_fixes)
                                       "\"range\":{\"start\":{\"line\":5,\"character\":0},\"end\":{\"line\":5,\"character\":0}}");
     PURR_CHECK(has(use_with, "\"newText\":\"with Body\""));
 
-    open_document("component Body { float2 position; }\nsystem Main() { Spawn(Body); }\n"
-         "system Push(Body body) { body.position.x = 1; }\n");
+    open_document("component Body { float2 position; }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n"
+         "system Push(Body body) { body.position.x = 1; }\nscene Main { }\n");
     const char *add_mut = request_at("file:///test.purr", "textDocument/codeAction", 2, 0,
                                      "\"range\":{\"start\":{\"line\":2,\"character\":25},\"end\":{\"line\":2,\"character\":29}}");
     PURR_CHECK(has(add_mut, "Declare 'body' as mut") && has(add_mut, "\"newText\":\"mut \""));

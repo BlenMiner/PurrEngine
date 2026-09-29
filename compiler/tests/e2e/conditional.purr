@@ -32,7 +32,9 @@ input PlayerInput
     }
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Counter);
 }

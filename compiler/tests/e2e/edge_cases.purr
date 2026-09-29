@@ -32,7 +32,9 @@ singleton Counter
     int destroyed;
 }
 
-system Main(mut Counter counter)
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Counter counter)
 {
     var first = Spawn(Tag);
     Spawn(Everything { flag = true, count = 1, amount = 0.5, offset = float3(1, 2, 3), other = first, double = 2 }, Tag);

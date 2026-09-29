@@ -95,7 +95,9 @@ Range Wider(Range r)
     return copy;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Unit);
     Spawn(Unit { stats = Stats { health = 1, damage = Range { hi = 5 } } });

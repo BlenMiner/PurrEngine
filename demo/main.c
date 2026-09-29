@@ -20,7 +20,7 @@
 
 #define SMOKE_TICKS 240
 // Update when the demo's simulation changes on purpose. Every platform must agree.
-#define SMOKE_HASH 0x87805726297668B9ull
+#define SMOKE_HASH 0x1D9D22B70969DF47ull
 
 // Colors demo.purr's views use, as 0xRRGGBBAA: the player's and the background.
 #define SMOKE_PLAYER_COLOR 0xFFC43DFFu

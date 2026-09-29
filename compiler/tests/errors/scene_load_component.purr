@@ -1,0 +1,4 @@
+// expect: Scene.Load takes a scene, and 'Health' is a component
+component Health { int value; }
+scene Main { }
+event(Spawned) Setup(with Main) { Scene.Load(Health); }

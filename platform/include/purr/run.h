@@ -11,7 +11,9 @@
 //         purr_run(&(purr_run_desc){.title = "Sandbox"});
 //     }
 //
-// The simulation ticks at a fixed rate. Player 0 joins before the first tick.
+// If the game's Main scene is the match's, a single-player match starts right
+// away; if it's local, the program starts in it, with no match. The simulation
+// ticks at a fixed rate. Player 0 joins before the first tick.
 // If the game declares an input, the devices are sampled every tick as player
 // 0's input and, since this machine is also the server, as the server's. The
 // views draw every frame. Close the window to quit.
@@ -41,6 +43,8 @@ static purr_devices purr_run_devices;
 static purr_draw_list purr_run_draw;
 static purr_run_desc purr_run_settings;
 static double purr_run_unsimulated; // Seconds of real time not simulated yet
+static purr_world *purr_run_match;   // The match, or NULL when there's none
+
 
 static inline void purr_run_tick(void)
 {
@@ -58,19 +62,21 @@ static inline int purr_run_frame(void *user, const float seconds)
     (void)user;
     purr_platform_poll(&purr_run_devices);
 
-    const double dt = 1.0 / purr_run_settings.tick_rate;
-    purr_run_unsimulated += seconds;
-    for (int ticks = 0; purr_run_unsimulated >= dt && ticks < PURR_RUN_MAX_TICKS_PER_FRAME; ticks++) {
-        purr_run_tick();
-        purr_run_unsimulated -= dt;
+    if (purr_run_match) {
+        const double dt = 1.0 / purr_run_settings.tick_rate;
+        purr_run_unsimulated += seconds;
+        for (int ticks = 0; purr_run_unsimulated >= dt && ticks < PURR_RUN_MAX_TICKS_PER_FRAME; ticks++) {
+            purr_run_tick();
+            purr_run_unsimulated -= dt;
+        }
+        if (purr_run_unsimulated >= dt) purr_run_unsimulated = 0.0;
     }
-    if (purr_run_unsimulated >= dt) purr_run_unsimulated = 0.0;
 
     purr_draw_reset(&purr_run_draw);
-    purr_frame(&purr_run_world, &purr_run_local, &purr_run_draw);
+    purr_frame(purr_run_match, &purr_run_local, &purr_run_draw);
     purr_platform_draw(&purr_run_draw);
 
-    if (purr_run_settings.stats) {
+    if (purr_run_settings.stats && purr_run_match) {
         char stats[96];
         snprintf(stats, sizeof stats, "tick %d   entities %u   %d fps", (int)purr_run_world.Time.tick,
                  (unsigned)purr_world_entity_count(&purr_run_world), purr_platform_fps());
@@ -90,8 +96,12 @@ _Noreturn static inline void purr_run(const purr_run_desc *desc)
     purr_platform_open(&(purr_window_desc){.title = purr_run_settings.title,
                                            .width = purr_run_settings.width,
                                            .height = purr_run_settings.height});
+#ifndef PURR_MAIN_IS_LOCAL
+    // Main is the match's: a single-player match starts right away.
     purr_world_init(&purr_run_world, 1.0f / (float)purr_run_settings.tick_rate);
     purr_world_player_joined(&purr_run_world, purr_player_from_index(0)); // Local play: player 0 is here from the start
+    purr_run_match = &purr_run_world;
+#endif
     purr_local_init(&purr_run_local);
     purr_platform_run(purr_run_frame, NULL);
 }

@@ -1,6 +1,8 @@
 // expect: Remove takes component types
 component Stunned { float duration; }
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var e = Spawn(Stunned);
     e.Remove(Stunned { duration = 1 });

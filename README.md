@@ -43,7 +43,9 @@ component Ball
     float2 velocity = float2(160, 120);
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Ball);
 }

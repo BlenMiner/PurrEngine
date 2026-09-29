@@ -3,14 +3,14 @@
 
 static purr_world world;
 
-// Main spawns these first, so they get slots 0 and 1.
-static const purr_entity FIRST = {0, 1};
-static const purr_entity EVERYTHING = {1, 1};
+// The Main scene is slot 0, and its Setup spawns these first, so they get slots 1 and 2.
+static const purr_entity FIRST = {1, 1};
+static const purr_entity EVERYTHING = {2, 1};
 
 PURR_TEST(edge_cases_every_field_type_round_trips)
 {
     purr_world_init(&world, 1.0f);
-    PURR_CHECK(purr_world_entity_count(&world) == 3);
+    PURR_CHECK(purr_world_entity_count(&world) == 4); // The Main scene and three from its Setup
 
     Everything *e = purr_get_Everything(&world, EVERYTHING);
     PURR_REQUIRE(e != NULL);
@@ -47,7 +47,7 @@ PURR_TEST(edge_cases_destroy_without_add_or_remove)
     purr_world_init(&world, 1.0f);
     purr_world_tick(&world);
     PURR_CHECK(world.Counter.destroyed == 1);
-    PURR_CHECK(purr_world_entity_count(&world) == 2);
+    PURR_CHECK(purr_world_entity_count(&world) == 3);
     purr_world_tick(&world);
     PURR_CHECK(world.Counter.destroyed == 1);
 }

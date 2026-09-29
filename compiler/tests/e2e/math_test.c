@@ -5,7 +5,7 @@
 
 static purr_world world;
 
-static const purr_entity THING = {0, 1};
+static const purr_entity THING = {1, 1};
 
 static bool near(const float a, const float b)
 {

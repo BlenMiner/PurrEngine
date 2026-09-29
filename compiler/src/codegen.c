@@ -29,6 +29,8 @@ typedef struct gen {
     bool in_input; // Generating the input's constructor: fields live in purr_self.
     const decl *routine; // The method or function being generated: a mut method's fields are purr_self->
     int spawn_temps;     // Temporaries for hoisted spawns, numbered per function.
+    bool has_scene;      // The body being generated has purr_scene: the scene of the entity it runs for
+    bool scene_local;    // ...an entity of the local world
 } gen;
 
 // ---------------------------------------------------------------------------
@@ -171,6 +173,32 @@ static const char *world_prefix(const bool local)
 static bool arch_local(const gen *g, const int a)
 {
     return g->prog->archetype_local.items[a];
+}
+
+// Whether a world has scenes: then its entities each record the one they're in.
+static bool has_scenes(const program *prog, const bool local)
+{
+    for (int i = 0; i < prog->components.count; i++) {
+        if (prog->components.items[i]->is_scene && prog->components.items[i]->is_local == local) return true;
+    }
+    return false;
+}
+
+// The scene component of archetype `a`'s entities, if they're scenes.
+static const decl *arch_scene(const gen *g, const int a)
+{
+    for (int i = 0; i < g->prog->components.count; i++) {
+        const decl *d = g->prog->components.items[i];
+        if (d->is_scene && has_component(g->prog->archetypes.items[a], i)) return d;
+    }
+    return NULL;
+}
+
+// Whether archetype `a` is made by Scene.Load: the scene's component alone.
+static bool is_load_archetype(const gen *g, const int a)
+{
+    const decl *scene = arch_scene(g, a);
+    return scene && g->prog->archetypes.items[a] == (uint64_t)1 << scene->index;
 }
 
 // A system's components, singletons, input and devices are passed by pointer,
@@ -442,10 +470,20 @@ static void gen_literal(gen *g, sb *o, const expr *e)
     gen_value(g, o, e->type_decl, e->inits.items, e->inits.count);
 }
 
+static void gen_load(gen *g, sb *o, const expr *e);
+
+// A spawn joins the scene of the entity the code runs for, when that entity is
+// in the same world; otherwise it's in no scene.
 static void gen_spawn(gen *g, sb *o, const expr *e)
 {
+    if (e->call == CALL_LOAD) {
+        gen_load(g, o, e);
+        return;
+    }
     const int a = e->spawn_archetype;
-    sb_printf(o, "purr_cmd_spawn%d(%s, (purr_spawn%d){", a, e->local_world ? "purr_l" : "purr_w", a);
+    const bool in_scene = g->has_scene && g->scene_local == e->local_world;
+    sb_printf(o, "purr_cmd_spawn%d(%s, %s, (purr_spawn%d){", a, e->local_world ? "purr_l" : "purr_w",
+              in_scene ? "purr_scene" : "(purr_entity){0}", a);
     int written = 0;
     for (int i = 0; i < e->args.count; i++) {
         const expr *arg = e->args.items[i];
@@ -456,6 +494,21 @@ static void gen_spawn(gen *g, sb *o, const expr *e)
     }
     if (written == 0) sb_put(o, "0");
     sb_put(o, "})");
+}
+
+// Scene.Load(Arena { ... }, visibility): an entity that's its own scene.
+static void gen_load(gen *g, sb *o, const expr *e)
+{
+    const int a = e->spawn_archetype;
+    const decl *scene = e->type_decl;
+    const expr *arg = e->args.items[0];
+    sb_printf(o, "purr_cmd_load%d(%s, (purr_spawn%d){.%s = ", a, e->local_world ? "purr_l" : "purr_w", a, type_cname(scene));
+    if (arg->kind == E_LITERAL) gen_value(g, o, scene, arg->inits.items, arg->inits.count);
+    else gen_value(g, o, scene, NULL, 0);
+    sb_put(o, "}, ");
+    if (e->args.count == 2) gen_expr(g, o, e->args.items[1]);
+    else sb_put(o, "0");
+    sb_put(o, ")");
 }
 
 static const char *int_op_helper(const tok_kind op)
@@ -891,7 +944,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         // Math.Dot(a, b) and friends, and Draw calls, which record into the
         // view's draw list. Entity methods (Add, Remove, Destroy) are
         // statements; see gen_method.
-        if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) {
+        if (e->call == CALL_LOAD) {
+            sb_put(o, e->hoisted); // Already ran, before the statement
+        } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) {
             gen_routine_call(g, o, e);
         } else if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
             sb_printf(o, "%s(%s", e->c_callee, e->call == CALL_DRAW ? "purr_draw" : "");
@@ -974,6 +1029,7 @@ static void collect_spawns(expr *e, expr_list *out)
     case E_METHOD:
         collect_spawns(e->object, out);
         collect_spawn_list(e->args.items, e->args.count, out);
+        if (e->call == CALL_LOAD) vec_push(*out, e);
         break;
     case E_CALL:
         collect_spawn_list(e->args.items, e->args.count, out);
@@ -1018,6 +1074,25 @@ static void hoist_spawns(gen *g, expr *a, expr *b)
 
 static void gen_stmt(gen *g, const stmt *s);
 
+// Whether C text is one parenthesized group, like (a == b), and not (a) && (b).
+static bool wrapped_in_parens(const char *text)
+{
+    if (text[0] != '(') return false;
+    int depth = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p == '"') { // Skip text, whose parentheses don't count
+            for (p++; *p && *p != '"'; p++) {
+                if (*p == '\\' && p[1]) p++;
+            }
+            if (!*p) return false;
+            continue;
+        }
+        if (*p == '(') depth++;
+        else if (*p == ')' && --depth == 0) return p[1] == '\0';
+    }
+    return false;
+}
+
 // Statements under if/else always get braces.
 static void gen_body_stmt(gen *g, const stmt *s)
 {
@@ -1051,11 +1126,13 @@ static void gen_stmt(gen *g, const stmt *s)
         line(g, o, "}");
         break;
 
-    case S_IF:
+    case S_IF: {
+        // A condition already in parentheses, like (a == b), gets no second
+        // pair: clang warns about `if ((x == 1))` when x can be assigned.
+        const char *cond = expr_text(g, s->cond);
         indent(g, o);
-        sb_put(o, "if (");
-        gen_expr(g, o, s->cond);
-        sb_put(o, ") {\n");
+        if (wrapped_in_parens(cond)) sb_printf(o, "if %s {\n", cond);
+        else sb_printf(o, "if (%s) {\n", cond);
         g->indent++;
         gen_body_stmt(g, s->then_stmt);
         g->indent--;
@@ -1067,6 +1144,7 @@ static void gen_stmt(gen *g, const stmt *s)
         }
         line(g, o, "}");
         break;
+    }
 
     case S_SWITCH:
         // Each section in braces, for its locals. The checker makes sure every
@@ -1151,6 +1229,20 @@ static void gen_stmt(gen *g, const stmt *s)
     case S_EXPR:
         if (s->value->call == CALL_SEND) {
             gen_send(g, s->value);
+        } else if (s->value->call == CALL_LOAD) {
+            line(g, o, "(void)%s;", s->value->hoisted);
+        } else if (s->value->call == CALL_UNLOAD) {
+            indent(g, o);
+            sb_printf(o, "%scmd_unload(%s, ", s->value->local_world ? "purr_local_" : "purr_", s->value->local_world ? "purr_l" : "purr_w");
+            gen_expr(g, o, s->value->args.items[0]);
+            sb_put(o, ");\n");
+        } else if (s->value->call == CALL_SCENE_PLAYER) {
+            indent(g, o);
+            sb_put(o, "purr_cmd_scene_player(purr_w, ");
+            gen_expr(g, o, s->value->args.items[0]);
+            sb_put(o, ", ");
+            gen_expr(g, o, s->value->args.items[1]);
+            sb_printf(o, ", %s);\n", str_eq_c(s->value->name, "AddPlayer") ? "true" : "false");
         } else if (s->value->call == CALL_METHOD || s->value->call == CALL_FUNCTION || s->value->call == CALL_DRAW) {
             indent(g, o);
             gen_expr(g, o, s->value);
@@ -1308,6 +1400,9 @@ static void gen_header(gen *g)
         sb_printf(o, "// %s\n", arch_label(g, a));
         sb_printf(o, "typedef struct purr_%s {\n", arch_name(g, a));
         sb_put(o, "    uint32_t count;\n    purr_entity entity[PURR_ARCHETYPE_CAPACITY];\n");
+        if (has_scenes(prog, arch_local(g, a))) {
+            sb_put(o, "    purr_entity scene[PURR_ARCHETYPE_CAPACITY]; // The scene each is in; a scene's is itself\n");
+        }
         for (int i = 0; i < prog->components.count; i++) {
             if (!has_component(mask, i)) continue;
             const char *comp = type_cname(prog->components.items[i]);
@@ -1332,7 +1427,9 @@ static void gen_header(gen *g)
 
     sb_put(o, "// Structural changes and events, deferred to the end of the tick\n\n");
     sb_put(o, "typedef struct purr_command {\n    uint32_t kind;\n    uint32_t id; // Archetype for spawns, component for add and remove, event for sends.\n");
-    sb_put(o, "    purr_entity entity; // For sends, the entity it's sent to, or null for the world\n    union {\n        uint8_t purr_none;\n");
+    sb_put(o, "    purr_entity entity; // For sends, the entity it's sent to, or null for the world\n");
+    sb_put(o, "    purr_entity scene;  // For spawns, the scene the entity joins, or null for none\n");
+    sb_put(o, "    union {\n        uint8_t purr_none;\n        purr_player_id player; // Who's added to or removed from a scene\n");
     for (int i = 0; i < prog->events.count; i++) {
         const decl *d = prog->events.items[i];
         if (is_queued(prog, d)) sb_printf(o, "        %s event_%s;\n", type_cname(d), type_cname(d));
@@ -1386,11 +1483,16 @@ static void gen_header(gen *g)
     sb_put(o, "    uint32_t command_count;\n    purr_command commands[PURR_MAX_COMMANDS];\n");
     sb_put(o, "} purr_local;\n\n");
 
-    sb_put(o, "// Clears the world, sets Time.dt and singleton defaults, runs Main and applies its spawns.\n");
+    if (prog->main->is_local) {
+        sb_put(o, "// The program starts in a local scene, Main, rather than in a match.\n#define PURR_MAIN_IS_LOCAL 1\n\n");
+    }
+    sb_put(o, "// Clears the world and sets Time.dt and singleton defaults. If Main is the match's\n");
+    sb_put(o, "// scene, loads it, with everything its Spawned handlers create.\n");
     sb_put(o, "void purr_world_init(purr_world *w, float dt);\n\n");
     sb_put(o, "// Runs every system once, in declaration order, then applies structural changes.\n");
     sb_put(o, "void purr_world_tick(purr_world *w);\n\n");
-    sb_put(o, "// Clears the local state and sets its singletons' defaults.\n");
+    sb_put(o, "// Clears the local state and sets its singletons' defaults. If Main is a local scene,\n");
+    sb_put(o, "// loads it.\n");
     sb_put(o, "void purr_local_init(purr_local *local);\n\n");
     sb_put(o, "// Runs every view once, in declaration order, adding their Draw calls to `draw`,\n");
     sb_put(o, "// then applies the local changes they made. Call once per frame; reset the list\n");
@@ -1473,6 +1575,7 @@ static void gen_remove_rows(gen *g)
         sb_printf(o, "    purr_%s *a = &w->%s;\n", name, name);
         sb_put(o, "    uint32_t last = --a->count;\n    if (row == last) return;\n");
         sb_put(o, "    a->entity[row] = a->entity[last];\n");
+        if (has_scenes(prog, arch_local(g, a))) sb_put(o, "    a->scene[row] = a->scene[last];\n");
         for (int i = 0; i < prog->components.count; i++) {
             if (!has_component(mask, i)) continue;
             const char *comp = type_cname(prog->components.items[i]);
@@ -1534,6 +1637,7 @@ static void gen_moves(gen *g)
         sb_printf(o, "    if (to->count == PURR_ARCHETYPE_CAPACITY) purr_fatal(\"too many entities with %s (raise PURR_ARCHETYPE_CAPACITY)\");\n",
                   arch_label(g, to));
         sb_put(o, "    uint32_t dst = to->count++;\n    to->entity[dst] = from->entity[row];\n");
+        if (has_scenes(prog, arch_local(g, from))) sb_put(o, "    to->scene[dst] = from->scene[row];\n");
         for (int c = 0; c < prog->components.count; c++) {
             if (!has_component(to_mask, c)) continue;
             const char *comp = type_cname(prog->components.items[c]);
@@ -1550,7 +1654,8 @@ static void gen_command_recorders(gen *g)
     const program *prog = g->prog;
     sb *o = &g->c;
 
-    sb_put(o, "enum { PURR_CMD_SPAWN, PURR_CMD_ADD, PURR_CMD_REMOVE, PURR_CMD_DESTROY, PURR_CMD_EVENT };\n\n");
+    sb_put(o, "enum { PURR_CMD_SPAWN, PURR_CMD_ADD, PURR_CMD_REMOVE, PURR_CMD_DESTROY, PURR_CMD_EVENT, PURR_CMD_UNLOAD,\n"
+              "       PURR_CMD_SCENE_PLAYER };\n\n");
     for (int side = 0; side < 2; side++) {
         const bool local = side == 1;
         const char *p = world_prefix(local);
@@ -1571,19 +1676,39 @@ static void gen_command_recorders(gen *g)
             "PURR_HELPER void %scmd_destroy(%s *w, purr_entity e)\n"
             "{\n"
             "    %scmd_push(w, PURR_CMD_DESTROY, 0, e);\n"
+            "}\n\n"
+            "PURR_HELPER void %scmd_unload(%s *w, purr_entity scene)\n"
+            "{\n"
+            "    %scmd_push(w, PURR_CMD_UNLOAD, 0, scene);\n"
             "}\n\n",
-            p, world_type(local), local ? "frame" : "tick", p, world_type(local), p, p, world_type(local), p);
+            p, world_type(local), local ? "frame" : "tick", p, world_type(local), p, p, world_type(local), p, p,
+            world_type(local), p);
     }
+    sb_put(o,
+        "// Who sees a scene: `add` or remove a player.\n"
+        "PURR_HELPER void purr_cmd_scene_player(purr_world *w, purr_entity scene, purr_player_id player, bool add)\n"
+        "{\n"
+        "    purr_cmd_push(w, PURR_CMD_SCENE_PLAYER, add ? 1u : 0u, scene)->data.player = player;\n"
+        "}\n\n");
 
     for (int a = 0; a < prog->archetypes.count; a++) {
         if (!g->prog->spawn_target.items[a]) continue;
         const bool local = arch_local(g, a);
-        sb_printf(o, "// Spawn: %s\n", arch_label(g, a));
-        sb_printf(o, "PURR_HELPER purr_entity purr_cmd_spawn%d(%s *w, purr_spawn%d values)\n{\n", a, world_type(local), a);
+        const bool load = is_load_archetype(g, a);
+        sb_printf(o, "// %s: %s\n", load ? "Load" : "Spawn", arch_label(g, a));
+        if (load) {
+            // A loaded scene is its own scene.
+            sb_printf(o, "PURR_HELPER purr_entity purr_cmd_load%d(%s *w, purr_spawn%d values, int32_t visibility)\n{\n", a,
+                      world_type(local), a);
+            sb_printf(o, "    values.%s.purr_visibility = visibility;\n", type_cname(arch_scene(g, a)));
+        } else {
+            sb_printf(o, "PURR_HELPER purr_entity purr_cmd_spawn%d(%s *w, purr_entity scene, purr_spawn%d values)\n{\n", a,
+                      world_type(local), a);
+        }
         sb_put(o, "    purr_entity e = purr_entity_create(&w->entities);\n");
         sb_put(o, "    if (purr_entity_is_null(e)) purr_fatal(\"too many entities (raise PURR_MAX_ENTITIES)\");\n");
-        sb_printf(o, "    %scmd_push(w, PURR_CMD_SPAWN, %d, e)->data.spawn%d = values;\n    return e;\n}\n\n", world_prefix(local),
-                  a, a);
+        sb_printf(o, "    purr_command *c = %scmd_push(w, PURR_CMD_SPAWN, %d, e);\n", world_prefix(local), a);
+        sb_printf(o, "    c->data.spawn%d = values;\n    c->scene = %s;\n    return e;\n}\n\n", a, load ? "e" : "scene");
     }
 
     for (int c = 0; c < prog->components.count; c++) {
@@ -1652,7 +1777,13 @@ static void gen_apply(gen *g, const bool local)
         sb_printf(o, "        purr_%s *a = &w->%s;\n", name, name);
         sb_printf(o, "        if (a->count == PURR_ARCHETYPE_CAPACITY) purr_fatal(\"too many entities with %s (raise PURR_ARCHETYPE_CAPACITY)\");\n",
                   arch_label(g, a));
+        if (has_scenes(prog, local)) {
+            sb_put(o, "        // A spawn into a scene that's been unloaded by now doesn't happen.\n");
+            sb_put(o, "        if (!purr_entity_is_null(c->scene) && !purr_entity_alive(&w->entities, c->scene)) {\n");
+            sb_put(o, "            purr_entity_destroy(&w->entities, c->entity);\n            break;\n        }\n");
+        }
         sb_put(o, "        uint32_t row = a->count++;\n        a->entity[row] = c->entity;\n");
+        if (has_scenes(prog, local)) sb_put(o, "        a->scene[row] = c->scene;\n");
         for (int i = 0; i < prog->components.count; i++) {
             if (!has_component(mask, i)) continue;
             const char *comp = type_cname(prog->components.items[i]);
@@ -1706,22 +1837,78 @@ static void gen_apply(gen *g, const bool local)
     }
     sb_put(o, "    default: break;\n    }\n}\n\n");
 
-    // Destroy
-    sb_printf(o, "PURR_HELPER void %sapply_destroy(%s *w, const purr_command *c)\n{\n", p, world);
-    sb_put(o, "    purr_location loc = purr_entity_location(&w->entities, c->entity);\n");
+    // Destroy one entity now
+    sb_printf(o, "PURR_HELPER void %sdestroy_now(%s *w, purr_entity e)\n{\n", p, world);
+    sb_put(o, "    purr_location loc = purr_entity_location(&w->entities, e);\n");
     sb_put(o, "    switch (loc.archetype) {\n");
     for (int a = 0; a < prog->archetypes.count; a++) {
         if (arch_local(g, a) != local) continue;
         // Destroyed's handlers run first, while the components can still be read.
         if (handled_for(prog, prog->destroyed, a)) {
-            sb_printf(o, "    case %d: %sdispatch_%s(w, c->entity, &(%s){0}); purr_remove_row%d(w, loc.row); break;\n", a, p,
+            sb_printf(o, "    case %d: %sdispatch_%s(w, e, &(%s){0}); purr_remove_row%d(w, loc.row); break;\n", a, p,
                       destroyed, destroyed, a);
         } else {
             sb_printf(o, "    case %d: purr_remove_row%d(w, loc.row); break;\n", a, a);
         }
     }
     sb_put(o, "    default: return; // Already destroyed.\n    }\n");
-    sb_put(o, "    purr_entity_destroy(&w->entities, c->entity);\n}\n\n");
+    sb_put(o, "    purr_entity_destroy(&w->entities, e);\n}\n\n");
+
+    // Unloading a scene: every entity in it, then the scene itself. Rows are
+    // walked from the end, so the row swapped into a gap was already seen.
+    const bool scenes = has_scenes(prog, local);
+    if (scenes) {
+        sb_printf(o, "PURR_HELPER void %sunload(%s *w, purr_entity scene)\n{\n", p, world);
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            if (arch_local(g, a) != local) continue;
+            const char *name = arch_name(g, a);
+            sb_printf(o, "    for (uint32_t i = w->%s.count; i-- > 0;) {\n", name);
+            sb_printf(o, "        const purr_entity e = w->%s.entity[i];\n", name);
+            sb_printf(o, "        if (purr_entity_equal(w->%s.scene[i], scene) && !purr_entity_equal(e, scene)) %sdestroy_now(w, e);\n",
+                      name, p);
+            sb_put(o, "    }\n");
+        }
+        sb_printf(o, "    %sdestroy_now(w, scene);\n}\n\n", p);
+    }
+
+    // Destroy: a scene's entity unloads the scene.
+    sb_printf(o, "PURR_HELPER void %sapply_destroy(%s *w, const purr_command *c)\n{\n", p, world);
+    if (scenes) {
+        sb_put(o, "    switch (purr_entity_location(&w->entities, c->entity).archetype) {\n");
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            if (arch_local(g, a) == local && arch_scene(g, a)) sb_printf(o, "    case %d:\n", a);
+        }
+        sb_printf(o, "        %sunload(w, c->entity);\n        return;\n    default:\n        break;\n    }\n", p);
+    }
+    sb_printf(o, "    %sdestroy_now(w, c->entity);\n}\n\n", p);
+
+    // Unload: nothing happens to an entity that isn't a scene.
+    sb_printf(o, "PURR_HELPER void %sapply_unload(%s *w, const purr_command *c)\n{\n    (void)w;\n    (void)c;\n", p, world);
+    if (scenes) {
+        sb_put(o, "    switch (purr_entity_location(&w->entities, c->entity).archetype) {\n");
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            if (arch_local(g, a) == local && arch_scene(g, a)) sb_printf(o, "    case %d:\n", a);
+        }
+        sb_printf(o, "        %sunload(w, c->entity);\n        break;\n    default:\n        break;\n    }\n", p);
+    }
+    sb_put(o, "}\n\n");
+
+    // Who sees a scene, as bits of its purr_players.
+    if (!local) {
+        sb_put(o, "PURR_HELPER void purr_apply_scene_player(purr_world *w, const purr_command *c)\n{\n");
+        sb_put(o, "    const int32_t index = purr_player_index(c->data.player);\n    if (index < 0) return;\n");
+        sb_put(o, "    const int32_t bit = (int32_t)(1u << index);\n    (void)bit;\n");
+        sb_put(o, "    const purr_location loc = purr_entity_location(&w->entities, c->entity);\n    switch (loc.archetype) {\n");
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            const decl *scene = arch_scene(g, a);
+            if (arch_local(g, a) || !scene) continue;
+            const char *players = "purr_players";
+            sb_printf(o, "    case %d:\n", a);
+            sb_printf(o, "        if (c->id) w->%s.%s[loc.row].%s |= bit;\n", arch_name(g, a), type_cname(scene), players);
+            sb_printf(o, "        else w->%s.%s[loc.row].%s &= ~bit;\n        break;\n", arch_name(g, a), type_cname(scene), players);
+        }
+        sb_put(o, "    default: break;\n    }\n}\n\n");
+    }
 
     // Event: its handlers, in order. Events nothing handles do nothing.
     sb_printf(o, "PURR_HELPER void %sapply_event(%s *w, const purr_command *c)\n{\n    (void)w;\n    switch (c->id) {\n", p, world);
@@ -1748,6 +1935,8 @@ static void gen_apply(gen *g, const bool local)
         "        case PURR_CMD_REMOVE: %sapply_remove(w, c); break;\n"
         "        case PURR_CMD_DESTROY: %sapply_destroy(w, c); break;\n"
         "        case PURR_CMD_EVENT: %sapply_event(w, c); break;\n"
+        "        case PURR_CMD_UNLOAD: %sapply_unload(w, c); break;\n"
+        "%s"
         "        default: break;\n"
         "        }\n"
         "    }\n"
@@ -1755,7 +1944,7 @@ static void gen_apply(gen *g, const bool local)
         "    memset(w->commands, 0, sizeof w->commands[0] * w->command_count);\n"
         "    w->command_count = 0;\n"
         "}\n\n",
-        p, world, p, p, p, p, p);
+        p, world, p, p, p, p, p, p, local ? "" : "        case PURR_CMD_SCENE_PLAYER: purr_apply_scene_player(w, c); break;\n");
 
     if (prog->input && !local) {
         const char *name = type_cname(prog->input);
@@ -1821,9 +2010,14 @@ static void gen_system_body(gen *g, const decl *sys)
             sb_printf(o, ", const %s *restrict %s", c_type(p->type), prev_input_name(g, p->name));
         }
     }
+    // The scene of the entity it runs for, for its spawns to join.
+    g->has_scene = sys->per_entity && has_scenes(g->prog, sys->entity_local);
+    g->scene_local = sys->entity_local;
+    if (g->has_scene) sb_put(o, ", purr_entity purr_scene");
     sb_put(o, ")\n{\n");
     g->indent = 1;
     g->spawn_temps = 0;
+    if (g->has_scene) line(g, o, "(void)purr_scene;");
     if (sys->is_view || !sys->is_local) line(g, o, "(void)purr_w;");
     if (sys->is_view || sys->is_local) line(g, o, "(void)purr_l;");
     if (sys->is_view) line(g, o, "(void)purr_draw;");
@@ -1834,6 +2028,7 @@ static void gen_system_body(gen *g, const decl *sys)
         if (p->type.kind == TY_INPUT) line(g, o, "(void)%s;", prev_input_name(g, p->name));
     }
     for (int i = 0; i < sys->body->stmts.count; i++) gen_stmt(g, sys->body->stmts.items[i]);
+    g->has_scene = false;
     g->indent = 0;
     sb_put(o, "}\n");
     line_reset(g);
@@ -1875,6 +2070,8 @@ static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const
             break;
         }
     }
+    // The scene of the entity, last, for its spawns to join.
+    if (arch_var && has_scenes(g->prog, sys->entity_local)) sb_printf(o, ", %s->scene[purr_i]", arch_var);
 }
 
 // Runs an event's handlers of one world in order. One that takes data from the
@@ -2336,6 +2533,7 @@ static void gen_print_fields(sb *o, const decl *d, const char *base)
     sb_printf(o, "        printf(\" " STR_FMT " {\");\n", STR_ARG(d->qualified));
     for (int f = 0; f < d->fields.count; f++) {
         const field *fl = &d->fields.items[f];
+        if (fl->hidden) continue;
         sb_printf(o, "        printf(\"%s" STR_FMT " = \");\n", f ? ", " : " ", STR_ARG(fl->name));
         char access[256];
         snprintf(access, sizeof access, "%s.%s", base, field_cname(fl));
@@ -2368,11 +2566,12 @@ static void gen_api(gen *g)
         sb_put(o, "    for (uint32_t i = 0; i <= PURR_SERVER_INPUT; i++) {\n");
         sb_put(o, "        w->inputs[i] = purr_defaults;\n        w->previous_inputs[i] = purr_defaults;\n    }\n");
     }
-    sb_printf(o, "    purr_system_%s(w", decl_cname(prog->main));
-    for (int i = 0; i < prog->main->params.count; i++) {
-        sb_printf(o, ", &w->%s", type_cname(prog->main->params.items[i].type.decl));
+    if (!prog->main->is_local) {
+        sb_printf(o, "    purr_cmd_load%d(w, (purr_spawn%d){.%s = ", prog->main_archetype, prog->main_archetype, type_cname(prog->main));
+        gen_value(g, o, prog->main, NULL, 0);
+        sb_put(o, "}, 0);\n");
     }
-    sb_put(o, ");\n    purr_apply_commands(w);\n}\n\n");
+    sb_put(o, "    purr_apply_commands(w);\n}\n\n");
 
     sb_put(o, "void purr_world_tick(purr_world *w)\n{\n");
     for (int i = 0; i < prog->systems.count; i++) {
@@ -2389,6 +2588,12 @@ static void gen_api(gen *g)
         sb_printf(o, "    local->%s = ", type_cname(d));
         gen_value(g, o, d, NULL, 0);
         sb_put(o, ";\n");
+    }
+    if (prog->main->is_local) {
+        sb_printf(o, "    purr_cmd_load%d(local, (purr_spawn%d){.%s = ", prog->main_archetype, prog->main_archetype,
+                  type_cname(prog->main));
+        gen_value(g, o, prog->main, NULL, 0);
+        sb_put(o, "}, 0);\n    purr_local_apply_commands(local);\n");
     }
     sb_put(o, "}\n\n");
 
@@ -2524,7 +2729,6 @@ bool codegen(program *prog, const codegen_options *opts)
     if (prog->input) gen_sample(&g);
     if (prog->input && prog->input->sanitize) gen_sanitize(&g);
     if (prog->input && input_needs_repair(prog->input)) gen_repair(&g);
-    gen_system_body(&g, prog->main);
     for (int i = 0; i < prog->systems.count; i++) gen_system_body(&g, prog->systems.items[i]);
     for (int i = 0; i < prog->views.count; i++) gen_system_body(&g, prog->views.items[i]);
     for (int i = 0; i < prog->handlers.count; i++) gen_system_body(&g, prog->handlers.items[i]);

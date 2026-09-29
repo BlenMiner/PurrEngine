@@ -1,4 +1,6 @@
 // expect: 'Bump' changes its 'counter', which must be int, not float
 void Bump(mut int counter) { counter += 1; }
 singleton Log { float count; }
-system Main(mut Log log) { Bump(log.count); }
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Log log) { Bump(log.count); }

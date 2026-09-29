@@ -5,5 +5,5 @@ stage 1  Strike  (per entity)
          alongside nothing
 
 Event handlers, at the end of the tick, as their events are sent:
-         Spawned: Welcome
+         Spawned: Setup, Welcome
          Hit: CountHits, TakeHit

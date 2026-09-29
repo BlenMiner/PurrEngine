@@ -1,4 +1,4 @@
 // expect: 'Hit' is an event; systems take components and singletons
 event Hit { int damage; }
-system Main() { }
+scene Main { }
 system Strike(Hit hit) { }

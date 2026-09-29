@@ -1,5 +1,7 @@
 // expect: operator '+' can't be used with float2 and float3
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var v = float2(1, 2) + float3(1, 2, 3);
 }

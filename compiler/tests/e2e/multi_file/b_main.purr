@@ -12,7 +12,9 @@ singleton Trace
     int hit_seen;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     // Body through `using Physics`; two components named Health, told apart by namespace.
     Spawn(Body, Combat.Health { value = 10 }, Items.Health { value = 3 });

@@ -1,6 +1,6 @@
 // expect: A runs after B runs after A
 singleton Log { int n; }
-system Main() { }
+scene Main { }
 [After(B)]
 system A(mut Log log) { log.n += 1; }
 [After(A)]

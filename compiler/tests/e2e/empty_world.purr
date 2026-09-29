@@ -15,6 +15,4 @@ system PlayerMovement(mut Transform trs, Player player, Time time)
     trs.position += player.velocity * time.dt;
 }
 
-system Main()
-{
-}
+scene Main { }

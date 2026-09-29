@@ -12,4 +12,6 @@ struct B
     bool operator !=(A a, B b) { return a.value != b.value; }
 }
 singleton Pair { A a; B b; bool same; }
-system Main(mut Pair pair) { pair.same = pair.a == pair.b; }
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Pair pair) { pair.same = pair.a == pair.b; }

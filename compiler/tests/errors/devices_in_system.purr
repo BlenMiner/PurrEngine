@@ -1,3 +1,3 @@
 // expect: Devices can only be read in the input's Sample
-system Main() { }
+scene Main { }
 system Peek(Devices devices) { }

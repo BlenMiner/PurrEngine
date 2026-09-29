@@ -4,5 +4,7 @@ component Unit
     int kills;
     mut void Kill() { kills += 1; }
 }
-system Main() { Spawn(Unit); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Unit); }
 system Fight(Unit unit) { unit.Kill(); }

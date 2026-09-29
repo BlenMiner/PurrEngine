@@ -1,2 +1,4 @@
 // expect: systems don't return values; use 'return;'
-system Main() { return 1; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { return 1; }

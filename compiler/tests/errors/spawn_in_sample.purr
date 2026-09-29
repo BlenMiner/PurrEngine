@@ -8,4 +8,4 @@ input PlayerInput
         Spawn(Marker);
     }
 }
-system Main() { }
+scene Main { }

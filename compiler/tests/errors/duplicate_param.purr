@@ -1,4 +1,4 @@
 // expect: 'Transform' appears twice
 component Transform { float3 position; }
-system Main() { }
+scene Main { }
 system Move(Transform a, mut Transform b) { }

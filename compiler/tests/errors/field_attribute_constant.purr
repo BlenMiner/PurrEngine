@@ -4,4 +4,4 @@ input PlayerInput
     float limit = 2;
     [Max(limit)] float move;
 }
-system Main() { }
+scene Main { }

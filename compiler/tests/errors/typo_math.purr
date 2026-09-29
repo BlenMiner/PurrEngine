@@ -1,6 +1,8 @@
 // expect: did you mean 'Sin'?
 component Body { float angle; }
-system Main() { Spawn(Body); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
 system Spin(mut Body body)
 {
     body.angle = Math.Sine(body.angle);

@@ -9,3 +9,6 @@ stage 2  Tally  (per entity)
          writes Log
          after Hurt: it writes Unit, which this reads
          alongside nothing
+
+Event handlers, at the end of the tick, as their events are sent:
+         Spawned: Setup

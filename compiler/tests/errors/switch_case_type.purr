@@ -1,7 +1,7 @@
 // expect: the switch is on Phase, so its cases are too, not int
 enum Phase { Warmup, Playing }
 singleton Match { Phase phase; }
-system Main() { }
+scene Main { }
 system S(Match match)
 {
     switch (match.phase)

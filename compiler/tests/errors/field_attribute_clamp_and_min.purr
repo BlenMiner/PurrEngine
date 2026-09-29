@@ -3,4 +3,4 @@ input PlayerInput
 {
     [Clamp(0, 1), Min(0)] float throttle;
 }
-system Main() { }
+scene Main { }

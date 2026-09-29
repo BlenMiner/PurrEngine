@@ -85,6 +85,7 @@ typedef struct field {
     loc type_at; // The type's name (the last part if it's qualified)
     VEC(attribute) attributes; // [Clamp], [Min] and [Max] on input and struct fields
     loc type_qual_at; // Where the type starts: its namespace if it's qualified
+    bool hidden; // The engine's own, in generated C only: a scene's visibility and players
 } field;
 
 typedef enum param_mode {
@@ -160,6 +161,7 @@ typedef struct decl {
     bool builtin;
     bool is_local;    // `local`: belongs to this machine, not the match. Views are always local code.
     loc local_at;     // The `local` keyword
+    bool is_scene;    // `scene Arena { ... }`: a DECL_COMPONENT whose entity is a loaded scene
     const char *c_name; // Records: the C struct name.
 
     // Components, singletons, inputs, records, structs and events
@@ -239,6 +241,9 @@ typedef enum builtin_call {
     CALL_METHOD,    // stats.IsDead(), or IsDead() inside another of Stats' methods
     CALL_FUNCTION,  // Heal(unit.stats, 5), or Combat.Heal(...)
     CALL_SEND,      // Send(RoundOver { ... }), or target.Send(Hit { ... }): type_decl is the event
+    CALL_LOAD,      // Scene.Load(Arena { ... }): a spawn whose entity is its own scene; type_decl is the scene
+    CALL_UNLOAD,    // Scene.Unload(scene)
+    CALL_SCENE_PLAYER, // Scene.AddPlayer(scene, player) and Scene.RemovePlayer(scene, player)
 } builtin_call;
 
 // How a constructor call builds its value.
@@ -397,7 +402,7 @@ typedef struct program {
     // Filled by the checker
     VEC(decl *) components;
     VEC(decl *) singletons;
-    VEC(decl *) systems; // Excluding Main.
+    VEC(decl *) systems;
     VEC(decl *) views;
     VEC(decl *) handlers; // Every event handler, in the order they run
     VEC(decl *) events;   // Built-in ones first
@@ -405,8 +410,10 @@ typedef struct program {
     decl *destroyed;
     decl *player_joined;
     decl *player_left;
-    decl *main;
+    decl *main;          // The scene named Main, where the program starts
+    int main_archetype;  // Main's archetype
     decl *input;         // The input declaration, if any.
+    decl *scene_visibility; // The built-in enum SceneVisibility
     decl *owner;         // The built-in Owner component.
     decl *devices;       // The built-in Devices record.
     VEC(decl *) records; // Built-in records: Devices, Keyboard, Mouse, Gamepad, Dpad, Button.

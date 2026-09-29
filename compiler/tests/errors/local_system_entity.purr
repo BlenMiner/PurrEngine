@@ -1,4 +1,6 @@
 // expect: a LocalEntity is local, and the match can't use local state
 component Ball { float2 position; }
-system Main() { Spawn(Ball); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Ball); }
 system Roll(LocalEntity e, Ball ball) { }

@@ -33,6 +33,8 @@ purr_e2e_test(operators)
 purr_e2e_test(events)
 purr_e2e_test(local)
 purr_e2e_test(enums)
+purr_e2e_test(scenes)
+purr_e2e_test(scenes_local)
 purr_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.purr e2e/multi_file/b_main.purr
     e2e/multi_file/c_combat.purr e2e/multi_file/d_items.purr)
 

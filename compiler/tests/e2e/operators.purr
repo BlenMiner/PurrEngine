@@ -33,7 +33,9 @@ singleton Wallet
     float stretched;
 }
 
-system Main(mut Wallet wallet)
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Wallet wallet)
 {
     wallet.total = wallet.price * 2 + Money { cents = 1 }; // 501
     wallet.total += wallet.price;                          // 751: += uses +

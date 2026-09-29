@@ -4,4 +4,4 @@ struct Stats
     float health;
     bool IsDead() { if (health <= 0) return true; }
 }
-system Main() { }
+scene Main { }

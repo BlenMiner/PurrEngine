@@ -1,4 +1,6 @@
 // expect: local handlers of match events aren't supported yet
 event Hit { int damage; }
-system Main() { Send(Hit); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Send(Hit); }
 local event(Hit hit) Flash() { }

@@ -1,5 +1,7 @@
 // expect: 'x' is already declared
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var x = 1;
     if (true)

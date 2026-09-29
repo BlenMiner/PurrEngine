@@ -1,5 +1,7 @@
 // expect: does nothing on its own
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     1 + 2;
 }

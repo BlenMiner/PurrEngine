@@ -17,7 +17,9 @@ singleton Spawner
     int seed = 12345;
 }
 
-system Main(mut Spawner spawner)
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Spawner spawner)
 {
     spawner.spawned = 0;
 }

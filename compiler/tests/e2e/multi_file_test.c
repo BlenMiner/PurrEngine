@@ -21,7 +21,7 @@ PURR_TEST(multi_file_order)
 PURR_TEST(multi_file_namespaces)
 {
     purr_world_init(&world, 1.0f);
-    const purr_entity e = {0, 1};
+    const purr_entity e = {1, 1};
     PURR_REQUIRE(purr_get_Physics_Body(&world, e) != NULL);
     PURR_REQUIRE(purr_get_Combat_Health(&world, e) != NULL);
     PURR_REQUIRE(purr_get_Items_Health(&world, e) != NULL);

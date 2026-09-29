@@ -1,5 +1,5 @@
 // expect: enum 'Phase' has no member 'Warmupp'
 enum Phase { Warmup, Playing }
 singleton Match { Phase phase; }
-system Main() { }
+scene Main { }
 system S(mut Match match) { match.phase = Phase.Warmupp; }

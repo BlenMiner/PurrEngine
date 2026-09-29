@@ -6,7 +6,9 @@ component Ball
     float2 position;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Ball { position = float2(1, 2) });
     Spawn(Ball { position = float2(3, 4) });

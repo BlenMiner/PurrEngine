@@ -69,7 +69,9 @@ event Ping { }
 
 event Order { }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var a = Spawn(Health, Target { id = 1 });
     var b = Spawn(Target { id = 2 });

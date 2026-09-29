@@ -1,0 +1,3 @@
+// expect: the program starts in the scene named Main, not a system
+component Body { float2 position; }
+system Main() { Spawn(Body); }

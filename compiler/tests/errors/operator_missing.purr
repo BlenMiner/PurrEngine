@@ -1,4 +1,6 @@
 // expect: declare it in Money, like 'Money operator +(Money a, Money b)'
 struct Money { int cents; }
 singleton Wallet { Money a; Money b; Money total; }
-system Main(mut Wallet wallet) { wallet.total = wallet.a + wallet.b; }
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Wallet wallet) { wallet.total = wallet.a + wallet.b; }

@@ -4,4 +4,4 @@ input PlayerInput
     float move;
     Sanitize(Devices devices) { }
 }
-system Main() { }
+scene Main { }

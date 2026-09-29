@@ -3,11 +3,12 @@
 
 static purr_world world;
 
-// Entity handles are allocated deterministically: Main spawns a, b and the
-// spawner first, so they get slots 0, 1 and 2, each at generation 1.
-static const purr_entity A = {0, 1};
-static const purr_entity B = {1, 1};
-static const purr_entity SPAWNER = {2, 1};
+// Entity handles are allocated deterministically: the Main scene is slot 0, and
+// its Setup spawns a, b and the spawner first, so they get slots 1, 2 and 3,
+// each at generation 1.
+static const purr_entity A = {1, 1};
+static const purr_entity B = {2, 1};
+static const purr_entity SPAWNER = {3, 1};
 
 // Spawn archetypes come first, in source order: Health, Health + Poisoned,
 // Spawner, Child.
@@ -21,7 +22,7 @@ static void ticks(int n)
 PURR_TEST(structural_main_applies_spawns_then_adds)
 {
     purr_world_init(&world, 1.0f);
-    PURR_CHECK(purr_world_entity_count(&world) == 3);
+    PURR_CHECK(purr_world_entity_count(&world) == 4); // The Main scene, a, b and the spawner
     PURR_REQUIRE(purr_get_Health(&world, A) != NULL);
     PURR_CHECK(purr_get_Health(&world, A)->value == 3);
     PURR_REQUIRE(purr_get_Poisoned(&world, A) != NULL); // Add on a pending spawn.
@@ -41,7 +42,7 @@ PURR_TEST(structural_changes_apply_at_end_of_tick)
     PURR_CHECK(purr_get_Dead(&world, B) != NULL);
     PURR_CHECK(purr_entity_alive(&world.entities, B));
     PURR_CHECK(purr_get_Health(&world, A)->value == 2);
-    PURR_CHECK(purr_world_entity_count(&world) == 4); // a, b, spawner, one child
+    PURR_CHECK(purr_world_entity_count(&world) == 5); // Main, a, b, spawner, one child
 }
 
 PURR_TEST(structural_destroy_frees_the_entity)
@@ -50,7 +51,7 @@ PURR_TEST(structural_destroy_frees_the_entity)
     ticks(2);
     PURR_CHECK(!purr_entity_alive(&world.entities, B));
     PURR_CHECK(purr_get_Health(&world, B) == NULL);
-    PURR_CHECK(purr_world_entity_count(&world) == 4); // a, spawner, two children
+    PURR_CHECK(purr_world_entity_count(&world) == 5); // Main, a, spawner, two children
 }
 
 PURR_TEST(structural_spawned_children_point_at_spawner)
@@ -70,5 +71,5 @@ PURR_TEST(structural_everything_poisoned_eventually_dies)
     ticks(4);
     // a hit zero on tick 3 and was destroyed on tick 4.
     PURR_CHECK(!purr_entity_alive(&world.entities, A));
-    PURR_CHECK(purr_world_entity_count(&world) == 3); // spawner and two children
+    PURR_CHECK(purr_world_entity_count(&world) == 4); // Main, the spawner and two children
 }

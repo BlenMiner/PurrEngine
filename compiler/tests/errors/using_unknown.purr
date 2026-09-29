@@ -1,4 +1,4 @@
 // expect: did you mean 'Physics'?
 namespace Physics;
 using Physcs;
-system Main() { }
+scene Main { }

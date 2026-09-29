@@ -14,7 +14,9 @@ singleton Log { int deaths; }
 
 void Count(mut int counter) { counter += 1; }
 
-system Main() { Spawn(Unit); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Unit); }
 
 // Writes Unit through a mut method.
 system Hurt(mut Unit unit)

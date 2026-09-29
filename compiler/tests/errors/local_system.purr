@@ -1,3 +1,3 @@
 // expect: systems run the match; for code that runs every frame on this machine, write a view
-system Main() { }
+scene Main { }
 local system Tick() { }

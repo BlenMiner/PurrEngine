@@ -1,5 +1,7 @@
 // expect: operator '*' can't be used with quaternions
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var q = quaternion.identity * quaternion.identity;
 }

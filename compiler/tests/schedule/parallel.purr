@@ -6,7 +6,9 @@ component Player { int score; }
 component Enemy { int hp; }
 singleton Score { int total; }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Position, Velocity, Player);
     Spawn(Position, Velocity, Enemy);

@@ -3,4 +3,4 @@ input PlayerInput
 {
     [Max(1)] bool jump;
 }
-system Main() { }
+scene Main { }

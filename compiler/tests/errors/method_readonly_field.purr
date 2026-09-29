@@ -4,4 +4,4 @@ struct Stats
     float health;
     void Heal(float amount) { health += amount; }
 }
-system Main() { }
+scene Main { }

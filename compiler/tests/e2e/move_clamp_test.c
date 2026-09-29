@@ -14,7 +14,7 @@ static purr_world snapshot;
 PURR_TEST(move_clamp_main_spawns)
 {
     purr_world_init(&world, 0.5f);
-    PURR_CHECK(purr_world_entity_count(&world) == 2);
+    PURR_CHECK(purr_world_entity_count(&world) == 3);
     PURR_REQUIRE(PLAYERS.count == 1);
     PURR_REQUIRE(PROPS.count == 1);
     PURR_CHECK(PLAYERS.Transform[0].position.y == 10.0f);

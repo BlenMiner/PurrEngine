@@ -1,4 +1,4 @@
-﻿// expect: the entry point is spelled 'Main', with a capital M
+﻿// expect: it's the scene named 'Main', with a capital M
 system main()
 {
 }

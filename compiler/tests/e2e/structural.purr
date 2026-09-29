@@ -24,7 +24,9 @@ component Child
     Entity parent;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var a = Spawn(Health { value = 3 });
     a.Add(Poisoned { damage = 1 });

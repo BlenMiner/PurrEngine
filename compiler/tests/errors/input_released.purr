@@ -5,7 +5,9 @@ input PlayerInput
     bool jump;
     Sample(Devices devices) { jump = devices.keyboard.space.pressed; }
 }
-system Main() { Spawn(Jumps, Owner); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Jumps, Owner); }
 system Land(PlayerInput input, mut Jumps jumps)
 {
     if (input.jump.released) jumps.count += 1;

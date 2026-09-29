@@ -4,4 +4,6 @@ component Health
     int value;
     Health operator +(Health a, Health b) { return Health { value = a.value + b.value }; }
 }
-system Main() { Spawn(Health); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Health); }

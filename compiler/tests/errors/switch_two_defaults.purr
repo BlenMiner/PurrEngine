@@ -1,6 +1,6 @@
 // expect: a switch has one 'default'
 singleton Match { int n; }
-system Main() { }
+scene Main { }
 system S(Match match)
 {
     switch (match.n)

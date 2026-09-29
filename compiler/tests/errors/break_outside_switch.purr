@@ -1,2 +1,4 @@
 // expect: 'break' only ends a switch's section; there's no loop to break out of
-system Main() { break; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { break; }

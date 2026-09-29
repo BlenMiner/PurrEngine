@@ -5,4 +5,4 @@ struct Range
     float hi;
     float Width() { return hi > lo; }
 }
-system Main() { }
+scene Main { }

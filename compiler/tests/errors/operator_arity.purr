@@ -4,4 +4,4 @@ struct Money
     int cents;
     Money operator +(Money a) { return a; }
 }
-system Main() { }
+scene Main { }

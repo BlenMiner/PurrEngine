@@ -6,8 +6,8 @@
 
 static purr_world world;
 
-static const purr_entity first = {0, 1};
-static const purr_entity second = {1, 1};
+static const purr_entity first = {1, 1};
+static const purr_entity second = {2, 1};
 
 static bool all_zero(const uint8_t *bytes, const size_t n)
 {

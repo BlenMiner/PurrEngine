@@ -4,4 +4,4 @@ input PlayerInput
     float move;
     sanitize() { move = Math.Clamp(move, -1, 1); }
 }
-system Main() { }
+scene Main { }

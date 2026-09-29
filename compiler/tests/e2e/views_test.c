@@ -91,7 +91,7 @@ PURR_TEST(views_colors_in_the_world)
 {
     purr_world_init(&world, 1.0f);
     PURR_CHECK(same_color(world.Palette.background, (purr_color){0.1f, 0.2f, 0.3f, 1.0f}));
-    const Tint *tint = purr_get_Tint(&world, (purr_entity){0, 1});
+    const Tint *tint = purr_get_Tint(&world, (purr_entity){1, 1});
     PURR_REQUIRE(tint != NULL);
     PURR_CHECK(same_color(tint->color, PURR_COLOR_RED));
 }

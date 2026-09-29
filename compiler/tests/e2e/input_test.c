@@ -5,11 +5,11 @@
 
 static purr_world world;
 
-// Main spawns these in order, so they get slots 0, 1 and 2.
-static const purr_entity FIRST = {0, 1};  // Owned by player 0
-static const purr_entity SECOND = {1, 1}; // Owned by player 1
-static const purr_entity NOBODY = {2, 1}; // Owned by no player
-static const purr_entity UNOWNED = {3, 1}; // No Owner
+// The Main scene is slot 0, and its Setup spawns these in order, so they get slots 1 to 4.
+static const purr_entity FIRST = {1, 1};  // Owned by player 0
+static const purr_entity SECOND = {2, 1}; // Owned by player 1
+static const purr_entity NOBODY = {3, 1}; // Owned by no player
+static const purr_entity UNOWNED = {4, 1}; // No Owner
 
 static PlayerInput moving_right(const bool jump)
 {

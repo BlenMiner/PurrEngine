@@ -51,7 +51,9 @@ component Bits
     float fromHex;
 }
 
-system Main(mut Overridden overridden)
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Overridden overridden)
 {
     var bare = Spawn(Health);
     var partial = Spawn(Health { max = 200 });

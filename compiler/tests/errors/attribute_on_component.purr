@@ -1,5 +1,5 @@
 // expect: orders systems, views and event handlers
-system Main() { }
+scene Main { }
 system Move() { }
 [After(Move)]
 component Body { float2 position; }

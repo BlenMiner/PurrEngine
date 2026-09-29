@@ -41,7 +41,9 @@ singleton Log
     int fire_downs;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Unit);
     Spawn(Unit { stats = Stats { health = 50, damage = Range { lo = 2, hi = 3 } } });

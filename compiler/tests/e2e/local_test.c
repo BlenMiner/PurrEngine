@@ -29,12 +29,12 @@ PURR_TEST(local_views_change_local_state)
     PURR_CHECK(local.Frames.blinks == 2); // Count's Blink, handled at the end of the frame
     PURR_CHECK(local.Frames.lit == 2);    // Each spark's Spawned
     PURR_CHECK(purr_local_entity_count(&local) == 2);
-    PURR_CHECK(purr_world_entity_count(&world) == 2);
+    PURR_CHECK(purr_world_entity_count(&world) == 3); // The Main scene and two balls
     const Spark *newest = purr_get_Spark(&local, local.Frames.newest);
     PURR_REQUIRE(newest != NULL);
     PURR_CHECK(newest->position.x == 3.0f && newest->position.y == 4.0f);
     PURR_CHECK(newest->lit);
-    PURR_CHECK(purr_entity_equal(local.Frames.selected, (purr_entity){1, 1})); // The second ball
+    PURR_CHECK(purr_entity_equal(local.Frames.selected, (purr_entity){2, 1})); // The second ball
 }
 
 PURR_TEST(local_entities_destroy_themselves)

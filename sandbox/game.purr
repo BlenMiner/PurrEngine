@@ -64,7 +64,9 @@ system PlayerGravity(mut Player player, Time time)
     player.velocity -= float3(0, 9.7 * time.dt, 0);
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(
         Transform { position = float3(0, 100, 2) },

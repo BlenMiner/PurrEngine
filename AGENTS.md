@@ -92,7 +92,8 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 The generated header is the API between the game and the host. Namespaced declarations have their namespace in their C name: `Combat.Health` is `Combat_Health`, read with `purr_get_Combat_Health`.
 
 - `purr_world`: the whole simulation state as plain data. Copying it is a snapshot.
-- `purr_world_init(w, dt)`: clears the world, sets `Time.dt` and singleton defaults, runs `Main`.
+- `purr_world_init(w, dt)`: clears the world, sets `Time.dt` and singleton defaults, and loads the `Main` scene if it's the match's.
+- `PURR_MAIN_IS_LOCAL` is defined when `Main` is a local scene: the program starts outside any match.
 - `purr_world_tick(w)`: runs every system once, then applies structural changes.
 - `purr_local`: this machine's local state, outside every world. `purr_local_init(local)` clears it and sets its singletons' defaults.
 - `purr_frame(w, local, draw)`: runs every view once, adding their Draw calls to a `purr_draw_list`, then applies the local changes they made. Call it once per frame, after `purr_draw_reset(draw)`, then render the list with `purr_platform_draw(draw)`. Outside a match `w` is NULL, and views that read the match don't run.

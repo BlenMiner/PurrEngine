@@ -1,4 +1,4 @@
 // expect: struct 'B' can't contain 'A': 'A' already contains 'B'
 struct A { B b; }
 struct B { int value; A a; }
-system Main() { }
+scene Main { }

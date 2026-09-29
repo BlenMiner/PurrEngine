@@ -1,4 +1,6 @@
 // expect: 'Health' is ambiguous: both Combat and Items have it
 using Combat;
 using Items;
-system Main() { Spawn(Health); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Health); }

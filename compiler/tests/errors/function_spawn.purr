@@ -1,4 +1,6 @@
 // expect: functions can't spawn entities; systems do
 component Enemy { int hp; }
 void Wave() { Spawn(Enemy); }
-system Main() { Wave(); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Wave(); }

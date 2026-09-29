@@ -1,4 +1,4 @@
 // expect: default values must be constant expressions
 singleton Physics { int collisionCount = 69; }
 component Health { int value = collisionCount; }
-system Main() { }
+scene Main { }

@@ -3,4 +3,6 @@ component Health
 {
     [Clamp(0, 100)] int value;
 }
-system Main() { Spawn(Health); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Health); }

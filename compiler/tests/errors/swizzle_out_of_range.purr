@@ -1,5 +1,7 @@
 // expect: 'z' doesn't match float2's components (x, y)
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     float2 v = float2(1, 2);
     var z = v.z;

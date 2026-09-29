@@ -1,6 +1,8 @@
 // expect: did you mean 'speed'?
 component Body { float2 position; }
-system Main() { Spawn(Body); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
 system Move(mut Body body)
 {
     var speed = 2.0;

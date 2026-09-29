@@ -18,7 +18,9 @@ component Prop
     int id;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Transform { position = float3(0, 10, 0), scale = float3(1, 1, 1) },
           Player { speed = float3(1, -2, 0) });

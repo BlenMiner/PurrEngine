@@ -1,3 +1,3 @@
 // expect: 'Link' belongs to the match, so it can't hold a LocalEntity
 component Link { LocalEntity to; }
-system Main() { }
+scene Main { }

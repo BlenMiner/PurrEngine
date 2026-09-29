@@ -21,7 +21,9 @@ component Hidden
     bool yes;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Body { position = float2(1, 2) }, Tint);
     Spawn(Body { position = float2(3, 4), radius = 2 }, Tint { color = Color(0, 0.5, 1, 0.25) });

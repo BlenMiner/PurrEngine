@@ -16,7 +16,9 @@ event Hit
     int damage = 1;
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Health);
 }

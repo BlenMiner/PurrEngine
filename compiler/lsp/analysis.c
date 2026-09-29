@@ -357,6 +357,12 @@ static void walk_expr(const expr *e)
         } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY || e->call == CALL_SEND) {
             o.kind = OCC_METHOD;
             add_occ(o);
+        } else if (e->call == CALL_LOAD || e->call == CALL_UNLOAD || e->call == CALL_SCENE_PLAYER) {
+            add_occ((occurrence){.at = e->object->at, .len = 5, .kind = OCC_OWNER, .owner = str_from("Scene"),
+                                 .name = str_from("Scene")});
+            o.kind = OCC_FUNCTION;
+            o.owner = str_from("Scene");
+            add_occ(o);
         } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // stats.IsDead(), Combat.Heal(...)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
             o.decl = e->method;
@@ -667,7 +673,7 @@ static const char *builtin_type_doc(const type_kind kind)
 static const char *decl_keyword(const decl *d)
 {
     switch (d->kind) {
-    case DECL_COMPONENT: return "component";
+    case DECL_COMPONENT: return d->is_scene ? "scene" : "component";
     case DECL_SINGLETON: return "singleton";
     case DECL_INPUT: return "input";
     case DECL_RECORD: return "record";
@@ -772,6 +778,7 @@ static void format_data_decl(const decl *d, sb *out)
     }
     for (int i = 0; i < d->fields.count; i++) {
         const field *f = &d->fields.items[i];
+        if (f->hidden) continue;
         const char *type = f->type_name.len > 0 ? NULL : type_name(f->type);
         if (type) sb_printf(out, "    %s " STR_FMT, type, STR_ARG(f->name));
         else sb_printf(out, "    " STR_FMT " " STR_FMT, STR_ARG(f->type_name), STR_ARG(f->name));
@@ -806,6 +813,19 @@ static const char *button_field_doc(const decl *d, const str name)
     return NULL;
 }
 
+// Scene's functions: for hovers, completion and signature help.
+static const struct {
+    const char *name;
+    const char *form;
+    const char *doc;
+} scene_calls[] = {
+    {"Load", "Scene.Load(scene, SceneVisibility visibility)",
+     "Loads a scene and returns its entity. Its `Spawned` handlers set it up at the end of the tick; it's public unless it's `SceneVisibility.Private`."},
+    {"Unload", "Scene.Unload(scene)", "Unloads a scene at the end of the tick, destroying every entity in it."},
+    {"AddPlayer", "Scene.AddPlayer(scene, PlayerID player)", "Lets a player see a private scene."},
+    {"RemovePlayer", "Scene.RemovePlayer(scene, PlayerID player)", "Stops a player seeing a private scene."},
+};
+
 // Markdown for a hover over `o`.
 static void describe(const occurrence *o, sb *out)
 {
@@ -817,7 +837,11 @@ static void describe(const occurrence *o, sb *out)
             code_block(out, code.data);
             if (o->decl->kind == DECL_EVENT && o->decl->builtin) sb_printf(out, "\n\n%s", builtin_event_doc(A.prog, o->decl));
             else if (o->decl->builtin) sb_put(out, "\n\nBuilt into the engine.");
-            else if (o->decl->kind == DECL_EVENT && o->decl->is_local) {
+            else if (o->decl->is_scene) {
+                sb_put(out, o->decl->is_local ? "\n\nA local scene: loaded with `Scene.Load` from views, on this machine only."
+                                              : "\n\nA scene: its entities load and unload together. Load it with `Scene.Load`; "
+                                                "systems that take it run once per loaded one.");
+            } else if (o->decl->kind == DECL_EVENT && o->decl->is_local) {
                 sb_put(out, "\n\nLocal: sent with `Send` from views, and handled by `local event(...)` handlers at the end of the frame.");
             } else if (o->decl->kind == DECL_EVENT) {
                 sb_put(out, "\n\nSent with `Send`, and handled by `event(...)` handlers at the end of the tick.");
@@ -873,8 +897,9 @@ static void describe(const occurrence *o, sb *out)
         break;
     case OCC_OWNER:
         code_block(out, str_to_cstr(o->name));
-        sb_put(out, str_eq_c(o->name, "Draw") ? "\n\nImmediate-mode drawing. Only in views."
-                                              : "\n\nMath functions and constants, deterministic on every platform.");
+        sb_put(out, str_eq_c(o->name, "Draw")    ? "\n\nImmediate-mode drawing. Only in views."
+                  : str_eq_c(o->name, "Scene") ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
+                                               : "\n\nMath functions and constants, deterministic on every platform.");
         break;
     case OCC_FUNCTION:
     case OCC_CONSTANT:
@@ -884,7 +909,13 @@ static void describe(const occurrence *o, sb *out)
             sb_put(out, "\n\nFunction: runs when it's called.");
             break;
         }
-        if (o->kind == OCC_FUNCTION && o->owner.len == 0 && str_eq_c(o->name, "Send")) {
+        if (o->kind == OCC_FUNCTION && str_eq_c(o->owner, "Scene")) {
+            for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
+                if (!str_eq_c(o->name, scene_calls[i].name)) continue;
+                code_block(out, scene_calls[i].form);
+                sb_printf(out, "\n\n%s", scene_calls[i].doc);
+            }
+        } else if (o->kind == OCC_FUNCTION && o->owner.len == 0 && str_eq_c(o->name, "Send")) {
             code_block(out, "Send(event)");
             sb_put(out, "\n\nSends an event to the whole world. Its handlers run at the end of the tick, in the order "
                         "everything was sent.");
@@ -1472,9 +1503,12 @@ void analysis_symbols(jbuf *out)
             write_range(out, member->at, member->name.len);
             jb_put(out, "}");
         }
+        bool first_child = d->members.count == 0;
         for (int f = 0; f < d->fields.count; f++) {
             const field *fl = &d->fields.items[f];
-            if (f) jb_put(out, ",");
+            if (fl->hidden) continue;
+            if (!first_child) jb_put(out, ",");
+            first_child = false;
             jb_put(out, "{\"name\":");
             jb_string_n(out, fl->name.ptr, (size_t)fl->name.len);
             jb_put(out, ",\"detail\":");
@@ -1489,7 +1523,8 @@ void analysis_symbols(jbuf *out)
             const decl *m = d->methods.items[k];
             sb detail = {0};
             format_routine(m, &detail);
-            if (d->fields.count > 0 || k > 0) jb_put(out, ",");
+            if (!first_child) jb_put(out, ",");
+            first_child = false;
             jb_put(out, "{\"name\":");
             jb_string_n(out, m->name.ptr, (size_t)m->name.len);
             jb_put(out, ",\"detail\":");
@@ -1941,6 +1976,7 @@ static void list_members(completion *c, const type t, const bool edges, const sc
                    || t.kind == TY_STRUCT || t.kind == TY_EVENT)) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             const field *f = &t.decl->fields.items[i];
+            if (f->hidden) continue;
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
         }
         for (int i = 0; i < t.decl->methods.count; i++) {
@@ -2017,6 +2053,14 @@ static void complete_members(completion *c, const int dot, const loc at, const b
     const param *p;
     type t = name_type(&sc, base, &p);
     if (t.kind == TY_ERROR) {
+        if (n == 1 && str_eq_c(base, "Scene") && sc.decl && !sc.in_input) {
+            for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
+                sb snippet = {0};
+                sb_printf(&snippet, "%s($1)", scene_calls[i].name);
+                item(c, scene_calls[i].name, CK_FUNCTION, scene_calls[i].form, scene_calls[i].doc, snippet.data);
+            }
+            return;
+        }
         // Page. or Game.Page.: an enum's members
         sb written = {0};
         for (int k = n - 1; k >= 0; k--) sb_printf(&written, "%s" STR_FMT, k == n - 1 ? "" : ".", STR_ARG(DOC->toks[ids[k]].text));
@@ -2253,6 +2297,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
              "Send($1)");
         complete_components_of(c, local);
         complete_events_of(c, local);
+        item(c, "Scene", CK_MODULE, "Loads and unloads scenes", NULL, NULL);
     }
     complete_value_types(c, true);
     complete_structs(c);
@@ -2276,6 +2321,10 @@ static void complete_declarations(completion *c)
          "input ${1:Name}\n{\n    $0\n\n    Sample(Devices devices)\n    {\n    }\n}");
     item(c, "event", CK_SNIPPET, "event Name { fields }", "Something that happened, sent with Send.",
          "event ${1:Name}\n{\n    $0\n}");
+    item(c, "scene", CK_SNIPPET, "scene Name { fields }", "Entities that load and unload together, like a level.",
+         "scene ${1:Name}\n{\n    $0\n}");
+    item(c, "local scene", CK_SNIPPET, "local scene Name { fields }", "A scene on this machine only, like a menu.",
+         "local scene ${1:Name}\n{\n    $0\n}");
     item(c, "local component", CK_SNIPPET, "local component Name { fields }",
          "This machine's own: views change it, and the match never sees it.", "local component ${1:Name}\n{\n    $0\n}");
     item(c, "local singleton", CK_SNIPPET, "local singleton Name { fields }",
@@ -2330,7 +2379,8 @@ static bool starts_declaration(const int i)
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(DOC->toks, i); // Attributes
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "struct")
-            || str_eq_c(t->text, "event") || str_eq_c(t->text, "enum") || str_eq_c(t->text, "local") || str_eq_c(t->text, "namespace")
+            || str_eq_c(t->text, "event") || str_eq_c(t->text, "enum") || str_eq_c(t->text, "scene")
+            || str_eq_c(t->text, "local") || str_eq_c(t->text, "namespace")
             || str_eq_c(t->text, "using"))) {
         return true;
     }
@@ -2532,6 +2582,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 if ((d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT && d->kind != DECL_EVENT) || !str_eq(d->name, name)) continue;
                 for (int k = 0; k < d->fields.count; k++) {
                     const field *fl = &d->fields.items[k];
+                    if (fl->hidden) continue;
                     sb snippet = {0};
                     sb_printf(&snippet, STR_FMT " = $0", STR_ARG(fl->name));
                     item(&c, str_to_cstr(fl->name), CK_FIELD, type_name(fl->type), NULL, snippet.data);
@@ -2729,7 +2780,7 @@ static const char *check_new_name(const occurrence *target, const str name)
     static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with", "without", "if",
                                            "else", "return", "true", "false", "switch", "case", "default", "break"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
-                                           "Destroyed", "PlayerJoined", "PlayerLeft"};
+                                           "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility"};
     static char message[160];
 
     if (name.len == 0 || !(isalpha((unsigned char)name.ptr[0]) || name.ptr[0] == '_')) return "Names start with a letter.";
@@ -2965,6 +3016,10 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
         builtin_signatures(DOC->toks[open - 3].text, name, visit_signature, &s);
     } else if (method && (str_eq_c(name, "Add") || str_eq_c(name, "Remove"))) {
         add_signature(&s, str_eq_c(name, "Add") ? "entity.Add(components...)" : "entity.Remove(components...)", NULL);
+    } else if (method && str_eq_c(DOC->toks[open - 3].text, "Scene")) {
+        for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
+            if (str_eq_c(name, scene_calls[i].name)) add_signature(&s, scene_calls[i].form, scene_calls[i].doc);
+        }
     } else if (method && str_eq_c(name, "Send")) {
         add_signature(&s, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.");
     } else if (!method) {

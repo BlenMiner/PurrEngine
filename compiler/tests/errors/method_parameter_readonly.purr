@@ -4,4 +4,4 @@ struct Stats
     float health;
     mut void Heal(float amount) { amount = Math.Min(amount, 10); health += amount; }
 }
-system Main() { }
+scene Main { }

@@ -1,6 +1,8 @@
 // expect: a view can't change the match, and 'Body' belongs to it
 component Body { float2 position; }
-system Main() { Spawn(Body); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
 view Nudge(mut Body body)
 {
     body.position.x += 1;

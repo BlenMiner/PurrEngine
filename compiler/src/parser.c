@@ -352,7 +352,8 @@ static stmt *parse_stmt(parser *p);
 static bool is_decl_word(const str text)
 {
     return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct") || str_eq_c(text, "event")
-        || str_eq_c(text, "enum") || str_eq_c(text, "local") || str_eq_c(text, "namespace") || str_eq_c(text, "using");
+        || str_eq_c(text, "enum") || str_eq_c(text, "scene") || str_eq_c(text, "local") || str_eq_c(text, "namespace")
+        || str_eq_c(text, "using");
 }
 
 // Keywords that only start declarations, and the contextual ones at the start
@@ -792,7 +793,7 @@ static decl *parse_operator(parser *p, decl *owner)
 // component Name { Type field; ... }, and the same for singletons, inputs and structs.
 static decl *parse_data_decl(parser *p, const decl_kind kind)
 {
-    const char *what = kind == DECL_COMPONENT   ? "component name"
+    const char *what = kind == DECL_COMPONENT   ? "component or scene name"
                        : kind == DECL_SINGLETON ? "singleton name"
                        : kind == DECL_STRUCT    ? "struct name"
                        : kind == DECL_EVENT     ? "event name"
@@ -1041,8 +1042,12 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "struct")) d = parse_data_decl(&p, DECL_STRUCT);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "event")) d = parse_data_decl(&p, DECL_EVENT);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "enum")) d = parse_enum(&p);
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "scene")) {
+            d = parse_data_decl(&p, DECL_COMPONENT);
+            d->is_scene = true;
+        }
         else if (t->kind == T_IDENT && at(&p, T_LPAREN) && str_eq_c(t->text, "event")) d = parse_handler(&p);
-        else fail_at(&p, t, "'component', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
+        else fail_at(&p, t, "'component', 'scene', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
         d->unit = p.unit;
         if (local) {
             d->is_local = true;

@@ -1,0 +1,4 @@
+// expect: 'Menu' is local, and the match can't use local state
+local scene Menu { }
+scene Main { }
+event(Spawned) Setup(with Main) { Scene.Load(Menu); }

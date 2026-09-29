@@ -1,6 +1,8 @@
 // expect: Spawn can't be on the right side of && or ||
 component Thing { int id; }
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     var e = Spawn(Thing);
     if (true || Spawn(Thing) == e) { }

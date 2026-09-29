@@ -5,4 +5,6 @@ input PlayerInput
     bool jump;
     Sanitize() { Spawn(Coin); }
 }
-system Main() { Spawn(Coin); }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Coin); }

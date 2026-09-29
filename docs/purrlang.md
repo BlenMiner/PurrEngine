@@ -30,7 +30,7 @@ PurrLang is a working name and may change.
 - Fields, parameters and locals use camelCase (PurrNet style): `trs.position`, not `trs.Position`.
 - Public properties use camelCase too, even static ones: `Color.red`, `quaternion.identity`. True constants use FULL_CASE: `Math.PI`, `Math.TAU`.
 - Attributes (`[...]`) are only for metadata, such as when a system runs or the bounds of an input field, not for what code does. The engine may enforce what an attribute declares, as it clamps an input field to its `[Clamp]`.
-- Braces go on lines of their own, as in C#, and so does an `else` after a block. A block that fits on one line can stay there (`system Main() { }`, `if (dead) { return; }`), and so do literals (`Body { position = p }`). The language server's formatter lays code out this way, indenting as the editor is set to (four spaces by default).
+- Braces go on lines of their own, as in C#, and so does an `else` after a block. A block that fits on one line can stay there (`scene Main { }`, `if (dead) { return; }`), and so do literals (`Body { position = p }`). The language server's formatter lays code out this way, indenting as the editor is set to (four spaces by default).
 
 ### Declarations
 
@@ -248,7 +248,6 @@ e.Remove(Stunned);
 - The scene named `Main` is where the program starts (see Scenes). There is exactly one.
 - A local `Main` starts the program in it, usually a menu. A match `Main` starts a single-player match with it right away, the same as a menu starting one.
 - `Main` sets up the first scene, not the game loop: the engine runs the tick.
-- Until scenes are implemented, purrc takes `system Main()` instead. It runs once when a world is created, before the first tick, and its structural changes are applied when it returns.
 
 ```csharp
 scene Main { }
@@ -330,7 +329,9 @@ component Health { int value = 100; }
 // main.purr
 using Combat;
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Health, Items.Health { value = 3 });
 }
@@ -765,6 +766,7 @@ system Count(Spark spark) { }
 - **Visibility:** scenes are public by default, seen by every player in the world. `Scene.Load(Hand { ... }, SceneVisibility.Private)` loads a private one, which only the server and the players given it see: `Scene.AddPlayer(scene, player)` and `Scene.RemovePlayer(scene, player)`. Membership is match state, so the server decides it, and a player who's added receives the scene's state.
 - A private scene with no players exists only on the server, which is where secrets like RNG seeds go. Code that reads a private scene only predicts correctly on machines that see it, and the server corrects the others.
 - A client never loads match scenes on its own: it has the ones the server has it in.
+- `system Main()` is an error that says to write `scene Main`.
 
 ```csharp
 scene Arena
@@ -795,6 +797,18 @@ system Collapse(Entity self, Arena arena)
     if (arena.size <= 0) Scene.Unload(self);
 }
 ```
+
+### Provisional
+
+- `scene` and `local scene` are only keywords at the start of a declaration. A scene's component can have methods, and `Add` can give its entity other components, like any entity.
+- `Spawn`, `Add` and `Remove` of a scene's component are errors that point to `Scene.Load` and `Scene.Unload`. `Destroy` on a scene's entity unloads it, and `Scene.Unload` of an entity that isn't a scene does nothing.
+- `Scene.Load` makes its entity right away, like `Spawn`, so it follows the same evaluation order and can't be inside `?:` or on the right of `&&` and `||`.
+- An entity spawned into a scene that's been unloaded by the spawn's turn is never made, like the loot an enemy drops while its arena unloads.
+- Entities unload in archetype order, each archetype's from its last row, and the scene's own entity last. Each gets its `Destroyed` handlers.
+- `SceneVisibility` is a built-in enum, `Public` and `Private`. A local scene has no visibility. Local code can't change who sees a scene.
+- In generated C, a scene's component holds its visibility and players too, as `purr_visibility` and `purr_players`, one bit per player. Code can't name them.
+- The engine loads `Main` itself: `purr_world_init` loads a match `Main`, and `purr_local_init` a local one, with `PURR_MAIN_IS_LOCAL` defined. `purr/run.h` starts without a match when `Main` is local.
+- The `Main` scene is the world's first entity.
 
 ### Open
 

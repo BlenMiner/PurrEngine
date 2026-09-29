@@ -48,7 +48,9 @@ input PlayerInput
     }
 }
 
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Body { radius = 16 }, Aim, Owner { player = PlayerID(0) });
     Spawn(Body { position = float2(-250, 120), velocity = float2(160, -90) }, Ball { color = Color(0.35, 0.67, 1) });

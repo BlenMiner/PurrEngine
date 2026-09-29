@@ -3,14 +3,14 @@
 
 static purr_world world;
 
-// Entity handles are allocated as spawns are recorded. Main spawns a, b, c, a
-// vanisher, a bomb, the player and a mirror; then, while Main's changes apply,
-// the player's weapon and the loot it drops.
-static const purr_entity A = {0, 1};
-static const purr_entity C = {2, 1};
-static const purr_entity PLAYER = {5, 1};
-static const purr_entity WEAPON = {7, 1};
-static const purr_entity PLAYER_LOOT = {8, 1};
+// Entity handles are allocated as spawns are recorded. The Main scene is first;
+// its Setup spawns a, b, c, a vanisher, a bomb, the player and a mirror; then,
+// while those changes apply, the player's weapon and the loot it drops.
+static const purr_entity A = {1, 1};
+static const purr_entity C = {3, 1};
+static const purr_entity PLAYER = {6, 1};
+static const purr_entity WEAPON = {8, 1};
+static const purr_entity PLAYER_LOOT = {9, 1};
 
 static void ticks(int n)
 {
@@ -38,8 +38,8 @@ PURR_TEST(events_handlers_run_in_order)
 PURR_TEST(events_spawned_and_destroyed_run_as_changes_apply)
 {
     purr_world_init(&world, 1.0f);
-    // Seven from Main, the player's weapon, and the loot the player dropped.
-    PURR_CHECK(world.Stats.spawned == 9);
+    // The Main scene, seven from its Setup, the player's weapon, and the loot the player dropped.
+    PURR_CHECK(world.Stats.spawned == 10);
     PURR_REQUIRE(purr_get_Weapon(&world, WEAPON) != NULL);
     PURR_CHECK(purr_entity_equal(purr_get_Weapon(&world, WEAPON)->owner, PLAYER));
     // The player's Hit took all its health, so TakeHit destroyed it, and
@@ -60,7 +60,7 @@ PURR_TEST(events_follow_the_order_they_were_recorded_in)
     PURR_CHECK(!purr_entity_alive(&world.entities, C));
     PURR_CHECK(world.Stats.hits == 6);
     PURR_CHECK(world.Stats.destroyed == 2);
-    PURR_CHECK(world.Stats.spawned == 10);
+    PURR_CHECK(world.Stats.spawned == 11);
 }
 
 PURR_TEST(events_sent_to_the_world)
