@@ -107,6 +107,12 @@ The generated header is the API between the game and the host. Namespaced declar
 - Local code's requests of the session (`Session.Play` and the like) wait in the local state: `purr_local_take_request(local, &request, &start)` takes them. Hosts tell local code where it stands with `purr_local_set_session(local, state, player, ping, server)`, `purr_local_connected(local)` and `purr_local_disconnected(local, reason)`.
 - If the game has an input (it declares one, or systems take `Devices`), `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices, local)` runs the input's `Sample` on the client, with this machine's local state: give it a copy of the devices that `purr_gui_hide(gui, &copy)` took what the GUI is using out of, then call `purr_devices_consume(devices)` on the real ones. The input holds what match code reads of the devices (`purr_dev`), everything else zero. `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.
 
+### Docs site
+
+- `docs/` is the docs site, built with VitePress and published to GitHub Pages (https://blenminer.github.io/PurrEngine/) from `dev` by `.github/workflows/docs.yml`, which also builds it on pull requests. It needs Node: `npm ci`, then `npm run dev` in `docs/` serves it, and `npm run build` builds it and fails on dead links.
+- The workflow builds the web demo (`web-release`, target `demo`) and puts it at `demo/`, where `docs/guide/demo.md` shows it. To see it locally, copy `build/web-release/bin/demo.html` to `docs/public/demo/index.html`.
+- The docs' Markdown fences PurrLang as `csharp`, which GitHub highlights; the site highlights it with the editors' grammar (`tools/purrlang-syntax`).
+
 ## Packaging and releases
 
 Users get PurrEngine as the `purr` command, not this repo: see README.md.
@@ -129,12 +135,12 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
 - `compiler/cli/`: `purr`, the command users run (owned by Claude; see Packaging and releases).
 - `compiler/lsp/`: `purrls`, the PurrLang language server (owned by Claude). It reuses purrc's front end, with error recovery, to give editors completion, diagnostics, quick fixes, hovers, go to definition, find usages, rename, formatting, parameter hints, inlay hints, the outline, workspace symbols, folding, semantic highlighting, and moving a declaration to a file of its own. Native builds only.
 - `tools/`: editor support. `purrlang-vscode` is the VS Code extension and `purrlang-jetbrains` the JetBrains plugin: each is the grammar and a client that runs `purrls`. `purrlang-syntax` is the TextMate grammar they both include, which the package also ships as a bundle for other editors.
-- `docs/purrlang.md`: the language spec.
+- `docs/`: the docs site (see Docs site). `docs/purrlang.md` is the language spec; `guide/`, `language/` and `engine/` are the pages for users, written from it and from this file.
 - `platform/`: the platform layer (`purr_platform`): window, frame loop and input devices, on raylib. Public header `platform/include/purr/platform.h`.
 - `demo/`: a small game on the platform layer. `demo.purr` is the simulation and the views that draw it, and `main.c` is the host. It builds as `demo.html` on the web.
 - `sandbox/`: the owner's experiments: a game with no C, built by `purr_add_game`.
 - `tests/`: tests built on the harness in `tests/purr_test.h`. New test files are picked up automatically.
-- `.github/workflows/`, `.releaserc.json`, `install.ps1`, `install.sh`: releases and installing (see Packaging and releases).
+- `.github/workflows/`, `.releaserc.json`, `install.ps1`, `install.sh`: releases and installing (see Packaging and releases), and the docs site.
 - `cmake/`: shared compiler flags (`PurrFlags.cmake`), the package (`package.cmake`), the file that locates clang (`clang-toolchain.cmake`), the web and MinGW toolchains (`wasi-toolchain.cmake`, `mingw-toolchain.cmake`), purr's built-in clang (`LLVM.cmake`), `purr_add_game` (`PurrLang.cmake`), the raylib download (`Raylib.cmake`), and `purr_add_web_test` (`WebTest.cmake`), which runs a web page in headless Chrome or Edge as a test.
 
 ### Runtime written by Claude for now
@@ -154,7 +160,7 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
 
 ## Language
 
-The language is called PurrLang (working name). Its syntax and semantics are specified in `docs/purrlang.md`.
+The language is called PurrLang (working name). Its syntax and semantics are specified in `docs/purrlang.md`. The docs site explains it to users: a change to the language, `purr` or the editors updates the site's pages too (`docs/guide/`, `docs/language/`, `docs/engine/`).
 
 - Derive as much as possible from the language.
 - It should be as explicit as our needs require, while staying friendly.

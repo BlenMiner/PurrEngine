@@ -4,6 +4,8 @@ A networking-first game engine. The simulation is deterministic, so players on
 different machines, the web included, can share one world. Games are written in
 PurrLang, which compiles to C and then to native code or WebAssembly.
 
+**Docs, and the demo running in your browser:** https://blenminer.github.io/PurrEngine/
+
 ## Install
 
 Windows, in PowerShell:
@@ -76,7 +78,8 @@ Then, in that folder:
 `purr help` lists every option. `purr` keeps its work in a hidden `.purr`
 folder next to your files, which you can delete any time; it's ignored by git.
 
-The language is described in [docs/purrlang.md](docs/purrlang.md).
+The [docs](https://blenminer.github.io/PurrEngine/) go through the language a topic at a time, and
+[docs/purrlang.md](docs/purrlang.md) is its full spec.
 
 ## Stay up to date
 
