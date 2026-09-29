@@ -362,6 +362,42 @@ PURR_TEST(net_local_code_starts_a_match)
     purr_session_destroy(s);
 }
 
+// This machine stops for a while (a browser tab in the background, a
+// breakpoint), and its server with it: for the match, that time didn't pass.
+PURR_TEST(net_a_session_survives_a_pause)
+{
+    purr_session *s = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = session_sample});
+    double t = 0.0;
+    purr_session_play(s, NULL, t);
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+    }
+    purr_session_event e;
+    while (purr_session_next_event(s, &e)) {}
+    const purr_session_status before = purr_session_status_of(s);
+    PURR_REQUIRE(before.client.state == PURR_SESSION_CONNECTED);
+
+    t += 10.0; // Twice the timeout
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+        const purr_session_status status = purr_session_status_of(s);
+        PURR_CHECK(status.client.predicted_tick == status.client.verified_tick); // Nothing to catch up
+    }
+    bool disconnected = false;
+    while (purr_session_next_event(s, &e)) disconnected |= e.kind == PURR_SESSION_DISCONNECTED_EVENT;
+    PURR_CHECK(!disconnected);
+    const purr_session_status after = purr_session_status_of(s);
+    PURR_CHECK(after.client.state == PURR_SESSION_CONNECTED);
+    // A second of play, and at most one update's ticks for the pause
+    const uint32_t ticks = after.client.verified_tick - before.client.verified_tick;
+    PURR_CHECK(ticks >= 60u && ticks <= 68u);
+    PURR_REQUIRE(purr_session_world(s) != NULL);
+    PURR_CHECK(memcmp(purr_session_world(s), purr_session_server_world(s), sizeof(purr_world)) == 0);
+    purr_session_destroy(s);
+}
+
 PURR_TEST(net_input_packs_and_unpacks)
 {
     const Controls in = {.move = {0.25f, -1.0f}, .jump = true};

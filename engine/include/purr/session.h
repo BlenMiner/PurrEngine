@@ -186,6 +186,9 @@ void purr_session_join(purr_session *s, purr_transport network, purr_address ser
 void purr_session_leave(purr_session *s);
 // A session that couldn't start: reports Disconnected with the reason.
 void purr_session_fail(purr_session *s, purr_disconnect_reason reason);
+// Once per frame, with the host's time in seconds. When this machine runs the
+// server, a long gap since the last update is a pause (a browser tab in the
+// background, a breakpoint): the match goes on from where it stopped.
 void purr_session_update(purr_session *s, double now);
 // What views read, or NULL outside a match.
 const void *purr_session_world(const purr_session *s);

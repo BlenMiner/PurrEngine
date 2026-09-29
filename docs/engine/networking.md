@@ -8,6 +8,8 @@ For how a game starts, hosts and joins matches, see [Multiplayer](../language/mu
 
 Single-player is a match too: the machine runs a server itself, and connects to it through a loopback transport. There's no separate offline path, so what works alone works online.
 
+When the machine that runs the server stops for a while, like a browser tab in the background or a program paused in a debugger, the match stops with it, and goes on from where it was when the machine comes back.
+
 ## What the server sends
 
 The server ticks the one true world. Every tick, it sends each player:

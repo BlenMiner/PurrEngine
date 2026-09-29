@@ -1365,7 +1365,16 @@ struct purr_session {
     uint64_t cookie;
     purr_session_event events[SESSION_EVENTS];
     uint32_t event_count;
+    double last_now; // The host's time at the last update
+    double paused;   // Host time that didn't pass for this machine's own match (see purr_session_update)
 };
+
+// The session's own time starts over with each match.
+static void start_clock(purr_session *s, const double now)
+{
+    s->last_now = now;
+    s->paused = 0.0;
+}
 
 static void push_event(purr_session *s, const purr_session_event e)
 {
@@ -1416,6 +1425,7 @@ void purr_session_leave(purr_session *s)
 static void start_server(purr_session *s, const void *start, const purr_transport network, const double now)
 {
     purr_session_leave(s);
+    start_clock(s, now);
     s->loopback = purr_loopback_create(1);
     if (!s->loopback) {
         if (network.close) network.close(network.self);
@@ -1462,6 +1472,7 @@ void purr_session_host(purr_session *s, const void *start, const purr_transport 
 void purr_session_join(purr_session *s, const purr_transport network, const purr_address server, const double now)
 {
     purr_session_leave(s);
+    start_clock(s, now);
     if (!purr_address_equal(server, s->joined)) s->cookie = 0;
     s->joined = server;
     const purr_client_desc client = {
@@ -1485,10 +1496,20 @@ void purr_session_join(purr_session *s, const purr_transport network, const purr
 void purr_session_update(purr_session *s, const double now)
 {
     if (!s->client) return;
-    if (s->loopback) purr_loopback_set_time(s->loopback, now);
-    purr_client_update(s->client, now);
-    if (s->server) purr_server_update(s->server, now);
-    purr_client_update(s->client, now); // What the server just sent: this machine's ticks, at once
+    // This machine's server stops whenever the machine does (a browser tab in
+    // the background, a breakpoint), and its player with it. Beyond the ticks
+    // the server can run in one update, which it would drop anyway, that time
+    // didn't pass for the match: neither side went quiet, and there's nothing
+    // to catch up. A client of another machine keeps to the real time.
+    const double most = (double)MAX_TICKS / (double)s->desc.tick_rate;
+    if (s->server && now - s->last_now > most) s->paused += now - s->last_now - most;
+    s->last_now = now;
+    const double t = now - s->paused;
+
+    if (s->loopback) purr_loopback_set_time(s->loopback, t);
+    purr_client_update(s->client, t);
+    if (s->server) purr_server_update(s->server, t);
+    purr_client_update(s->client, t); // What the server just sent: this machine's ticks, at once
 
     const purr_client_status status = purr_client_status_of(s->client);
     if (!s->server && status.cookie) s->cookie = status.cookie;
