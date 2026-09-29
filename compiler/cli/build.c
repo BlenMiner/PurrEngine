@@ -384,9 +384,11 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
 #endif
     if (!find_target(root, opts)) return NULL;
 
-    // Everything purr makes goes in <folder>/.purr/<configuration>.
+    // Everything purr makes goes in <folder>/.purr/<configuration>, hidden
+    // like .git.
     char *purr_dir = path_join(folder, ".purr");
     sys_mkdirs(purr_dir);
+    sys_hide(purr_dir);
     char *ignore = path_join(purr_dir, ".gitignore");
     if (!sys_exists(ignore)) sys_write_text(ignore, "# Made by purr; safe to delete.\n*\n");
     char config[32];

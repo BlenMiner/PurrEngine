@@ -146,6 +146,18 @@ bool sys_mkdirs(const char *path)
     return ok;
 }
 
+void sys_hide(const char *path)
+{
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesA(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_HIDDEN)) {
+        SetFileAttributesA(path, attributes | FILE_ATTRIBUTE_HIDDEN);
+    }
+#else
+    (void)path;
+#endif
+}
+
 bool sys_rename(const char *from, const char *to)
 {
 #ifdef _WIN32

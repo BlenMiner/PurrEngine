@@ -15,6 +15,7 @@ bool sys_exists(const char *path);
 bool sys_is_dir(const char *path);
 int64_t sys_mtime(const char *path); // 0 if it doesn't exist
 bool sys_mkdirs(const char *path);   // Creates every missing folder on the way
+void sys_hide(const char *path);     // Hides a file or folder on Windows; elsewhere a leading dot does
 bool sys_rename(const char *from, const char *to);
 bool sys_remove(const char *path);
 bool sys_remove_tree(const char *path); // A file, or a folder and everything in it

@@ -71,8 +71,8 @@ Then, in that folder:
 | `purr build --release --web` | An optimized, self-contained `.html` (WebGL 2) |
 | `purr schedule` | Shows which systems can run at the same time, and why the others wait |
 
-`purr help` lists every option. `purr` keeps its work in a `.purr` folder next
-to your files, which you can delete any time; it's ignored by git.
+`purr help` lists every option. `purr` keeps its work in a hidden `.purr`
+folder next to your files, which you can delete any time; it's ignored by git.
 
 The language is described in [docs/purrlang.md](docs/purrlang.md).
 
