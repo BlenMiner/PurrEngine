@@ -1,0 +1,4 @@
+// expect: 'Spark' is local, and the match can't use local state
+local component Spark { float life; }
+system Main() { }
+system Burn(mut Spark spark) { spark.life -= 1; }

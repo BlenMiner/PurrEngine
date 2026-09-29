@@ -1,4 +1,4 @@
-// expect: views only read the world, so their parameters can't be 'mut'
+// expect: a view can't change the match, and 'Body' belongs to it
 component Body { float2 position; }
 system Main() { Spawn(Body); }
 view Nudge(mut Body body)

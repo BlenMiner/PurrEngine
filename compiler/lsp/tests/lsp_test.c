@@ -358,7 +358,7 @@ PURR_TEST(lsp_complete_draw_only_in_views)
     PURR_CHECK(offers(system, "Spawn"));
     const char *view = complete(GAME_TYPES "view V(Body body)\n{\n    $\n}\n");
     PURR_CHECK(offers(view, "Draw"));
-    PURR_CHECK(!offers(view, "Spawn"));
+    PURR_CHECK(!offers(view, "Body")); // Views spawn local entities, never the match's
 }
 
 PURR_TEST(lsp_complete_names_in_scope)
@@ -609,6 +609,86 @@ PURR_TEST(lsp_events)
     PURR_CHECK(has(symbols, "\"name\":\"Hit\",\"detail\":\"event\",\"kind\":24"));
     PURR_CHECK(has(symbols, "\"name\":\"TakeHit\",\"detail\":\"event handler\""));
 }
+
+PURR_TEST(lsp_local_state)
+{
+    start();
+    static const char game[] = GAME_TYPES
+        "local component Spark { int framesLeft = 2; }\n"
+        "local singleton Menu { bool open; }\n"
+        "view Trail(with Body, mut Menu menu) { Spawn(Spark); menu.open = true; }\n"
+        "view Fade(LocalEntity self, mut Spark spark) { spark.framesLeft -= 1; }\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    open_document(GAME_TYPES "local component Sp$ark { int framesLeft = 2; }\nview Fade(mut Spark spark) { spark.framesLeft -= 1; }\n");
+    const char *hover = request("textDocument/hover");
+    PURR_CHECK(has(hover, "local component Spark"));
+    PURR_CHECK(has(hover, "Local: this machine's own"));
+
+    // In a view, Spawn makes local entities: the local components are offered, not the match's.
+    const char *spawn = complete(GAME_TYPES "local component Spark { int framesLeft = 2; }\nview Trail(Body body)\n{\n    $\n}\n");
+    PURR_CHECK(offers(spawn, "Spawn"));
+    PURR_CHECK(offers(spawn, "Spark"));
+    PURR_CHECK(!offers(spawn, "Body"));
+    const char *entity = complete(GAME_TYPES "local component Spark { int framesLeft = 2; }\n"
+                                  "view Fade(LocalEntity self, Spark spark)\n{\n    self.$\n}\n");
+    PURR_CHECK(offers(entity, "Destroy"));
+    PURR_CHECK(offers(complete(GAME_TYPES "\n$"), "local component"));
+
+    open_document(game);
+    PURR_CHECK(has(request("textDocument/documentSymbol"), "\"name\":\"Spark\",\"detail\":\"local component\""));
+}
+
+
+PURR_TEST(lsp_enums_and_switch)
+{
+    start();
+    static const char game[] = "enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; int n; }\nsystem Main() { }\n"
+                               "system S(mut Match match)\n{\n    switch (match.phase)\n    {\n        case Phase.Warmup:\n"
+                               "            match.n = 1;\n            break;\n        default:\n            break;\n    }\n}\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    open_document("enum Pha$se { Warmup, Playing = 5 }\nsystem Main() { }\n");
+    const char *type = request("textDocument/hover");
+    PURR_CHECK(has(type, "enum Phase"));
+    PURR_CHECK(has(type, "Playing = 5,"));
+
+    open_document("enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; }\nsystem Main() { }\n"
+                  "system S(mut Match match) { match.phase = Phase.Play$ing; }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Phase.Playing = 5"));
+
+    const char *members = complete("enum Phase { Warmup, Playing = 5 }\nsingleton Match { Phase phase; }\nsystem Main() { }\n"
+                                   "system S(mut Match match)\n{\n    match.phase = Phase.$\n}\n");
+    PURR_CHECK(offers(members, "Warmup"));
+    PURR_CHECK(offers(members, "Playing"));
+
+    open_document(game);
+    const char *symbols = request("textDocument/documentSymbol");
+    PURR_CHECK(has(symbols, "\"name\":\"Phase\",\"detail\":\"enum\",\"kind\":10"));
+    PURR_CHECK(has(symbols, "\"name\":\"Playing\",\"detail\":\"5\",\"kind\":22"));
+}
+
+PURR_TEST(lsp_format_switch)
+{
+    start();
+    static const char messy[] =
+        "enum Phase { Warmup, Playing }\nsingleton Match { Phase phase; int n; }\nsystem Main() { }\n"
+        "system S(mut Match match)\n{\nswitch (match.phase)\n{\ncase Phase.Warmup :\nmatch.n = 1;\nbreak;\n"
+        "default:\n// Nothing to do\nif (match.n > 1) { match.n = 0; }\nbreak;\n}\n}\n";
+    static const char expected[] =
+        "enum Phase { Warmup, Playing }\nsingleton Match { Phase phase; int n; }\nsystem Main() { }\n"
+        "system S(mut Match match)\n{\n    switch (match.phase)\n    {\n        case Phase.Warmup:\n            match.n = 1;\n"
+        "            break;\n        default:\n            // Nothing to do\n            if (match.n > 1) { match.n = 0; }\n"
+        "            break;\n    }\n}\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+    PURR_CHECK(has(format_reply(expected), "\"result\":[]"));
+}
+
 
 PURR_TEST(lsp_format_events)
 {

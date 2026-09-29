@@ -20,6 +20,7 @@ typedef struct checker {
     bool in_input;      // Checking the input's constructor, which runs outside the simulation.
     bool in_sanitize;         // Checking the input's Sanitize; in_input is set too, for the fields.
     int short_circuit_depth;  // Inside the right side of && or ||, which may not run.
+    int switch_depth;         // Inside a switch's sections, where `break` ends one.
     int branch_depth;         // Inside a side of ?:, which may not run.
     VEC(stmt *) locals;       // S_VAR statements currently in scope.
     VEC(int) scope_marks;
@@ -44,6 +45,7 @@ static type decl_type(decl *d)
     case DECL_RECORD: return (type){TY_RECORD, d};
     case DECL_STRUCT: return (type){TY_STRUCT, d};
     case DECL_EVENT: return (type){TY_EVENT, d};
+    case DECL_ENUM: return (type){TY_ENUM, d};
     default: return T_ERR;
     }
 }
@@ -229,6 +231,7 @@ static const char *decl_what(const decl *d)
     case DECL_INPUT: return "the input";
     case DECL_STRUCT: return "a struct";
     case DECL_EVENT: return "an event";
+    case DECL_ENUM: return "an enum";
     default: return "not a type";
     }
 }
@@ -310,6 +313,8 @@ static param *find_param(const checker *c, const str name)
 // Expressions
 
 static type check_expr(checker *c, expr *e);
+static void c_name_of(const decl *d, sb *out);
+static bool check_component_side(const checker *c, const expr *arg, const decl *d);
 static bool check_writable(checker *c, expr *target, const decl *called, const param *arg_of);
 
 static uint64_t bit(const decl *component)
@@ -420,7 +425,7 @@ static uint64_t check_component_list(checker *c, const expr *call, const char *f
     uint64_t mask = 0;
     for (int i = 0; i < call->args.count; i++) {
         decl *d = check_component_arg(c, call->args.items[i], fn);
-        if (!d) continue;
+        if (!d || !check_component_side(c, call->args.items[i], d)) continue;
         if (mask & bit(d)) {
             diag_error(call->args.items[i]->at, "'" STR_FMT "' appears twice; an entity has at most one of each component",
                        STR_ARG(d->name));
@@ -467,6 +472,12 @@ static type check_construct(checker *c, expr *e, const type target)
         }
         diag_error(e->at, "Color takes (r, g, b) or (r, g, b, a), numbers from 0 to 1");
         return T_ERR;
+    }
+
+    // int(page): an enum member's value.
+    if (target.kind == TY_INT && argc == 1 && first.kind == TY_ENUM) {
+        e->ctor = CTOR_SCALAR;
+        return target;
     }
 
     // float(x), int(x): conversions between the two number types.
@@ -579,6 +590,41 @@ static bool in_view(const checker *c)
     return c->system && c->system->is_view;
 }
 
+// Local code runs on this machine: views, and local event handlers.
+static bool is_local_code(const decl *d)
+{
+    return d && d->kind == DECL_SYSTEM && (d->is_view || d->is_local);
+}
+
+// "a view" or "a local handler", for messages about local code.
+static const char *local_code_what(const decl *d)
+{
+    return d->is_view ? "a view" : "a local handler";
+}
+
+
+// Whether the code being checked is local.
+static bool local_code(const checker *c)
+{
+    return is_local_code(c->system);
+}
+
+// Whether code on this side may create, change or remove component `d`. Local
+// code only changes local state; match code never touches it.
+static bool check_component_side(const checker *c, const expr *arg, const decl *d)
+{
+    if (d->is_local == local_code(c)) return true;
+    if (d->is_local) {
+        diag_error(arg->at, "'" STR_FMT "' is local, and the match can't use local state", STR_ARG(d->name));
+        diag_note("local state belongs to one machine, and the match runs the same on every one");
+    } else {
+        diag_error(arg->at, "%s can't change the match, and '" STR_FMT "' belongs to it", local_code_what(c->system),
+                   STR_ARG(d->name));
+        diag_note("put what it wants in the input, and change the match in a system");
+    }
+    return false;
+}
+
 static const char *routines(const checker *c);
 
 // The event Send takes: `RoundOver` with its defaults, `Hit { ... }`, or any
@@ -623,6 +669,24 @@ static decl *check_event_arg(checker *c, expr *arg)
     return NULL;
 }
 
+// Whether the entity `e` is called on (e.Add, e.Destroy, e.Send) is of the
+// code's world: local code changes local entities, match code the match's.
+static bool check_entity_side(const checker *c, const expr *e)
+{
+    const type_kind kind = e->object->type.kind;
+    if (kind == TY_ERROR) return false;
+    if (local_code(c) && kind == TY_ENTITY) {
+        diag_error(e->at, "%s can't change the match, and this entity belongs to it", local_code_what(c->system));
+        diag_note("put what it wants in the input, and change the match in a system");
+        return false;
+    }
+    if (!local_code(c) && kind == TY_LOCAL_ENTITY) {
+        diag_error(e->at, "a LocalEntity is local, and the match can't use local state");
+        return false;
+    }
+    return true;
+}
+
 // Send(RoundOver { ... }) to the whole world, or target.Send(Hit { ... }) to an
 // entity. Whether an event needs an entity depends on its handlers, so sends
 // are checked against them once every handler is known (see check_sends).
@@ -631,13 +695,17 @@ static type check_send(checker *c, expr *e)
     const char *error = NULL;
     if (c->method) error = "%s can't send events; systems and event handlers do";
     else if (c->in_input) error = "%s runs outside the simulation, so it can't send events";
-    else if (in_view(c)) error = "views only read the world, so they can't send events";
     if (error) {
         diag_error(e->at, error, c->method ? routines(c) : input_code(c));
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         return T_ERR;
     }
     e->call = CALL_SEND;
+    e->local_world = local_code(c);
+    if (e->kind == E_METHOD && !check_entity_side(c, e)) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        return T_ERR;
+    }
     if (e->args.count != 1) {
         diag_error(e->at, "Send takes one event, like 'Send(RoundOver)' or 'target.Send(Hit { damage = 5 })'");
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
@@ -650,6 +718,17 @@ static type check_send(checker *c, expr *e)
         if (event == c->prog->spawned) diag_note("it's sent to each entity as it's spawned");
         else if (event == c->prog->destroyed) diag_note("it's sent to each entity as it's destroyed");
         else diag_note("it's sent when a player joins or leaves");
+        return T_ERR;
+    }
+    if (event->is_local != e->local_world) {
+        if (event->is_local) {
+            diag_error(e->args.items[0]->at, "'" STR_FMT "' is local, and the match can't use local state", STR_ARG(event->name));
+            diag_note("local state belongs to one machine, and the match runs the same on every one");
+        } else {
+            diag_error(e->args.items[0]->at, "%s can't change the match, and '" STR_FMT "' is a match event",
+                       local_code_what(c->system), STR_ARG(event->name));
+            diag_note("put what it wants in the input, and send '" STR_FMT "' from a system", STR_ARG(event->name));
+        }
         return T_ERR;
     }
     e->type_decl = event;
@@ -731,10 +810,6 @@ static type check_call(checker *c, expr *e)
             diag_error(e->at, "%s runs outside the simulation, so it can't spawn entities", input_code(c));
             return T_ERR;
         }
-        if (in_view(c)) {
-            diag_error(e->at, "views only read the world, so they can't spawn entities");
-            return T_ERR;
-        }
         // Expressions evaluate left to right, so codegen runs a statement's spawns
         // first, in order. On the right of && or ||, or in a side of ?:, that would
         // spawn even when that part is skipped.
@@ -746,10 +821,11 @@ static type check_call(checker *c, expr *e)
             diag_note("that side only runs sometimes; spawn into a local before the condition");
         }
         e->call = CALL_SPAWN;
+        e->local_world = local_code(c);
         e->spawn_mask = check_component_list(c, e, "Spawn");
         c->prog->spawned_mask |= e->spawn_mask;
         vec_push(c->spawns, e);
-        return T_ENTITY_;
+        return e->local_world ? (type){TY_LOCAL_ENTITY, NULL} : T_ENTITY_;
     }
 
     decl *const fn = find_named(c, e->name, e->at, NAME_FUNCTION);
@@ -838,7 +914,7 @@ static type check_method(checker *c, expr *e)
         check_method_args(c, e, m);
         return m->return_type;
     }
-    if (obj.kind != TY_ENTITY) {
+    if (obj.kind != TY_ENTITY && obj.kind != TY_LOCAL_ENTITY) {
         diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
         return T_ERR;
     }
@@ -851,10 +927,11 @@ static type check_method(checker *c, expr *e)
         diag_error(e->at, "%s runs outside the simulation, so it can't change entities", input_code(c));
         return T_ERR;
     }
-    if (in_view(c)) {
-        diag_error(e->at, "views only read the world, so they can't change entities");
+    if (!check_entity_side(c, e)) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         return T_ERR;
     }
+    e->local_world = local_code(c);
 
     if (str_eq_c(e->name, "Add")) {
         e->call = CALL_ADD;
@@ -874,7 +951,7 @@ static type check_method(checker *c, expr *e)
                 continue;
             }
             decl *d = check_component_arg(c, arg, "Remove");
-            if (!d) continue;
+            if (!d || !check_component_side(c, arg, d)) continue;
             if (mask & bit(d)) diag_error(arg->at, "'" STR_FMT "' appears twice", STR_ARG(d->name));
             mask |= bit(d);
         }
@@ -889,7 +966,8 @@ static type check_method(checker *c, expr *e)
         return T_VOID_;
     }
 
-    diag_error(e->at, "Entity has no method '" STR_FMT "'; it has Add, Remove, Destroy and Send", STR_ARG(e->name));
+    diag_error(e->at, "%s has no method '" STR_FMT "'; it has Add, Remove, Destroy and Send", type_name(obj),
+               STR_ARG(e->name));
     suggestion s = suggest_start(e->name);
     suggest_consider_c(&s, "Add");
     suggest_consider_c(&s, "Remove");
@@ -1037,6 +1115,8 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
         if (is_scalar_number(l) && is_scalar_number(r)) return T_BOOL_;
         if (l.kind == TY_BOOL && r.kind == TY_BOOL) return T_BOOL_;
         if (l.kind == TY_ENTITY && r.kind == TY_ENTITY) return T_BOOL_;
+        if (l.kind == TY_LOCAL_ENTITY && r.kind == TY_LOCAL_ENTITY) return T_BOOL_;
+        if (l.kind == TY_ENUM && same_type(l, r)) return T_BOOL_;
         if (l.kind == TY_PLAYER && r.kind == TY_PLAYER) return T_BOOL_;
         break;
     case T_AND:
@@ -1107,10 +1187,47 @@ static bool is_input_field(const expr *e)
     return e->kind == E_NAME && e->bind == BIND_PARAM && e->param->type.kind == TY_INPUT;
 }
 
+// Page.Title, or Game.Page.Title: one of an enum's members.
+static type check_enum_member(expr *e, decl *d)
+{
+    expr *type_name_expr = e->object;
+    type_name_expr->bind = BIND_TYPE;
+    type_name_expr->type_decl = d;
+    if (type_name_expr->kind == E_MEMBER) mark_namespaces(type_name_expr->object);
+    e->type_decl = d;
+    for (int i = 0; i < d->members.count; i++) {
+        if (str_eq(d->members.items[i].name, e->member)) {
+            e->enum_member = &d->members.items[i];
+            return (type){TY_ENUM, d};
+        }
+    }
+    diag_error(e->at, "enum '" STR_FMT "' has no member '" STR_FMT "'", STR_ARG(d->name), STR_ARG(e->member));
+    suggestion s = suggest_start(e->member);
+    for (int i = 0; i < d->members.count; i++) suggest_consider(&s, d->members.items[i].name);
+    suggest_note(&s);
+    return T_ERR;
+}
+
+// The enum a chain of names like `Game.Page` names, or NULL.
+static decl *named_enum(const checker *c, const expr *e)
+{
+    const expr *root = chain_root(e);
+    str text;
+    if (root->kind != E_NAME || find_local(c, root->name) || find_param(c, root->name) || field_in_scope(c, root->name)
+        || !qualified_text(e, &text)) {
+        return NULL;
+    }
+    decl *d = find_type(c, text, e->at);
+    return d && d->kind == DECL_ENUM ? d : NULL;
+}
+
 static type check_member(checker *c, expr *e)
 {
     // quaternion.identity, Math.PI
     if (names_builtin_owner(c, e->object)) return resolve_builtin_member(e->object->name, e);
+
+    decl *const enum_decl = named_enum(c, e->object);
+    if (enum_decl) return check_enum_member(e, enum_decl);
 
     // Combat.Health: a namespace, not a variable, on the left
     const expr *root = chain_root(e);
@@ -1382,8 +1499,8 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
             diag_note("devices can only be read");
         } else if (root->param->type.kind == TY_SINGLETON && root->param->type.decl->builtin) {
             diag_note("'" STR_FMT "' is managed by the engine", STR_ARG(root->param->type_name));
-        } else if (in_view(c)) {
-            diag_note("views only read the world; systems change it");
+        } else if (in_view(c) && root->param->type.decl && !root->param->type.decl->is_local) {
+            diag_note("a view can't change the match: put what it wants in the input, and change it in a system");
         } else {
             diag_note("declare the parameter as 'mut " STR_FMT " " STR_FMT "' to write to it",
                       STR_ARG(root->param->type_name), STR_ARG(root->name));
@@ -1457,6 +1574,90 @@ static void check_assign(checker *c, const stmt *s)
 
 static void check_stmt(checker *c, stmt *s);
 
+// A case's value, if it's one a switch can have: an int literal, maybe
+// negative, or an enum's member.
+static bool case_value(const expr *e, int64_t *out)
+{
+    if (e->kind == E_INT) *out = e->int_value;
+    else if (e->kind == E_UNARY && e->op == T_MINUS && e->lhs->kind == E_INT) *out = -e->lhs->int_value;
+    else if (e->kind == E_MEMBER && e->enum_member) *out = e->enum_member->number;
+    else return false;
+    return true;
+}
+
+// Whether a statement always leaves its switch section: with break or return,
+// in every path.
+static bool always_exits(const stmt *s)
+{
+    if (!s) return false;
+    switch (s->kind) {
+    case S_RETURN:
+    case S_BREAK: return true;
+    case S_BLOCK:
+        for (int i = 0; i < s->stmts.count; i++) {
+            if (always_exits(s->stmts.items[i])) return true;
+        }
+        return false;
+    case S_IF: return always_exits(s->then_stmt) && always_exits(s->else_stmt);
+    default: return false;
+    }
+}
+
+// switch (value) { case A: ... break; }: on an int or an enum, as in C#. Each
+// section ends with break or return; none runs into the next.
+static void check_switch(checker *c, stmt *s)
+{
+    const type value = check_expr(c, s->cond);
+    const bool switchable = value.kind == TY_INT || value.kind == TY_ENUM;
+    if (value.kind != TY_ERROR && !switchable) {
+        diag_error(s->cond->at, "switch works on ints and enums, not %s", type_name(value));
+        if (value.kind == TY_BOOL) diag_note("use if/else for a bool");
+    }
+    bool has_default = false;
+    VEC(int64_t) seen = {0};
+    c->switch_depth++;
+    for (int i = 0; i < s->cases.count; i++) {
+        switch_case *section = &s->cases.items[i];
+        for (int k = 0; k < section->labels.count; k++) {
+            expr *label = section->labels.items[k];
+            if (!label) {
+                if (has_default) diag_error(section->label_at.items[k], "a switch has one 'default'");
+                has_default = true;
+                continue;
+            }
+            const type t = check_expr(c, label);
+            if (t.kind == TY_ERROR || !switchable) continue;
+            int64_t number;
+            if (!case_value(label, &number)) {
+                diag_error(label->at, "a case is an int or one of an enum's members, like 'case %s:'",
+                           value.kind == TY_ENUM ? "Page.Title" : "3");
+                continue;
+            }
+            if (!same_type(value, t)) {
+                diag_error(label->at, "the switch is on %s, so its cases are too, not %s", type_name(value), type_name(t));
+                continue;
+            }
+            for (int j = 0; j < seen.count; j++) {
+                if (seen.items[j] == number) {
+                    diag_error(label->at, "this case is already handled above");
+                    break;
+                }
+            }
+            vec_push(seen, number);
+        }
+        push_scope(c);
+        for (int k = 0; k < section->body.count; k++) check_stmt(c, section->body.items[k]);
+        pop_scope(c);
+        bool exits = false;
+        for (int k = 0; k < section->body.count && !exits; k++) exits = always_exits(section->body.items[k]);
+        if (!exits) {
+            diag_error(section->label_at.items[0], "this case runs on into what's after it; end it with 'break;' or 'return;'");
+            diag_note("as in C#, a switch's sections never fall through");
+        }
+    }
+    c->switch_depth--;
+}
+
 // `return;` everywhere, and `return value;` in a method that returns one.
 static void check_return(checker *c, const stmt *s)
 {
@@ -1495,6 +1696,17 @@ static bool always_returns(const stmt *s)
         }
         return false;
     case S_IF: return always_returns(s->then_stmt) && always_returns(s->else_stmt);
+    case S_SWITCH: {
+        bool has_default = false;
+        for (int i = 0; i < s->cases.count; i++) {
+            const switch_case *section = &s->cases.items[i];
+            bool returns = false;
+            for (int k = 0; k < section->labels.count; k++) has_default |= section->labels.items[k] == NULL;
+            for (int k = 0; k < section->body.count && !returns; k++) returns = always_returns(section->body.items[k]);
+            if (!returns) return false;
+        }
+        return has_default;
+    }
     default: return false;
     }
 }
@@ -1574,6 +1786,15 @@ static void check_stmt(checker *c, stmt *s)
     case S_ASSIGN:
         check_assign(c, s);
         break;
+    case S_SWITCH:
+        check_switch(c, s);
+        break;
+    case S_BREAK:
+        if (c->switch_depth == 0) {
+            diag_error(s->at, "'break' only ends a switch's section; there's no loop to break out of");
+            diag_note("use 'return;' to end the system here");
+        }
+        break;
     case S_EXPR: {
         check_expr(c, s->value);
         const builtin_call call = s->value->call;
@@ -1591,6 +1812,13 @@ static void check_stmt(checker *c, stmt *s)
 // Declarations
 
 static bool all_constant(const expr *e);
+
+// Whether `e` is only names and members, like Page.Title: maybe an enum's member.
+static bool names_only(const expr *e)
+{
+    while (e->kind == E_MEMBER) e = e->object;
+    return e->kind == E_NAME;
+}
 
 // Constant expressions: literals, constructors of built-in types, Math
 // functions, built-in constants like quaternion.identity, members of any of
@@ -1614,8 +1842,8 @@ static bool is_constant(const expr *e)
         return builtin_type_named(e->name, &ignored) && all_constant(e);
     case E_METHOD:
         return e->object->kind == E_NAME && builtin_owner(e->object->name) && all_constant(e);
-    case E_MEMBER:
-        return (e->object->kind == E_NAME && builtin_owner(e->object->name)) || is_constant(e->object);
+    case E_MEMBER: // Checking tells a member of an enum from anything else
+        return (e->object->kind == E_NAME && builtin_owner(e->object->name)) || is_constant(e->object) || names_only(e);
     case E_LITERAL:
         for (int i = 0; i < e->inits.count; i++) {
             if (!is_constant(e->inits.items[i].value)) return false;
@@ -1637,8 +1865,9 @@ static bool all_constant(const expr *e)
 static void check_default(checker *c, const field *f)
 {
     expr *value = f->default_value;
-    if (f->type.kind == TY_ENTITY) {
-        diag_error(value->at, "Entity fields always start as the null entity; they can't have a default value");
+    if (f->type.kind == TY_ENTITY || f->type.kind == TY_LOCAL_ENTITY) {
+        diag_error(value->at, "%s fields always start as the null entity; they can't have a default value",
+                   type_name(f->type));
         return;
     }
     if (!is_constant(value)) {
@@ -1735,8 +1964,8 @@ static void resolve_field_types(const checker *c, const decl *d)
         if (builtin_type_named(f->type_name, &f->type)) continue;
         f->type = T_ERR;
         decl *const t = find_type(c, f->type_name, at);
-        if (t && t->kind == DECL_STRUCT) {
-            f->type = (type){TY_STRUCT, t};
+        if (t && (t->kind == DECL_STRUCT || t->kind == DECL_ENUM)) {
+            f->type = decl_type(t);
         } else if (t) {
             const char *what = t->kind == DECL_COMPONENT   ? "components"
                                : t->kind == DECL_SINGLETON ? "singletons"
@@ -1752,6 +1981,47 @@ static void resolve_field_types(const checker *c, const decl *d)
             suggest_note(&s);
             const fix create = {.kind = FIX_CREATE_STRUCT, .at = at, .name = f->type_name};
             vec_push(c->prog->fixes, create);
+        }
+    }
+}
+
+// An enum's members: their names and values. A member without a value is one
+// more than the one before it, and the first is 0, as in C#. In generated C,
+// Page.Title is Page_Title.
+static void check_enum(const checker *c, decl *d)
+{
+    if (d->members.count == 0) diag_error(d->at, "enum '" STR_FMT "' needs at least one member", STR_ARG(d->name));
+    int64_t next = 0;
+    for (int i = 0; i < d->members.count; i++) {
+        enum_member *m = &d->members.items[i];
+        check_reserved(m->name, m->at);
+        for (int j = 0; j < i; j++) {
+            if (str_eq(d->members.items[j].name, m->name)) {
+                diag_error(m->at, "'" STR_FMT "' already has a member '" STR_FMT "'", STR_ARG(d->name), STR_ARG(m->name));
+            }
+        }
+        if (m->value) {
+            int64_t number;
+            if (!case_value(m->value, &number) || m->value->kind == E_MEMBER) {
+                diag_error(m->value->at, "a member's value is an int, like '" STR_FMT " = 3'", STR_ARG(m->name));
+            } else {
+                next = number;
+            }
+        }
+        m->number = next++;
+        // Other declarations' names in C, like Page_Title for a struct Page.Title
+        for (int k = 0; k < c->prog->decls.count; k++) {
+            const decl *other = c->prog->decls.items[k];
+            sb mine = {0};
+            sb theirs = {0};
+            c_name_of(d, &mine);
+            sb_printf(&mine, "_" STR_FMT, STR_ARG(m->name));
+            c_name_of(other, &theirs);
+            if (strcmp(mine.data, theirs.data) == 0) {
+                diag_error(m->at, "'" STR_FMT "." STR_FMT "' and '" STR_FMT "' would have the same name in generated C, %s",
+                           STR_ARG(d->qualified), STR_ARG(m->name), STR_ARG(other->qualified), mine.data);
+                diag_note("rename one of them");
+            }
         }
     }
 }
@@ -1796,6 +2066,16 @@ static void check_fields(checker *c, const decl *d)
         }
         if (f->default_value) check_default(c, f);
         check_field_attributes(c, d, f);
+        if (f->type.kind == TY_LOCAL_ENTITY && (!d->is_local || d->kind == DECL_STRUCT)) {
+            const loc at = f->type_qual_at.line ? f->type_qual_at : f->type_at.line ? f->type_at : f->at;
+            if (d->kind == DECL_STRUCT) {
+                diag_error(at, "structs belong to neither side, so they can't hold a LocalEntity");
+                diag_note("keep it in a local component or singleton");
+            } else {
+                diag_error(at, "'" STR_FMT "' belongs to the match, so it can't hold a LocalEntity", STR_ARG(d->name));
+                diag_note("local entities only exist on this machine");
+            }
+        }
     }
 }
 
@@ -1807,9 +2087,9 @@ static type method_type(const checker *c, const str name, const loc at, const bo
     if (is_return && str_eq_c(name, "void")) return T_VOID_;
     if (builtin_type_named(name, &t)) return t;
     decl *const d = find_type(c, name, at);
-    if (d && (d->kind == DECL_STRUCT || d->kind == DECL_COMPONENT)) return decl_type(d);
+    if (d && (d->kind == DECL_STRUCT || d->kind == DECL_COMPONENT || d->kind == DECL_ENUM)) return decl_type(d);
     if (d) {
-        diag_error(at, "methods take and return built-in types, structs and components, not %s",
+        diag_error(at, "methods take and return built-in types, structs, enums and components, not %s",
                    d->kind == DECL_SINGLETON ? "singletons" : d->kind == DECL_EVENT ? "events" : "inputs");
     } else if (str_eq_c(name, "void")) {
         diag_error(at, "'void' only goes before a method that returns nothing");
@@ -1987,19 +2267,54 @@ static void check_trigger(const checker *c, decl *handler, param *p, decl *d)
     }
     p->type = (type){TY_EVENT, d};
     handler->event = d;
+    // Spawned and Destroyed come from both worlds; the handler's side picks one.
+    if (d == c->prog->spawned || d == c->prog->destroyed) return;
+    if (d->is_local && !handler->is_local) {
+        diag_error(at, "'" STR_FMT "' is local, so its handlers are too: 'local event(" STR_FMT " ...) " STR_FMT "(...)'",
+                   STR_ARG(d->name), STR_ARG(d->name), STR_ARG(handler->name));
+    } else if (!d->is_local && handler->is_local) {
+        diag_error(at, "local handlers of match events aren't supported yet");
+        diag_note("they need to tell predicted ticks from verified ones, which comes with multiplayer");
+    }
+}
+
+// A component or singleton `d` in the parameters of `sys`, from the other side:
+// match code can't use local state, and local code can't change the match.
+// Local handlers only take local state for now. Returns false after an error.
+static bool check_param_side(const decl *sys, const param *p, const decl *d)
+{
+    const loc at = p->type_at.line ? p->type_at : p->at;
+    if (d->is_local && !is_local_code(sys)) {
+        diag_error(at, "'" STR_FMT "' is local, and the match can't use local state", STR_ARG(d->name));
+        diag_note("local state belongs to one machine, and the match runs the same on every one");
+        return false;
+    }
+    if (!d->is_local && sys->is_handler && sys->is_local) {
+        diag_error(at, "'" STR_FMT "' belongs to the match, and local handlers only take local state for now",
+                   STR_ARG(d->name));
+        return false;
+    }
+    if (!d->is_local && sys->is_view && p->mode == PARAM_MUT) {
+        diag_error(p->at, "a view can't change the match, and '" STR_FMT "' belongs to it", STR_ARG(d->name));
+        diag_note("put what the view wants in the input, and change '" STR_FMT "' in a system", STR_ARG(d->name));
+        return false;
+    }
+    return true;
 }
 
 static void check_params(const checker *c, decl *sys)
 {
     const program *prog = c->prog;
-    bool has_entity = false;
+    const param *entity = NULL; // The Entity or LocalEntity parameter
     bool has_input = false;
     uint64_t seen = 0;
+    const decl *side_of = NULL; // The first component: which world the entities are in
 
     for (int i = 0; i < sys->params.count; i++) {
         param *p = &sys->params.items[i];
         decl *d = find_type(c, p->type_name, p->type_at);
-        bool is_entity = str_eq_c(p->type_name, "Entity");
+        const bool is_entity = str_eq_c(p->type_name, "Entity");
+        const bool is_local_entity = str_eq_c(p->type_name, "LocalEntity");
 
         if (p->name.len > 0) {
             check_reserved(p->name, p->at);
@@ -2015,19 +2330,17 @@ static void check_params(const checker *c, decl *sys)
             continue;
         }
 
-        if (sys->is_view && p->mode == PARAM_MUT) {
-            diag_error(p->at, "views only read the world, so their parameters can't be 'mut'");
-            diag_note("views run once per frame, outside the simulation");
-            p->mode = PARAM_READ;
-        }
-
-        if (is_entity) {
+        if (is_entity || is_local_entity) {
             if (p->mode != PARAM_READ) {
-                diag_error(p->at, "Entity parameters can't be 'mut', 'with' or 'without'");
+                diag_error(p->at, "%s parameters can't be 'mut', 'with' or 'without'", is_entity ? "Entity" : "LocalEntity");
             }
-            if (has_entity) diag_error(p->at, "a system can only have one Entity parameter");
-            has_entity = true;
-            p->type = T_ENTITY_;
+            if (entity) diag_error(p->at, "a %s can only have one Entity or LocalEntity parameter", sys->is_view ? "view" : "system");
+            if (is_local_entity && !is_local_code(sys)) {
+                diag_error(p->type_at.line ? p->type_at : p->at, "a LocalEntity is local, and the match can't use local state");
+                diag_note("match code runs for the match's entities: 'Entity'");
+            }
+            entity = p;
+            p->type = is_entity ? T_ENTITY_ : (type){TY_LOCAL_ENTITY, NULL};
             continue;
         }
 
@@ -2044,6 +2357,7 @@ static void check_params(const checker *c, decl *sys)
             suggestion s = suggest_start(p->type_name);
             suggest_decls(&s, prog, true, p->mode != PARAM_WITH && p->mode != PARAM_WITHOUT, true);
             suggest_consider_c(&s, "Entity");
+            if (is_local_code(sys)) suggest_consider_c(&s, "LocalEntity");
             suggest_note(&s);
             const fix create = {.kind = FIX_CREATE_COMPONENT, .at = p->type_at.line ? p->type_at : p->at, .name = p->type_name};
             vec_push(c->prog->fixes, create);
@@ -2064,6 +2378,15 @@ static void check_params(const checker *c, decl *sys)
             continue;
         }
 
+        if (d->kind == DECL_ENUM) {
+            diag_error(p->type_at.line ? p->type_at : p->at, "'" STR_FMT "' is an enum; systems take components and singletons",
+                       STR_ARG(d->name));
+            diag_note("keep its value in a component or singleton, like 'singleton Name { " STR_FMT " value; }'",
+                      STR_ARG(d->name));
+            p->type = T_ERR;
+            continue;
+        }
+
         if (d->kind == DECL_STRUCT) {
             diag_error(p->type_at.line ? p->type_at : p->at, "'" STR_FMT "' is a struct; systems take components and singletons",
                        STR_ARG(d->name));
@@ -2079,6 +2402,8 @@ static void check_params(const checker *c, decl *sys)
             if (sys->is_view) {
                 diag_error(p->at, "views can't read input yet");
                 diag_note("read the state the input changed instead, like a component the systems update");
+            } else if (is_local_code(sys)) {
+                diag_error(p->at, "local handlers can't read input");
             }
             if (p->mode != PARAM_READ) {
                 diag_error(p->at, "input can't be 'mut', 'with' or 'without'; the simulation can only read it");
@@ -2086,6 +2411,11 @@ static void check_params(const checker *c, decl *sys)
             if (has_input) diag_error(p->at, "a system can only have one input parameter");
             has_input = true;
             p->type = (type){TY_INPUT, d};
+            continue;
+        }
+
+        if (!check_param_side(sys, p, d)) {
+            p->type = T_ERR;
             continue;
         }
 
@@ -2111,12 +2441,35 @@ static void check_params(const checker *c, decl *sys)
         seen |= bit(d);
         if (p->mode == PARAM_WITHOUT) sys->without_mask |= bit(d);
         else sys->need_mask |= bit(d);
+        // An entity is in one world, so its components are all of one side.
+        if (side_of && side_of->is_local != d->is_local) {
+            const decl *local = d->is_local ? d : side_of;
+            const decl *match = d->is_local ? side_of : d;
+            diag_error(p->type_at.line ? p->type_at : p->at, "'" STR_FMT "' is local and '" STR_FMT "' belongs to the match, "
+                       "and no entity has both", STR_ARG(local->name), STR_ARG(match->name));
+            diag_note("local entities live on this machine, and the match's in the match");
+        } else if (!side_of) {
+            side_of = d;
+        }
     }
 
     if (sys->need_mask & sys->without_mask) {
         diag_error(sys->at, "system '" STR_FMT "' both requires and excludes the same component", STR_ARG(sys->name));
     }
-    sys->per_entity = has_entity || seen != 0;
+    sys->per_entity = entity || seen != 0;
+    sys->entity_local = side_of ? side_of->is_local : entity && entity->type.kind == TY_LOCAL_ENTITY;
+
+    // The entity parameter names the world its components are in.
+    if (entity && side_of && side_of->is_local != (entity->type.kind == TY_LOCAL_ENTITY)) {
+        const loc at = entity->type_at.line ? entity->type_at : entity->at;
+        if (side_of->is_local) {
+            diag_error(at, "'" STR_FMT "' is local, so its entities are local too: 'LocalEntity " STR_FMT "'",
+                       STR_ARG(side_of->name), STR_ARG(entity->name));
+        } else {
+            diag_error(at, "'" STR_FMT "' belongs to the match, so its entities are the match's: 'Entity " STR_FMT "'",
+                       STR_ARG(side_of->name), STR_ARG(entity->name));
+        }
+    }
 
     // A handler that takes components or an Entity reads the entity its event
     // is sent to, so every Send of that event must name one (see check_sends).
@@ -2149,7 +2502,7 @@ static void warn_unused_params(checker *c, const decl *sys)
         const str type = p->type_name;
         if (!p->read && kind == TY_COMPONENT) {
             diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
-            if (sys->is_handler) {
+            if (sys->is_handler || sys->is_view) {
                 diag_note("to only require the component, write 'with " STR_FMT "'", STR_ARG(type));
             } else {
                 diag_note("to only require the component, write 'with " STR_FMT "': a filter doesn't make other "
@@ -2160,11 +2513,11 @@ static void warn_unused_params(checker *c, const decl *sys)
             vec_push(c->prog->fixes, f);
         } else if (!p->read) {
             diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
-            if (sys->is_handler) diag_note("remove it");
+            if (sys->is_handler || sys->is_view) diag_note("remove it");
             else diag_note("remove it: systems that write " STR_FMT " wait for this one while it's declared", STR_ARG(type));
-        } else if (p->mode == PARAM_MUT && !p->written && !sys->is_view) {
+        } else if (p->mode == PARAM_MUT && !p->written) {
             diag_warning(p->at, "'" STR_FMT "' is declared mut but never written", STR_ARG(p->name));
-            if (sys->is_handler) diag_note("remove 'mut': the handler only reads " STR_FMT, STR_ARG(type));
+            if (sys->is_handler || sys->is_view) diag_note("remove 'mut': it only reads " STR_FMT, STR_ARG(type));
             else diag_note("without 'mut', systems that read " STR_FMT " can run alongside this one", STR_ARG(type));
             const fix f = {.kind = FIX_REMOVE_MUT, .at = p->at, .param = p};
             vec_push(c->prog->fixes, f);
@@ -2356,6 +2709,27 @@ static void collect_decls(program *prog)
             }
         }
 
+        if (d->is_local && !(d->kind == DECL_COMPONENT || d->kind == DECL_SINGLETON || d->kind == DECL_EVENT
+                             || (d->kind == DECL_SYSTEM && d->is_handler))) {
+            switch (d->kind) {
+            case DECL_STRUCT:
+                diag_error(d->local_at, "structs belong to neither side: the match and local state both hold them");
+                break;
+            case DECL_SYSTEM:
+                if (d->is_view) diag_error(d->local_at, "views are always local; drop 'local'");
+                else diag_error(d->local_at, "systems run the match; for code that runs every frame on this machine, write a view");
+                break;
+            case DECL_INPUT:
+                diag_error(d->local_at, "the input is what players send to the match, so it can't be local");
+                break;
+            default:
+                diag_error(d->local_at, "functions belong to neither side, so they can't be local");
+                break;
+            }
+            diag_note("'local' goes before components, singletons, events and event handlers");
+            d->is_local = false;
+        }
+
         switch (d->kind) {
         case DECL_COMPONENT:
             d->index = prog->components.count;
@@ -2378,6 +2752,7 @@ static void collect_decls(program *prog)
             else prog->input = d;
             break;
         case DECL_RECORD:
+        case DECL_ENUM:
         case DECL_STRUCT: // Ordered once their fields are known; see order_struct
         case DECL_METHOD: // Not in prog->decls
         case DECL_FUNCTION:
@@ -2410,19 +2785,21 @@ static void collect_decls(program *prog)
 // ---------------------------------------------------------------------------
 // Archetypes
 
-static int find_archetype(const program *prog, const uint64_t mask)
+// The match and the local world each have their own archetypes.
+static int find_archetype(const program *prog, const uint64_t mask, const bool local)
 {
     for (int i = 0; i < prog->archetypes.count; i++) {
-        if (prog->archetypes.items[i] == mask) return i;
+        if (prog->archetypes.items[i] == mask && prog->archetype_local.items[i] == local) return i;
     }
     return -1;
 }
 
-static bool add_archetype(program *prog, const uint64_t mask)
+static bool add_archetype(program *prog, const uint64_t mask, const bool local)
 {
-    if (find_archetype(prog, mask) >= 0) return true;
+    if (find_archetype(prog, mask, local) >= 0) return true;
     if (prog->archetypes.count == MAX_ARCHETYPES) return false;
     vec_push(prog->archetypes, mask);
+    vec_push(prog->archetype_local, local);
     return true;
 }
 
@@ -2444,19 +2821,22 @@ static void derive_archetypes(const checker *c)
 {
     program *prog = c->prog;
     for (int i = 0; i < c->spawns.count; i++) {
-        if (!add_archetype(prog, c->spawns.items[i]->spawn_mask)) goto too_many;
+        if (!add_archetype(prog, c->spawns.items[i]->spawn_mask, c->spawns.items[i]->local_world)) goto too_many;
     }
+    // Add and Remove only move entities within their world.
     for (int i = 0; i < prog->archetypes.count; i++) {
         for (int bit_index = 0; bit_index < prog->components.count; bit_index++) {
             const uint64_t b = (uint64_t)1 << bit_index;
             const uint64_t current = prog->archetypes.items[i];
-            if ((prog->added_mask & b) && !add_archetype(prog, current | b)) goto too_many;
-            if ((prog->removed_mask & b) && !add_archetype(prog, current & ~b)) goto too_many;
+            const bool local = prog->archetype_local.items[i];
+            if (prog->components.items[bit_index]->is_local != local) continue;
+            if ((prog->added_mask & b) && !add_archetype(prog, current | b, local)) goto too_many;
+            if ((prog->removed_mask & b) && !add_archetype(prog, current & ~b, local)) goto too_many;
         }
     }
     for (int i = 0; i < prog->archetypes.count; i++) vec_push(prog->spawn_target, false);
     for (int i = 0; i < c->spawns.count; i++) {
-        const int a = find_archetype(prog, c->spawns.items[i]->spawn_mask);
+        const int a = find_archetype(prog, c->spawns.items[i]->spawn_mask, c->spawns.items[i]->local_world);
         c->spawns.items[i]->spawn_archetype = a;
         prog->spawn_target.items[a] = true;
     }
@@ -2481,6 +2861,7 @@ static void warn_unmatched(const program *prog, const decl *const *list, const i
         bool matched = false;
         for (int a = 0; a < prog->archetypes.count; a++) {
             const uint64_t mask = prog->archetypes.items[a];
+            if (prog->archetype_local.items[a] != sys->entity_local) continue;
             if ((mask & sys->need_mask) == sys->need_mask && !(mask & sys->without_mask)) matched = true;
         }
         if (!matched) {
@@ -2755,6 +3136,10 @@ bool check(program *prog)
     }
     for (int i = 0; i < prog->decls.count; i++) {
         if (prog->decls.items[i]->kind == DECL_STRUCT) order_struct(prog, prog->decls.items[i]);
+        if (prog->decls.items[i]->kind == DECL_ENUM) {
+            c.unit = prog->decls.items[i]->unit;
+            check_enum(&c, prog->decls.items[i]);
+        }
     }
     for (int i = 0; i < prog->decls.count; i++) {
         const decl *d = prog->decls.items[i];

@@ -1,4 +1,4 @@
-// expect: views only read the world, so they can't spawn entities
+// expect: a view can't change the match, and 'Spark' belongs to it
 component Spark { float life; }
 system Main() { }
 view Sparkle()

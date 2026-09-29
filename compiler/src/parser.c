@@ -352,7 +352,7 @@ static stmt *parse_stmt(parser *p);
 static bool is_decl_word(const str text)
 {
     return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct") || str_eq_c(text, "event")
-        || str_eq_c(text, "namespace") || str_eq_c(text, "using");
+        || str_eq_c(text, "enum") || str_eq_c(text, "local") || str_eq_c(text, "namespace") || str_eq_c(text, "using");
 }
 
 // Keywords that only start declarations, and the contextual ones at the start
@@ -392,6 +392,10 @@ static bool at_decl_start_or_function(const parser *p, const bool functions)
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(p->toks, p->pos);
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text)) return true;
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_LPAREN && str_eq_c(t->text, "event")) return true;
+    if (t->kind == T_IDENT && t->at.col == 1 && str_eq_c(t->text, "local")
+        && (peek_at(p, 1)->kind == T_COMPONENT || peek_at(p, 1)->kind == T_SINGLETON || peek_at(p, 1)->kind == T_SYSTEM)) {
+        return true;
+    }
     return functions && (t->kind == T_IDENT || t->kind == T_MUT) && t->at.col == 1 && at_method(p);
 }
 
@@ -482,6 +486,44 @@ static stmt *parse_var(parser *p)
     return s;
 }
 
+// switch (value) { case A: ... break; case B: case C: ... break; default: ... break; }
+// Labels in a row share one section.
+static stmt *parse_switch(parser *p)
+{
+    const token *keyword = advance(p);
+    stmt *s = new_stmt(S_SWITCH, keyword->at);
+    expect(p, T_LPAREN, "'(' after 'switch'");
+    s->cond = parse_expr(p);
+    expect(p, T_RPAREN, "')' after the switch's value");
+    const token *open = expect(p, T_LBRACE, "'{' and the switch's cases");
+    while (!at(p, T_RBRACE)) {
+        if (at(p, T_EOF) || (p->recover && at_decl_start(p))) {
+            if (!p->recover) fail_at(p, peek(p), "'}'");
+            diag_error(peek(p)->at, "expected '}' to close the switch on line %d", open->at.line);
+            s->end = peek(p)->at;
+            return s;
+        }
+        if (!at(p, T_CASE) && !at(p, T_DEFAULT)) fail_at(p, peek(p), "'case' or 'default'");
+        switch_case section = {0};
+        while (at(p, T_CASE) || at(p, T_DEFAULT)) {
+            const token *label = advance(p);
+            vec_push(section.label_at, label->at);
+            expr *value = label->kind == T_CASE ? parse_expr(p) : NULL;
+            vec_push(section.labels, value);
+            expect(p, T_COLON, label->kind == T_CASE ? "':' after the case's value" : "':' after 'default'");
+        }
+        while (!at(p, T_CASE) && !at(p, T_DEFAULT) && !at(p, T_RBRACE) && !at(p, T_EOF)
+               && !(p->recover && at_decl_start(p))) {
+            if (p->recover) RECOVERING(p, vec_push(section.body, parse_stmt(p)));
+            else vec_push(section.body, parse_stmt(p));
+        }
+        vec_push(s->cases, section);
+    }
+    s->end = peek(p)->at;
+    advance(p);
+    return s;
+}
+
 static stmt *parse_stmt(parser *p)
 {
     const token *t = peek(p);
@@ -511,6 +553,16 @@ static stmt *parse_stmt(parser *p)
     case T_MUT:
     case T_VAR:
         return parse_var(p);
+
+    case T_SWITCH:
+        return parse_switch(p);
+
+    case T_BREAK: {
+        advance(p);
+        stmt *s = new_stmt(S_BREAK, t->at);
+        expect(p, T_SEMI, "';'");
+        return s;
+    }
 
     default: {
         // `Type name = ...` declares a local: two identifiers in a row, the
@@ -828,6 +880,24 @@ static void parse_query_rest(parser *p, decl *d)
     d->end = d->body->end;
 }
 
+// enum Page { Title, Options = 3, Credits }, with an optional ',' after the last.
+static decl *parse_enum(parser *p)
+{
+    const token *name = expect_ident(p, "enum name");
+    decl *d = new_decl(DECL_ENUM, name);
+    expect(p, T_LBRACE, "'{'");
+    while (!at(p, T_RBRACE)) {
+        const token *member = expect_ident(p, "a member name or '}'");
+        enum_member m = {member->text, member->at, NULL, 0};
+        if (accept(p, T_ASSIGN)) m.value = parse_expr(p);
+        vec_push(d->members, m);
+        if (!accept(p, T_COMMA)) break;
+    }
+    d->end = peek(p)->at;
+    expect(p, T_RBRACE, "',' or '}' after the member");
+    return d;
+}
+
 // system Name(Time time, mut Transform trs, with Player, without Dead) { ... }
 // Views have the same shape: view Name(Transform trs, with Player) { ... }
 static decl *parse_system(parser *p, const bool is_view)
@@ -938,11 +1008,20 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
             continue;
         }
         const token *t = peek(&p);
+        // `local` before a declaration: it belongs to this machine, not the match.
+        const token *local = NULL;
+        const tok_kind after = peek_at(&p, 1)->kind;
+        if (t->kind == T_IDENT && str_eq_c(t->text, "local")
+            && (after == T_IDENT || after == T_COMPONENT || after == T_SINGLETON || after == T_SYSTEM)) {
+            local = advance(&p);
+            t = peek(&p);
+        }
         // Contextual keywords: only special at the start of a declaration or a
         // file, so they can still name parameters and locals.
         const bool followed_by_name = peek_at(&p, 1)->kind == T_IDENT;
         if (t->kind == T_IDENT && followed_by_name && (str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"))) {
             advance(&p);
+            if (local) diag_error(local->at, "'local' goes before a declaration, like 'local component Spark { ... }'");
             parse_file_header(&p, t);
             continue;
         }
@@ -961,9 +1040,14 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "view")) d = parse_system(&p, true);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "struct")) d = parse_data_decl(&p, DECL_STRUCT);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "event")) d = parse_data_decl(&p, DECL_EVENT);
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "enum")) d = parse_enum(&p);
         else if (t->kind == T_IDENT && at(&p, T_LPAREN) && str_eq_c(t->text, "event")) d = parse_handler(&p);
-        else fail_at(&p, t, "'component', 'singleton', 'struct', 'event', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
+        else fail_at(&p, t, "'component', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
         d->unit = p.unit;
+        if (local) {
+            d->is_local = true;
+            d->local_at = local->at;
+        }
         d->attributes.items = p.pending.items;
         d->attributes.count = p.pending.count;
         d->attributes.cap = p.pending.cap;

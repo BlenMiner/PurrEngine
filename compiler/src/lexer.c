@@ -19,6 +19,10 @@ static const struct {
     {"return", T_RETURN},
     {"true", T_TRUE},
     {"false", T_FALSE},
+    {"switch", T_SWITCH},
+    {"case", T_CASE},
+    {"default", T_DEFAULT},
+    {"break", T_BREAK},
 };
 
 typedef struct lexer {
@@ -358,6 +362,10 @@ const char *tok_kind_name(const tok_kind kind)
     case T_RETURN: return "'return'";
     case T_TRUE: return "'true'";
     case T_FALSE: return "'false'";
+    case T_SWITCH: return "'switch'";
+    case T_CASE: return "'case'";
+    case T_DEFAULT: return "'default'";
+    case T_BREAK: return "'break'";
     case T_LBRACE: return "'{'";
     case T_RBRACE: return "'}'";
     case T_LPAREN: return "'('";

@@ -36,6 +36,7 @@ typedef struct purr_run_desc {
 #define PURR_RUN_MAX_TICKS_PER_FRAME 8
 
 static purr_world purr_run_world;
+static purr_local purr_run_local;
 static purr_devices purr_run_devices;
 static purr_draw_list purr_run_draw;
 static purr_run_desc purr_run_settings;
@@ -66,7 +67,7 @@ static inline int purr_run_frame(void *user, const float seconds)
     if (purr_run_unsimulated >= dt) purr_run_unsimulated = 0.0;
 
     purr_draw_reset(&purr_run_draw);
-    purr_world_draw(&purr_run_world, &purr_run_draw);
+    purr_frame(&purr_run_world, &purr_run_local, &purr_run_draw);
     purr_platform_draw(&purr_run_draw);
 
     if (purr_run_settings.stats) {
@@ -91,5 +92,6 @@ _Noreturn static inline void purr_run(const purr_run_desc *desc)
                                            .height = purr_run_settings.height});
     purr_world_init(&purr_run_world, 1.0f / (float)purr_run_settings.tick_rate);
     purr_world_player_joined(&purr_run_world, purr_player_from_index(0)); // Local play: player 0 is here from the start
+    purr_local_init(&purr_run_local);
     purr_platform_run(purr_run_frame, NULL);
 }

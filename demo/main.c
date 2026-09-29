@@ -27,6 +27,7 @@
 #define SMOKE_BACKGROUND 0x14141CFFu
 
 static purr_world world;
+static purr_local local;
 static purr_devices devices;
 static purr_draw_list draw;
 static bool smoke;
@@ -45,7 +46,7 @@ static void tick(void)
 static void render(void)
 {
     purr_draw_reset(&draw);
-    purr_world_draw(&world, &draw);
+    purr_frame(&world, &local, &draw);
     purr_platform_draw(&draw);
 }
 
@@ -162,5 +163,6 @@ int main(const int argc, char **argv)
     smoke = argc > 1 && strcmp(argv[1], "--smoke") == 0;
     purr_platform_open(&(purr_window_desc){.title = "PurrEngine demo", .width = WIDTH, .height = HEIGHT, .hidden = smoke});
     purr_world_init(&world, 1.0f / TICK_RATE);
+    purr_local_init(&local);
     purr_platform_run(frame, NULL);
 }

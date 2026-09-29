@@ -1,0 +1,3 @@
+// expect: views are always local; drop 'local'
+system Main() { }
+local view Show() { }

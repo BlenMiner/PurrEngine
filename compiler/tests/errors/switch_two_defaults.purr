@@ -1,0 +1,13 @@
+// expect: a switch has one 'default'
+singleton Match { int n; }
+system Main() { }
+system S(Match match)
+{
+    switch (match.n)
+    {
+        default:
+            break;
+        default:
+            break;
+    }
+}

@@ -1,0 +1,3 @@
+// expect: structs belong to neither side, so they can't hold a LocalEntity
+struct Pair { LocalEntity a; }
+system Main() { }

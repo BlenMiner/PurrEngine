@@ -1,0 +1,15 @@
+// expect: this case runs on into what's after it; end it with 'break;' or 'return;'
+enum Phase { Warmup, Playing }
+singleton Match { Phase phase; int n; }
+system Main() { }
+system S(mut Match match)
+{
+    switch (match.phase)
+    {
+        case Phase.Warmup:
+            match.n = 1;
+        case Phase.Playing:
+            match.n = 2;
+            break;
+    }
+}

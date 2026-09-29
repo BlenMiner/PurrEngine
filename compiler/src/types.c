@@ -22,6 +22,7 @@ static const struct {
     {"float3x3", TY_FLOAT3X3, "f3x3", "purr_float3x3"},
     {"float4x4", TY_FLOAT4X4, "f4x4", "purr_float4x4"},
     {"Entity", TY_ENTITY, "e", "purr_entity"},
+    {"LocalEntity", TY_LOCAL_ENTITY, "le", "purr_entity"},
     {"PlayerID", TY_PLAYER, "p", "purr_player_id"},
     {"Color", TY_COLOR, "c", "purr_color"},
 };
@@ -127,7 +128,8 @@ const char *type_name(const type t)
     case TY_INPUT:
     case TY_RECORD:
     case TY_STRUCT:
-    case TY_EVENT: {
+    case TY_EVENT:
+    case TY_ENUM: {
         char *b = buf[next++ % 4];
         const str name = t.decl->qualified.len > 0 ? t.decl->qualified : t.decl->name;
         snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(name));

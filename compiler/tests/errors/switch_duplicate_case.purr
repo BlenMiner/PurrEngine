@@ -1,0 +1,13 @@
+// expect: this case is already handled above
+singleton Match { int n; }
+system Main() { }
+system S(mut Match match)
+{
+    switch (match.n)
+    {
+        case 1:
+            break;
+        case 1:
+            break;
+    }
+}

@@ -22,6 +22,10 @@ typedef enum tok_kind {
     T_RETURN,
     T_TRUE,
     T_FALSE,
+    T_SWITCH,
+    T_CASE,
+    T_DEFAULT,
+    T_BREAK,
 
     // Punctuation
     T_LBRACE,

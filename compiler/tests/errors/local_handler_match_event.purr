@@ -1,0 +1,4 @@
+// expect: local handlers of match events aren't supported yet
+event Hit { int damage; }
+system Main() { Send(Hit); }
+local event(Hit hit) Flash() { }

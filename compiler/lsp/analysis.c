@@ -34,6 +34,7 @@ typedef enum occ_kind {
     OCC_MEMBER,   // Swizzles, color channels, quaternion.value, matrix columns, input .down/.up
     OCC_NAMESPACE, // Combat in `namespace Combat;` or Combat.Health
     OCC_ATTRIBUTE, // Before, After, Clamp, Min, Max
+    OCC_ENUM_MEMBER, // Title in Page.Title, and in `enum Page { Title }` (with `decl`, the enum)
 } occ_kind;
 
 typedef struct occurrence {
@@ -207,7 +208,7 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
     const str name = last_part(text);
     occurrence o = {.at = at, .len = name.len, .kind = OCC_TYPE, .name = name, .type = t};
     if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
-        || t.kind == TY_STRUCT || t.kind == TY_EVENT) {
+        || t.kind == TY_STRUCT || t.kind == TY_EVENT || t.kind == TY_ENUM) {
         o.decl = t.decl;
     } else if (!builtin_type_named(name, &o.type)) {
         // Unresolved, for example a component used as a field type: still a type.
@@ -304,6 +305,9 @@ static void walk_expr(const expr *e)
                         .object_type = e->object->type};
         if (e->bind == BIND_TYPE && e->type_decl) { // Combat.Health, in Spawn(Combat.Health)
             o.kind = OCC_TYPE;
+            o.decl = e->type_decl;
+        } else if (e->enum_member) { // Title in Page.Title
+            o.kind = OCC_ENUM_MEMBER;
             o.decl = e->type_decl;
         } else if (e->bind == BIND_NAMESPACE) { // Combat in Game.Combat.Health
             o.kind = OCC_NAMESPACE;
@@ -428,6 +432,16 @@ static void walk_stmt(const stmt *s)
     case S_EXPR:
         walk_expr(s->value);
         break;
+    case S_SWITCH:
+        walk_expr(s->cond);
+        for (int i = 0; i < s->cases.count; i++) {
+            const switch_case *section = &s->cases.items[i];
+            for (int k = 0; k < section->labels.count; k++) walk_expr(section->labels.items[k]);
+            for (int k = 0; k < section->body.count; k++) walk_stmt(section->body.items[k]);
+        }
+        break;
+    case S_BREAK:
+        break;
     }
 }
 
@@ -505,6 +519,12 @@ static void index_program(void)
         }
         add_occ((occurrence){.at = d->at, .len = d->name.len, .kind = OCC_TYPE, .declaration = true, .decl = d,
                              .name = d->name});
+        for (int m = 0; m < d->members.count; m++) {
+            const enum_member *member = &d->members.items[m];
+            add_occ((occurrence){.at = member->at, .len = member->name.len, .kind = OCC_ENUM_MEMBER, .declaration = true,
+                                 .decl = d, .name = member->name});
+            walk_expr(member->value);
+        }
         for (int f = 0; f < d->fields.count; f++) {
             const field *fl = &d->fields.items[f];
             type_ref(fl->type_qual_at.line ? fl->type_qual_at : fl->type_at, fl->type_at, fl->type_name, fl->type);
@@ -637,6 +657,7 @@ static const char *builtin_type_doc(const type_kind kind)
     case TY_QUATERNION: return "A rotation. Combine rotations with Math.Mul and rotate vectors with Math.Rotate.";
     case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4: return "A matrix, stored column by column (c0, c1, ...).";
     case TY_ENTITY: return "A handle to an entity. It stays safe to use after the entity is destroyed.";
+    case TY_LOCAL_ENTITY: return "A handle to an entity of the local world: this machine's own, which only local code holds.";
     case TY_PLAYER: return "A player, independent of connections. `PlayerID(0)` names a player by index.";
     case TY_COLOR: return "A color: r, g, b and a from 0 to 1. `Color(r, g, b)` or `Color(r, g, b, a)`.";
     default: return NULL;
@@ -654,15 +675,21 @@ static const char *decl_keyword(const decl *d)
     case DECL_METHOD: return "method";
     case DECL_FUNCTION: return "function";
     case DECL_EVENT: return "event";
+    case DECL_ENUM: return "enum";
     case DECL_SYSTEM: return d->is_view ? "view" : d->is_handler ? "event" : "system";
     }
     return "";
 }
 
-// What a declaration is, in words: "event handler" rather than the keyword.
+// What a declaration is, in words: "event handler" rather than the keyword,
+// and "local component" for what's local.
 static const char *decl_what(const decl *d)
 {
-    return d->kind == DECL_SYSTEM && d->is_handler ? "event handler" : decl_keyword(d);
+    const char *what = d->kind == DECL_SYSTEM && d->is_handler ? "event handler" : decl_keyword(d);
+    if (!d->is_local) return what;
+    sb b = {0};
+    sb_printf(&b, "local %s", what);
+    return b.data;
 }
 
 static void format_param(const param *p, sb *out)
@@ -681,6 +708,7 @@ static void format_param(const param *p, sb *out)
 static void format_header(const decl *d, sb *out)
 {
     int first = 0;
+    if (d->is_local) sb_put(out, "local ");
     if (d->is_handler && d->params.count > 0) {
         sb_put(out, "event(");
         format_param(&d->params.items[0], out);
@@ -738,7 +766,10 @@ static void format_default(const field *f, sb *out)
 
 static void format_data_decl(const decl *d, sb *out)
 {
-    sb_printf(out, "%s " STR_FMT "\n{\n", decl_keyword(d), STR_ARG(d->name));
+    sb_printf(out, "%s%s " STR_FMT "\n{\n", d->is_local ? "local " : "", decl_keyword(d), STR_ARG(d->name));
+    for (int i = 0; i < d->members.count; i++) {
+        sb_printf(out, "    " STR_FMT " = %lld,\n", STR_ARG(d->members.items[i].name), (long long)d->members.items[i].number);
+    }
     for (int i = 0; i < d->fields.count; i++) {
         const field *f = &d->fields.items[i];
         const char *type = f->type_name.len > 0 ? NULL : type_name(f->type);
@@ -786,7 +817,13 @@ static void describe(const occurrence *o, sb *out)
             code_block(out, code.data);
             if (o->decl->kind == DECL_EVENT && o->decl->builtin) sb_printf(out, "\n\n%s", builtin_event_doc(A.prog, o->decl));
             else if (o->decl->builtin) sb_put(out, "\n\nBuilt into the engine.");
-            else if (o->decl->kind == DECL_EVENT) sb_put(out, "\n\nSent with `Send`, and handled by `event(...)` handlers at the end of the tick.");
+            else if (o->decl->kind == DECL_EVENT && o->decl->is_local) {
+                sb_put(out, "\n\nLocal: sent with `Send` from views, and handled by `local event(...)` handlers at the end of the frame.");
+            } else if (o->decl->kind == DECL_EVENT) {
+                sb_put(out, "\n\nSent with `Send`, and handled by `event(...)` handlers at the end of the tick.");
+            } else if (o->decl->is_local) {
+                sb_put(out, "\n\nLocal: this machine's own, never sent, rolled back or hashed. Views change it; the match can't see it.");
+            }
         } else {
             code_block(out, type_name(o->type));
             const char *doc = builtin_type_doc(o->type.kind);
@@ -798,14 +835,15 @@ static void describe(const occurrence *o, sb *out)
         code_block(out, code.data);
         if (o->decl->is_handler && o->decl->event) {
             const str event = o->decl->event->name;
+            const char *when = o->decl->is_local ? "frame" : "tick";
             if (o->decl->per_entity) {
                 sb_printf(out, "\n\nRuns when a `" STR_FMT "` is sent to an entity that matches its parameters, "
-                               "at the end of the tick.", STR_ARG(event));
+                               "at the end of the %s.", STR_ARG(event), when);
             } else {
-                sb_printf(out, "\n\nRuns once for every `" STR_FMT "` sent, at the end of the tick.", STR_ARG(event));
+                sb_printf(out, "\n\nRuns once for every `" STR_FMT "` sent, at the end of the %s.", STR_ARG(event), when);
             }
         } else {
-            sb_put(out, o->decl->is_view ? "\n\nRuns once per frame and only reads the world."
+            sb_put(out, o->decl->is_view ? "\n\nRuns once per frame. It reads the match and changes local state, never the match."
                                          : o->decl->is_main ? "\n\nThe entry point: runs once when the world is created."
                                          : o->decl->per_entity ? "\n\nRuns once per tick for every matching entity."
                                          : "\n\nRuns once per tick.");
@@ -924,6 +962,15 @@ static void describe(const occurrence *o, sb *out)
         }
         break;
     }
+    case OCC_ENUM_MEMBER:
+        for (int i = 0; o->decl && i < o->decl->members.count; i++) {
+            const enum_member *m = &o->decl->members.items[i];
+            if (!str_eq(m->name, o->name)) continue;
+            sb_printf(&code, STR_FMT "." STR_FMT " = %lld", STR_ARG(o->decl->name), STR_ARG(m->name), (long long)m->number);
+            code_block(out, code.data);
+            sb_printf(out, "\n\nMember of enum `" STR_FMT "`.", STR_ARG(o->decl->name));
+        }
+        break;
     case OCC_NAMESPACE: {
         sb_printf(&code, "namespace " STR_FMT, STR_ARG(o->name));
         code_block(out, code.data);
@@ -1381,8 +1428,8 @@ void analysis_definition(const char *uri, const int line, const int character, j
 // ---------------------------------------------------------------------------
 // Document symbols: the outline
 
-enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_FIELD = 8, SYMBOL_INTERFACE = 11, SYMBOL_FUNCTION = 12,
-       SYMBOL_STRUCT = 23, SYMBOL_EVENT = 24 };
+enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_FIELD = 8, SYMBOL_ENUM = 10, SYMBOL_INTERFACE = 11,
+       SYMBOL_FUNCTION = 12, SYMBOL_ENUM_MEMBER = 22, SYMBOL_STRUCT = 23, SYMBOL_EVENT = 24 };
 
 static int symbol_kind(const decl *d)
 {
@@ -1390,6 +1437,7 @@ static int symbol_kind(const decl *d)
          : d->kind == DECL_SINGLETON                            ? SYMBOL_CLASS
          : d->kind == DECL_INPUT                                ? SYMBOL_INTERFACE
          : d->kind == DECL_EVENT                                ? SYMBOL_EVENT
+         : d->kind == DECL_ENUM                                 ? SYMBOL_ENUM
                                                                 : SYMBOL_FUNCTION;
 }
 
@@ -1413,6 +1461,17 @@ void analysis_symbols(jbuf *out)
         jb_put(out, "},\"selectionRange\":");
         write_range(out, d->at, d->name.len);
         jb_put(out, ",\"children\":[");
+        for (int m = 0; m < d->members.count; m++) {
+            const enum_member *member = &d->members.items[m];
+            if (m) jb_put(out, ",");
+            jb_put(out, "{\"name\":");
+            jb_string_n(out, member->name.ptr, (size_t)member->name.len);
+            jb_printf(out, ",\"detail\":\"%lld\",\"kind\":%d,\"range\":", (long long)member->number, SYMBOL_ENUM_MEMBER);
+            write_range(out, member->at, member->name.len);
+            jb_put(out, ",\"selectionRange\":");
+            write_range(out, member->at, member->name.len);
+            jb_put(out, "}");
+        }
         for (int f = 0; f < d->fields.count; f++) {
             const field *fl = &d->fields.items[f];
             if (f) jb_put(out, ",");
@@ -1602,9 +1661,9 @@ void analysis_workspace_symbols(const char *query, jbuf *out)
 
 static const char *const token_types[] = {"namespace", "type",     "struct", "class",   "interface", "parameter",
                                           "variable",  "property", "enumMember", "function", "method", "keyword",
-                                          "decorator"};
+                                          "decorator", "enum"};
 enum { ST_NAMESPACE, ST_TYPE, ST_STRUCT, ST_CLASS, ST_INTERFACE, ST_PARAMETER, ST_VARIABLE, ST_PROPERTY,
-       ST_ENUM_MEMBER, ST_FUNCTION, ST_METHOD, ST_KEYWORD, ST_DECORATOR };
+       ST_ENUM_MEMBER, ST_FUNCTION, ST_METHOD, ST_KEYWORD, ST_DECORATOR, ST_ENUM };
 
 // Lowercase built-in value types (float3, int, bool, ...) read as keywords,
 // like C#'s float and int.
@@ -1650,6 +1709,7 @@ static void classify(const occurrence *o, int *type, int *mods)
         // Components and structs are structs, singletons classes, inputs
         // interfaces, and the device records types: editors can color each kind.
         *type = o->decl->kind == DECL_COMPONENT || o->decl->kind == DECL_STRUCT || o->decl->kind == DECL_EVENT ? ST_STRUCT
+              : o->decl->kind == DECL_ENUM      ? ST_ENUM
               : o->decl->kind == DECL_INPUT     ? ST_INTERFACE
               : o->decl->kind == DECL_RECORD    ? ST_TYPE
                                                 : ST_CLASS;
@@ -1691,6 +1751,7 @@ static void classify(const occurrence *o, int *type, int *mods)
     case OCC_ATTRIBUTE: *type = ST_DECORATOR; *mods = 0; break;
     case OCC_MEMBER: *type = ST_PROPERTY; *mods |= SM_DEFAULT_LIBRARY; break;
     case OCC_NAMESPACE: *type = ST_NAMESPACE; break;
+    case OCC_ENUM_MEMBER: *type = ST_ENUM_MEMBER; *mods |= SM_READONLY; break;
     }
 }
 
@@ -1721,7 +1782,8 @@ void analysis_semantic_tokens(jbuf *out)
 
 enum {
     CK_METHOD = 2, CK_FUNCTION = 3, CK_FIELD = 5, CK_VARIABLE = 6, CK_CLASS = 7, CK_INTERFACE = 8, CK_MODULE = 9,
-    CK_PROPERTY = 10, CK_KEYWORD = 14, CK_SNIPPET = 15, CK_CONSTANT = 21, CK_STRUCT = 22, CK_EVENT = 23,
+    CK_PROPERTY = 10, CK_ENUM = 13, CK_KEYWORD = 14, CK_SNIPPET = 15, CK_ENUM_MEMBER = 20, CK_CONSTANT = 21, CK_STRUCT = 22,
+    CK_EVENT = 23,
 };
 
 typedef struct completion {
@@ -1910,7 +1972,9 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         static const char *const columns[] = {"c0", "c1", "c2", "c3"};
         item(c, columns[i], CK_PROPERTY, type_name(vector_type(true, n)), "A column.", NULL);
     }
-    if (t.kind == TY_ENTITY && sc->decl && sc->decl->kind == DECL_SYSTEM && !sc->decl->is_view) {
+    const bool local = sc->decl && sc->decl->kind == DECL_SYSTEM && (sc->decl->is_view || sc->decl->is_local);
+    const bool match = sc->decl && sc->decl->kind == DECL_SYSTEM && !local;
+    if ((t.kind == TY_ENTITY && match) || (t.kind == TY_LOCAL_ENTITY && local)) {
         item(c, "Add", CK_METHOD, "entity.Add(components...)", "Adds components, or replaces their values.", "Add($1)");
         item(c, "Remove", CK_METHOD, "entity.Remove(components...)", "Removes components.", "Remove($1)");
         item(c, "Destroy", CK_METHOD, "entity.Destroy()", "Destroys the entity at the end of the tick.", "Destroy()");
@@ -1935,6 +1999,7 @@ static void add_builtin_member(void *user, const builtin_member *m)
 
 // After `a.b.`: resolves the chain of names before the dot.
 static bool complete_in_namespace(completion *c, str ns, bool systems);
+static const char *name_for(const decl *d);
 
 static void complete_members(completion *c, const int dot, const loc at, const bool systems)
 {
@@ -1952,6 +2017,19 @@ static void complete_members(completion *c, const int dot, const loc at, const b
     const param *p;
     type t = name_type(&sc, base, &p);
     if (t.kind == TY_ERROR) {
+        // Page. or Game.Page.: an enum's members
+        sb written = {0};
+        for (int k = n - 1; k >= 0; k--) sb_printf(&written, "%s" STR_FMT, k == n - 1 ? "" : ".", STR_ARG(DOC->toks[ids[k]].text));
+        for (int i = 0; i < A.prog->decls.count; i++) {
+            const decl *d = A.prog->decls.items[i];
+            if (d->kind != DECL_ENUM || strcmp(name_for(d), written.data) != 0) continue;
+            for (int m = 0; m < d->members.count; m++) {
+                char value[32];
+                snprintf(value, sizeof value, "%lld", (long long)d->members.items[m].number);
+                item(c, str_to_cstr(d->members.items[m].name), CK_ENUM_MEMBER, value, NULL, NULL);
+            }
+            return;
+        }
         if (n == 1 && builtin_owner(base)) {
             if (str_eq_c(base, "Draw") && !(sc.decl && sc.decl->is_view)) return;
             builtin_visit v = {c};
@@ -2009,9 +2087,19 @@ static void complete_types(completion *c, const bool components, const bool sing
 {
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (components && d->kind == DECL_COMPONENT) item(c, name_for(d), CK_STRUCT, "component", NULL, NULL);
-        if (singletons && d->kind == DECL_SINGLETON) item(c, name_for(d), CK_CLASS, "singleton", NULL, NULL);
+        if (components && d->kind == DECL_COMPONENT) item(c, name_for(d), CK_STRUCT, decl_what(d), NULL, NULL);
+        if (singletons && d->kind == DECL_SINGLETON) item(c, name_for(d), CK_CLASS, decl_what(d), NULL, NULL);
         if (input && d->kind == DECL_INPUT) item(c, name_for(d), CK_INTERFACE, "input", NULL, NULL);
+    }
+}
+
+// The components code on one side can spawn and change: local code the local
+// world's, match code the match's.
+static void complete_components_of(completion *c, const bool local)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->kind == DECL_COMPONENT && d->is_local == local) item(c, name_for(d), CK_STRUCT, decl_what(d), NULL, NULL);
     }
 }
 
@@ -2021,16 +2109,26 @@ static void complete_events(completion *c, const bool builtin)
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->kind != DECL_EVENT || (d->builtin && !builtin)) continue;
-        item(c, name_for(d), CK_EVENT, "event", d->builtin ? builtin_event_doc(A.prog, d) : NULL, NULL);
+        item(c, name_for(d), CK_EVENT, decl_what(d), d->builtin ? builtin_event_doc(A.prog, d) : NULL, NULL);
     }
 }
 
-// Structs: field and local types, and values like Stats { ... }.
+// The events code on one side can send.
+static void complete_events_of(completion *c, const bool local)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->kind == DECL_EVENT && !d->builtin && d->is_local == local) item(c, name_for(d), CK_EVENT, decl_what(d), NULL, NULL);
+    }
+}
+
+// Structs: field and local types, and values like Stats { ... }. Enums too.
 static void complete_structs(completion *c)
 {
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->kind == DECL_STRUCT) item(c, name_for(d), CK_STRUCT, "struct", NULL, NULL);
+        if (d->kind == DECL_ENUM) item(c, name_for(d), CK_ENUM, "enum", NULL, NULL);
     }
 }
 
@@ -2081,7 +2179,8 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
         if (!d->unit || !str_eq(d->unit->ns, ns) || d->is_main) continue;
         if (systems != (d->kind == DECL_SYSTEM)) continue;
         const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
-                       : d->kind == DECL_EVENT ? CK_EVENT : d->kind == DECL_SYSTEM ? CK_FUNCTION : CK_CLASS;
+                       : d->kind == DECL_EVENT ? CK_EVENT : d->kind == DECL_ENUM ? CK_ENUM
+                       : d->kind == DECL_SYSTEM ? CK_FUNCTION : CK_CLASS;
         item(c, str_to_cstr(d->name), kind, decl_keyword(d), NULL, NULL);
     }
     return any;
@@ -2089,7 +2188,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
 
 static const char *const value_types[] = {
     "bool", "int", "int2", "int3", "int4", "float", "float2", "float3", "float4", "quaternion",
-    "float2x2", "float3x3", "float4x4", "Entity", "PlayerID", "Color",
+    "float2x2", "float3x3", "float4x4", "Entity", "LocalEntity", "PlayerID", "Color",
 };
 
 static void complete_value_types(completion *c, const bool constructors_only)
@@ -2097,7 +2196,7 @@ static void complete_value_types(completion *c, const bool constructors_only)
     for (size_t i = 0; i < sizeof value_types / sizeof value_types[0]; i++) {
         type t;
         builtin_type_named(str_from(value_types[i]), &t);
-        if (constructors_only && (t.kind == TY_BOOL || t.kind == TY_ENTITY)) continue;
+        if (constructors_only && (t.kind == TY_BOOL || t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY)) continue;
         item(c, value_types[i], CK_STRUCT, "built-in type", builtin_type_doc(t.kind), NULL);
     }
 }
@@ -2109,7 +2208,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     const bool view = sc.decl && sc.decl->is_view;
 
     if (statement) {
-        static const char *const keywords[] = {"if", "else", "return", "var", "mut"};
+        static const char *const keywords[] = {"if", "else", "return", "var", "mut", "switch", "case", "default", "break"};
         for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) item(c, keywords[i], CK_KEYWORD, NULL, NULL, NULL);
     }
     item(c, "true", CK_KEYWORD, NULL, NULL, NULL);
@@ -2143,13 +2242,17 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     }
 
     const bool routine = sc.decl && (sc.decl->kind == DECL_METHOD || sc.decl->kind == DECL_FUNCTION);
-    if (sc.decl && !view && !sc.in_input && !routine) {
-        item(c, "Spawn", CK_FUNCTION, "Spawn(components...) -> Entity", "Creates an entity with these components.",
+    if (sc.decl && !sc.in_input && !routine) {
+        const bool local = view || sc.decl->is_local;
+        item(c, "Spawn", CK_FUNCTION, local ? "Spawn(local components...) -> LocalEntity" : "Spawn(components...) -> Entity",
+             local ? "Creates a local entity with these components, at the end of the frame."
+                   : "Creates an entity with these components.",
              "Spawn($1)");
-        item(c, "Send", CK_FUNCTION, "Send(event)", "Sends an event to the whole world, handled at the end of the tick.",
+        item(c, "Send", CK_FUNCTION, "Send(event)",
+             local ? "Sends a local event, handled at the end of the frame." : "Sends an event to the whole world, handled at the end of the tick.",
              "Send($1)");
-        complete_types(c, true, false, false);
-        complete_events(c, false);
+        complete_components_of(c, local);
+        complete_events_of(c, local);
     }
     complete_value_types(c, true);
     complete_structs(c);
@@ -2164,6 +2267,8 @@ static void complete_declarations(completion *c)
     item(c, "singleton", CK_SNIPPET, "singleton Name { fields }", NULL, "singleton ${1:Name}\n{\n    $0\n}");
     item(c, "struct", CK_SNIPPET, "struct Name { fields }", "A value type for fields and locals.",
          "struct ${1:Name}\n{\n    $0\n}");
+    item(c, "enum", CK_SNIPPET, "enum Name { Members }", "A type with named values, like 'enum Page { Title, Options }'.",
+         "enum ${1:Name}\n{\n    $0\n}");
     item(c, "system", CK_SNIPPET, "system Name(parameters) { ... }", NULL, "system ${1:Name}($2)\n{\n    $0\n}");
     item(c, "view", CK_SNIPPET, "view Name(parameters) { ... }", "Runs once per frame and draws.",
          "view ${1:Name}($2)\n{\n    $0\n}");
@@ -2171,6 +2276,12 @@ static void complete_declarations(completion *c)
          "input ${1:Name}\n{\n    $0\n\n    Sample(Devices devices)\n    {\n    }\n}");
     item(c, "event", CK_SNIPPET, "event Name { fields }", "Something that happened, sent with Send.",
          "event ${1:Name}\n{\n    $0\n}");
+    item(c, "local component", CK_SNIPPET, "local component Name { fields }",
+         "This machine's own: views change it, and the match never sees it.", "local component ${1:Name}\n{\n    $0\n}");
+    item(c, "local singleton", CK_SNIPPET, "local singleton Name { fields }",
+         "This machine's own, like settings or a menu's state.", "local singleton ${1:Name}\n{\n    $0\n}");
+    item(c, "local event", CK_SNIPPET, "local event Name { fields }", "Sent from views, handled at the end of the frame.",
+         "local event ${1:Name}\n{\n    $0\n}");
     item(c, "event handler", CK_SNIPPET, "event(Event e) Name(parameters) { ... }",
          "Runs when the event is sent, at the end of the tick.", "event(${1:Event} ${2:e}) ${3:Name}($4)\n{\n    $0\n}");
     item(c, "function", CK_SNIPPET, "Type Name(parameters) { ... }", "Code other code calls, like 'float Heal(mut Stats stats)'.",
@@ -2219,7 +2330,12 @@ static bool starts_declaration(const int i)
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(DOC->toks, i); // Attributes
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "struct")
-            || str_eq_c(t->text, "event") || str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"))) {
+            || str_eq_c(t->text, "event") || str_eq_c(t->text, "enum") || str_eq_c(t->text, "local") || str_eq_c(t->text, "namespace")
+            || str_eq_c(t->text, "using"))) {
+        return true;
+    }
+    if (t->kind == T_IDENT && t->at.col == 1 && str_eq_c(t->text, "local")
+        && (DOC->toks[i + 1].kind == T_COMPONENT || DOC->toks[i + 1].kind == T_SINGLETON)) {
         return true;
     }
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_LPAREN && str_eq_c(t->text, "event")) {
@@ -2359,6 +2475,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 item(&c, "with", CK_KEYWORD, "Entities must have this component", NULL, NULL);
                 item(&c, "without", CK_KEYWORD, "Entities must not have this component", NULL, NULL);
                 item(&c, "Entity", CK_STRUCT, "The entity being processed", NULL, NULL);
+                item(&c, "LocalEntity", CK_STRUCT, "The local entity being processed", NULL, NULL);
             }
             complete_types(&c, true, true, pk != T_MUT);
             complete_namespaces(&c, false);
@@ -2466,6 +2583,7 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_MEMBER:
     case OCC_NAMESPACE:
     case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
+    case OCC_ENUM_MEMBER: return a->decl == b->decl && str_eq(a->name, b->name);
     }
     return false;
 }
@@ -2527,6 +2645,7 @@ static const char *rename_target(const int line, const int character, const occu
         return NULL;
     case OCC_PARAM:
     case OCC_LOCAL:
+    case OCC_ENUM_MEMBER:
         return NULL;
     case OCC_NAMESPACE:
         return "Renaming namespaces isn't supported yet: change the `namespace` line in each of its files.";
@@ -2607,8 +2726,8 @@ static bool param_named(const decl *d, const str name)
 // Whether `name` can replace the target's name, or why not.
 static const char *check_new_name(const occurrence *target, const str name)
 {
-    static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with",
-                                           "without", "if", "else", "return", "true", "false"};
+    static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with", "without", "if",
+                                           "else", "return", "true", "false", "switch", "case", "default", "break"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft"};
     static char message[160];
@@ -2660,6 +2779,11 @@ static const char *check_new_name(const occurrence *target, const str name)
         for (int i = 0; i < target->decl->fields.count; i++) {
             const field *f = &target->decl->fields.items[i];
             if (f != target->field && str_eq(f->name, name)) clash = true;
+        }
+        break;
+    case OCC_ENUM_MEMBER:
+        for (int i = 0; i < target->decl->members.count; i++) {
+            if (str_eq(target->decl->members.items[i].name, name)) clash = true;
         }
         break;
     case OCC_PARAM: {
@@ -2924,11 +3048,24 @@ static bool ends_operand(const tok_kind k)
         || k == T_TRUE || k == T_FALSE;
 }
 
+// Whether the ':' at token `i` ends a switch's label, like `case Page.Title:`,
+// rather than being part of `?:`.
+static bool is_label_colon(const int i)
+{
+    for (int k = i - 1; k >= 0; k--) {
+        const tok_kind kind = DOC->toks[k].kind;
+        if (kind == T_CASE || kind == T_DEFAULT) return true;
+        if (kind == T_QUESTION || kind == T_SEMI || kind == T_LBRACE || kind == T_RBRACE || kind == T_COLON) return false;
+    }
+    return false;
+}
+
 static bool space_between(const fmt_item *a, const fmt_item *b)
 {
     if (a->tok < 0 || b->tok < 0) return true; // Comments
     const tok_kind x = DOC->toks[a->tok].kind;
     const tok_kind y = DOC->toks[b->tok].kind;
+    if (y == T_COLON && is_label_colon(b->tok)) return false;
     if (y == T_RPAREN || y == T_RBRACKET || y == T_COMMA || y == T_SEMI || y == T_DOT) return false;
     if (x == T_LPAREN || x == T_LBRACKET || x == T_DOT) return false;
     if (a->unary || x == T_NOT || x == T_TILDE) return false;
@@ -2952,6 +3089,59 @@ static bool opens_literal(const int i)
     const tok_kind before = DOC->toks[k - 1].kind;
     return before != T_IDENT && before != T_COMPONENT && before != T_SINGLETON && before != T_SEMI
         && before != T_LBRACE && before != T_RBRACE && before != T_RBRACKET;
+}
+
+// How many levels deeper than its braces each token goes for the switch
+// sections around it: statements under `case X:` go one level in, the labels
+// stay at the switch's level.
+static int *case_levels(void)
+{
+    int *levels = arena_alloc(sizeof(int) * ((size_t)DOC->tok_count + 1));
+    // Per open brace: is it a switch's, and has a label started a section in it?
+    bool *is_switch = arena_alloc(sizeof(bool) * ((size_t)DOC->tok_count + 1));
+    bool *in_section = arena_alloc(sizeof(bool) * ((size_t)DOC->tok_count + 1));
+    int depth = 0;
+    int sections = 0; // Open braces whose section is running
+    for (int i = 0; i < DOC->tok_count; i++) {
+        const tok_kind k = DOC->toks[i].kind;
+        const bool label = (k == T_CASE || k == T_DEFAULT) && depth > 0 && is_switch[depth - 1];
+        const bool closing = k == T_RBRACE && depth > 0;
+        levels[i] = sections - ((label || closing) && depth > 0 && in_section[depth - 1] ? 1 : 0);
+        if (label && !in_section[depth - 1]) {
+            in_section[depth - 1] = true;
+            sections++;
+        }
+        if (k == T_LBRACE) {
+            // switch (...) {: the ')' before it closes the '(' after `switch`.
+            bool after_switch = false;
+            if (i > 0 && DOC->toks[i - 1].kind == T_RPAREN) {
+                int parens = 0;
+                for (int j = i - 1; j >= 0; j--) {
+                    if (DOC->toks[j].kind == T_RPAREN) parens++;
+                    else if (DOC->toks[j].kind == T_LPAREN && --parens == 0) {
+                        after_switch = j > 0 && DOC->toks[j - 1].kind == T_SWITCH;
+                        break;
+                    }
+                }
+            }
+            is_switch[depth] = after_switch;
+            in_section[depth] = false;
+            depth++;
+        } else if (closing) {
+            depth--;
+            if (in_section[depth]) sections--;
+        }
+    }
+    return levels;
+}
+
+// The case_levels of what's at `text`: the first token that starts there or after.
+static int case_level_at(const int *levels, const char *text)
+{
+    for (int i = 0; i < DOC->tok_count; i++) {
+        if (token_start(&DOC->toks[i]) >= text) return levels[i];
+    }
+    return 0;
 }
 
 enum { BREAK_BEFORE = 1, BREAK_AFTER = 2 };
@@ -3051,6 +3241,7 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
         if (lines[l].count > 0 || verbatim[l]) last_content = l;
     }
     const unsigned char *breaks = brace_breaks();
+    const int *case_level = case_levels();
     const char *first_break = memchr(DOC->src.text, '\n', DOC->src.len);
     const char *newline = first_break && first_break > DOC->src.text && first_break[-1] == '\r' ? "\r\n" : "\n";
 
@@ -3119,6 +3310,7 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
                 int level = depth;
                 if (first == T_RBRACE) level--;
                 if (first != T_LBRACE) level += pending;
+                level += from->tok >= 0 ? case_level[from->tok] : case_level_at(case_level, from->text);
                 if (level < 0) level = 0;
 
                 // A line that continues an expression or an argument list goes one
@@ -3166,13 +3358,14 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
             if (last_tok >= 0) {
                 const tok_kind k = DOC->toks[last_tok].kind;
                 opened_pending = false;
-                if (k == T_SEMI || k == T_LBRACE || k == T_RBRACE) {
+                const bool label = k == T_COLON && is_label_colon(last_tok);
+                if (k == T_SEMI || k == T_LBRACE || k == T_RBRACE || label) {
                     pending = 0;
                 } else if ((k == T_RPAREN && has_if && parens == 0) || k == T_ELSE) {
                     pending++;
                     opened_pending = true;
                 }
-                statement_open = k != T_SEMI && k != T_LBRACE && k != T_RBRACE;
+                statement_open = k != T_SEMI && k != T_LBRACE && k != T_RBRACE && !label;
             }
         }
         if (!verbatim[l] && (text.len != (size_t)original.len || memcmp(text.data, original.ptr, text.len) != 0)) {

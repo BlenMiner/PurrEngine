@@ -1,0 +1,71 @@
+// Local state: this machine's own singletons, components and events. Views
+// change it every frame, in a match or not, and the match never sees it.
+
+component Ball
+{
+    float2 position;
+}
+
+system Main()
+{
+    Spawn(Ball { position = float2(1, 2) });
+    Spawn(Ball { position = float2(3, 4) });
+}
+
+system Roll(mut Ball ball)
+{
+    ball.position.x += 1;
+}
+
+local singleton Frames
+{
+    int count;
+    int blinks;
+    int lit;
+    Entity selected;    // A match entity, which local code can hold and read
+    LocalEntity newest;
+}
+
+local component Spark
+{
+    float2 position;
+    int framesLeft = 2;
+    bool lit;
+}
+
+local event Blink
+{
+    int times = 1;
+}
+
+// Reads nothing of the match, so it runs every frame, in a match or not.
+view Count(mut Frames frames)
+{
+    frames.count += 1;
+    Send(Blink { times = 2 });
+}
+
+// Reads the match, so it only runs in one: a spark behind every ball.
+view Trail(Entity ball, Ball body, mut Frames frames)
+{
+    frames.selected = ball;
+    frames.newest = Spawn(Spark { position = body.position });
+}
+
+// Each spark fades, and destroys itself when it's done.
+view Fade(LocalEntity self, mut Spark spark)
+{
+    spark.framesLeft -= 1;
+    if (spark.framesLeft <= 0) self.Destroy();
+}
+
+local event(Blink blink) CountBlinks(mut Frames frames)
+{
+    frames.blinks += blink.times;
+}
+
+local event(Spawned) Light(mut Spark spark, mut Frames frames)
+{
+    spark.lit = true;
+    frames.lit += 1;
+}

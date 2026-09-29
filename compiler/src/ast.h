@@ -27,6 +27,7 @@ typedef enum type_kind {
     TY_FLOAT3X3,
     TY_FLOAT4X4,
     TY_ENTITY,
+    TY_LOCAL_ENTITY, // LocalEntity: an entity of the local world, which only local code can hold
     TY_PLAYER,     // PlayerID
     TY_COLOR,
     TY_STRING,     // Text literals; only Draw.Text takes them for now.
@@ -36,6 +37,7 @@ typedef enum type_kind {
     TY_RECORD,     // Built-in read-only data: Devices, Keyboard, Button, ...
     TY_STRUCT,     // A struct: plain data, copied like any value
     TY_EVENT,      // An event's value: what `Send` sends and a handler receives
+    TY_ENUM,       // A value of an enum: one of its members, an int underneath
 } type_kind;
 
 typedef struct type {
@@ -136,7 +138,16 @@ typedef enum decl_kind {
     DECL_METHOD, // bool IsDead() { ... } in a struct or component; in its `methods`, not program.decls
     DECL_FUNCTION, // void Heal(mut Stats stats, float amount) { ... }: code other code calls
     DECL_EVENT,    // event Hit { fields }: something that happened, sent with Send
+    DECL_ENUM,     // enum Page { Title, Options }: a type with named values
 } decl_kind;
+
+// One of an enum's members: `Options`, or `Options = 3`.
+typedef struct enum_member {
+    str name;
+    loc at;
+    struct expr *value; // The value written after '=', or NULL for the one after the previous member's
+    int64_t number;     // Its value, once checked
+} enum_member;
 
 typedef struct decl {
     decl_kind kind;
@@ -147,6 +158,8 @@ typedef struct decl {
     const unit *unit; // The file it's in; NULL for built-ins
     VEC(attribute) attributes;
     bool builtin;
+    bool is_local;    // `local`: belongs to this machine, not the match. Views are always local code.
+    loc local_at;     // The `local` keyword
     const char *c_name; // Records: the C struct name.
 
     // Components, singletons, inputs, records, structs and events
@@ -160,6 +173,9 @@ typedef struct decl {
 
     // Structs and components: their methods
     VEC(struct decl *) methods;
+
+    // Enums
+    VEC(enum_member) members;
 
     // Methods and functions
     struct decl *owner;       // A method's struct or component; NULL for a function
@@ -182,6 +198,7 @@ typedef struct decl {
     struct decl *event;  // A handler's event
     bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
+    bool entity_local;   // Its entities are the local world's (views of local components)
     uint64_t need_mask;  // Components an entity must have (access and `with`).
     uint64_t without_mask;
     VEC(struct decl *) after; // Systems or views that must run first ([After], and [Before] on them)
@@ -289,6 +306,7 @@ struct expr {
     int swizzle_len;       // Vector swizzle: number of components (0 if not a swizzle).
     int swizzle[4];        // Component indices: 0..3 for x, y, z, w.
     const char *c_constant; // Static member such as quaternion.identity, as C.
+    const enum_member *enum_member; // Page.Title: the member (type_decl is its enum)
 
     // E_CALL, E_METHOD
     VEC(expr *) args;
@@ -299,6 +317,7 @@ struct expr {
     struct decl *method;    // CALL_METHOD and CALL_FUNCTION: the method or function called
     uint64_t spawn_mask;  // CALL_SPAWN: components the new entity has.
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
+    bool local_world;     // CALL_SPAWN, CALL_ADD, CALL_REMOVE, CALL_DESTROY and CALL_SEND: in the local world
     const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
 
     // E_BINARY, E_UNARY; E_CONDITIONAL's two sides. `method` is the struct's
@@ -323,7 +342,16 @@ typedef enum stmt_kind {
     S_VAR,
     S_ASSIGN,
     S_EXPR,
+    S_SWITCH,
+    S_BREAK,
 } stmt_kind;
+
+// A switch's section: its labels, then the statements they run.
+typedef struct switch_case {
+    VEC(struct expr *) labels; // `case` values; NULL for `default`
+    VEC(loc) label_at;         // Each label's `case` or `default`
+    VEC(struct stmt *) body;
+} switch_case;
 
 struct stmt {
     stmt_kind kind;
@@ -333,10 +361,13 @@ struct stmt {
     VEC(stmt *) stmts;
     loc end; // The closing brace, or where a block cut short by a syntax error ends
 
-    // S_IF
+    // S_IF, and S_SWITCH's value
     expr *cond;
     stmt *then_stmt;
     stmt *else_stmt;
+
+    // S_SWITCH
+    VEC(switch_case) cases;
 
     // S_VAR
     bool is_mut;
@@ -382,6 +413,7 @@ typedef struct program {
     VEC(decl *) structs; // In an order where each comes after the structs it contains.
 
     VEC(uint64_t) archetypes;  // Component masks, in derivation order.
+    VEC(bool) archetype_local; // Per archetype: in the local world rather than the match
     VEC(bool) spawn_target;    // Per archetype: does some Spawn create it directly?
     uint64_t spawned_mask;     // Union of components that appear in spawns.
     uint64_t added_mask;       // Components that appear in Add.

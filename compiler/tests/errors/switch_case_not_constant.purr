@@ -1,0 +1,11 @@
+// expect: a case is an int or one of an enum's members, like 'case 3:'
+singleton Match { int n; int m; }
+system Main() { }
+system S(Match match)
+{
+    switch (match.n)
+    {
+        case match.m:
+            break;
+    }
+}

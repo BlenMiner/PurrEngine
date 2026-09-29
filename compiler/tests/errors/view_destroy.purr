@@ -1,4 +1,4 @@
-// expect: views only read the world, so they can't change entities
+// expect: a view can't change the match, and this entity belongs to it
 component Body { float2 position; }
 system Main() { Spawn(Body); }
 view Cull(Entity e, Body body)

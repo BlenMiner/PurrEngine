@@ -1,5 +1,5 @@
-// expect: views only read the world, so they can't send events
+// expect: a view can't change the match, and 'Ping' is a match event
 component Body { float2 position; }
 event Ping { }
 system Main() { Spawn(Body); }
-view Draw(Body body) { Send(Ping); }
+view Show(Body body) { Send(Ping); }

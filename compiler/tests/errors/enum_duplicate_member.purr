@@ -1,0 +1,3 @@
+// expect: 'Phase' already has a member 'Warmup'
+enum Phase { Warmup, Warmup }
+system Main() { }

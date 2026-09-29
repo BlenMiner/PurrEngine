@@ -39,6 +39,7 @@ PurrLang is a working name and may change.
 - `struct` declares a value type for fields and locals (see Structs).
 - `system` declares a system.
 - `event` declares an event, and `event(...)` code that runs when one is sent (see Events).
+- `enum` declares an enum (see Enums and switch).
 - `scene` declares a scene (see Scenes).
 - `local` in front of a declaration makes it belong to the machine instead of the match (see Local state).
 - A function, `ReturnType Name(parameters) { ... }` with no keyword, declares code that other code calls (see Functions).
@@ -273,7 +274,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Types and values
 
-- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit) and `Entity`. There is no `double`. Vector types are under Vector math, and `Color` under Views and drawing.
+- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit), `Entity` and `LocalEntity` (see Local state). There is no `double`. Vector types are under Vector math, and `Color` under Views and drawing.
 - `1.5` is a `float`; the `f` suffix is optional. An `int` converts to `float` implicitly, never the other way.
 - In `cond ? a : b`, the condition is a `bool`, and the two sides have the same type or one converts to the other's, as in C#: `ready ? 1 : 0.5` is a `float`. It binds looser than every binary operator and groups to the right.
 - Integer arithmetic wraps on overflow. Integer division and modulo by zero give 0, so no input can crash the simulation.
@@ -303,7 +304,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Syntax
 
-- Statements: blocks, `if`/`else`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), and calls to `Spawn`, `Add`, `Remove`, `Destroy` and the `Draw` functions. There are no loops yet.
+- Statements: blocks, `if`/`else`, `switch`, `break;`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), and calls to `Spawn`, `Add`, `Remove`, `Destroy`, `Send` and the `Draw` functions. There are no loops yet.
 - Operators and their precedence follow C#. Comments are `//` and `/* */`.
 
 ### Limits
@@ -470,6 +471,52 @@ event(Spawned) Arm(Entity player, with Player)
 - Local handlers, such as playing a sound when a `Hit` happens (`local event(Hit hit) PlayHitSound()`). They have to run once even when rollback re-runs the tick that sent the event, and choose between predicted and verified ticks.
 - Handling a world event for every matching entity, such as resetting every player on `RoundOver`. It waits for loops over queries.
 
+## Enums and switch
+
+### Decided
+
+- Enums and `switch` follow C#'s syntax.
+
+```csharp
+enum Phase
+{
+    Warmup,
+    Playing = 5,
+    Over,
+}
+
+system Advance(mut Match match)
+{
+    switch (match.phase)
+    {
+        case Phase.Warmup:
+            match.phase = Phase.Playing;
+            break;
+        case Phase.Playing:
+        case Phase.Over:
+            break;
+    }
+}
+```
+
+### Provisional
+
+- `enum Name { A, B = 5, C }` declares an enum. A member without a value is one more than the one before it, and the first is 0. A value is an int literal, and a comma after the last member is fine. `enum` is only a keyword at the start of a declaration.
+- Members are always written with their enum: `Phase.Playing`, or `Game.Phase.Playing` from another namespace. In generated C, `Phase.Playing` is `Phase_Playing`, a constant of the type `Phase`, an `int32_t`.
+- Enums are values, like structs: fields, locals, inputs, and functions' parameters and return values can hold them. A field without a default starts at 0, even if no member has that value, as in C#.
+- `==` and `!=` compare two values of the same enum. `int(phase)` gives a member's value; there's no way from an int to an enum yet.
+- An enum in an input that isn't one of its members, which only a bad client could send, becomes the field's default before `Sanitize`, like a NaN float.
+- `switch` works on ints and enums. A case is an int literal or one of the enum's members. Labels in a row share a section, `default` handles the rest, and each value appears once.
+- Every section ends with `break;` or `return;` on every path, so none runs into the next, as in C#. `break` anywhere else is an error, since there are no loops yet.
+- Each section has its own scope for locals.
+- A function returns on every path when a switch with a `default` returns in every section.
+- `switch`, `case`, `default` and `break` are keywords.
+
+### Open
+
+- Ordering enums (`<`), and turning an int into an enum.
+- A warning when a switch on an enum has no `default` and misses a member.
+
 ## Input
 
 ### Decided
@@ -556,7 +603,7 @@ input PlayerInput
 
 ### Provisional
 
-- `view` declares a view. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick. Until local state is implemented, `mut` parameters, input parameters, `Spawn`, `Add`, `Remove` and `Destroy` are all errors in a view.
+- `view` declares a view. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick. Its `mut` parameters, `Spawn`, `Add`, `Remove`, `Destroy` and `Send` are local (see Local state); input parameters are errors in a view.
 - Views run in declaration order, after all the systems of the frame's ticks. Within a view, entities run in the same order as in systems.
 - `Draw` functions can only be called from views for now. Calling them from systems needs to tell predicted ticks from verified or replayed ones, which comes with multiplayer.
 - `view` is only a keyword at the start of a declaration, like `input`.
@@ -686,6 +733,15 @@ view DrawSparks(Entity self, mut Spark spark)
 // Error: match code can't read local state.
 system Count(Spark spark) { }
 ```
+
+### Provisional
+
+- `local` is only a keyword at the start of a declaration. It goes before components, singletons, events and event handlers; before anything else it's an error that says why (structs and functions belong to neither side, views are always local, systems run the match).
+- **`LocalEntity`** is an entity of the local world. `Spawn` in local code returns one, and a view of local components takes `LocalEntity`, where a view of match components takes `Entity`. Local code can hold and read an `Entity` (the unit a player selected, say) but never change one. The match's declarations can't hold a `LocalEntity`, and neither can structs, which both sides share.
+- A view runs for the entities of one world: its components are all local or all the match's.
+- Local handlers handle local events, and `Spawned` and `Destroyed` of local entities. They only take local state for now.
+- The host keeps the local state and calls `purr_local_init(local)` once, then `purr_frame(w, local, draw)` every frame. `purr_frame` runs the views, then applies their local changes and events. Outside a match, `w` is NULL, and views that read the match don't run.
+- The local world has its own entity table and queue, the same size as the match's.
 
 ### Open
 

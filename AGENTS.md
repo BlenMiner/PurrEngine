@@ -94,8 +94,9 @@ The generated header is the API between the game and the host. Namespaced declar
 - `purr_world`: the whole simulation state as plain data. Copying it is a snapshot.
 - `purr_world_init(w, dt)`: clears the world, sets `Time.dt` and singleton defaults, runs `Main`.
 - `purr_world_tick(w)`: runs every system once, then applies structural changes.
-- `purr_world_draw(w, draw)`: runs every view once, adding their Draw calls to a `purr_draw_list`. Call it once per frame, after `purr_draw_reset(draw)`, then render the list with `purr_platform_draw(draw)`.
-- `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`.
+- `purr_local`: this machine's local state, outside every world. `purr_local_init(local)` clears it and sets its singletons' defaults.
+- `purr_frame(w, local, draw)`: runs every view once, adding their Draw calls to a `purr_draw_list`, then applies the local changes they made. Call it once per frame, after `purr_draw_reset(draw)`, then render the list with `purr_platform_draw(draw)`. Outside a match `w` is NULL, and views that read the match don't run.
+- `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`. A local component's takes the `purr_local`.
 - `purr_world_player_joined(w, player)` and `purr_world_player_left(w, player)`: send `PlayerJoined` and `PlayerLeft`, handled at the end of the next tick. Every machine calls them before the same tick.
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
 - If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's `Sample` on the client (call `purr_devices_consume(devices)` after it). `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.

@@ -17,6 +17,7 @@ static arch_set archetypes_of(const program *prog, const decl *sys)
     arch_set set = {{0}};
     for (int a = 0; a < prog->archetypes.count && a < 256; a++) {
         const uint64_t mask = prog->archetypes.items[a];
+        if (prog->archetype_local.items[a] != sys->entity_local) continue; // Another world's
         if ((mask & sys->need_mask) == sys->need_mask && !(mask & sys->without_mask)) {
             set.words[a / 64] |= (uint64_t)1 << (a % 64);
         }

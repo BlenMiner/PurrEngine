@@ -52,7 +52,7 @@ _Noreturn void purr_platform_run(purr_frame_fn frame, void *user);
 void purr_platform_poll(purr_devices *devices);
 
 // Renders a frame's draw list (see purr/draw.h), such as the one
-// purr_world_draw fills. Call from the frame function.
+// purr_frame fills. Call from the frame function.
 void purr_platform_draw(const purr_draw_list *list);
 
 // Where a world position lands on screen, in raylib's window pixels (from the
