@@ -1,0 +1,3 @@
+// expect: text can't show float3x3 yet
+scene Main { }
+view V() { Draw.Text($"{float3x3.identity}", float2(0, 0), 10, Color.white); }

@@ -8,6 +8,7 @@ static purr_world world_before;
 static purr_local local;
 static purr_local local_before;
 static purr_draw_list draw;
+static purr_gui gui;
 
 static void start(void)
 {
@@ -18,7 +19,7 @@ static void start(void)
 static void frame(const purr_world *w)
 {
     purr_draw_reset(&draw);
-    purr_frame(w, &local, &draw);
+    purr_frame(w, NULL, 1.0f, &local, &draw, &gui);
 }
 
 PURR_TEST(local_views_change_local_state)

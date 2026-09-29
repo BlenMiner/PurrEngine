@@ -1,3 +1,7 @@
-// expect: Devices can only be read in the input's Sample
+// expect: 'Devices' is this machine's devices, and the match runs the same on every machine
+component Walker { float x; }
 scene Main { }
-system Peek(Devices devices) { }
+system Walk(mut Walker w)
+{
+    if (Devices.keyboard.space.down) w.x += 1;
+}

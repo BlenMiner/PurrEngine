@@ -152,9 +152,12 @@
     // -----------------------------------------------------------------------
     // The platform (purr_web.h)
 
-    // Keys by the DOM's `code`, which names physical positions.
+    // Keys by the DOM's `code`, which names physical positions. A key pressed
+    // and released between two frames still reads as held for one, so no tap
+    // is lost however slow the frames are.
     const keyIndex = new Map();
     let keysHeld = new Uint8Array(0);
+    let keysTapped = new Uint8Array(0);
     // Keys whose browser default (scrolling, moving focus) would fight the game.
     const keepFromBrowser = new Set(['Space', 'Tab', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
         'PageUp', 'PageDown', 'Home', 'End']);
@@ -162,15 +165,25 @@
         const index = keyIndex.get(event.code);
         if (index === undefined) return;
         keysHeld[index] = held;
+        if (held) keysTapped[index] = 1;
         if (keepFromBrowser.has(event.code)) event.preventDefault();
     }
-    addEventListener('keydown', event => onKey(event, 1));
+    // Characters typed, which follow the keyboard layout: `key` is one
+    // character for keys that type one, and a name like "Shift" for the others.
+    const typed = [];
+    function onType(event) {
+        if (event.ctrlKey || event.metaKey || event.isComposing) return;
+        const c = event.key.codePointAt(0);
+        if ([...event.key].length !== 1 || c < 32 || c === 127) return;
+        if (typed.length < 64) typed.push(c);
+    }
+    addEventListener('keydown', event => { onKey(event, 1); onType(event); });
     addEventListener('keyup', event => onKey(event, 0));
-    addEventListener('blur', () => keysHeld.fill(0)); // Keys released elsewhere never send keyup
+    addEventListener('blur', () => { keysHeld.fill(0); keysTapped.fill(0); }); // Keys released elsewhere never send keyup
 
     // The mouse over the canvas, in canvas pixels. Buttons in raylib's order:
     // left, right, middle, back, forward (the DOM's is left, middle, right, ...).
-    const mouse = { x: 0, y: 0, buttons: 0, wheelX: 0, wheelY: 0 };
+    const mouse = { x: 0, y: 0, buttons: 0, tapped: 0, wheelX: 0, wheelY: 0 }; // Taps as for keys
     const buttonBit = [1, 4, 2, 8, 16];
     function onMouseMove(event) {
         const rect = canvas.getBoundingClientRect();
@@ -181,6 +194,7 @@
     canvas.addEventListener('mousedown', event => {
         onMouseMove(event);
         mouse.buttons |= buttonBit[event.button] || 0;
+        mouse.tapped |= buttonBit[event.button] || 0;
         canvas.focus();
     });
     addEventListener('mouseup', event => { mouse.buttons &= ~(buttonBit[event.button] || 0); });
@@ -232,7 +246,7 @@
         canvas_height: () => canvas.height,
         mouse_x: () => mouse.x,
         mouse_y: () => mouse.y,
-        mouse_buttons: () => mouse.buttons,
+        mouse_buttons() { const held = mouse.buttons | mouse.tapped; mouse.tapped = 0; return held; },
         take_wheel_x() { const v = mouse.wheelX; mouse.wheelX = 0; return v; },
         take_wheel_y() { const v = mouse.wheelY; mouse.wheelY = 0; return v; },
         watch_key(index, codePtr) {
@@ -241,9 +255,13 @@
                 const grown = new Uint8Array(index + 1);
                 grown.set(keysHeld);
                 keysHeld = grown;
+                const tapped = new Uint8Array(index + 1);
+                tapped.set(keysTapped);
+                keysTapped = tapped;
             }
         },
-        key_held: index => keysHeld[index] || 0,
+        key_held(index) { const held = keysHeld[index] || keysTapped[index] || 0; keysTapped[index] = 0; return held; },
+        take_char: () => typed.length ? typed.shift() : 0,
         gamepad_connected(pad) {
             const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
             return gamepads[pad] && gamepads[pad].connected ? 1 : 0;

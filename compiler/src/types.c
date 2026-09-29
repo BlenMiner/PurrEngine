@@ -25,6 +25,7 @@ static const struct {
     {"LocalEntity", TY_LOCAL_ENTITY, "le", "purr_entity"},
     {"PlayerID", TY_PLAYER, "p", "purr_player_id"},
     {"Color", TY_COLOR, "c", "purr_color"},
+    {"Rect", TY_RECT, "r", "purr_rect"},
 };
 
 #define BUILTIN_COUNT (sizeof builtins / sizeof builtins[0])
@@ -85,6 +86,22 @@ int matrix_dim(const type t)
     }
 }
 
+bool type_blends(const type t)
+{
+    if (t.kind == TY_FLOAT || t.kind == TY_QUATERNION || t.kind == TY_COLOR || t.kind == TY_RECT) return true;
+    if (type_dim(t) >= 2) return type_is_float_based(t);
+    if (matrix_dim(t) > 0) return true;
+    if (t.kind != TY_STRUCT) return false;
+    if (t.decl->interpolate) return true; // Its own way
+    for (int i = 0; i < t.decl->fields.count; i++) {
+        const field *f = &t.decl->fields.items[i];
+        bool snaps = false;
+        for (int k = 0; k < f->attributes.count; k++) snaps |= str_eq_c(f->attributes.items[k].name, "Snap");
+        if (!snaps && type_blends(f->type)) return true;
+    }
+    return false;
+}
+
 type vector_type(const bool is_float, const int dim)
 {
     static const type_kind floats[] = {TY_ERROR, TY_FLOAT, TY_FLOAT2, TY_FLOAT3, TY_FLOAT4};
@@ -123,13 +140,15 @@ const char *type_name(const type t)
     case TY_ERROR: return "<error>";
     case TY_VOID: return "nothing";
     case TY_STRING: return "string";
+    case TY_BLOCK: return "Block";
     case TY_COMPONENT:
     case TY_SINGLETON:
     case TY_INPUT:
     case TY_RECORD:
     case TY_STRUCT:
     case TY_EVENT:
-    case TY_ENUM: {
+    case TY_ENUM:
+    case TY_LIST: {
         char *b = buf[next++ % 4];
         const str name = t.decl->qualified.len > 0 ? t.decl->qualified : t.decl->name;
         snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(name));
@@ -145,7 +164,8 @@ const char *type_name(const type t)
 
 const char *type_c_name(const type t)
 {
-    if (t.kind == TY_STRING) return "const char *";
+    if (t.kind == TY_STRING) return "purr_str";
+    if (t.kind == TY_LIST) return "purr_list";
     for (size_t i = 0; i < BUILTIN_COUNT; i++) {
         if (builtins[i].kind == t.kind) return builtins[i].c_name;
     }

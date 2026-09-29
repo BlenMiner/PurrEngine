@@ -75,6 +75,8 @@ static void start(void)
 static int cursor_line;
 static int cursor_character;
 
+// Documents are written with the cursor as `$`; `$$` is a `$` of the text,
+// as in $$"score {score}".
 static void open_document(const char *marked)
 {
     char text[8192];
@@ -83,11 +85,12 @@ static void open_document(const char *marked)
     int character = 0;
     cursor_line = cursor_character = -1;
     for (const char *p = marked; *p && n + 1 < sizeof text; p++) {
-        if (*p == '$') {
+        if (*p == '$' && p[1] != '$') {
             cursor_line = line;
             cursor_character = character;
             continue;
         }
+        if (*p == '$') p++;
         text[n++] = *p;
         if (*p == '\n') {
             line++;
@@ -181,7 +184,13 @@ static char applied[8192];
 
 static const char *apply_reply(const char *original, const char *path)
 {
-    snprintf(applied, sizeof applied, "%s", original);
+    size_t n = 0;
+    for (const char *p = original; *p && n + 1 < sizeof applied; p++) { // As open_document reads it
+        if (*p == '$' && p[1] != '$') continue;
+        if (*p == '$') p++;
+        applied[n++] = *p;
+    }
+    applied[n] = '\0';
     const json *reply = json_parse(last_sent(), strlen(last_sent()));
     const json *edits = json_get(reply, "result");
     if (path) edits = json_path(edits, "changes", path, NULL);
@@ -288,26 +297,26 @@ PURR_TEST(lsp_complete_input_edges)
     PURR_CHECK(offers(reply, "up"));
 }
 
-// Inside Sanitize, the input's fields are in scope; Sample's devices aren't.
+// Inside Sanitize, the input's fields are in scope; this machine's devices aren't.
 PURR_TEST(lsp_sanitize)
 {
     start();
-    static const char program[] = "input PlayerInput\n{\n    float move;\n\n    Sample(Devices devices) { }\n\n"
+    static const char program[] = "input PlayerInput\n{\n    float move;\n\n    Sample() { }\n\n"
                                   "    Sanitize()\n    {\n        move = Math.Clamp($, -1, 1);\n    }\n}\n"
                                   "scene Main { }\n";
     const char *reply = complete(program);
     PURR_CHECK(offers(reply, "move"));
-    PURR_CHECK(!offers(reply, "devices"));
+    PURR_CHECK(!offers(reply, "Devices"));
 
     open_document("input PlayerInput\n{\n    float move;\n    Sani$tize() { move = Math.Clamp(move, -1, 1); }\n}\n"
          "scene Main { }\n");
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
     PURR_CHECK(has(request("textDocument/hover"), "Runs on every input before the simulation reads it"));
 
-    open_document("input PlayerInput\n{\n    bool jump;\n    Sam$ple(Devices devices) { jump = devices.keyboard.space.pressed; }\n}\n"
+    open_document("input PlayerInput\n{\n    bool jump;\n    Sam$ple() { jump = Devices.keyboard.space.pressed; }\n}\n"
          "scene Main { }\n");
     PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
-    PURR_CHECK(has(request("textDocument/hover"), "Builds the player's input from the devices"));
+    PURR_CHECK(has(request("textDocument/hover"), "Builds the player's input from this machine's `Devices`"));
 }
 
 static const char *format_reply(const char *text);
@@ -378,15 +387,33 @@ PURR_TEST(lsp_complete_names_in_scope)
 PURR_TEST(lsp_complete_in_constructor)
 {
     start();
-    const char *devices = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample(Devices devices)\n    {\n"
-                                   "        var keys = devices.$\n    }\n}\nscene Main { }\n");
+    const char *devices = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample()\n    {\n"
+                                   "        var keys = Devices.$\n    }\n}\nscene Main { }\n");
     PURR_CHECK(offers(devices, "keyboard"));
     PURR_CHECK(offers(devices, "gamepad"));
 
-    const char *keys = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample(Devices devices)\n    {\n"
-                                "        var keys = devices.keyboard;\n        if (keys.$\n    }\n}\nscene Main { }\n");
+    const char *keys = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample()\n    {\n"
+                                "        var keys = Devices.keyboard;\n        if (keys.$\n    }\n}\nscene Main { }\n");
     PURR_CHECK(offers(keys, "space"));
     PURR_CHECK(offers(keys, "leftShift"));
+
+    // Sample takes local singletons; Devices is a name.
+    const char *params = complete("local singleton Menu { bool open; }\ninput PlayerInput\n{\n    float2 move;\n\n"
+                                  "    Sample($)\n    {\n    }\n}\nscene Main { }\n");
+    PURR_CHECK(offers(params, "Menu"));
+    PURR_CHECK(!offers(params, "Devices"));
+    const char *names = complete("input PlayerInput\n{\n    float2 move;\n\n    Sample()\n    {\n        move = $\n"
+                                 "    }\n}\nscene Main { }\n");
+    PURR_CHECK(offers(names, "Devices"));
+
+    // Views read them too, and systems take them.
+    const char *view = complete("scene Main { }\nview Pause()\n{\n    if (Devices.keyboard.$\n}\n");
+    PURR_CHECK(offers(view, "escape"));
+    const char *system = complete("scene Main { }\ncomponent Body { float x; }\n"
+                                  "system Move(Devices devices, mut Body body)\n{\n    body.x += devices.gamepad.$\n}\n");
+    PURR_CHECK(offers(system, "leftStick"));
+    const char *header = complete("scene Main { }\ncomponent Body { float x; }\nsystem Move($)\n{\n}\n");
+    PURR_CHECK(offers(header, "Devices"));
 }
 
 PURR_TEST(lsp_complete_declarations_and_headers)
@@ -496,17 +523,20 @@ PURR_TEST(lsp_definition_in_c)
     PURR_CHECK(has(c_definition(IN_SYSTEM("var c = Color.red.g$;")), "float r, g, b, a;"));
     PURR_CHECK(strcmp(c_definition(GAME_TYPES "system S(Ti$me time) { }\n"), "") == 0); // Generated: no C definition
 
-    static const char constructor[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
-                                      "        var keys = devices.key$board;\n        fire = keys.space.pressed;\n    }\n}\n"
+    static const char constructor[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample()\n    {\n"
+                                      "        var keys = Devices.key$board;\n        fire = keys.space.pressed;\n    }\n}\n"
                                       "scene Main { }\n";
     PURR_CHECK(has(c_definition(constructor), "purr_keyboard keyboard;"));
-    static const char key[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
-                              "        var keys = devices.keyboard;\n        fire = keys.spa$ce.pressed;\n    }\n}\n"
+    static const char key[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample()\n    {\n"
+                              "        var keys = Devices.keyboard;\n        fire = keys.spa$ce.pressed;\n    }\n}\n"
                               "scene Main { }\n";
     PURR_CHECK(has(c_definition(key), "X(space)"));
-    static const char button[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n"
-                                 "        fire = devices.mouse.left.pre$ssed;\n    }\n}\nscene Main { }\n";
+    static const char button[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample()\n    {\n"
+                                 "        fire = Devices.mouse.left.pre$ssed;\n    }\n}\nscene Main { }\n";
     PURR_CHECK(has(c_definition(button), "bool pressed;"));
+    static const char devices[] = "input PlayerInput\n{\n    bool fire;\n\n    Sample()\n    {\n"
+                                  "        fire = Devi$ces.mouse.left.pressed;\n    }\n}\nscene Main { }\n";
+    PURR_CHECK(has(c_definition(devices), "typedef struct purr_devices"));
 #undef IN_SYSTEM
 #undef IN_VIEW
 }
@@ -537,7 +567,7 @@ PURR_TEST(lsp_semantic_tokens)
     open_document("component Body { float3 p; }\nscene Main { }\n");
     PURR_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,10,4,2,1,0,7,6,11,0,"));
     // Sample and Sanitize are keywords too, and attributes decorators (12).
-    open_document("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample(Devices devices) { }\n}\nscene Main { }\n");
+    open_document("input PlayerInput\n{\n    [Clamp(-1, 1)] float move;\n    Sample() { }\n}\nscene Main { }\n");
     const char *input = request("textDocument/semanticTokens/full");
     PURR_CHECK(has(input, "2,5,5,12,0,")); // Clamp: line +2, column 5
     PURR_CHECK(has(input, "1,4,6,11,0,")); // Sample: line +1, column 4
@@ -691,6 +721,178 @@ PURR_TEST(lsp_format_switch)
 }
 
 
+PURR_TEST(lsp_gui)
+{
+    start();
+    static const char game[] =
+        "local singleton Menu { bool open; float volume; }\nscene Main { }\n\n"
+        "void Section(string title, mut bool open, Block content)\n{\n    GUILayout.Toggle(title, open);\n"
+        "    if (open) content();\n}\n\n"
+        "view Options(mut Menu menu)\n{\n    GUILayout.Area(Anchor.MiddleCenter)\n    {\n"
+        "        Section(\"Audio\", menu.open)\n        {\n            GUILayout.Slider(\"Volume\", menu.volume, 0, 1);\n"
+        "        }\n    }\n}\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    PURR_CHECK(has(format_reply(game), "\"result\":[]")); // Blocks after calls keep their braces on lines of their own
+
+    const char *widgets = complete("scene Main { }\nview V()\n{\n    GUILayout.$\n}\n");
+    PURR_CHECK(offers(widgets, "Button"));
+    PURR_CHECK(offers(widgets, "Horizontal"));
+    PURR_CHECK(offers(widgets, "Area"));
+    PURR_CHECK(offers(complete("scene Main { }\nview V()\n{\n    $\n}\n"), "GUILayout"));
+    PURR_CHECK(!offers(complete("scene Main { }\nsystem S()\n{\n    $\n}\n"), "GUILayout"));
+    PURR_CHECK(offers(complete("scene Main { }\nvoid F()\n{\n    $\n}\n"), "Screen"));
+
+    open_document("local singleton M { bool on; }\nscene Main { }\nview V(mut M m) { GUILayout.Tog$gle(\"On\", m.on); }\n");
+    const char *toggle = request("textDocument/hover");
+    PURR_CHECK(has(toggle, "GUILayout.Toggle(string text, mut bool value) -> bool"));
+    PURR_CHECK(has(toggle, "Returns whether it changed it"));
+
+    open_document("scene Main { }\nvoid Twice(Block content) { con$tent(); content(); }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Block content"));
+
+    open_document("scene Main { }\nview V() { var w = Screen.wid$th; }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Screen.width: float"));
+
+    // What a Block's caller writes is the caller's code: its names are the caller's.
+    open_document("local singleton M { bool on; }\nscene Main { }\nvoid Twice(Block content) { content(); content(); }\n"
+                  "view V(mut M m)\n{\n    Twice()\n    {\n        m.o$n = true;\n    }\n}\n");
+    PURR_CHECK(has(request("textDocument/hover"), "bool on"));
+}
+
+PURR_TEST(lsp_format_blocks)
+{
+    start();
+    static const char messy[] = "scene Main { }\nview V()\n{\nGUILayout.Horizontal() {\nGUILayout.Label(\"a\");\n}\n"
+                                "GUILayout.Vertical() { GUILayout.Label(\"b\"); }\n}\n";
+    static const char expected[] = "scene Main { }\nview V()\n{\n    GUILayout.Horizontal()\n    {\n        GUILayout.Label(\"a\");\n"
+                                   "    }\n    GUILayout.Vertical() { GUILayout.Label(\"b\"); }\n}\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
+
+PURR_TEST(lsp_loops)
+{
+    start();
+    static const char game[] = "component Tally { int n; }\nscene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Tally); }\n\n"
+                               "system Count(mut Tally t)\n{\n    for (var i = 0; i < 10; i++)\n    {\n"
+                               "        if (i % 2 == 1) continue;\n        t.n += i;\n    }\n"
+                               "    mut var left = 3;\n    while (left > 0) { left--; }\n}\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    PURR_CHECK(has(format_reply(game), "\"result\":[]")); // Already formatted
+
+    // The for's variable is in scope in its body.
+    PURR_CHECK(offers(complete("component Tally { int n; }\nscene Main { }\nsystem S(mut Tally t)\n{\n"
+                               "    for (var index = 0; index < 3; index++)\n    {\n        t.n = $\n    }\n}\n"),
+                      "index"));
+    PURR_CHECK(offers(complete("scene Main { }\nsystem S()\n{\n    $\n}\n"), "while"));
+    open_document("component Tally { int n; }\nscene Main { }\nsystem S(mut Tally t)\n{\n"
+                  "    for (var index = 0; index < 3; index++) t.n += ind$ex;\n}\n");
+    PURR_CHECK(has(request("textDocument/hover"), "int index"));
+}
+
+PURR_TEST(lsp_format_loops)
+{
+    start();
+    static const char messy[] = "scene Main { }\nsystem S()\n{\nmut var n = 0;\nfor(var i=0;i<3;i ++){\nn+=i;\n}\n"
+                                "while (n > 0) {\nn --;\nif (n == 1) break;\n}\n}\n";
+    static const char expected[] = "scene Main { }\nsystem S()\n{\n    mut var n = 0;\n    for (var i = 0; i < 3; i++)\n    {\n"
+                                   "        n += i;\n    }\n    while (n > 0)\n    {\n        n--;\n        if (n == 1) break;\n"
+                                   "    }\n}\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
+
+PURR_TEST(lsp_text)
+{
+    start();
+    static const char game[] = "local singleton Score { int points; float time; }\nscene Main { }\n\n"
+                               "view Hud(Score score)\n{\n    var name = \"cat\";\n"
+                               "    GUILayout.Label($$\"{name}: {score.points:D3} in {score.time:F1}s\" + \"!\");\n}\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    PURR_CHECK(has(format_reply(game), "\"result\":[]")); // Values sit against their braces
+
+    // Completion works in a value, not in the text around it.
+    PURR_CHECK(offers(complete("local singleton Score { int points; }\nscene Main { }\nview V(Score score)\n{\n"
+                               "    GUILayout.Label($$\"points: {sco$}\");\n}\n"),
+                      "score"));
+    PURR_CHECK(!offers(complete("local singleton Score { int points; }\nscene Main { }\nview V(Score score)\n{\n"
+                                "    GUILayout.Label($$\"poi$ {score.points}\");\n}\n"),
+                       "score"));
+    const char *methods = complete("scene Main { }\nview V()\n{\n    var name = \"cat\";\n    var n = name.$\n}\n");
+    PURR_CHECK(offers(methods, "Length"));
+    PURR_CHECK(offers(methods, "Contains"));
+
+    open_document("scene Main { }\nview V() { var n = \"cat\".Cont$ains(\"a\"); }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Whether `value` is in the text."));
+
+    // Text in fields
+    PURR_CHECK(offers(complete("component Name\n{\n    $\n}\nscene Main { }\n"), "string"));
+    open_document("component Name { string va$lue = \"cat\"; }\nscene Main { }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "string value"));
+    const char *fields = complete("component Name { string value; }\nscene Main { }\nsystem S(Name name)\n{\n"
+                                  "    var n = name.value.$\n}\n");
+    PURR_CHECK(offers(fields, "Length"));
+}
+
+PURR_TEST(lsp_format_text)
+{
+    start();
+    static const char messy[] = "scene Main { }\nview V()\n{\nvar a = $$\"x { 1 + 2 :F2} y {3}\";\n}\n";
+    static const char expected[] = "scene Main { }\nview V()\n{\n    var a = $\"x {1 + 2:F2} y {3}\";\n}\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
+
+PURR_TEST(lsp_lists)
+{
+    start();
+    static const char game[] = "component Inventory { List<int> scores = [1, 2]; }\nscene Main { }\n"
+                               "event(Spawned) Setup(with Main) { Spawn(Inventory); }\n\n"
+                               "system Count(mut Inventory inv)\n{\n    foreach (var score in inv.scores)\n    {\n"
+                               "        if (score > 1) inv.scores.Add(score);\n    }\n}\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    PURR_CHECK(has(format_reply(game), "\"result\":[]")); // List<int> keeps no spaces
+
+    const char *members = complete("component Inventory { List<int> scores; }\nscene Main { }\nsystem S(Inventory inv)\n{\n"
+                                   "    var n = inv.scores.$\n}\n");
+    PURR_CHECK(offers(members, "Count"));
+    PURR_CHECK(offers(members, "Add"));
+    PURR_CHECK(offers(complete("component Inventory\n{\n    $\n}\nscene Main { }\n"), "List"));
+
+    // The loop's variable is in scope in its body.
+    PURR_CHECK(offers(complete("component Inventory { List<int> scores; }\nscene Main { }\nsystem S(mut Inventory inv)\n{\n"
+                               "    foreach (var score in inv.scores)\n    {\n        var x = $\n    }\n}\n"),
+                      "score"));
+    open_document("component Inventory { List<int> sco$res; }\nscene Main { }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "List<int> scores"));
+}
+
+PURR_TEST(lsp_format_lists)
+{
+    start();
+    static const char messy[] = "scene Main { }\nint F(List < int > xs)\n{\nmut List<int> ys = [ 1,2 ];\nys.Add(xs [0]);\nreturn ys.Count;\n}\n";
+    static const char expected[] = "scene Main { }\nint F(List<int> xs)\n{\n    mut List<int> ys = [1, 2];\n    ys.Add(xs[0]);\n"
+                                   "    return ys.Count;\n}\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
+
 PURR_TEST(lsp_scenes)
 {
     start();
@@ -720,6 +922,49 @@ PURR_TEST(lsp_scenes)
     const char *symbols = request("textDocument/documentSymbol");
     PURR_CHECK(has(symbols, "\"name\":\"Arena\",\"detail\":\"scene\""));
     PURR_CHECK(!has(symbols, "purr_players"));
+}
+
+// Snap: on entities and singletons in match code. A type's Interpolate isn't for calling.
+PURR_TEST(lsp_snap)
+{
+    start();
+    const char *entity = complete("component Body { float2 p; }\nscene Main { }\n"
+                                  "system Respawn(Entity self, mut Body body)\n{\n    self.$\n}\n");
+    PURR_CHECK(offers(entity, "Snap"));
+    PURR_CHECK(offers(entity, "Destroy"));
+    const char *singleton = complete("singleton Camera { float2 center; }\nscene Main { }\n"
+                                     "system Cut(mut Camera camera)\n{\n    camera.$\n}\n");
+    PURR_CHECK(offers(singleton, "Snap"));
+    PURR_CHECK(offers(singleton, "center"));
+    const char *methods = complete("struct Angle\n{\n    float degrees;\n    Angle Interpolate(Angle from, Angle to, float t) { return to; }\n"
+                                   "    float Radians() { return degrees; }\n}\ncomponent Body { Angle heading; }\nscene Main { }\n"
+                                   "system S(Body body)\n{\n    var r = body.heading.$\n}\n");
+    PURR_CHECK(offers(methods, "Radians"));
+    PURR_CHECK(!offers(methods, "Interpolate"));
+}
+
+// Session: its calls from local code, and its singleton and events.
+PURR_TEST(lsp_sessions)
+{
+    start();
+    static const char game[] = "local scene Main { }\nscene Arena { int size = 20; }\n"
+                               "view Menu(Session session)\n{\n"
+                               "    if (GUILayout.Button(\"Host\") && session.state == SessionState.Offline) Session.Host(Arena, 7777);\n"
+                               "    if (GUILayout.Button(\"Join\")) Session.Join(\"127.0.0.1\");\n}\n"
+                               "local event(Disconnected gone) Lost() { }\n";
+    open_document(game);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    const char *calls = complete("local scene Main { }\nview Menu()\n{\n    Session.$\n}\n");
+    PURR_CHECK(offers(calls, "Play"));
+    PURR_CHECK(offers(calls, "Join"));
+    PURR_CHECK(offers(calls, "Leave"));
+    const char *fields = complete("local scene Main { }\nview Menu(Session session)\n{\n    var s = session.$\n}\n");
+    PURR_CHECK(offers(fields, "state"));
+    PURR_CHECK(offers(fields, "ping"));
+
+    open_document("local scene Main { }\nview Menu()\n{\n    Session.Le$ave();\n}\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Leaves the match"));
 }
 
 
@@ -1120,7 +1365,7 @@ PURR_TEST(lsp_format_braces)
     start();
     static const char js[] =
         "component Body {\n    float2 position;\n}\n"
-        "input Keys {\n    bool fire;\n\n    Sample(Devices devices) {\n        fire = devices.keyboard.space.pressed; }\n}\n"
+        "input Keys {\n    bool fire;\n\n    Sample() {\n        fire = Devices.keyboard.space.pressed; }\n}\n"
         "system Move(mut Body body) { // Every body\n"
         "    if (body.position.x > 1) {\n        body.position.x = 0;\n    } else {\n        body.position.x += 1;\n    }\n"
         "    if (body.position.y > 1) { return; } else {\n        body.position.y = 0;\n    }\n"
@@ -1131,7 +1376,7 @@ PURR_TEST(lsp_format_braces)
         "system Main() { }\n";
     static const char expected[] =
         "component Body\n{\n    float2 position;\n}\n"
-        "input Keys\n{\n    bool fire;\n\n    Sample(Devices devices)\n    {\n        fire = devices.keyboard.space.pressed;\n    }\n}\n"
+        "input Keys\n{\n    bool fire;\n\n    Sample()\n    {\n        fire = Devices.keyboard.space.pressed;\n    }\n}\n"
         "system Move(mut Body body)\n{ // Every body\n"
         "    if (body.position.x > 1)\n    {\n        body.position.x = 0;\n    }\n    else\n    {\n        body.position.x += 1;\n    }\n"
         "    if (body.position.y > 1) { return; }\n    else\n    {\n        body.position.y = 0;\n    }\n"
@@ -1200,9 +1445,10 @@ PURR_TEST(lsp_every_prefix_is_safe)
         "struct Range\n{\n    float lo;\n    float hi = 1;\n\n    float Width() { return hi - lo; }\n"
         "    mut void Scale(float by) { lo *= by; hi *= by; }\n}\n"
         "float Grow(mut Range range, float by)\n{\n    range.Scale(by);\n    return range.Width();\n}\n"
-        "input Controls\n{\n    float2 aim;\n\n    Controls(Devices devices)\n    {\n"
-        "        var keys = devices.keyboard;\n        if (keys.w.pressed) aim.y += 1;\n    }\n}\n"
-        "system Move(Controls controls, Time time, mut Body body, without Arena)\n{\n"
+        "input Controls\n{\n    float2 aim;\n\n    Sample()\n    {\n"
+        "        var keys = Devices.keyboard;\n        if (keys.w.pressed) aim.y += 1;\n    }\n}\n"
+        "system Move(Controls controls, Devices devices, Time time, mut Body body, without Arena)\n{\n"
+        "    if (devices.gamepad.buttonSouth.down) body.radius += 1;\n"
         "    mut var speed = Math.Length(body.position.xy) * 2;\n"
         "    if (controls.aim.x > 0 && speed < 10) { body.position += controls.aim * time.dt; }\n"
         "    else body.radius = Math.Clamp(body.radius, 1, 2);\n"

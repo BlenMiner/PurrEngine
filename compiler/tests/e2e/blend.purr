@@ -1,0 +1,101 @@
+// Views see the match between its last two ticks: floats blended, the rest as
+// it is at the latest tick, types with an Interpolate their own way, and what
+// jumped (Snap) as it is.
+
+struct Look
+{
+    Color tint;
+    int layer;
+}
+
+// Degrees that wrap: blended the short way round.
+struct Angle
+{
+    float degrees;
+
+    Angle Interpolate(Angle from, Angle to, float t)
+    {
+        mut var d = to.degrees - from.degrees;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        return Angle { degrees = from.degrees + d * t };
+    }
+}
+
+component Body
+{
+    float2 position;
+    [Snap] float radius; // Jumps: drawn as it is
+    int lives;
+    Look look;
+    Angle heading;
+}
+
+// Teleports on the second tick.
+component Jumper { }
+
+singleton Camera
+{
+    float2 center;
+}
+
+// Cuts to another shot on the second tick.
+singleton Shot
+{
+    float2 center;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Body { radius = 1, look = Look { tint = Color(0, 0, 0) }, heading = Angle { degrees = 330 } });
+    Spawn(Body { position = float2(0, 50) }, Jumper);
+}
+
+system Move(Time time, mut Body body, mut Camera camera, without Jumper)
+{
+    body.position += float2(4, 0);
+    body.radius += 1;
+    body.lives += 1;
+    body.look.tint.r += 0.5;
+    body.look.layer += 1;
+    body.heading.degrees += 20;
+    if (body.heading.degrees >= 360) body.heading.degrees -= 360;
+    camera.center += float2(0, 8);
+    if (time.tick == 1) Spawn(Body { position = float2(100, 0), radius = 5 });
+}
+
+system Jump(Time time, Entity self, mut Body body, with Jumper)
+{
+    body.position += float2(4, 0);
+    if (time.tick != 1) return;
+    body.position = float2(1000, 50);
+    self.Snap();
+}
+
+system Cut(Time time, mut Shot shot)
+{
+    shot.center += float2(0, 8);
+    if (time.tick != 1) return;
+    shot.center = float2(0, 500);
+    shot.Snap();
+}
+
+view DrawBody(Body body, without Jumper)
+{
+    Draw.Circle(body.position, body.radius, body.look.tint);
+    Draw.Line(body.position, body.position + float2(body.heading.degrees, 0), Color.white);
+    Draw.Text($"{body.lives} {body.look.layer}", body.position, 10, Color.white);
+}
+
+view DrawJumper(Body body, with Jumper)
+{
+    Draw.WireRect(body.position, float2(1, 1), Color.red);
+}
+
+view Frame(Camera camera, Shot shot)
+{
+    Draw.Camera(camera.center, 10);
+    Draw.Rect(shot.center, float2(1, 1), Color.blue);
+}

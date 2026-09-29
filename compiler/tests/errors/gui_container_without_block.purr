@@ -1,0 +1,3 @@
+// expect: GUILayout.Horizontal takes a block: 'GUILayout.Horizontal(...) { ... }'
+scene Main { }
+view Row() { GUILayout.Horizontal(); }

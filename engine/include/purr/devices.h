@@ -1,10 +1,11 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "purr/math.h"
 
-// Input devices, as PurrLang's `Devices` sees them in an input's constructor.
+// Input devices, as PurrLang's `Devices` sees them.
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later. purrc reads the member lists below (the X-macros), so PurrLang and C
@@ -13,7 +14,9 @@
 // The platform layer (raylib, for example) updates the devices every frame with
 // purr_button_set and the mouse fields. Once per tick, the host builds the local
 // player's input from them (purr_input_sample in generated code) and then calls
-// purr_devices_consume to start the next sample window.
+// purr_devices_consume to start the next sample window. Views read them once
+// per frame, through the GUI (purr/gui.h), which works out what changed since
+// the last frame.
 
 // A button between two samples, named as in Unity. `pressed` is true if the
 // button was down at any point since the last sample, so a quick tap between
@@ -71,6 +74,8 @@ typedef struct purr_mouse {
     // the user.
     PURR_MOUSE_AXES(PURR_DEVICES_MEMBER_FLOAT2)
     PURR_MOUSE_BUTTONS(PURR_DEVICES_MEMBER_BUTTON)
+    purr_float2 poll_delta;  // Platform state: this poll's movement and scroll alone, for what views read
+    purr_float2 poll_scroll;
 } purr_mouse;
 
 typedef struct purr_dpad {
@@ -78,22 +83,42 @@ typedef struct purr_dpad {
 } purr_dpad;
 
 typedef struct purr_gamepad {
-    bool connected;
     PURR_GAMEPAD_STICKS(PURR_DEVICES_MEMBER_FLOAT2)   // -1 to 1 on each axis, y positive up
     PURR_GAMEPAD_TRIGGERS(PURR_DEVICES_MEMBER_FLOAT)  // 0 to 1
     PURR_GAMEPAD_BUTTONS(PURR_DEVICES_MEMBER_BUTTON)
     purr_dpad dpad;
+    bool connected;
+    uint8_t purr_pad[3]; // Written out: no padding the compiler adds (see below)
 } purr_gamepad;
+
+#ifndef PURR_TEXT_MAX
+#define PURR_TEXT_MAX 32u
+#endif
+
+// Characters typed since the last poll, as Unicode code points. Unlike keys,
+// they follow the keyboard layout: what's printed on the key, with Shift and
+// friends applied. The GUI types them into fields; the input never sees them.
+typedef struct purr_typed {
+    uint32_t count;
+    uint32_t chars[PURR_TEXT_MAX];
+} purr_typed;
 
 typedef struct purr_devices {
     purr_keyboard keyboard;
     purr_mouse mouse;
     purr_gamepad gamepad;
+    purr_typed text; // Platform state, not visible to PurrLang
 } purr_devices;
 
 #undef PURR_DEVICES_MEMBER_BUTTON
 #undef PURR_DEVICES_MEMBER_FLOAT2
 #undef PURR_DEVICES_MEMBER_FLOAT
+
+// What a player's devices send is part of the match's input, which snapshots
+// and state hashes compare byte by byte, so the devices have no padding the
+// compiler adds, and the same size on every platform.
+_Static_assert(sizeof(purr_button) == 4, "a button is four bools");
+_Static_assert(sizeof(purr_gamepad) % 4 == 0 && sizeof(purr_devices) % 4 == 0, "devices have no padding the compiler adds");
 
 // Platform layer: report a button's current state. Call every frame for every
 // button; presses and releases latch until the next purr_devices_consume.

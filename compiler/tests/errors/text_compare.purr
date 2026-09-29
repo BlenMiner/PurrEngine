@@ -1,0 +1,4 @@
+// expect: text joins with '+' and compares with '==' and '!='
+scene Main { }
+component Tally { int n; }
+system S(mut Tally t) { if ("a" < "b") t.n = 1; }

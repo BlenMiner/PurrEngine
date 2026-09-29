@@ -1,0 +1,7 @@
+// expect: Sample reads this machine's devices as 'Devices', not as a parameter
+input PlayerInput
+{
+    bool jump;
+    Sample(Devices devices) { jump = devices.keyboard.space.pressed; }
+}
+scene Main { }

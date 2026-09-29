@@ -35,16 +35,16 @@ input PlayerInput
     float2 move;
     bool fire;
 
-    Sample(Devices devices)
+    Sample()
     {
-        var keys = devices.keyboard;
+        var keys = Devices.keyboard;
         if (keys.d.pressed || keys.rightArrow.pressed) move.x += 1;
         if (keys.a.pressed || keys.leftArrow.pressed) move.x -= 1;
         if (keys.w.pressed || keys.upArrow.pressed) move.y += 1;
         if (keys.s.pressed || keys.downArrow.pressed) move.y -= 1;
-        var stick = devices.gamepad.leftStick;
+        var stick = Devices.gamepad.leftStick;
         if (Math.Length(stick) > 0.2) move += stick;
-        fire = keys.space.pressed || devices.gamepad.buttonSouth.pressed;
+        fire = keys.space.pressed || Devices.gamepad.buttonSouth.pressed;
     }
 }
 
@@ -93,15 +93,25 @@ system Expire(Entity entity, mut Lifetime life)
     if (life.ticks <= 0) entity.Destroy();
 }
 
-// Views run once per frame and draw the world. They can only read it.
+// Views run once per frame and draw the world. They can only read it; how it
+// looks is this machine's own, local state that the options change.
 
-view DrawArena(Arena arena)
+local singleton Look
+{
+    bool open;
+    bool aim = true;
+    float zoom = 1.1;
+    Color player = Color(1, 0.77, 0.24);
+}
+
+view DrawArena(Arena arena, Look look)
 {
     Draw.Clear(Color(0.08, 0.08, 0.11));
-    Draw.Camera(float2(0, 0), arena.halfSize.y * 1.1);
+    Draw.Camera(float2(0, 0), arena.halfSize.y * look.zoom);
     Draw.WireRect(float2(0, 0), arena.halfSize * 2, Color(0.24, 0.24, 0.31));
     var help = float2(8 - arena.halfSize.x, 26 - arena.halfSize.y);
-    Draw.Text("move: WASD, arrows or left stick    fire: space or A", help, 18, Color(0.43, 0.43, 0.51));
+    Draw.Text("move: WASD, arrows or left stick    fire: space or A    options: Esc or Start", help, 18,
+              Color(0.43, 0.43, 0.51));
 }
 
 view DrawBalls(Body body, Ball ball)
@@ -109,9 +119,26 @@ view DrawBalls(Body body, Ball ball)
     Draw.Circle(body.position, body.radius, ball.color);
 }
 
-view DrawPlayers(Body body, Aim aim, with Owner)
+view DrawPlayers(Body body, Aim aim, with Owner, Look look)
 {
-    var color = Color(1, 0.77, 0.24);
-    Draw.Circle(body.position, body.radius, color);
-    Draw.Line(body.position, body.position + aim.direction * (body.radius + 12), color);
+    Draw.Circle(body.position, body.radius, look.player);
+    if (look.aim) Draw.Line(body.position, body.position + aim.direction * (body.radius + 12), look.player);
+}
+
+// The GUI, over the world. The button, Escape or Start bring up the options,
+// and back (Escape or B) puts them away.
+view Options(mut Look look)
+{
+    if (Devices.keyboard.escape.down || Devices.gamepad.start.down) look.open = true;
+    GUILayout.Area(Anchor.UpperLeft)
+    {
+        if (GUILayout.Button("Options")) look.open = true;
+    }
+    GUILayout.Modal(Anchor.MiddleCenter, look.open)
+    {
+        GUILayout.Toggle("Aim line", look.aim);
+        GUILayout.Slider("Zoom", look.zoom, 0.5, 2);
+        GUILayout.ColorField("Player", look.player);
+        if (GUILayout.Button("Close")) look.open = false;
+    }
 }

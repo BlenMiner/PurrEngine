@@ -1,0 +1,3 @@
+// expect: fields can't hold a Block
+scene Main { }
+component Menu { Block content; }

@@ -36,7 +36,7 @@ PURR_TEST(conditional_in_the_input_constructor)
 {
     purr_devices d = {0};
     purr_button_set(&d.keyboard.d, true);
-    PURR_CHECK(purr_input_sample(&d).horizontal == 1.0f);
+    PURR_CHECK(purr_input_sample(&d, NULL).horizontal == 1.0f);
     purr_button_set(&d.keyboard.a, true);
-    PURR_CHECK(purr_input_sample(&d).horizontal == 0.0f);
+    PURR_CHECK(purr_input_sample(&d, NULL).horizontal == 0.0f);
 }

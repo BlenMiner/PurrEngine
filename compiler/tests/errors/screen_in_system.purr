@@ -1,0 +1,4 @@
+// expect: Screen can only be used in views, and in functions they call
+scene Main { }
+component Body { float2 position; }
+system Center(mut Body body) { body.position.x = Screen.width; }

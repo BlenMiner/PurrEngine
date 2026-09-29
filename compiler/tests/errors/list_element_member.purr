@@ -1,0 +1,5 @@
+// expect: a list's element is a copy, so it can't be changed where it is
+scene Main { }
+struct Item { int count; }
+component Inventory { List<Item> items; }
+system S(mut Inventory inv) { inv.items[0].count = 1; }

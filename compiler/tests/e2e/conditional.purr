@@ -24,10 +24,10 @@ input PlayerInput
 {
     float horizontal;
 
-    Sample(Devices devices)
+    Sample()
     {
-        float left = devices.keyboard.a.pressed ? 1 : 0;
-        float right = devices.keyboard.d.pressed ? 1 : 0;
+        float left = Devices.keyboard.a.pressed ? 1 : 0;
+        float right = Devices.keyboard.d.pressed ? 1 : 0;
         horizontal = right - left;
     }
 }

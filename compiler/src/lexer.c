@@ -23,6 +23,10 @@ static const struct {
     {"case", T_CASE},
     {"default", T_DEFAULT},
     {"break", T_BREAK},
+    {"while", T_WHILE},
+    {"for", T_FOR},
+    {"foreach", T_FOREACH},
+    {"continue", T_CONTINUE},
 };
 
 typedef struct lexer {
@@ -151,11 +155,83 @@ static tok_kind lex_number(lexer *lx)
     return is_float ? T_FLOAT : T_INT;
 }
 
+// Reads text up to its closing quote or, in text with values, the `{` that
+// starts one, and stands after it. Returns '"' or '{', or 0 after an error.
+// `start` is where the token starts, for the error about a missing quote.
+static char lex_text(lexer *lx, const bool values, const loc start)
+{
+    while (lx->p < lx->end && *lx->p != '\n') {
+        const unsigned char ch = (unsigned char)*lx->p;
+        if (ch == '"') {
+            lx->p++;
+            return '"';
+        }
+        if (values && ch == '{') {
+            if (lx->p + 1 < lx->end && lx->p[1] == '{') { // {{ is a brace
+                lx->p += 2;
+                continue;
+            }
+            lx->p++;
+            return '{';
+        }
+        if (values && ch == '}') {
+            if (lx->p + 1 < lx->end && lx->p[1] == '}') {
+                lx->p += 2;
+                continue;
+            }
+            diag_error(here(lx), "a '}' in text is written '}}'");
+            lx->p++;
+            return 0;
+        }
+        if (ch == '\\') {
+            const char esc = lx->p + 1 < lx->end ? lx->p[1] : '\0';
+            if (esc == '\n' || esc == '\0') break;
+            if (esc != '"' && esc != '\\' && esc != 'n') {
+                diag_error(here(lx), "unknown escape '\\%c'; text can use \\\", \\\\ and \\n", esc);
+                lx->p += 2;
+                return 0;
+            }
+            lx->p += 2;
+            continue;
+        }
+        if (ch < ' ' || ch == 0x7F) {
+            diag_error(here(lx), "text can't hold control characters; write a new line as \\n");
+            lx->p++;
+            return 0;
+        }
+        if (ch >= 0x80) { // UTF-8: a lead byte and its continuation bytes
+            const int more = ch >= 0xF0 && ch < 0xF5 ? 3 : ch >= 0xE0 ? 2 : ch >= 0xC2 && ch < 0xE0 ? 1 : -1;
+            bool valid = more > 0 && ch < 0xF5;
+            for (int i = 1; valid && i <= more; i++) {
+                valid = lx->p + i < lx->end && ((unsigned char)lx->p[i] & 0xC0u) == 0x80u;
+            }
+            if (!valid) {
+                diag_error(here(lx), "text must be UTF-8, and this isn't");
+                lx->p++;
+                return 0;
+            }
+            lx->p += 1 + more;
+            continue;
+        }
+        lx->p++;
+    }
+    diag_error(start, "text is missing its closing '\"'");
+    return 0;
+}
+
+// The values open in text with values: their braces and parentheses, so a
+// `}` of their own doesn't end them and a `:` inside parentheses isn't a format.
+typedef struct text_value {
+    int braces;
+    int parens;
+} text_value;
+
 static token *lex_impl(const source *src, const bool tolerant)
 {
     lexer lx = {src->text, src->text + src->len, 1, src->text, src->file};
     VEC(token) toks = {0};
     bool ok = true;
+    VEC(text_value) values = {0}; // Innermost last
 
     // Editors on Windows often start UTF-8 files with a byte-order mark.
     if (src->len >= 3 && memcmp(src->text, "\xEF\xBB\xBF", 3) == 0) {
@@ -175,6 +251,10 @@ static token *lex_impl(const source *src, const bool tolerant)
         const char *start = lx.p;
 
         if (lx.p >= lx.end) {
+            if (values.count > 0) {
+                diag_error(t.at, "text with a value in it is missing its closing '}' and quote");
+                ok = false;
+            }
             t.kind = T_EOF;
             t.text = (str){start, 0};
             vec_push(toks, t);
@@ -214,42 +294,65 @@ static token *lex_impl(const source *src, const bool tolerant)
             continue;
         }
 
-        // "text": printable ASCII on one line, with the escapes \" \\ and \n.
+        // "text": UTF-8 on one line, with the escapes \" \\ and \n.
         if (c == '"') {
             lx.p++;
-            bool closed = false;
-            while (lx.p < lx.end && *lx.p != '\n') {
-                const char ch = *lx.p;
-                if (ch == '"') {
-                    closed = true;
-                    break;
-                }
-                if (ch == '\\') {
-                    const char esc = lx.p + 1 < lx.end ? lx.p[1] : '\0';
-                    if (esc == '\n' || esc == '\0') break;
-                    if (esc != '"' && esc != '\\' && esc != 'n') {
-                        diag_error(here(&lx), "unknown escape '\\%c'; text can use \\\", \\\\ and \\n", esc);
-                        ok = false;
-                    }
-                    lx.p += 2;
-                    continue;
-                }
-                if ((unsigned char)ch >= 0x80 || ch < ' ') {
-                    diag_error(here(&lx), "text can only use printable ASCII characters for now");
-                    ok = false;
-                }
-                lx.p++;
-            }
-            if (!closed) {
-                diag_error(t.at, "text is missing its closing '\"'");
+            if (lex_text(&lx, false, t.at) != '"') {
                 ok = false;
                 continue;
             }
-            lx.p++;
             t.kind = T_STRING;
             t.text = (str){start + 1, (int)(lx.p - start) - 2};
             vec_push(toks, t);
             continue;
+        }
+
+        // $"text with {values}": the text up to the first value, whose tokens follow.
+        if (c == '$' && n == '"') {
+            lx.p += 2;
+            const char ended = lex_text(&lx, true, t.at);
+            if (!ended) {
+                ok = false;
+                continue;
+            }
+            t.kind = T_INTERP;
+            t.text = (str){start, (int)(lx.p - start)};
+            vec_push(toks, t);
+            if (ended == '{') {
+                const text_value v = {0, 0};
+                vec_push(values, v);
+            }
+            continue;
+        }
+
+        // In a value in text: `}` ends it, and `:` starts its format.
+        if (values.count > 0) {
+            text_value *v = &values.items[values.count - 1];
+            if (c == '}' && v->braces == 0) {
+                lx.p++;
+                const char ended = lex_text(&lx, true, t.at);
+                if (!ended) {
+                    ok = false;
+                    values.count--;
+                    continue;
+                }
+                t.kind = T_INTERP_PART;
+                t.text = (str){start, (int)(lx.p - start)};
+                vec_push(toks, t);
+                if (ended == '"') values.count--;
+                continue;
+            }
+            if (c == ':' && v->braces == 0 && v->parens == 0) {
+                while (lx.p < lx.end && *lx.p != '}' && *lx.p != '"' && *lx.p != '\n') lx.p++;
+                t.kind = T_INTERP_FORMAT;
+                t.text = (str){start, (int)(lx.p - start)};
+                vec_push(toks, t);
+                continue;
+            }
+            if (c == '{') v->braces++;
+            if (c == '}') v->braces--;
+            if (c == '(' || c == '[') v->parens++;
+            if (c == ')' || c == ']') v->parens--;
         }
 
         int len = 1;
@@ -285,8 +388,8 @@ static token *lex_impl(const source *src, const bool tolerant)
             }
             break;
         }
-        case '+': t.kind = n == '=' ? (len = 2, T_PLUS_ASSIGN) : T_PLUS; break;
-        case '-': t.kind = n == '=' ? (len = 2, T_MINUS_ASSIGN) : T_MINUS; break;
+        case '+': t.kind = n == '=' ? (len = 2, T_PLUS_ASSIGN) : n == '+' ? (len = 2, T_PLUS_PLUS) : T_PLUS; break;
+        case '-': t.kind = n == '=' ? (len = 2, T_MINUS_ASSIGN) : n == '-' ? (len = 2, T_MINUS_MINUS) : T_MINUS; break;
         case '*': t.kind = n == '=' ? (len = 2, T_STAR_ASSIGN) : T_STAR; break;
         case '/': t.kind = n == '=' ? (len = 2, T_SLASH_ASSIGN) : T_SLASH; break;
         case '%': t.kind = n == '=' ? (len = 2, T_PERCENT_ASSIGN) : T_PERCENT; break;
@@ -328,8 +431,10 @@ token *lex_all(const source *src)
 tok_kind compound_op(const tok_kind assign)
 {
     switch (assign) {
-    case T_PLUS_ASSIGN: return T_PLUS;
-    case T_MINUS_ASSIGN: return T_MINUS;
+    case T_PLUS_ASSIGN:
+    case T_PLUS_PLUS: return T_PLUS;
+    case T_MINUS_ASSIGN:
+    case T_MINUS_MINUS: return T_MINUS;
     case T_STAR_ASSIGN: return T_STAR;
     case T_SLASH_ASSIGN: return T_SLASH;
     case T_PERCENT_ASSIGN: return T_PERCENT;
@@ -366,6 +471,15 @@ const char *tok_kind_name(const tok_kind kind)
     case T_CASE: return "'case'";
     case T_DEFAULT: return "'default'";
     case T_BREAK: return "'break'";
+    case T_WHILE: return "'while'";
+    case T_FOR: return "'for'";
+    case T_FOREACH: return "'foreach'";
+    case T_CONTINUE: return "'continue'";
+    case T_PLUS_PLUS: return "'++'";
+    case T_INTERP: return "text";
+    case T_INTERP_PART: return "'}' after a value in text";
+    case T_INTERP_FORMAT: return "a format";
+    case T_MINUS_MINUS: return "'--'";
     case T_LBRACE: return "'{'";
     case T_RBRACE: return "'}'";
     case T_LPAREN: return "'('";

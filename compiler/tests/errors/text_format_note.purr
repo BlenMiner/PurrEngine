@@ -1,0 +1,3 @@
+// expect: floats take F and how many decimals, like '{x:F2}', up to F9
+scene Main { }
+view V() { Draw.Text($"{1.5:D2}", float2(0, 0), 10, Color.white); }

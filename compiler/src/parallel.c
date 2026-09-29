@@ -37,6 +37,10 @@ static bool share_archetypes(const arch_set *a, const arch_set *b)
 // them writes. Components only count if the systems can meet the same entity.
 static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
+    if (earlier->writes_text && later->writes_text) {
+        const conflict c = {NULL, CONFLICT_TEXT};
+        vec_push(w->conflicts, c);
+    }
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
         const bool component = a->type.kind == TY_COMPONENT;
@@ -156,6 +160,11 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
         [CONFLICT_EARLIER_WRITES] = ", which this reads",
     };
     bool first_part = true;
+    for (int i = 0; i < w->conflicts.count; i++) {
+        if (w->conflicts.items[i].kind != CONFLICT_TEXT) continue;
+        sb_put(out, "both change text or lists, which the match keeps in one heap");
+        first_part = false;
+    }
     for (int kind = CONFLICT_BOTH_WRITE; kind <= CONFLICT_EARLIER_WRITES; kind++) {
         int count = 0;
         for (int i = 0; i < w->conflicts.count; i++) count += (int)w->conflicts.items[i].kind == kind;

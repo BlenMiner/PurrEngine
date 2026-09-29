@@ -1,8 +1,8 @@
-// expect: unknown name 'devices'
+// expect: Sanitize runs on every machine for every player's input, so it can't read this machine's Devices
 input PlayerInput
 {
     bool jump;
-    Sample(Devices devices) { jump = devices.keyboard.space.pressed; }
-    Sanitize() { jump = devices.keyboard.space.pressed; }
+    Sample() { jump = Devices.keyboard.space.pressed; }
+    Sanitize() { jump = Devices.keyboard.space.pressed; }
 }
 scene Main { }

@@ -1,0 +1,5 @@
+// expect: Contains compares elements with '==', which Item doesn't have
+scene Main { }
+struct Item { int count; }
+component Inventory { List<Item> items; bool has; }
+system S(mut Inventory inv) { inv.has = inv.items.Contains(Item { count = 1 }); }

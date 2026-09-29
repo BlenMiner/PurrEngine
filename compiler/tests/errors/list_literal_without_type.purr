@@ -1,0 +1,4 @@
+// expect: a list's type comes from where it goes: 'List<int> scores = [1, 2];'
+scene Main { }
+component T { int n; }
+system S(mut T t) { var x = [1, 2]; t.n = 1; }

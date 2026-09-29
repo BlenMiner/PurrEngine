@@ -1,0 +1,7 @@
+// expect: 'devices' is read-only
+component Walker { float x; }
+scene Main { }
+system Walk(Devices devices, mut Walker w)
+{
+    devices.keyboard.space.down = false;
+}

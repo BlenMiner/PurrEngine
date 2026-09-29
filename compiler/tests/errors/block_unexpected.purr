@@ -1,0 +1,11 @@
+// expect: 'Heal' doesn't take a block
+scene Main { }
+component Counter { int n; }
+void Heal(mut int n) { n += 1; }
+system Count(mut Counter counter)
+{
+    Heal(counter.n)
+    {
+        counter.n += 1;
+    }
+}

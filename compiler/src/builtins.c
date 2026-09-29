@@ -10,7 +10,7 @@
 // Every built-in math function maps to a purr/math.h function named
 // purr_<lowercase name>_<type suffix>, for example Math.Dot on float3 is
 // purr_dot_f3. Formulas and semantics follow Unity.Mathematics. Draw functions
-// map to purr/draw.h.
+// map to purr/draw.h, and GUI and GUILayout to purr/gui.h.
 
 static const type T_F = {TY_FLOAT, NULL};
 static const type T_F2 = {TY_FLOAT2, NULL};
@@ -20,6 +20,29 @@ static const type T_STR = {TY_STRING, NULL};
 static const type T_Q = {TY_QUATERNION, NULL};
 static const type T_F4X4 = {TY_FLOAT4X4, NULL};
 static const type T_NONE = {TY_VOID, NULL};
+static const type T_BOOL = {TY_BOOL, NULL};
+
+// The Anchor enum in signatures. The table outlives programs, so it can't
+// hold the enum's declaration: calls match it against the program's own.
+static const type T_ANCHOR = {TY_ENUM, NULL};
+static const decl *anchor_decl;
+
+void builtins_use(const decl *anchor)
+{
+    anchor_decl = anchor;
+}
+
+// A signature's type as a program sees it.
+static type real_type(const type t)
+{
+    if (t.kind == TY_ENUM && !t.decl) return (type){TY_ENUM, (decl *)anchor_decl};
+    return t;
+}
+
+static const char *signature_type_name(const type t)
+{
+    return t.kind == TY_ENUM && !t.decl ? "Anchor" : type_name(t);
+}
 
 // ---------------------------------------------------------------------------
 // Component-wise functions: take float or int scalars and vectors, mixed
@@ -48,18 +71,22 @@ static const struct {
 // The table is built once and kept for the whole process, so its strings are
 // malloc'd rather than taken from the arena, which the language server resets.
 
+#define MAX_PARAMS 6
+
 typedef struct signature {
     const char *owner;
     const char *name;
     type result;
     int argc;
-    type params[4];
+    type params[MAX_PARAMS];
     const char *c_name;
     const char *param_names; // "center, radius, color", or NULL
     const char *doc;         // One line for editors, or NULL
+    unsigned mut;            // A bit per parameter the call changes: the argument's variable itself
+    int gui;                 // GUI_ID and GUI_CONTAINER
 } signature;
 
-#define MAX_SIGNATURES 128
+#define MAX_SIGNATURES 192
 
 static signature signatures[MAX_SIGNATURES];
 static int signature_count;
@@ -96,8 +123,52 @@ static signature *add(const char *owner, const char *name, const type result, co
         exit(1);
     }
     signature *s = &signatures[signature_count++];
-    *s = (signature){owner, name, result, argc, {p0, p1, p2, T_NONE}, permanent(c_name), NULL, NULL};
+    *s = (signature){owner, name, result, argc, {p0, p1, p2, T_NONE, T_NONE, T_NONE}, permanent(c_name), NULL, NULL, 0, 0};
     return s;
+}
+
+// A GUI function from its parameters as PurrLang writes them:
+// "string label, mut float value, float min, float max".
+static void add_gui(const char *owner, const char *name, const type result, const char *c_name, const char *params,
+                    const int gui, const char *doc)
+{
+    signature *s = add(owner, name, result, c_name, 0, T_NONE, T_NONE, T_NONE);
+    s->gui = gui;
+    s->doc = doc;
+    sb names = {0};
+    for (const char *p = params; *p;) {
+        const char *end = strchr(p, ',');
+        const size_t n = end ? (size_t)(end - p) : strlen(p);
+        char buf[64];
+        snprintf(buf, sizeof buf, "%.*s", (int)n, p);
+        const bool mut = strncmp(buf, "mut ", 4) == 0;
+        char *type_text = buf + (mut ? 4 : 0);
+        char *space = strchr(type_text, ' ');
+        *space = '\0';
+        type t = {TY_ERROR, NULL};
+        if (strcmp(type_text, "string") == 0) t = T_STR;
+        else if (strcmp(type_text, "Anchor") == 0) t = T_ANCHOR;
+        else builtin_type_named(str_from(type_text), &t);
+        if (mut) s->mut |= 1u << s->argc;
+        s->params[s->argc++] = t;
+        sb_printf(&names, "%s%s", names.len ? ", " : "", space + 1);
+        p = end ? end + 2 : p + n;
+    }
+    s->param_names = permanent(names.data ? names.data : "");
+}
+
+// A widget in both GUI, at a rect, and GUILayout, laid out: purr_gui_<c> and
+// purr_gui_layout_<c>.
+static void add_widget(const char *name, const type result, const char *c, const char *params, const int gui,
+                       const char *doc)
+{
+    char c_name[64];
+    char with_rect[256];
+    snprintf(with_rect, sizeof with_rect, params[0] ? "Rect rect, %s" : "Rect rect", params);
+    snprintf(c_name, sizeof c_name, "purr_gui_%s", c);
+    add_gui("GUI", name, result, c_name, with_rect, gui, doc);
+    snprintf(c_name, sizeof c_name, "purr_gui_layout_%s", c);
+    add_gui("GUILayout", name, result, c_name, params, gui, doc);
 }
 
 static void describe(signature *s, const char *param_names, const char *doc)
@@ -190,6 +261,70 @@ static void build_signatures(void)
     text->argc = 4;
     text->params[3] = T_COLOR;
     describe(text, "text, position, size, color", "Text: `position` is its top left corner and `size` its height.");
+
+    // Text's methods: purr/text.h, with the text first. Positions and lengths
+    // count characters, and are clamped to the text, never out of range.
+    const type t_int = {TY_INT, NULL};
+    describe(add("string", "Contains", T_BOOL, "purr_str_contains", 1, T_STR, T_NONE, T_NONE),
+             "value", "Whether `value` is in the text.");
+    describe(add("string", "StartsWith", T_BOOL, "purr_str_starts_with", 1, T_STR, T_NONE, T_NONE),
+             "value", "Whether the text starts with `value`.");
+    describe(add("string", "EndsWith", T_BOOL, "purr_str_ends_with", 1, T_STR, T_NONE, T_NONE),
+             "value", "Whether the text ends with `value`.");
+    describe(add("string", "IndexOf", t_int, "purr_str_index_of", 1, T_STR, T_NONE, T_NONE),
+             "value", "Where `value` first is in the text, counting characters from 0, or -1.");
+    describe(add("string", "Substring", T_STR, "purr_str_substring_from", 1, t_int, T_NONE, T_NONE),
+             "start", "The text from character `start` on.");
+    describe(add("string", "Substring", T_STR, "purr_str_substring", 2, t_int, t_int, T_NONE),
+             "start, length", "`length` characters of the text, from character `start`.");
+    describe(add("string", "ToUpper", T_STR, "purr_str_to_upper", 0, T_NONE, T_NONE, T_NONE),
+             NULL, "The text in upper case: ASCII letters only, for now.");
+    describe(add("string", "ToLower", T_STR, "purr_str_to_lower", 0, T_NONE, T_NONE, T_NONE),
+             NULL, "The text in lower case: ASCII letters only, for now.");
+    describe(add("string", "Trim", T_STR, "purr_str_trim", 0, T_NONE, T_NONE, T_NONE),
+             NULL, "The text without spaces, tabs and new lines at its start and end.");
+    describe(add("string", "Replace", T_STR, "purr_str_replace", 2, T_STR, T_STR, T_NONE),
+             "from, to", "The text with every `from` in it replaced by `to`.");
+
+    // The GUI, in views: purr/gui.h. Codegen passes the view's GUI first, then
+    // the widget's ID, then a mut argument's address.
+    add_widget("Label", T_NONE, "label", "string text", 0, "Text.");
+    add_widget("Button", T_BOOL, "button", "string text", GUI_ID, "A button. Returns whether it was pressed.");
+    add_widget("Toggle", T_BOOL, "toggle", "string text, mut bool value", GUI_ID,
+               "A checkbox for `value`. Returns whether it changed it.");
+    add_widget("Slider", T_BOOL, "slider", "string label, mut float value, float min, float max", GUI_ID,
+               "A slider for `value`, from `min` to `max`. Returns whether it changed it.");
+    add_widget("IntSlider", T_BOOL, "int_slider", "string label, mut int value, int min, int max", GUI_ID,
+               "A slider for a whole number, from `min` to `max`. Returns whether it changed it.");
+    add_widget("IntField", T_BOOL, "int_field", "string label, mut int value", GUI_ID,
+               "A field to type a whole number into. Returns whether it changed `value`.");
+    add_widget("FloatField", T_BOOL, "float_field", "string label, mut float value", GUI_ID,
+               "A field to type a number into. Returns whether it changed `value`.");
+    add_widget("Float2Field", T_BOOL, "float2_field", "string label, mut float2 value", GUI_ID,
+               "Fields for a float2's x and y. Returns whether they changed `value`.");
+    add_widget("Float3Field", T_BOOL, "float3_field", "string label, mut float3 value", GUI_ID,
+               "Fields for a float3's x, y and z. Returns whether they changed `value`.");
+    add_widget("Float4Field", T_BOOL, "float4_field", "string label, mut float4 value", GUI_ID,
+               "Fields for a float4's x, y, z and w. Returns whether they changed `value`.");
+    add_widget("ColorField", T_BOOL, "color_field", "string label, mut Color value", GUI_ID,
+               "A color's swatch, and fields for its r, g, b and a. Returns whether they changed `value`.");
+    add_widget("TextField", T_BOOL, "text_field", "string label, mut string value", GUI_ID,
+               "A field to type text into. It changes `value` as the player types, and returns whether it did.");
+    add_gui("GUILayout", "Space", T_NONE, "purr_gui_layout_space", "float size", 0,
+            "Empty space: down in a vertical container, across in a horizontal one.");
+    add_gui("GUILayout", "Vertical", T_NONE, "purr_gui_begin_vertical", "", GUI_ID | GUI_CONTAINER,
+            "Stacks the widgets in its block top to bottom.");
+    add_gui("GUILayout", "Horizontal", T_NONE, "purr_gui_begin_horizontal", "", GUI_ID | GUI_CONTAINER,
+            "Puts the widgets in its block side by side.");
+    add_gui("GUILayout", "Area", T_NONE, "purr_gui_begin_area_at", "Anchor anchor", GUI_ID | GUI_CONTAINER,
+            "A panel on the screen, sized to its block's widgets, at one of nine anchors like `Anchor.MiddleCenter`.");
+    add_gui("GUILayout", "Area", T_NONE, "purr_gui_begin_area", "Rect rect", GUI_ID | GUI_CONTAINER,
+            "A panel on the screen at `rect`, with its block's widgets laid out inside.");
+    add_gui("GUILayout", "Modal", T_NONE, "purr_gui_begin_modal", "Anchor anchor, mut bool open",
+            GUI_ID | GUI_CONTAINER | GUI_SKIPS,
+            "A panel over the whole screen while `open` is true, like a pause menu. While it's up, the widgets "
+            "outside it don't work, the game and views get no input, and back (Escape or the east button) closes "
+            "it.");
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +353,9 @@ static const struct {
     {"Color", "magenta", TY_COLOR, "PURR_COLOR_MAGENTA"},
     {"Color", "gray", TY_COLOR, "PURR_COLOR_GRAY"},
     {"Color", "clear", TY_COLOR, "PURR_COLOR_CLEAR"},
+    {"Screen", "width", TY_FLOAT, "purr_ui->width"},
+    {"Screen", "height", TY_FLOAT, "purr_ui->height"},
+    {"Screen", "scale", TY_FLOAT, "purr_ui->scale"},
 };
 
 #define MEMBER_COUNT (sizeof members / sizeof members[0])
@@ -227,7 +365,8 @@ static const struct {
 bool builtin_owner(const str name)
 {
     type ignored;
-    return str_eq_c(name, "Math") || str_eq_c(name, "Draw") || builtin_type_named(name, &ignored);
+    return str_eq_c(name, "Math") || str_eq_c(name, "Draw") || str_eq_c(name, "GUI") || str_eq_c(name, "GUILayout")
+        || str_eq_c(name, "Screen") || builtin_type_named(name, &ignored);
 }
 
 // Widest type of a component-wise call's arguments, or false if they don't fit together.
@@ -265,7 +404,7 @@ static void format_signature(const signature *s, sb *out)
     sb_printf(out, "%s.%s(", s->owner, s->name);
     const char *names = s->param_names;
     for (int a = 0; a < s->argc; a++) {
-        sb_printf(out, "%s%s", a ? ", " : "", type_name(s->params[a]));
+        sb_printf(out, "%s%s%s", a ? ", " : "", s->mut & (1u << a) ? "mut " : "", signature_type_name(s->params[a]));
         if (names) {
             const char *end = strchr(names, ',');
             const size_t n = end ? (size_t)(end - names) : strlen(names);
@@ -274,6 +413,7 @@ static void format_signature(const signature *s, sb *out)
             names = end ? end + 2 : NULL;
         }
     }
+    if (s->gui & GUI_CONTAINER) sb_printf(out, "%sBlock content", s->argc ? ", " : "");
     sb_put(out, ")");
     if (s->result.kind != TY_VOID) sb_printf(out, " -> %s", type_name(s->result));
 }
@@ -317,11 +457,18 @@ type resolve_builtin_call(const str owner, expr *e)
         if (s->argc != e->args.count) continue;
         bool fits = true;
         for (int a = 0; a < s->argc; a++) {
-            if (!type_assignable(s->params[a], e->args.items[a]->type)) fits = false;
+            const type want = real_type(s->params[a]);
+            const type have = e->args.items[a]->type;
+            // A mut argument is the variable itself, so its type matches exactly.
+            if (s->mut & (1u << a) ? want.kind != have.kind || want.decl != have.decl : !type_assignable(want, have)) {
+                fits = false;
+            }
         }
         if (!fits) continue;
-        for (int a = 0; a < s->argc; a++) vec_push(e->arg_want, s->params[a]);
+        for (int a = 0; a < s->argc; a++) vec_push(e->arg_want, real_type(s->params[a]));
         e->c_callee = s->c_name;
+        e->arg_mut = s->mut;
+        e->gui = s->gui;
         return s->result;
     }
 
@@ -340,13 +487,16 @@ type resolve_builtin_call(const str owner, expr *e)
     char args[256];
     arg_list(e, args, sizeof args);
     diag_error(e->at, "no version of " STR_FMT "." STR_FMT " takes (%s)", STR_ARG(owner), STR_ARG(e->name), args);
+    bool changes = false;
     for (int i = 0; i < signature_count; i++) {
         const signature *s = &signatures[i];
         if (!str_eq_c(owner, s->owner) || !str_eq_c(e->name, s->name)) continue;
         sb line = {0};
         format_signature(s, &line);
         diag_note("%s", line.data);
+        changes |= s->mut != 0;
     }
+    if (changes) diag_note("a mut argument is the variable it changes, so its type is exactly the parameter's");
     return (type){TY_ERROR, NULL};
 }
 
@@ -467,6 +617,7 @@ void builtin_list_members(const str owner, void (*visit)(void *user, const built
         sb snippet = {0};
         if (s->param_names) format_snippet(s->name, s->param_names, &snippet);
         else sb_printf(&snippet, "%s($1)", s->name);
+        if (s->gui & GUI_CONTAINER) sb_put(&snippet, "\n{\n\t$0\n}");
         const builtin_member m = {s->name, true, detail.data, s->doc, snippet.data};
         visit(user, &m);
     }

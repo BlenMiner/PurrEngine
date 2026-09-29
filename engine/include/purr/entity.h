@@ -34,6 +34,7 @@ typedef struct purr_entity_slot {
     uint32_t generation; // Odd while alive, even while free.
     uint32_t archetype;
     uint32_t row;
+    uint32_t snaps;      // Times it jumped (entity.Snap()): views only blend it between ticks with the same count
 } purr_entity_slot;
 
 typedef struct purr_entities {
@@ -53,8 +54,19 @@ bool purr_entity_alive(const purr_entities *t, purr_entity e);
 
 void purr_entity_set_location(purr_entities *t, purr_entity e, purr_location loc);
 
+// It jumped: views draw it as it is, not blended from the tick before.
+void purr_entity_snap(purr_entities *t, purr_entity e);
+
+// Its snap count, or 0 if it isn't alive.
+uint32_t purr_entity_snaps(const purr_entities *t, purr_entity e);
+
 // Archetype is PURR_ARCHETYPE_NONE for dead entities and for pending spawns.
 purr_location purr_entity_location(const purr_entities *t, purr_entity e);
+
+// For snapshots: copies what's in use, and clears what `to` used beyond it, so
+// past the counts a table is all zeros. The hash covers what's in use.
+void purr_entities_copy(purr_entities *to, const purr_entities *from);
+uint64_t purr_entities_hash(uint64_t h, const purr_entities *t);
 
 static inline bool purr_entity_is_null(const purr_entity e)
 {

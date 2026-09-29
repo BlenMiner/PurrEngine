@@ -1,0 +1,4 @@
+// expect: 'GUILayout.Toggle' changes its 'value'
+scene Main { }
+component Door { bool open; }
+view Doors(Door door) { GUILayout.Toggle("Open", door.open); }

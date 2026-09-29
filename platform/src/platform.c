@@ -1,6 +1,7 @@
 #include "purr/platform.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -207,6 +208,8 @@ static void poll_mouse(purr_mouse *m)
     // Delta and scroll add up until the input is sampled.
     m->delta = purr_f2(m->delta.x + delta.x, m->delta.y - delta.y);
     m->scroll = purr_f2(m->scroll.x + scroll.x, m->scroll.y + scroll.y);
+    m->poll_delta = purr_f2(delta.x, -delta.y);
+    m->poll_scroll = purr_f2(scroll.x, scroll.y);
     for (size_t i = 0; i < COUNT_OF(mouse_buttons); i++)
         purr_button_set(BUTTON_AT(m, mouse_buttons[i].offset), IsMouseButtonDown(mouse_buttons[i].raylib));
 }
@@ -257,26 +260,52 @@ static void poll_gamepad(purr_gamepad *g)
     }
 }
 
+// Characters typed since the last poll, which follow the keyboard layout.
+static void poll_text(purr_typed *text)
+{
+    text->count = 0;
+    for (;;) {
+#ifdef __wasm__
+        const int c = purr_web_take_char();
+#else
+        const int c = GetCharPressed();
+#endif
+        if (c <= 0) break;
+        if (text->count < PURR_TEXT_MAX) text->chars[text->count++] = (uint32_t)c;
+    }
+}
+
 void purr_platform_poll(purr_devices *devices)
 {
     poll_keyboard(&devices->keyboard);
     poll_mouse(&devices->mouse);
     poll_gamepad(&devices->gamepad);
+    poll_text(&devices->text);
 }
 
 // The camera maps world units (y up) to window pixels (y down). Each frame's
-// list starts at the origin with 1 unit per pixel.
+// list starts at the origin with 1 unit per pixel. After PURR_DRAW_GUI, it
+// maps GUI units instead: from the top left, y down, a screen 1080 tall.
 typedef struct camera {
     purr_float2 center;
     float scale; // Pixels per world unit
+    bool gui;
 } camera;
 
-static camera last_camera = {{0.0f, 0.0f}, 1.0f};
+static camera last_camera = {{0.0f, 0.0f}, 1.0f, false};
 
 static Vector2 to_screen(const camera *cam, const purr_float2 p)
 {
+    if (cam->gui) return (Vector2){p.x * cam->scale, p.y * cam->scale};
     return (Vector2){(float)GetScreenWidth() * 0.5f + (p.x - cam->center.x) * cam->scale,
                      (float)GetScreenHeight() * 0.5f - (p.y - cam->center.y) * cam->scale};
+}
+
+// A rect's top left corner on screen: y goes up in the world, down in the GUI.
+static Vector2 rect_corner(const camera *cam, const purr_draw_command *c)
+{
+    const float half_height = cam->gui ? -c->b.y * 0.5f : c->b.y * 0.5f;
+    return to_screen(cam, purr_f2(c->a.x - c->b.x * 0.5f, c->a.y + half_height));
 }
 
 static unsigned char color_channel(const float v)
@@ -294,7 +323,8 @@ static Color to_raylib(const purr_color c)
 void purr_platform_draw(const purr_draw_list *list)
 {
     ClearBackground(BLACK); // Every frame starts black; Draw.Clear picks another color
-    camera cam = {{0.0f, 0.0f}, 1.0f};
+    camera cam = {{0.0f, 0.0f}, 1.0f, false};
+    camera world = cam; // The last world camera, for purr_platform_world_to_screen
     for (uint32_t i = 0; i < list->count; i++) {
         const purr_draw_command *c = &list->commands[i];
         const Color color = to_raylib(c->color);
@@ -305,6 +335,12 @@ void purr_platform_draw(const purr_draw_list *list)
         case PURR_DRAW_CAMERA:
             cam.center = c->a;
             cam.scale = c->b.x > 0.0f ? (float)GetScreenHeight() / (2.0f * c->b.x) : 1.0f;
+            cam.gui = false;
+            world = cam;
+            break;
+        case PURR_DRAW_GUI:
+            cam.scale = (float)GetScreenHeight() / PURR_GUI_SCREEN_HEIGHT;
+            cam.gui = true;
             break;
         case PURR_DRAW_CIRCLE:
             DrawCircleV(to_screen(&cam, c->a), c->b.x * cam.scale, color);
@@ -314,7 +350,7 @@ void purr_platform_draw(const purr_draw_list *list)
             break;
         case PURR_DRAW_RECT:
         case PURR_DRAW_WIRE_RECT: {
-            const Vector2 top_left = to_screen(&cam, purr_f2(c->a.x - c->b.x * 0.5f, c->a.y + c->b.y * 0.5f));
+            const Vector2 top_left = rect_corner(&cam, c);
             const Rectangle r = {top_left.x, top_left.y, c->b.x * cam.scale, c->b.y * cam.scale};
             if (c->kind == PURR_DRAW_RECT) DrawRectangleRec(r, color);
             else DrawRectangleLinesEx(r, 1.0f, color);
@@ -330,7 +366,7 @@ void purr_platform_draw(const purr_draw_list *list)
         }
         }
     }
-    last_camera = cam;
+    last_camera = world;
 
     static bool warned;
     if (list->dropped > 0 && !warned) {
@@ -344,6 +380,16 @@ purr_float2 purr_platform_world_to_screen(const purr_float2 world)
 {
     const Vector2 p = to_screen(&last_camera, world);
     return purr_f2(p.x, p.y);
+}
+
+purr_float2 purr_platform_screen_size(void)
+{
+    return purr_f2((float)GetScreenWidth(), (float)GetScreenHeight());
+}
+
+float purr_platform_measure_text(const char *text, const float size)
+{
+    return MeasureTextEx(GetFontDefault(), text, size, size / 10.0f).x;
 }
 
 void purr_platform_draw_overlay(const char *text)

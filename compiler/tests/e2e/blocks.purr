@@ -1,0 +1,144 @@
+// Functions that take a Block: the code the caller writes in braces after the
+// call, run where the function runs it, as the caller's own code.
+
+component Counter
+{
+    int twice;
+    int never;
+    int when;
+    int returned;
+    int after;
+    int picked;
+    int afterPick;
+    int seen;
+    int bumps;
+    int seenBumps;
+    int outer;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Counter);
+}
+
+void Twice(Block content)
+{
+    content();
+    content();
+}
+
+void Never(Block content)
+{
+}
+
+void When(bool yes, Block content)
+{
+    if (!yes) return; // Ends When, not its caller
+    content();
+}
+
+// Its own switch around the block: a break in the block still ends the caller's.
+void Pick(int which, Block content)
+{
+    switch (which)
+    {
+        case 0:
+            content();
+            break;
+        default:
+            break;
+    }
+}
+
+void Shadow(Block content)
+{
+    var x = 100;
+    content();
+}
+
+void Bump(mut int n, Block content)
+{
+    n += 1;
+    content();
+}
+
+// Passes its own block on, inside another's.
+void Outer(Block content)
+{
+    Twice()
+    {
+        content();
+    }
+}
+
+system Run(mut Counter c)
+{
+    Twice() { c.twice += 1; }
+    Never() { c.never += 1; }
+    When(false) { c.when += 1; }
+    When(true) { c.when += 10; }
+    var x = 5;
+    Shadow() { c.seen = x; }
+    Bump(c.bumps) { c.seenBumps = c.bumps; }
+    Outer() { c.outer += 1; }
+    switch (c.twice)
+    {
+        case 2:
+            Pick(0)
+            {
+                c.picked += 1;
+                break;
+            }
+            c.afterPick += 1;
+            break;
+        default:
+            break;
+    }
+    Twice()
+    {
+        c.returned += 1;
+        return; // Ends the system
+    }
+    c.after += 1;
+}
+
+// Containers close when a return or break leaves them.
+local singleton Frame
+{
+    int mode;
+}
+
+view Returns(Frame frame)
+{
+    GUILayout.Area(Rect(500, 500, 300, 300))
+    {
+        GUILayout.Label("inside");
+        if (frame.mode == 0) return;
+        GUILayout.Label("unreached");
+    }
+}
+
+view Breaks(Frame frame)
+{
+    switch (frame.mode)
+    {
+        case 0:
+            GUILayout.Area(Rect(500, 500, 300, 300))
+            {
+                GUILayout.Label("inside too");
+                if (frame.mode == 0) break;
+                GUILayout.Label("unreached");
+            }
+            break;
+        default:
+            break;
+    }
+    GUILayout.Label("between");
+}
+
+view After()
+{
+    GUILayout.Label("after");
+}

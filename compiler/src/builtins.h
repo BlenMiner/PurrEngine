@@ -2,14 +2,21 @@
 
 #include "ast.h"
 
-// Built-in functions and constants reached through a type, `Math` or `Draw`:
-// Math.Dot(a, b), quaternion.AxisAngle(axis, angle), Draw.Circle(...), Color.red.
+// Built-in functions and constants reached through a type, `Math`, `Draw`,
+// `GUI`, `GUILayout` or `Screen`: Math.Dot(a, b), quaternion.AxisAngle(axis,
+// angle), Draw.Circle(...), GUILayout.Button(text), Color.red, Screen.width.
 
-// Is `name` something that can own static members: Math, Draw or a built-in type?
+// Is `name` something that can own static members: Math, Draw, GUI, GUILayout,
+// Screen or a built-in type?
 bool builtin_owner(str name);
 
+// The program's Anchor enum, which GUILayout.Area takes. Call before resolving
+// calls.
+void builtins_use(const decl *anchor);
+
 // Resolves owner.name(args) for a call whose arguments are already checked.
-// Fills e->call, e->c_callee and e->arg_want. Reports errors and returns TY_ERROR on failure.
+// Fills e->call, e->c_callee and e->arg_want, and for the GUI e->arg_mut and
+// e->gui. Reports errors and returns TY_ERROR on failure.
 type resolve_builtin_call(str owner, expr *e);
 
 // Resolves owner.member, such as quaternion.identity. Fills e->c_constant.

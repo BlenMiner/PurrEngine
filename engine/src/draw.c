@@ -57,6 +57,25 @@ void purr_draw_line(purr_draw_list *d, const purr_float2 from, const purr_float2
     push(d, PURR_DRAW_LINE, from, to, color);
 }
 
+void purr_draw_gui(purr_draw_list *d)
+{
+    push(d, PURR_DRAW_GUI, purr_f2(0.0f, 0.0f), purr_f2(0.0f, 0.0f), PURR_COLOR_CLEAR);
+}
+
+void purr_draw_append(purr_draw_list *d, const purr_draw_list *from)
+{
+    for (uint32_t i = 0; i < from->count; i++) {
+        const purr_draw_command *c = &from->commands[i];
+        if (c->kind == PURR_DRAW_TEXT) {
+            purr_draw_text(d, from->text + c->text, c->a, c->b.x, c->color);
+        } else {
+            purr_draw_command *copy = push(d, (purr_draw_kind)c->kind, c->a, c->b, c->color);
+            if (copy) copy->text = 0;
+        }
+    }
+    d->dropped += from->dropped;
+}
+
 void purr_draw_text(purr_draw_list *d, const char *text, const purr_float2 position, const float size,
                     const purr_color color)
 {

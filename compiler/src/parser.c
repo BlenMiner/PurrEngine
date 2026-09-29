@@ -1,4 +1,5 @@
 #include <setjmp.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "ast.h"
@@ -102,6 +103,25 @@ static qname parse_qname(parser *p, const char *what)
 // ---------------------------------------------------------------------------
 // Expressions
 
+// A type: a name, maybe qualified, or List<T>, whose text is "List<T>".
+static qname parse_type(parser *p, const char *what)
+{
+    qname q = parse_qname(p, what);
+    if (!at(p, T_LT) || !str_eq_c(q.text, "List")) return q;
+    advance(p);
+    const qname element = parse_type(p, "the list's element type, like 'List<int>'");
+    if (at(p, T_SHR)) {
+        diag_error(peek(p)->at, "a list can't hold lists yet");
+        diag_note("hold structs that have the lists instead");
+        longjmp(p->fail, 1);
+    }
+    expect(p, T_GT, "'>' after the list's element type");
+    char *text = arena_alloc((size_t)element.text.len + 7);
+    snprintf(text, (size_t)element.text.len + 7, "List<" STR_FMT ">", STR_ARG(element.text));
+    q.text = (str){text, element.text.len + 6};
+    return q;
+}
+
 static expr *new_expr(const expr_kind kind, const loc at)
 {
     expr *e = NEW(expr);
@@ -190,10 +210,41 @@ static expr *parse_primary(parser *p)
         e->text = t->text;
         return e;
     }
+    case T_INTERP: {
+        // $"a {x} b {y:F2} c": the tokens are `$"a {`, x, `} b {`, y, `:F2`, `} c"`.
+        advance(p);
+        expr *e = new_expr(E_INTERP, t->at);
+        vec_push(e->parts, ((str){t->text.ptr + 2, t->text.len - 3}));
+        bool open = t->text.ptr[t->text.len - 1] == '{';
+        while (open) {
+            vec_push(e->args, parse_expr(p));
+            str format = {"", 0};
+            if (at(p, T_INTERP_FORMAT)) {
+                const token *f = advance(p);
+                format = (str){f->text.ptr + 1, f->text.len - 1};
+            }
+            vec_push(e->formats, format);
+            const token *part = expect(p, T_INTERP_PART, "'}' to end the value in the text");
+            vec_push(e->parts, ((str){part->text.ptr + 1, part->text.len - 2}));
+            open = part->text.ptr[part->text.len - 1] == '{';
+        }
+        return e;
+    }
     case T_LPAREN: {
         advance(p);
         expr *e = parse_expr(p);
         expect(p, T_RPAREN, "')'");
+        return e;
+    }
+    case T_LBRACKET: { // [a, b, c]: a list
+        advance(p);
+        expr *e = new_expr(E_LIST, t->at);
+        if (!at(p, T_RBRACKET)) {
+            do {
+                vec_push(e->args, parse_expr(p));
+            } while (accept(p, T_COMMA) && !at(p, T_RBRACKET));
+        }
+        expect(p, T_RBRACKET, "']' after the list's elements");
         return e;
     }
     case T_IDENT: {
@@ -223,7 +274,16 @@ static expr *parse_primary(parser *p)
 static expr *parse_postfix(parser *p)
 {
     expr *e = parse_primary(p);
-    while (at(p, T_DOT)) {
+    while (at(p, T_DOT) || at(p, T_LBRACKET)) {
+        if (at(p, T_LBRACKET)) { // items[i]
+            const token *open = advance(p);
+            expr *index = new_expr(E_INDEX, open->at);
+            index->object = e;
+            index->lhs = parse_expr(p);
+            expect(p, T_RBRACKET, "']' after the index");
+            e = index;
+            continue;
+        }
         advance(p);
         const token *name = expect_ident(p, "member name after '.'");
         if (at(p, T_LPAREN)) {
@@ -329,6 +389,11 @@ static expr *parse_expr(parser *p)
     expr *e = new_expr(E_CONDITIONAL, question->at);
     e->cond = cond;
     e->lhs = parse_expr(p);
+    if (at(p, T_INTERP_FORMAT)) { // $"{a ? b : c}": the ':' started a format
+        diag_error(peek(p)->at, "in text, '?:' goes in parentheses: '{(a ? b : c)}'");
+        diag_note("a ':' after a value in text starts its format, like '{x:F2}'");
+        longjmp(p->fail, 1);
+    }
     expect(p, T_COLON, "':' and the value for when the condition is false");
     e->rhs = parse_expr(p);
     return e;
@@ -380,6 +445,12 @@ static bool at_method(const parser *p)
     if (peek_at(p, i)->kind != T_IDENT || is_decl_word(peek_at(p, i)->text)) return false; // view Name(...)
     i++;
     while (peek_at(p, i)->kind == T_DOT && peek_at(p, i + 1)->kind == T_IDENT) i += 2;
+    if (peek_at(p, i)->kind == T_LT) { // List<Item> Name(...)
+        i++;
+        while (peek_at(p, i)->kind == T_IDENT || peek_at(p, i)->kind == T_DOT) i++;
+        if (peek_at(p, i)->kind != T_GT) return false;
+        i++;
+    }
     return peek_at(p, i)->kind == T_IDENT && peek_at(p, i + 1)->kind == T_LPAREN;
 }
 
@@ -469,7 +540,7 @@ static stmt *parse_var(parser *p)
     stmt *s = new_stmt(S_VAR, first->at);
     s->is_mut = accept(p, T_MUT);
     if (!accept(p, T_VAR)) {
-        const qname type = parse_qname(p, "'var' or a type");
+        const qname type = parse_type(p, "'var' or a type");
         s->type_name = type.text;
         s->type_at = type.name_at;
         s->type_qual_at = type.at;
@@ -525,6 +596,66 @@ static stmt *parse_switch(parser *p)
     return s;
 }
 
+// i++, --i, x = y, x += y or a call: a statement without its ';', as a for's
+// step and as the start of most statements.
+static stmt *parse_simple(parser *p)
+{
+    const token *t = peek(p);
+    if (t->kind == T_PLUS_PLUS || t->kind == T_MINUS_MINUS) { // ++i
+        advance(p);
+        stmt *s = new_stmt(S_ASSIGN, t->at);
+        s->target = parse_expr(p);
+        s->op = t->kind;
+        s->value = new_expr(E_INT, t->at);
+        s->value->int_value = 1;
+        return s;
+    }
+    expr *e = parse_expr(p);
+    if (is_assign_op(peek(p)->kind) || at(p, T_PLUS_PLUS) || at(p, T_MINUS_MINUS)) {
+        const token *op = advance(p);
+        stmt *s = new_stmt(S_ASSIGN, op->at);
+        s->target = e;
+        s->op = op->kind;
+        if (op->kind == T_PLUS_PLUS || op->kind == T_MINUS_MINUS) {
+            s->value = new_expr(E_INT, op->at);
+            s->value->int_value = 1;
+        } else {
+            s->value = parse_expr(p);
+        }
+        return s;
+    }
+    stmt *s = new_stmt(S_EXPR, e->at);
+    s->value = e;
+    return s;
+}
+
+// for (init; cond; step) body, each part optional: for (var i = 0; i < n; i++)
+static stmt *parse_for(parser *p)
+{
+    const token *keyword = advance(p);
+    stmt *s = new_stmt(S_FOR, keyword->at);
+    expect(p, T_LPAREN, "'(' after 'for'");
+    if (!accept(p, T_SEMI)) {
+        const token *t = peek(p);
+        int next = 1;
+        while (t->kind == T_IDENT && peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
+        const bool list = t->kind == T_IDENT && str_eq_c(t->text, "List") && peek_at(p, 1)->kind == T_LT;
+        if (t->kind == T_MUT || t->kind == T_VAR || list || (t->kind == T_IDENT && peek_at(p, next)->kind == T_IDENT)) {
+            s->init = parse_var(p); // Takes the ';'
+            s->init->loop_var = true;
+        } else {
+            s->init = parse_simple(p);
+            expect(p, T_SEMI, "';' after the for's start");
+        }
+    }
+    if (!at(p, T_SEMI)) s->cond = parse_expr(p);
+    expect(p, T_SEMI, "';' after the for's condition");
+    if (!at(p, T_RPAREN)) s->step = parse_simple(p);
+    expect(p, T_RPAREN, "')' after the for's step");
+    s->then_stmt = parse_stmt(p);
+    return s;
+}
+
 static stmt *parse_stmt(parser *p)
 {
     const token *t = peek(p);
@@ -558,10 +689,46 @@ static stmt *parse_stmt(parser *p)
     case T_SWITCH:
         return parse_switch(p);
 
-    case T_BREAK: {
+    case T_BREAK:
+    case T_CONTINUE: {
         advance(p);
-        stmt *s = new_stmt(S_BREAK, t->at);
+        stmt *s = new_stmt(t->kind == T_BREAK ? S_BREAK : S_CONTINUE, t->at);
         expect(p, T_SEMI, "';'");
+        return s;
+    }
+
+    case T_WHILE: {
+        advance(p);
+        stmt *s = new_stmt(S_WHILE, t->at);
+        expect(p, T_LPAREN, "'(' after 'while'");
+        s->cond = parse_expr(p);
+        expect(p, T_RPAREN, "')' after the condition");
+        s->then_stmt = parse_stmt(p);
+        return s;
+    }
+
+    case T_FOR:
+        return parse_for(p);
+
+    case T_FOREACH: {
+        // foreach (var name in list) or foreach (Type name in list)
+        advance(p);
+        stmt *s = new_stmt(S_FOREACH, t->at);
+        expect(p, T_LPAREN, "'(' after 'foreach'");
+        if (!accept(p, T_VAR)) {
+            const qname type = parse_type(p, "'var' or the elements' type");
+            s->type_name = type.text;
+            s->type_at = type.name_at;
+            s->type_qual_at = type.at;
+        }
+        const token *name = expect_ident(p, "the variable for each element");
+        s->name = name->text;
+        s->name_at = name->at;
+        if (!at(p, T_IDENT) || !str_eq_c(peek(p)->text, "in")) fail_at(p, peek(p), "'in' and the list");
+        advance(p);
+        s->value = parse_expr(p);
+        expect(p, T_RPAREN, "')' after the list");
+        s->then_stmt = parse_stmt(p);
         return s;
     }
 
@@ -571,19 +738,14 @@ static stmt *parse_stmt(parser *p)
         int next = 1;
         while (t->kind == T_IDENT && peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
         if (t->kind == T_IDENT && peek_at(p, next)->kind == T_IDENT) return parse_var(p);
+        if (t->kind == T_IDENT && str_eq_c(t->text, "List") && peek_at(p, 1)->kind == T_LT) return parse_var(p);
 
-        expr *e = parse_expr(p);
-        if (is_assign_op(peek(p)->kind)) {
-            const token *op = advance(p);
-            stmt *s = new_stmt(S_ASSIGN, op->at);
-            s->target = e;
-            s->op = op->kind;
-            s->value = parse_expr(p);
-            expect(p, T_SEMI, "';'");
+        stmt *s = parse_simple(p);
+        // A call's block: Foldout("Audio") { ... }, GUILayout.Horizontal() { ... }
+        if (s->kind == S_EXPR && at(p, T_LBRACE) && (s->value->kind == E_CALL || s->value->kind == E_METHOD)) {
+            s->value->block = parse_block(p);
             return s;
         }
-        stmt *s = new_stmt(S_EXPR, e->at);
-        s->value = e;
         expect(p, T_SEMI, "';'");
         return s;
     }
@@ -602,8 +764,8 @@ static decl *new_decl(const decl_kind kind, const token *name)
     return d;
 }
 
-// Sample(Devices devices) { ... } inside an input declaration. The input's
-// own name instead of Sample is the constructor it used to be.
+// Sample() { ... } inside an input declaration, maybe taking local singletons.
+// The input's own name instead of Sample is the constructor it used to be.
 static void parse_sample(parser *p, decl *d, const token *name)
 {
     const bool spelled_sample = str_eq_c(name->text, "Sample") || str_eq_c(name->text, "sample");
@@ -617,9 +779,9 @@ static void parse_sample(parser *p, decl *d, const token *name)
         longjmp(p->fail, 1);
     }
     if (str_eq_c(name->text, "sample")) {
-        diag_error(name->at, "methods use PascalCase: 'Sample(Devices devices)'");
+        diag_error(name->at, "methods use PascalCase: 'Sample()'");
     } else if (!spelled_sample) {
-        diag_error(name->at, "inputs read the devices in a method: 'Sample(Devices devices)'");
+        diag_error(name->at, "inputs read the devices in a method: 'Sample()'");
     }
     d->body_at = name->at;
     expect(p, T_LPAREN, "'('");
@@ -682,7 +844,7 @@ static void parse_field_attributes(parser *p)
 // Type name; [= default];
 static void parse_field(parser *p, decl *d)
 {
-    const qname type = parse_qname(p, "field type or '}'");
+    const qname type = parse_type(p, "field type or '}'");
     const token *field_name = expect_ident(p, "field name");
     field f = {0};
     f.name = field_name->text;
@@ -710,7 +872,7 @@ static void parse_routine_rest(parser *p, decl *m, const token *name)
             prm.at = peek(p)->at;
             prm.mode = accept(p, T_MUT) ? PARAM_MUT : PARAM_READ;
             prm.function_param = true;
-            const qname type = parse_qname(p, "parameter type");
+            const qname type = parse_type(p, "parameter type");
             prm.type_name = type.text;
             prm.type_qual_at = type.at;
             prm.type_at = type.name_at;
@@ -730,7 +892,7 @@ static void parse_routine_rest(parser *p, decl *m, const token *name)
 static decl *parse_method(parser *p, decl *owner)
 {
     const bool is_mut = accept(p, T_MUT);
-    const qname ret = parse_qname(p, "return type");
+    const qname ret = parse_type(p, "return type");
     const token *name = expect_ident(p, owner ? "method name" : "function name");
     decl *m = new_decl(owner ? DECL_METHOD : DECL_FUNCTION, name);
     m->unit = p->unit;
@@ -767,7 +929,7 @@ static bool is_overloadable(const tok_kind kind)
 // ReturnType operator +(Type a, Type b) { ... } in a struct.
 static decl *parse_operator(parser *p, decl *owner)
 {
-    const qname ret = parse_qname(p, "return type");
+    const qname ret = parse_type(p, "return type");
     const token *keyword = advance(p);
     const token *op = advance(p);
     if (!is_overloadable(op->kind)) {
@@ -865,7 +1027,7 @@ static void parse_query_rest(parser *p, decl *d)
             } else {
                 prm.mode = accept(p, T_MUT) ? PARAM_MUT : PARAM_READ;
             }
-            const qname type = parse_qname(p, what);
+            const qname type = parse_type(p, what);
             prm.type_name = type.text;
             prm.type_qual_at = type.at;
             prm.type_at = type.name_at;

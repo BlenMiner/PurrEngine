@@ -30,7 +30,10 @@ typedef enum type_kind {
     TY_LOCAL_ENTITY, // LocalEntity: an entity of the local world, which only local code can hold
     TY_PLAYER,     // PlayerID
     TY_COLOR,
-    TY_STRING,     // Text literals; only Draw.Text takes them for now.
+    TY_STRING,     // Text: literals, and function parameters and locals that hold them
+    TY_RECT,       // Rect: a GUI rectangle, x and y from the top left, width and height
+    TY_BLOCK,      // Block: a function's last parameter, the code its caller writes in braces after the call
+    TY_LIST,       // List<T>: decl is the list type, whose one field is its element
     TY_COMPONENT,
     TY_SINGLETON,
     TY_INPUT,      // The game's input declaration
@@ -86,6 +89,7 @@ typedef struct field {
     VEC(attribute) attributes; // [Clamp], [Min] and [Max] on input and struct fields
     loc type_qual_at; // Where the type starts: its namespace if it's qualified
     bool hidden; // The engine's own, in generated C only: a scene's visibility and players
+    int leaf;    // In the device records: 1 + its index in program.device_leaves, if it's a value the devices send
 } field;
 
 typedef enum param_mode {
@@ -95,6 +99,14 @@ typedef enum param_mode {
     PARAM_WITHOUT,
     PARAM_EVENT, // An event handler's trigger: `event(Hit hit)`, always its first parameter
 } param_mode;
+
+// One value the devices send, like keyboard.space or gamepad.leftStick.
+typedef struct device_leaf {
+    const char *path;          // Its C access from purr_devices: "keyboard.space"
+    const struct field *field; // Its field in the device records
+} device_leaf;
+
+#define DEVICE_WORDS 4 // Bits for up to 256 device leaves
 
 typedef struct param {
     param_mode mode;
@@ -115,6 +127,7 @@ typedef enum conflict_kind {
     CONFLICT_BOTH_WRITE,     // Both write the data
     CONFLICT_EARLIER_READS,  // The earlier system reads what this one writes
     CONFLICT_EARLIER_WRITES, // The earlier system writes what this one reads
+    CONFLICT_TEXT,           // Both write text or lists, which the match keeps in one heap
 } conflict_kind;
 
 typedef struct conflict {
@@ -140,6 +153,7 @@ typedef enum decl_kind {
     DECL_FUNCTION, // void Heal(mut Stats stats, float amount) { ... }: code other code calls
     DECL_EVENT,    // event Hit { fields }: something that happened, sent with Send
     DECL_ENUM,     // enum Page { Title, Options }: a type with named values
+    DECL_LIST,     // List<T>, one per element type: its one field is the element; in program.lists
 } decl_kind;
 
 // One of an enum's members: `Options`, or `Options = 3`.
@@ -163,6 +177,9 @@ typedef struct decl {
     loc local_at;     // The `local` keyword
     bool is_scene;    // `scene Arena { ... }`: a DECL_COMPONENT whose entity is a loaded scene
     const char *c_name; // Records: the C struct name.
+    bool device_group;  // Devices, Keyboard, Mouse, Gamepad and Dpad: records made of device values
+    int leaves_first;   // ...which are program.device_leaves from this one
+    int leaves_count;
 
     // Components, singletons, inputs, records, structs and events
     VEC(field) fields;
@@ -183,6 +200,9 @@ typedef struct decl {
     struct decl *owner;       // A method's struct or component; NULL for a function
     bool is_mut_method;       // `mut void Damage(...)`: it may change the fields
     bool is_operator;         // `Money operator +(Money a, Money b)`: in a struct, with no value of its own
+    bool is_interpolate;      // `Angle Interpolate(Angle from, Angle to, float t)`: how views blend its type, no value of its own
+    struct decl *interpolate; // Structs and components: their Interpolate, if they have one
+    bool snapped;             // Singletons: something calls .Snap() on it, so it counts its snaps
     tok_kind op;              // An operator's: T_PLUS, T_EQ, ...; T_MINUS is negation with one parameter
     str return_type_name;     // "void" if it returns nothing
     loc return_type_at;       // Its last part, if it's qualified
@@ -201,6 +221,15 @@ typedef struct decl {
     bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
     bool entity_local;   // Its entities are the local world's (views of local components)
+    bool draws;          // A function that draws or uses the GUI, itself or through the functions it calls
+    loc draws_at;        // ...where it first does
+    bool frame_devices;  // ...and whether that's reading this frame's Devices, not drawing
+    bool takes_block;    // A function whose last parameter is a Block: inlined where it's called
+    bool writes_text;    // A system that writes text into its world: its heap, which one system changes at a time
+    VEC(struct decl *) callees; // Functions it calls, once each
+    VEC(loc) callee_at;         // ...and where it first calls each
+    uint64_t device_uses[DEVICE_WORDS]; // Device values it reads through parameters, a bit per device leaf
+    loc position_at;     // ...where it first reads the mouse's position that way
     uint64_t need_mask;  // Components an entity must have (access and `with`).
     uint64_t without_mask;
     VEC(struct decl *) after; // Systems or views that must run first ([After], and [Before] on them)
@@ -227,6 +256,9 @@ typedef enum expr_kind {
     E_UNARY,
     E_LITERAL, // Transform { position = ... }
     E_CONDITIONAL, // cond ? lhs : rhs
+    E_INTERP,  // $"score {score}": `parts` around the values in `args`, each with its format
+    E_INDEX,   // object[lhs]: a list's element
+    E_LIST,    // [a, b, c]: a list of `args`, whose type comes from where it goes
 } expr_kind;
 
 typedef enum builtin_call {
@@ -244,7 +276,20 @@ typedef enum builtin_call {
     CALL_LOAD,      // Scene.Load(Arena { ... }): a spawn whose entity is its own scene; type_decl is the scene
     CALL_UNLOAD,    // Scene.Unload(scene)
     CALL_SCENE_PLAYER, // Scene.AddPlayer(scene, player) and Scene.RemovePlayer(scene, player)
+    CALL_SESSION,   // Session.Play, Host, Join and Leave: `name` says which; type_decl is Play's and Host's scene
+    CALL_SNAP,      // entity.Snap() or singleton.Snap(): views draw it as it is this tick; type_decl is a singleton's
+    CALL_GUI,       // GUI.Button(...), GUILayout.Horizontal() { ... }: calls c_callee with the GUI first
+    CALL_BLOCK,     // content(): runs the Block its function was given
+    CALL_TEXT,      // name.Contains(...), text's methods: calls c_callee with the text first
+    CALL_LIST,      // items.Add(...), a list's methods: `name` says which
 } builtin_call;
+
+// What a GUI call needs besides its arguments (expr.gui).
+enum {
+    GUI_ID = 1,        // A widget ID, from where it's called
+    GUI_CONTAINER = 2, // A block after the call: GUILayout.Vertical() { ... }
+    GUI_SKIPS = 4,     // A container whose block doesn't always run: it returns -1 then
+};
 
 // How a constructor call builds its value.
 typedef enum ctor_form {
@@ -260,6 +305,7 @@ typedef enum ctor_form {
     CTOR_MAT_FROM_ROT_T, // float4x4(float3x3 rotation, float3 translation)
     CTOR_PLAYER,         // PlayerID(index)
     CTOR_COLOR,          // Color(r, g, b) or Color(r, g, b, a)
+    CTOR_RECT,           // Rect(x, y, width, height)
 } ctor_form;
 
 typedef enum binding_kind {
@@ -269,6 +315,7 @@ typedef enum binding_kind {
     BIND_TYPE,  // A component or event name used as a value: Spawn(Player), Send(RoundOver).
     BIND_FIELD, // A field of the input, named directly inside its Sample or Sanitize.
     BIND_NAMESPACE, // `Combat` in Combat.Health
+    BIND_DEVICES,   // `Devices`: this machine's devices, in views and the input's Sample
 } binding_kind;
 
 typedef enum input_edge {
@@ -324,6 +371,9 @@ struct expr {
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
     bool local_world;     // CALL_SPAWN, CALL_ADD, CALL_REMOVE, CALL_DESTROY and CALL_SEND: in the local world
     const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
+    unsigned arg_mut;     // CALL_GUI: a bit per argument the call changes, which it takes by address
+    int gui;              // CALL_GUI: GUI_ID and GUI_CONTAINER
+    struct stmt *block;   // A call's block, written in braces after it: Foldout("Audio") { ... }
 
     // E_BINARY, E_UNARY; E_CONDITIONAL's two sides. `method` is the struct's
     // operator, if one is used.
@@ -331,6 +381,12 @@ struct expr {
     expr *lhs;
     expr *rhs;
     expr *cond; // E_CONDITIONAL
+
+    // E_INTERP: the text before, between and after the values (escapes as written),
+    // and each value's format as written ("F2") and as purr/text.h takes it
+    VEC(str) parts;
+    VEC(str) formats;
+    VEC(int32_t) format_codes;
 
     // E_LITERAL
     VEC(field_init) inits;
@@ -349,6 +405,10 @@ typedef enum stmt_kind {
     S_EXPR,
     S_SWITCH,
     S_BREAK,
+    S_WHILE,    // while (cond) then_stmt
+    S_FOR,      // for (init; cond; step) then_stmt: each part optional
+    S_CONTINUE,
+    S_FOREACH,  // foreach (var name in value) then_stmt: `type` is the element's, and it's the variable's declaration
 } stmt_kind;
 
 // A switch's section: its labels, then the statements they run.
@@ -366,16 +426,21 @@ struct stmt {
     VEC(stmt *) stmts;
     loc end; // The closing brace, or where a block cut short by a syntax error ends
 
-    // S_IF, and S_SWITCH's value
+    // S_IF, and S_SWITCH's value; S_WHILE and S_FOR, with then_stmt their body
     expr *cond;
     stmt *then_stmt;
     stmt *else_stmt;
+
+    // S_FOR
+    stmt *init; // A local, an assignment or a call, or NULL
+    stmt *step; // An assignment, i++ or a call, or NULL
 
     // S_SWITCH
     VEC(switch_case) cases;
 
     // S_VAR
     bool is_mut;
+    bool loop_var; // Declared by a for: only its step changes it, unless it's mut
     str type_name; // Empty for `var`. With its namespace if it's qualified.
     str name;
     type type;
@@ -388,7 +453,7 @@ struct stmt {
 
     // S_ASSIGN
     expr *target;
-    tok_kind op;
+    tok_kind op; // T_ASSIGN, a compound one like T_PLUS_ASSIGN, or T_PLUS_PLUS and T_MINUS_MINUS (value 1)
     struct decl *operator_decl; // A compound assignment's struct operator: `money += tip` uses `+`
 };
 
@@ -414,9 +479,21 @@ typedef struct program {
     int main_archetype;  // Main's archetype
     decl *input;         // The input declaration, if any.
     decl *scene_visibility; // The built-in enum SceneVisibility
+    decl *anchor;        // The built-in enum Anchor, where GUILayout.Area goes
+    decl *session;       // The built-in local singleton Session: this machine's part in a match
+    decl *connected;     // Built-in local events: this machine joined a match, and left it
+    decl *disconnected;
+    VEC(decl *) start_scenes; // Scenes Session.Play and Session.Host start matches in
+    bool uses_text;      // Some code makes text, in the scratch area the run functions clear
+    bool uses_heap;      // Some field holds text or a list: the worlds have a heap
+    VEC(decl *) lists;   // Every List<T> type the program uses, one per element type
     decl *owner;         // The built-in Owner component.
     decl *devices;       // The built-in Devices record.
     VEC(decl *) records; // Built-in records: Devices, Keyboard, Mouse, Gamepad, Dpad, Button.
+    VEC(device_leaf) device_leaves; // Each value the devices send: a button, stick, trigger, axis or bool
+    int position_leaf;   // The mouse's position, which the match can't read
+    bool match_devices;  // Systems or handlers take Devices: the input sends the devices too
+    uint64_t device_uses[DEVICE_WORDS]; // The leaves match code reads: all the input sends of them
     VEC(decl *) structs; // In an order where each comes after the structs it contains.
 
     VEC(uint64_t) archetypes;  // Component masks, in derivation order.

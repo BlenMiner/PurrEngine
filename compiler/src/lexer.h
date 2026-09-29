@@ -8,6 +8,14 @@ typedef enum tok_kind {
     T_INT,
     T_FLOAT,
     T_STRING, // Text in double quotes; the token's text excludes them.
+    // Text with values in it, $"score {score} of {max:D3}", as tokens whose text
+    // is all they cover: T_INTERP is `$"score {`, then the value's own tokens,
+    // then T_INTERP_PART `} of {`, ... and the last part ends with the quote,
+    // `}"`. A format after a value is T_INTERP_FORMAT, `:D3`. Text with no
+    // values is one T_INTERP, `$"plain"`.
+    T_INTERP,
+    T_INTERP_PART,
+    T_INTERP_FORMAT,
 
     // Keywords
     T_COMPONENT,
@@ -26,6 +34,10 @@ typedef enum tok_kind {
     T_CASE,
     T_DEFAULT,
     T_BREAK,
+    T_WHILE,
+    T_FOR,
+    T_FOREACH,
+    T_CONTINUE,
 
     // Punctuation
     T_LBRACE,
@@ -73,6 +85,8 @@ typedef enum tok_kind {
     T_NOT,
     T_AND,
     T_OR,
+    T_PLUS_PLUS,   // i++, a statement
+    T_MINUS_MINUS, // i--
 } tok_kind;
 
 typedef struct token {
@@ -90,5 +104,6 @@ token *lex_all(const source *src);
 
 const char *tok_kind_name(tok_kind kind);
 
-// The binary operator behind a compound assignment: T_PLUS for T_PLUS_ASSIGN.
+// The binary operator behind a compound assignment: T_PLUS for T_PLUS_ASSIGN,
+// and for T_PLUS_PLUS, which adds 1.
 tok_kind compound_op(tok_kind assign);

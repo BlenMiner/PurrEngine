@@ -45,7 +45,7 @@ PURR_TEST(functions_run_in_sample)
 {
     purr_world_init(&world, 1.0f);
     const purr_devices devices = {0};
-    purr_world_set_server_input(&world, purr_input_sample(&devices));
+    purr_world_set_server_input(&world, purr_input_sample(&devices, NULL));
     purr_world_tick(&world);
     PURR_CHECK(world.Log.sampled.x == 0.6f && world.Log.sampled.y == 0.8f); // (3, 4) normalized
 }

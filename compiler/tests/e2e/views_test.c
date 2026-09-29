@@ -7,6 +7,7 @@ static purr_world world;
 static purr_world before;
 static purr_local local;
 static purr_draw_list draw;
+static purr_gui gui;
 
 static bool same_color(const purr_color a, const purr_color b)
 {
@@ -29,7 +30,7 @@ static void draw_frame(void)
     purr_world_tick(&world);
     purr_local_init(&local);
     purr_draw_reset(&draw);
-    purr_frame(&world, &local, &draw);
+    purr_frame(&world, NULL, 1.0f, &local, &draw, &gui);
 }
 
 PURR_TEST(views_run_in_declaration_order)
@@ -81,8 +82,8 @@ PURR_TEST(views_leave_the_world_alone)
     memcpy(&before, &world, sizeof world);
     purr_local_init(&local);
     purr_draw_reset(&draw);
-    purr_frame(&world, &local, &draw);
-    purr_frame(&world, &local, &draw);
+    purr_frame(&world, NULL, 1.0f, &local, &draw, &gui);
+    purr_frame(&world, NULL, 1.0f, &local, &draw, &gui);
     PURR_CHECK(memcmp(&before, &world, sizeof world) == 0);
     PURR_CHECK(draw.count == 22); // Drawing twice without a reset adds up
 }

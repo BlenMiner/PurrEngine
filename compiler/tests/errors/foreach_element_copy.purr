@@ -1,0 +1,4 @@
+// expect: 'score' is a copy of the list's element, so it can't be changed
+scene Main { }
+component Inventory { List<int> scores; }
+system S(mut Inventory inv) { foreach (var score in inv.scores) score = 1; }

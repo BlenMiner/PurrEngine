@@ -1,0 +1,73 @@
+// Text in fields: components, singletons, structs and events keep their own.
+
+struct Tag
+{
+    string label;
+    int level;
+}
+
+component Named
+{
+    string name = "nobody";
+    Tag tag;
+}
+
+singleton Log
+{
+    string last;
+    string status;
+    int renames;
+    int heard;
+    int kept;
+}
+
+event Said
+{
+    string text;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Named { name = "cat", tag = Tag { label = "pet", level = 1 } });
+    Spawn(Named);
+}
+
+void Rename(mut string name, string to)
+{
+    name = to;
+}
+
+void Promote(mut Tag tag)
+{
+    if (tag.label.Length < 8) tag.label = tag.label + "!";
+    tag.level += 1;
+}
+
+system Grow(Entity self, mut Named n, mut Log log)
+{
+    var before = n.name; // A copy: it keeps the old text
+    if (n.name.Length < 12) n.name += "s";
+    else n.name = n.name.ToUpper(); // New text every tick, the old released
+    if (before + "s" == n.name) log.renames += 1;
+    Promote(n.tag);
+    mut var copy = n.tag; // A copy of a struct with text in it
+    copy.label = "changed";
+    if (n.tag.label != "changed") log.kept += 1;
+    Send(Said { text = $"{n.name} said hi" });
+    if (n.name == "nobodyss") self.Destroy();
+}
+
+system Status(Time time, mut Log log)
+{
+    mut var status = "";
+    Rename(status, $"tick {time.tick % 3}");
+    Rename(log.status, status);
+}
+
+event(Said said) Hear(mut Log log)
+{
+    log.heard += 1;
+    log.last = said.text;
+}

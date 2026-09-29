@@ -1,0 +1,3 @@
+// expect: 'F2' isn't a format for bool
+scene Main { }
+view V() { Draw.Text($"{true:F2}", float2(0, 0), 10, Color.white); }

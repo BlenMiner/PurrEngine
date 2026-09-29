@@ -1,0 +1,4 @@
+// expect: a list's index is an int, not float
+scene Main { }
+component Inventory { List<int> scores; int first; }
+system S(mut Inventory inv) { inv.first = inv.scores[1.5]; }

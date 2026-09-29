@@ -1,4 +1,4 @@
-// expect: Sample takes the devices: 'Sample(Devices devices)'
+// expect: Sample takes local singletons, and 'int' is a built-in type
 input PlayerInput
 {
     bool jump;

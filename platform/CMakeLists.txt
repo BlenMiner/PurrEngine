@@ -9,6 +9,9 @@ target_include_directories(purr_platform PUBLIC include)
 # Private: hosts go through purr/platform.h only. A file with a game's generated
 # header can't include raylib.h, whose names clash with components.
 target_link_libraries(purr_platform PUBLIC purr PRIVATE raylib)
+if(WIN32)
+    target_link_libraries(purr_platform PUBLIC ws2_32) # UDP, for sessions
+endif()
 
 if(PURR_WEB)
     # The page's JavaScript (web/purr.js) provides the canvas, input and frames
@@ -78,6 +81,14 @@ endif()
 # On Windows, only the MinGW build's platform layer goes in the package.
 if(PURR_PACKAGE_LIBS)
     install(FILES $<TARGET_FILE:purr_platform> $<TARGET_FILE:raylib> DESTINATION ${PURR_PACKAGE_LIBS} COMPONENT purr)
+endif()
+
+if(NOT PURR_WEB)
+    # Sessions over real UDP, on this machine.
+    add_executable(purr_platform_udp tests/udp.c "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+    target_include_directories(purr_platform_udp PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+    target_link_libraries(purr_platform_udp PRIVATE purr_platform)
+    add_test(NAME purr_platform_udp COMMAND purr_platform_udp)
 endif()
 
 if(PURR_WEB)

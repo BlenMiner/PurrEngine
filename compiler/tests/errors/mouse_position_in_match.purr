@@ -1,0 +1,11 @@
+// expect: the match can't read the mouse's position: it's in this machine's window
+component Walker { float2 target; }
+scene Main { }
+float2 Target(Devices devices)
+{
+    return devices.mouse.position;
+}
+system Walk(Devices devices, mut Walker w)
+{
+    w.target = Target(devices);
+}

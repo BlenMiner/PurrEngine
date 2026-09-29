@@ -16,7 +16,7 @@ static PlayerInput moving_right(const bool jump)
     purr_devices d = {0};
     purr_button_set(&d.keyboard.d, true);
     purr_button_set(&d.keyboard.space, jump);
-    return purr_input_sample(&d);
+    return purr_input_sample(&d, NULL);
 }
 
 PURR_TEST(input_sample_reads_devices)
@@ -27,7 +27,7 @@ PURR_TEST(input_sample_reads_devices)
     d.gamepad.leftStick = purr_f2(0.5f, 0.0f);
     purr_button_set(&d.gamepad.buttonSouth, true);
 
-    const PlayerInput in = purr_input_sample(&d);
+    const PlayerInput in = purr_input_sample(&d, NULL);
     PURR_CHECK(in.move.x == 1.5f && in.move.y == 1.0f);
     PURR_CHECK(in.jump);
     PURR_CHECK(in.speed == 1.0f); // Default, since the mouse wasn't pressed
@@ -37,10 +37,10 @@ PURR_TEST(input_sample_starts_from_defaults_each_time)
 {
     purr_devices d = {0};
     purr_button_set(&d.mouse.left, true);
-    PURR_CHECK(purr_input_sample(&d).speed == 2.0f);
+    PURR_CHECK(purr_input_sample(&d, NULL).speed == 2.0f);
 
     purr_devices_consume(&d); // Still held, but no longer "pressed"
-    PURR_CHECK(purr_input_sample(&d).speed == 1.0f);
+    PURR_CHECK(purr_input_sample(&d, NULL).speed == 1.0f);
 }
 
 PURR_TEST(input_moves_the_owners_entity)

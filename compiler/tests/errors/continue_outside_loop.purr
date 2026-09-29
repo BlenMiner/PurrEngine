@@ -1,0 +1,13 @@
+// expect: 'continue' goes on to a loop's next round, and it's not in a loop
+scene Main { }
+component Tally { int n; }
+system Count(mut Tally t)
+{
+    switch (t.n)
+    {
+        case 0:
+            continue;
+        default:
+            break;
+    }
+}

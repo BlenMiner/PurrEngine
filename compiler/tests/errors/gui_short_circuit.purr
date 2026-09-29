@@ -1,0 +1,7 @@
+// expect: GUILayout.Button can't be on the right side of && or ||
+scene Main { }
+local singleton Menu { bool open; int closes; }
+view Close(mut Menu menu)
+{
+    if (menu.open && GUILayout.Button("Close")) menu.closes += 1;
+}

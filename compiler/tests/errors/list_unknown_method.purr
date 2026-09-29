@@ -1,0 +1,4 @@
+// expect: did you mean 'Add'?
+scene Main { }
+component Inventory { List<int> scores; }
+system S(mut Inventory inv) { inv.scores.add(1); }

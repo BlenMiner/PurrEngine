@@ -1,0 +1,16 @@
+// expect: Interpolate is how views blend Angle between ticks; code doesn't call it
+struct Angle
+{
+    float degrees;
+
+    Angle Interpolate(Angle from, Angle to, float t)
+    {
+        return to;
+    }
+}
+component Body { Angle heading; }
+scene Main { }
+system Turn(mut Body body)
+{
+    body.heading = body.heading.Interpolate(body.heading, body.heading, 0.5);
+}

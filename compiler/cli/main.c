@@ -37,8 +37,12 @@ static void usage(void)
            "  --release          optimized, the way players get it\n"
            "  --web              a web page (WebGL 2), with clang's WebAssembly target\n"
            "  --title <title>    the window's title (default: the folder's name)\n"
-           "  --stats            show the tick, the entity count and the frame rate\n"
+           "  --stats            show the tick, the entity count, the ping and the frame rate\n"
            "  -o <path>          build: where the program goes\n"
+           "\n"
+           "run, in a match with others (the game's Main must be the match's for --host):\n"
+           "  --host [port]      a match others can join (port 7777 by default)\n"
+           "  --join <address>   the match at an address, like 192.168.1.5 or localhost:7777\n"
            "\n"
            "upgrade:\n"
            "  --nightly          follow nightly versions from now on\n"
@@ -140,9 +144,16 @@ int main(const int argc, char **argv)
     }
 
     build_options opts = {.folder = "."};
+    const char *session[3] = {NULL, NULL, NULL}; // --host [port] or --join <address>, for the game
     for (int i = 2; i < argc; i++) {
         const char *a = argv[i];
-        if (strcmp(a, "--release") == 0) opts.release = true;
+        if (run && strcmp(a, "--host") == 0) {
+            session[0] = a;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') session[1] = argv[++i];
+        } else if (run && strcmp(a, "--join") == 0 && i + 1 < argc) {
+            session[0] = a;
+            session[1] = argv[++i];
+        } else if (strcmp(a, "--release") == 0) opts.release = true;
         else if (strcmp(a, "--web") == 0) opts.web = true;
         else if (strcmp(a, "--stats") == 0) opts.stats = true;
         else if (strcmp(a, "--title") == 0 && i + 1 < argc) opts.title = argv[++i];
@@ -164,11 +175,12 @@ int main(const int argc, char **argv)
         } else if (build) {
             printf("Built %s\n", program);
         } else if (opts.web) {
+            if (session[0]) fprintf(stderr, "purr: web games can't %s yet; opening it on its own\n", session[0] + 2);
             printf("Opening %s\n", program);
             code = open_in_browser(program);
         } else {
             char *folder = path_absolute(opts.folder);
-            const char *const game[] = {program, NULL};
+            const char *const game[] = {program, session[0], session[1], NULL};
             code = sys_run(game, folder, false);
             if (code == -1) fprintf(stderr, "purr: couldn't start %s\n", program);
         }

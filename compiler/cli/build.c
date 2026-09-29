@@ -97,9 +97,9 @@ static bool write_main(const char *path, const char *title, const bool stats)
              "#include \"game.h\"\n"
              "#include \"purr/run.h\"\n"
              "\n"
-             "int main(void)\n"
+             "int main(int argc, char **argv)\n"
              "{\n"
-             "    purr_run(&(purr_run_desc){.title = \"%s\", .stats = %s});\n"
+             "    purr_run(&(purr_run_desc){.title = \"%s\", .stats = %s, .argc = argc, .argv = argv});\n"
              "}\n",
              escaped, stats ? "true" : "false");
     return sys_write_text(path, text);
@@ -121,7 +121,7 @@ static const char *const release_flags[] = {"-O2", "-DNDEBUG", NULL};
 #define NATIVE_RUNTIME "mingw"
 static const char *const native_libs[] = {"-lmingw32", "-lmingwex", "-lmoldname", "-lmsvcrt", "-lkernel32",
                                           "-luser32", "-lgdi32", "-lshell32", "-ladvapi32", "-lopengl32",
-                                          "-lwinmm", NULL};
+                                          "-lwinmm", "-lws2_32", NULL};
 #define EXE_SUFFIX ".exe"
 #elif defined(__APPLE__)
 // What raylib and its GLFW link on macOS.

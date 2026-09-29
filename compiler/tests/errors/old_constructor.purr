@@ -1,4 +1,4 @@
-// expect: inputs read the devices in a method: 'Sample(Devices devices)'
+// expect: inputs read the devices in a method: 'Sample()'
 input PlayerInput
 {
     bool jump;

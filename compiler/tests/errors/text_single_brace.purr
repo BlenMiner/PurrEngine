@@ -1,0 +1,3 @@
+// expect: a '}' in text is written '}}'
+scene Main { }
+view V() { Draw.Text($"a } b", float2(0, 0), 10, Color.white); }

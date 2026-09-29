@@ -14,7 +14,8 @@
 //
 // Positions and sizes are in world units, with y up. The camera decides where
 // they land on screen. Commands draw in the order they were recorded, on a
-// frame that starts black.
+// frame that starts black. After a PURR_DRAW_GUI command, they're the GUI's
+// instead: in units of a screen 1080 tall, from the top left with y down.
 
 #ifndef PURR_DRAW_MAX_COMMANDS
 #define PURR_DRAW_MAX_COMMANDS 16384u
@@ -33,6 +34,7 @@ typedef enum purr_draw_kind {
     PURR_DRAW_WIRE_RECT,   // a = center, b = size, color
     PURR_DRAW_LINE,        // a = from, b = to, color
     PURR_DRAW_TEXT,        // a = top left corner, b.x = height, color, text
+    PURR_DRAW_GUI,         // The commands after it are the GUI's (see purr/gui.h)
 } purr_draw_kind;
 
 typedef struct purr_draw_command {
@@ -73,3 +75,10 @@ void purr_draw_line(purr_draw_list *d, purr_float2 from, purr_float2 to, purr_co
 // `position` is the text's top left corner and `size` its height. The text is
 // copied into the list.
 void purr_draw_text(purr_draw_list *d, const char *text, purr_float2 position, float size, purr_color color);
+
+// The commands after it are in GUI units: a screen 1080 units tall, whose
+// width follows the window's shape, from the top left with y down.
+void purr_draw_gui(purr_draw_list *d);
+
+// Adds `from`'s commands to the end of `d`, such as the GUI's over the world.
+void purr_draw_append(purr_draw_list *d, const purr_draw_list *from);

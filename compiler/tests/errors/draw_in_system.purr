@@ -1,4 +1,4 @@
-// expect: Draw can only be used in views for now
+// expect: Draw can only be used in views, and in functions they call
 component Body { float2 position; }
 scene Main { }
 

@@ -1,0 +1,6 @@
+// expect: Session.Join takes the server's address as text
+local scene Main { }
+view Start()
+{
+    Session.Join(7777);
+}

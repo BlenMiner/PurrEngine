@@ -204,6 +204,17 @@ static void qualifier_ref(const loc qual_at, const loc name_at, const str text)
 static void type_ref(const loc qual_at, const loc at, const str text, const type t)
 {
     if (text.len == 0) return;
+    if (str_starts_with_c(text, "List<") && text.ptr[text.len - 1] == '>') {
+        add_occ((occurrence){.at = qual_at, .len = 4, .kind = OCC_TYPE, .name = str_from("List"), .type = t});
+        // The element's type, as the formatter writes it: right after "List<"
+        const str inner = {text.ptr + 5, text.len - 6};
+        const loc inner_at = {qual_at.line, qual_at.col + 5, qual_at.file};
+        const type element = t.kind == TY_LIST ? t.decl->fields.items[0].type : (type){TY_ERROR, NULL};
+        const str last = last_part(inner);
+        const loc last_at = {qual_at.line, inner_at.col + (int)(last.ptr - inner.ptr), qual_at.file};
+        type_ref(inner_at, last_at, inner, element);
+        return;
+    }
     qualifier_ref(qual_at, at, text);
     const str name = last_part(text);
     occurrence o = {.at = at, .len = name.len, .kind = OCC_TYPE, .name = name, .type = t};
@@ -251,6 +262,8 @@ static int operator_len(const tok_kind kind)
     }
 }
 
+static void walk_stmt(const stmt *s);
+
 static void walk_expr(const expr *e)
 {
     if (!e) return;
@@ -283,6 +296,10 @@ static void walk_expr(const expr *e)
             break;
         case BIND_NAMESPACE:
             o.kind = OCC_NAMESPACE;
+            break;
+        case BIND_DEVICES: // This machine's devices, like Screen
+            o.kind = OCC_OWNER;
+            o.owner = e->name;
             break;
         case BIND_NONE:
             // The owner in Math.Dot(...) or quaternion.identity, which the checker doesn't bind.
@@ -341,20 +358,26 @@ static void walk_expr(const expr *e)
             o.decl = e->method;
             add_occ(o);
             vec_push(A.calls, e);
+        } else if (e->call == CALL_BLOCK) { // content(): the Block parameter
+            o.kind = OCC_PARAM;
+            o.param = e->param;
+            add_occ(o);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
+        walk_stmt(e->block);
         break;
     }
 
     case E_METHOD: {
         walk_expr(e->object);
         occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type};
-        if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
+        if (e->call == CALL_BUILTIN || e->call == CALL_DRAW || e->call == CALL_GUI || e->call == CALL_TEXT) {
             o.kind = OCC_FUNCTION;
-            o.owner = e->object->name;
+            o.owner = e->call == CALL_TEXT ? str_from("string") : e->object->name; // name.Contains(...): text's
             o.c_name = e->c_callee;
             add_occ(o);
-        } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY || e->call == CALL_SEND) {
+        } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY || e->call == CALL_SEND
+                   || e->call == CALL_LIST) {
             o.kind = OCC_METHOD;
             add_occ(o);
         } else if (e->call == CALL_LOAD || e->call == CALL_UNLOAD || e->call == CALL_SCENE_PLAYER) {
@@ -363,6 +386,12 @@ static void walk_expr(const expr *e)
             o.kind = OCC_FUNCTION;
             o.owner = str_from("Scene");
             add_occ(o);
+        } else if (e->call == CALL_SESSION) {
+            add_occ((occurrence){.at = e->object->at, .len = 7, .kind = OCC_OWNER, .owner = str_from("Session"),
+                                 .name = str_from("Session")});
+            o.kind = OCC_FUNCTION;
+            o.owner = str_from("Session");
+            add_occ(o);
         } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // stats.IsDead(), Combat.Heal(...)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
             o.decl = e->method;
@@ -370,6 +399,7 @@ static void walk_expr(const expr *e)
             vec_push(A.calls, e);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
+        walk_stmt(e->block);
         break;
     }
 
@@ -403,6 +433,16 @@ static void walk_expr(const expr *e)
         walk_expr(e->cond);
         walk_expr(e->lhs);
         walk_expr(e->rhs);
+        break;
+
+    case E_INTERP:
+    case E_LIST:
+        for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
+        break;
+
+    case E_INDEX:
+        walk_expr(e->object);
+        walk_expr(e->lhs);
         break;
     }
 }
@@ -447,6 +487,24 @@ static void walk_stmt(const stmt *s)
         }
         break;
     case S_BREAK:
+    case S_CONTINUE:
+        break;
+    case S_WHILE:
+        walk_expr(s->cond);
+        walk_stmt(s->then_stmt);
+        break;
+    case S_FOREACH:
+        type_ref(s->type_qual_at.line ? s->type_qual_at : s->type_at, s->type_at, s->type_name, s->type);
+        add_occ((occurrence){.at = s->name_at, .len = s->name.len, .kind = OCC_LOCAL, .declaration = true, .local = s,
+                             .name = s->name, .type = s->type});
+        walk_expr(s->value);
+        walk_stmt(s->then_stmt);
+        break;
+    case S_FOR:
+        walk_stmt(s->init);
+        walk_expr(s->cond);
+        walk_stmt(s->step);
+        walk_stmt(s->then_stmt);
         break;
     }
 }
@@ -666,6 +724,10 @@ static const char *builtin_type_doc(const type_kind kind)
     case TY_LOCAL_ENTITY: return "A handle to an entity of the local world: this machine's own, which only local code holds.";
     case TY_PLAYER: return "A player, independent of connections. `PlayerID(0)` names a player by index.";
     case TY_COLOR: return "A color: r, g, b and a from 0 to 1. `Color(r, g, b)` or `Color(r, g, b, a)`.";
+    case TY_RECT: return "A rectangle on the screen, for the GUI: x and y from the top left, y down, then width and height.";
+    case TY_STRING: return "Text, written in double quotes.";
+    case TY_BLOCK: return "Code the caller writes in braces after the call, run with `content();`.";
+    case TY_LIST: return "A list of values, which grows and shrinks: `Count`, `items[i]`, `Add`, `RemoveAt`, `foreach`.";
     default: return NULL;
     }
 }
@@ -682,6 +744,7 @@ static const char *decl_keyword(const decl *d)
     case DECL_FUNCTION: return "function";
     case DECL_EVENT: return "event";
     case DECL_ENUM: return "enum";
+    case DECL_LIST: return "list";
     case DECL_SYSTEM: return d->is_view ? "view" : d->is_handler ? "event" : "system";
     }
     return "";
@@ -826,6 +889,20 @@ static const struct {
     {"RemovePlayer", "Scene.RemovePlayer(scene, PlayerID player)", "Stops a player seeing a private scene."},
 };
 
+// Session's calls, from views and local handlers.
+static const struct {
+    const char *name;
+    const char *form;
+    const char *doc;
+} session_calls[] = {
+    {"Play", "Session.Play(scene)", "Starts a match on this machine alone, in `scene`. It leaves the match it's in first."},
+    {"Host", "Session.Host(scene, int port)",
+     "Starts a match others can join, in `scene`, taking players on `port` (7777 unless it says). It leaves the match it's in first."},
+    {"Join", "Session.Join(string address)",
+     "Joins the match at `address`, like \"192.168.1.5\" or \"localhost:7777\". It leaves the match it's in first."},
+    {"Leave", "Session.Leave()", "Leaves the match: `Disconnected` follows, and views stop seeing it."},
+};
+
 // Markdown for a hover over `o`.
 static void describe(const occurrence *o, sb *out)
 {
@@ -897,9 +974,18 @@ static void describe(const occurrence *o, sb *out)
         break;
     case OCC_OWNER:
         code_block(out, str_to_cstr(o->name));
-        sb_put(out, str_eq_c(o->name, "Draw")    ? "\n\nImmediate-mode drawing. Only in views."
-                  : str_eq_c(o->name, "Scene") ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
-                                               : "\n\nMath functions and constants, deterministic on every platform.");
+        sb_put(out, str_eq_c(o->name, "Draw")        ? "\n\nImmediate-mode drawing, in views and the functions they call."
+                  : str_eq_c(o->name, "GUI")       ? "\n\nThe GUI's widgets, each at a Rect. In views and the functions they call."
+                  : str_eq_c(o->name, "GUILayout") ? "\n\nThe GUI's widgets, laid out one after another, and containers "
+                                                     "that arrange them. In views and the functions they call."
+                  : str_eq_c(o->name, "Screen")    ? "\n\nThe window, in GUI units: a screen 1080 tall."
+                  : str_eq_c(o->name, "Devices")   ? "\n\nThis machine's keyboard, mouse and gamepad. Views read them once "
+                                                     "per frame, and the input's Sample once per tick. Systems take a "
+                                                     "`Devices` parameter instead: the devices of the entity's owner."
+                  : str_eq_c(o->name, "Scene")     ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
+                  : str_eq_c(o->name, "Session")   ? "\n\nWhich match this machine is in: Play, Host, Join and Leave, from views "
+                                                     "and local handlers. Take `Session session` to read where it stands."
+                                                   : "\n\nMath functions and constants, deterministic on every platform.");
         break;
     case OCC_FUNCTION:
     case OCC_CONSTANT:
@@ -914,6 +1000,12 @@ static void describe(const occurrence *o, sb *out)
                 if (!str_eq_c(o->name, scene_calls[i].name)) continue;
                 code_block(out, scene_calls[i].form);
                 sb_printf(out, "\n\n%s", scene_calls[i].doc);
+            }
+        } else if (o->kind == OCC_FUNCTION && str_eq_c(o->owner, "Session")) {
+            for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
+                if (!str_eq_c(o->name, session_calls[i].name)) continue;
+                code_block(out, session_calls[i].form);
+                sb_printf(out, "\n\n%s", session_calls[i].doc);
             }
         } else if (o->kind == OCC_FUNCTION && o->owner.len == 0 && str_eq_c(o->name, "Send")) {
             code_block(out, "Send(event)");
@@ -945,9 +1037,10 @@ static void describe(const occurrence *o, sb *out)
             break;
         }
         if (str_eq_c(o->name, "Sample")) {
-            code_block(out, "Sample(Devices devices)");
-            sb_put(out, "\n\nBuilds the player's input from the devices, once per tick on their machine. Fields "
-                        "start at their defaults. It runs outside the simulation, so it only sees the devices.");
+            code_block(out, "Sample()");
+            sb_put(out, "\n\nBuilds the player's input from this machine's `Devices`, once per tick on their machine. "
+                        "Fields start at their defaults. It runs outside the simulation, so it only sees the devices and "
+                        "the local singletons it takes.");
         } else if (str_eq_c(o->name, "Sanitize")) {
             code_block(out, "Sanitize()");
             sb_put(out, "\n\nRuns on every input before the simulation reads it, including input from other "
@@ -985,6 +1078,8 @@ static void describe(const occurrence *o, sb *out)
                                          "input, after repairing NaN and before Sanitize."},
             {"Min", "[Min(x)]", "Keeps this input field at least x, before Sanitize runs."},
             {"Max", "[Max(x)]", "Keeps this input field at most x, before Sanitize runs."},
+            {"Snap", "[Snap]", "Views see this field as it is at the latest tick, not blended between the last two: "
+                               "for angles that wrap and values that jump."},
         };
         for (size_t i = 0; i < sizeof attributes / sizeof attributes[0]; i++) {
             if (!str_eq_c(o->name, attributes[i].name)) continue;
@@ -1400,14 +1495,20 @@ static bool write_c_definition(const occurrence *o, jbuf *out)
         return cdefs_find(name, out);
     }
     case OCC_OWNER:
-        return cdefs_find_header(str_eq_c(o->owner, "Draw") ? "draw.h" : "math.h", out);
+        if (str_eq_c(o->owner, "Devices")) return cdefs_find("purr_devices", out);
+        return cdefs_find_header(str_eq_c(o->owner, "Draw")                                         ? "draw.h"
+                                 : str_eq_c(o->owner, "GUI") || str_eq_c(o->owner, "GUILayout")
+                                       || str_eq_c(o->owner, "Screen")                              ? "gui.h"
+                                                                                                    : "math.h",
+                                 out);
     case OCC_FIELD:
         return o->decl && o->decl->kind == DECL_RECORD && cdefs_find_member(o->decl->c_name, str_to_cstr(o->name), out);
     case OCC_MEMBER: {
         // Real struct members only: x, r, value, c0; not swizzles like xz.
         const type t = o->object_type;
         const bool vector_component = type_dim(t) >= 2 && o->name.len == 1;
-        const bool other = (t.kind == TY_COLOR && o->name.len == 1) || t.kind == TY_QUATERNION || matrix_dim(t) > 0;
+        const bool other = (t.kind == TY_COLOR && o->name.len == 1) || t.kind == TY_QUATERNION || t.kind == TY_RECT
+                        || matrix_dim(t) > 0;
         return (vector_component || other) && cdefs_find_member(type_c_name(t), str_to_cstr(o->name), out);
     }
     default:
@@ -1870,16 +1971,44 @@ static bool block_contains(const stmt *block, const loc at)
         && loc_cmp(at, block->end) <= 0;
 }
 
+static void collect_list(stmt *const *stmts, int count, loc at, scope *sc);
+
 static void collect_locals(const stmt *block, const loc at, scope *sc)
 {
-    for (int i = 0; i < block->stmts.count; i++) {
-        const stmt *s = block->stmts.items[i];
+    collect_list(block->stmts.items, block->stmts.count, at, sc);
+}
+
+// The locals declared before the cursor in a list of statements, and in the
+// ones around it.
+static void collect_list(stmt *const *stmts, const int count, const loc at, scope *sc)
+{
+    for (int i = 0; i < count; i++) {
+        const stmt *s = stmts[i];
         if (loc_cmp(s->at, at) >= 0) break;
         if (s->kind == S_VAR && loc_cmp(s->name_at, at) < 0) vec_push(sc->locals, s);
         if (block_contains(s, at)) collect_locals(s, at, sc);
         if (s->kind == S_IF) {
             if (block_contains(s->then_stmt, at)) collect_locals(s->then_stmt, at, sc);
             if (block_contains(s->else_stmt, at)) collect_locals(s->else_stmt, at, sc);
+        }
+        if (s->kind == S_FOREACH && block_contains(s->then_stmt, at)) {
+            vec_push(sc->locals, s); // foreach (var item in ...)
+            collect_locals(s->then_stmt, at, sc);
+        }
+        if ((s->kind == S_WHILE || s->kind == S_FOR) && block_contains(s->then_stmt, at)) {
+            if (s->init && s->init->kind == S_VAR) vec_push(sc->locals, s->init); // for (var i = 0; ...)
+            collect_locals(s->then_stmt, at, sc);
+        }
+        if (s->kind == S_EXPR && block_contains(s->value->block, at)) collect_locals(s->value->block, at, sc);
+        if (s->kind == S_SWITCH && loc_cmp(at, s->end) <= 0) {
+            // The section the cursor is in: from its first label to the next section's.
+            for (int k = 0; k < s->cases.count; k++) {
+                const switch_case *section = &s->cases.items[k];
+                const bool started = section->label_at.count > 0 && loc_cmp(section->label_at.items[0], at) < 0;
+                const bool ended = k + 1 < s->cases.count && s->cases.items[k + 1].label_at.count > 0
+                                && loc_cmp(s->cases.items[k + 1].label_at.items[0], at) < 0;
+                if (started && !ended) collect_list(section->body.items, section->body.count, at, sc);
+            }
         }
     }
 }
@@ -1952,6 +2081,12 @@ static type member_type(const type t, const str member)
     const int dim = type_dim(t);
     if (dim >= 2 && is_swizzle(member, dim)) return vector_type(type_is_float_based(t), member.len);
     if (t.kind == TY_COLOR && member.len == 1 && strchr("rgba", member.ptr[0])) return (type){TY_FLOAT, NULL};
+    if (t.kind == TY_RECT && (str_eq_c(member, "x") || str_eq_c(member, "y") || str_eq_c(member, "width")
+                              || str_eq_c(member, "height"))) {
+        return (type){TY_FLOAT, NULL};
+    }
+    if (t.kind == TY_STRING && str_eq_c(member, "Length")) return (type){TY_INT, NULL};
+    if (t.kind == TY_LIST && str_eq_c(member, "Count")) return (type){TY_INT, NULL};
     if (t.kind == TY_QUATERNION && str_eq_c(member, "value")) return (type){TY_FLOAT4, NULL};
     const int n = matrix_dim(t);
     if (n > 0 && member.len == 2 && member.ptr[0] == 'c' && member.ptr[1] >= '0' && member.ptr[1] < '0' + n) {
@@ -1970,6 +2105,16 @@ static void complete_routine(completion *c, const decl *m, const char *name)
     item(c, name ? name : str_to_cstr(m->name), m->owner ? CK_METHOD : CK_FUNCTION, detail.data, NULL, snippet.data);
 }
 
+typedef struct builtin_visit {
+    completion *c;
+} builtin_visit;
+
+static void add_builtin_member(void *user, const builtin_member *m)
+{
+    completion *c = ((builtin_visit *)user)->c;
+    item(c, m->name, m->is_function ? CK_FUNCTION : CK_CONSTANT, m->detail, m->doc, m->snippet);
+}
+
 static void list_members(completion *c, const type t, const bool edges, const scope *sc)
 {
     if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
@@ -1980,7 +2125,8 @@ static void list_members(completion *c, const type t, const bool edges, const sc
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
         }
         for (int i = 0; i < t.decl->methods.count; i++) {
-            if (!t.decl->methods.items[i]->is_operator) complete_routine(c, t.decl->methods.items[i], NULL);
+            const decl *m = t.decl->methods.items[i];
+            if (!m->is_operator && !m->is_interpolate) complete_routine(c, m, NULL);
         }
     }
     const int dim = type_dim(t);
@@ -2002,6 +2148,31 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "b", CK_PROPERTY, "float", "Blue, 0 to 1.", NULL);
         item(c, "a", CK_PROPERTY, "float", "Alpha, 0 to 1.", NULL);
     }
+    if (t.kind == TY_LIST) {
+        item(c, "Count", CK_PROPERTY, "int", "How many elements the list has.", NULL);
+        item(c, "Add", CK_METHOD, "items.Add(item)", "Adds an element at the end.", "Add($1)");
+        item(c, "Insert", CK_METHOD, "items.Insert(index, item)", "Adds an element at `index`, moving the ones after it along.",
+             "Insert($1)");
+        item(c, "RemoveAt", CK_METHOD, "items.RemoveAt(index)", "Removes the element at `index`, moving the ones after it back.",
+             "RemoveAt($1)");
+        item(c, "Remove", CK_METHOD, "items.Remove(item) -> bool", "Removes the first element equal to `item`, if there is one.",
+             "Remove($1)");
+        item(c, "Clear", CK_METHOD, "items.Clear()", "Removes every element.", "Clear()");
+        item(c, "Contains", CK_METHOD, "items.Contains(item) -> bool", "Whether an element is equal to `item`.", "Contains($1)");
+        item(c, "IndexOf", CK_METHOD, "items.IndexOf(item) -> int", "Where the first element equal to `item` is, or -1.",
+             "IndexOf($1)");
+    }
+    if (t.kind == TY_STRING) {
+        item(c, "Length", CK_PROPERTY, "int", "How many characters the text has.", NULL);
+        builtin_visit v = {c};
+        builtin_list_members(str_from("string"), add_builtin_member, &v);
+    }
+    if (t.kind == TY_RECT) {
+        item(c, "x", CK_PROPERTY, "float", "The left side, from the screen's left.", NULL);
+        item(c, "y", CK_PROPERTY, "float", "The top side, from the screen's top.", NULL);
+        item(c, "width", CK_PROPERTY, "float", NULL, NULL);
+        item(c, "height", CK_PROPERTY, "float", NULL, NULL);
+    }
     if (t.kind == TY_QUATERNION) item(c, "value", CK_PROPERTY, "float4", "(x, y, z) is the vector part.", NULL);
     const int n = matrix_dim(t);
     for (int i = 0; i < n; i++) {
@@ -2016,21 +2187,20 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "Destroy", CK_METHOD, "entity.Destroy()", "Destroys the entity at the end of the tick.", "Destroy()");
         item(c, "Send", CK_METHOD, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.",
              "Send($1)");
+        if (t.kind == TY_ENTITY) {
+            item(c, "Snap", CK_METHOD, "entity.Snap()",
+                 "It jumped, like a respawn or a portal: views draw it as it is this tick, not blended from where it was.",
+                 "Snap()");
+        }
+    }
+    if (t.kind == TY_SINGLETON && match && !t.decl->is_local) {
+        item(c, "Snap", CK_METHOD, "singleton.Snap()",
+             "It jumped, like a camera cut: views draw it as it is this tick, not blended from where it was.", "Snap()");
     }
     if (edges && t.kind == TY_BOOL) {
         item(c, "down", CK_PROPERTY, "bool", "True on the tick it became true.", NULL);
         item(c, "up", CK_PROPERTY, "bool", "True on the tick it became false.", NULL);
     }
-}
-
-typedef struct builtin_visit {
-    completion *c;
-} builtin_visit;
-
-static void add_builtin_member(void *user, const builtin_member *m)
-{
-    completion *c = ((builtin_visit *)user)->c;
-    item(c, m->name, m->is_function ? CK_FUNCTION : CK_CONSTANT, m->detail, m->doc, m->snippet);
 }
 
 // After `a.b.`: resolves the chain of names before the dot.
@@ -2052,7 +2222,18 @@ static void complete_members(completion *c, const int dot, const loc at, const b
     const str base = DOC->toks[ids[n - 1]].text;
     const param *p;
     type t = name_type(&sc, base, &p);
+    if (t.kind == TY_ERROR && str_eq_c(base, "Devices")) t = (type){TY_RECORD, A.prog->devices}; // This machine's
     if (t.kind == TY_ERROR) {
+        // Session.: its calls, where local code runs
+        const bool local_code = sc.decl && sc.decl->kind == DECL_SYSTEM && (sc.decl->is_view || sc.decl->is_local);
+        if (n == 1 && str_eq_c(base, "Session") && local_code && !sc.in_input) {
+            for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
+                sb snippet = {0};
+                sb_printf(&snippet, "%s($1)", session_calls[i].name);
+                item(c, session_calls[i].name, CK_FUNCTION, session_calls[i].form, session_calls[i].doc, snippet.data);
+            }
+            return;
+        }
         if (n == 1 && str_eq_c(base, "Scene") && sc.decl && !sc.in_input) {
             for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
                 sb snippet = {0};
@@ -2075,7 +2256,9 @@ static void complete_members(completion *c, const int dot, const loc at, const b
             return;
         }
         if (n == 1 && builtin_owner(base)) {
-            if (str_eq_c(base, "Draw") && !(sc.decl && sc.decl->is_view)) return;
+            const bool frame_owner = str_eq_c(base, "Draw") || str_eq_c(base, "GUI") || str_eq_c(base, "GUILayout")
+                                  || str_eq_c(base, "Screen");
+            if (frame_owner && !(sc.decl && (sc.decl->is_view || sc.decl->kind == DECL_FUNCTION))) return;
             builtin_visit v = {c};
             builtin_list_members(base, add_builtin_member, &v);
             return;
@@ -2232,7 +2415,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
 
 static const char *const value_types[] = {
     "bool", "int", "int2", "int3", "int4", "float", "float2", "float3", "float4", "quaternion",
-    "float2x2", "float3x3", "float4x4", "Entity", "LocalEntity", "PlayerID", "Color",
+    "float2x2", "float3x3", "float4x4", "Entity", "LocalEntity", "PlayerID", "Color", "Rect",
 };
 
 static void complete_value_types(completion *c, const bool constructors_only)
@@ -2243,6 +2426,10 @@ static void complete_value_types(completion *c, const bool constructors_only)
         if (constructors_only && (t.kind == TY_BOOL || t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY)) continue;
         item(c, value_types[i], CK_STRUCT, "built-in type", builtin_type_doc(t.kind), NULL);
     }
+    if (!constructors_only) {
+        item(c, "string", CK_STRUCT, "built-in type", builtin_type_doc(TY_STRING), NULL);
+        item(c, "List", CK_STRUCT, "List<T>", builtin_type_doc(TY_LIST), "List<$1>");
+    }
 }
 
 // Names and keywords that can start an expression or statement.
@@ -2252,7 +2439,8 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     const bool view = sc.decl && sc.decl->is_view;
 
     if (statement) {
-        static const char *const keywords[] = {"if", "else", "return", "var", "mut", "switch", "case", "default", "break"};
+        static const char *const keywords[] = {"if", "else", "return", "var", "mut", "switch", "case", "default", "break",
+                                               "while", "for", "foreach", "continue"};
         for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) item(c, keywords[i], CK_KEYWORD, NULL, NULL, NULL);
     }
     item(c, "true", CK_KEYWORD, NULL, NULL, NULL);
@@ -2273,10 +2461,11 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         if (sc.fields_of) {
             for (int i = 0; i < sc.fields_of->fields.count; i++) {
                 const field *f = &sc.fields_of->fields.items[i];
-                item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), NULL, NULL);
+                if (!f->hidden) item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), NULL, NULL);
             }
             for (int i = 0; i < sc.fields_of->methods.count; i++) {
-                if (!sc.fields_of->methods.items[i]->is_operator) complete_routine(c, sc.fields_of->methods.items[i], NULL);
+                const decl *m = sc.fields_of->methods.items[i];
+                if (!m->is_operator && !m->is_interpolate) complete_routine(c, m, NULL);
             }
         }
     }
@@ -2303,7 +2492,22 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     complete_structs(c);
     item(c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
     complete_namespaces(c, false);
-    if (view) item(c, "Draw", CK_MODULE, "Immediate-mode drawing", NULL, NULL);
+    // What views draw with, which the functions they call can use too.
+    if (view || (routine && sc.decl->kind == DECL_FUNCTION)) {
+        item(c, "Draw", CK_MODULE, "Immediate-mode drawing", NULL, NULL);
+        item(c, "GUI", CK_MODULE, "Widgets at a Rect", NULL, NULL);
+        item(c, "GUILayout", CK_MODULE, "Widgets laid out automatically", NULL, NULL);
+        item(c, "Screen", CK_MODULE, "The window's size, in GUI units", NULL, NULL);
+    }
+    // This machine's devices
+    if (view || (routine && sc.decl->kind == DECL_FUNCTION) || (sc.in_input && !sc.in_sanitize)) {
+        item(c, "Devices", CK_MODULE, "This machine's keyboard, mouse and gamepad", NULL, NULL);
+    }
+    // content(): a function's Block
+    for (int i = 0; sc.decl && i < sc.decl->params.count; i++) {
+        const param *p = &sc.decl->params.items[i];
+        if (p->type.kind == TY_BLOCK) item(c, str_to_cstr(p->name), CK_FUNCTION, "Block", "Runs the caller's block.", "$0();");
+    }
 }
 
 static void complete_declarations(completion *c)
@@ -2318,7 +2522,7 @@ static void complete_declarations(completion *c)
     item(c, "view", CK_SNIPPET, "view Name(parameters) { ... }", "Runs once per frame and draws.",
          "view ${1:Name}($2)\n{\n    $0\n}");
     item(c, "input", CK_SNIPPET, "input Name { fields; Sample }", "What a player sends each tick.",
-         "input ${1:Name}\n{\n    $0\n\n    Sample(Devices devices)\n    {\n    }\n}");
+         "input ${1:Name}\n{\n    $0\n\n    Sample()\n    {\n    }\n}");
     item(c, "event", CK_SNIPPET, "event Name { fields }", "Something that happened, sent with Send.",
          "event ${1:Name}\n{\n    $0\n}");
     item(c, "scene", CK_SNIPPET, "scene Name { fields }", "Entities that load and unload together, like a level.",
@@ -2412,6 +2616,13 @@ void analysis_completion(const int line, const int character, jbuf *out)
         const token *t = &DOC->toks[last];
         const bool inside = t->at.line == at.line && at.col <= t->at.col + token_len(t);
         if (inside && t->kind == T_STRING) goto done; // No completion in text
+        // In text with values: not in its text, but in its values.
+        const bool text_end = at.col == t->at.col + token_len(t) && t->text.ptr[t->text.len - 1] == '"';
+        if ((t->kind == T_INTERP || t->kind == T_INTERP_PART) && t->at.line == at.line
+            && (at.col < t->at.col + token_len(t) || text_end)) {
+            goto done;
+        }
+        if (inside && t->kind == T_INTERP_FORMAT) goto done;
         if (inside && is_word(t)) last--;
     }
 
@@ -2485,6 +2696,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                  "Clamp($1)");
             item(&c, "Min", CK_FUNCTION, "[Min(x)]", "Keeps the field at least x, before Sanitize runs.", "Min($1)");
             item(&c, "Max", CK_FUNCTION, "[Max(x)]", "Keeps the field at most x, before Sanitize runs.", "Max($1)");
+            item(&c, "Snap", CK_FUNCTION, "[Snap]", "Views see the field as it is, not blended between ticks.", "Snap");
         }
         break;
 
@@ -2514,9 +2726,15 @@ void analysis_completion(const int line, const int character, jbuf *out)
             } else if (pk == T_IDENT) {
                 complete_param_name(&c, prev->text);
             }
-        } else if (sample) {
-            if (pk == T_LPAREN) item(&c, "Devices", CK_CLASS, "The keyboard, mouse and gamepad", NULL, NULL);
-            else if (pk == T_IDENT) item(&c, "devices", CK_VARIABLE, NULL, NULL, NULL);
+        } else if (sample) { // Sample(Settings settings): local singletons
+            if (pk == T_LPAREN || pk == T_COMMA) {
+                for (int i = 0; i < A.prog->decls.count; i++) {
+                    const decl *d = A.prog->decls.items[i];
+                    if (d->kind == DECL_SINGLETON && d->is_local) item(&c, name_for(d), CK_CLASS, decl_what(d), NULL, NULL);
+                }
+            } else if (pk == T_IDENT) {
+                complete_param_name(&c, prev->text);
+            }
         } else if (pk == T_WITH || pk == T_WITHOUT) {
             complete_types(&c, true, false, false);
         } else if (pk == T_LPAREN || pk == T_COMMA || pk == T_MUT) {
@@ -2526,6 +2744,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 item(&c, "without", CK_KEYWORD, "Entities must not have this component", NULL, NULL);
                 item(&c, "Entity", CK_STRUCT, "The entity being processed", NULL, NULL);
                 item(&c, "LocalEntity", CK_STRUCT, "The local entity being processed", NULL, NULL);
+                item(&c, "Devices", CK_CLASS, "The devices of the entity's owner, or the server's", NULL, NULL);
             }
             complete_types(&c, true, true, pk != T_MUT);
             complete_namespaces(&c, false);
@@ -2687,6 +2906,7 @@ static const char *rename_target(const int line, const int character, const occu
     case OCC_TYPE:
         if (!o->decl) return "Built-in types can't be renamed.";
         if (o->decl->builtin) return "Types built into the engine can't be renamed.";
+        if (o->decl == A.prog->main) return "Main is the scene the program starts in, so it keeps its name.";
         return NULL;
     case OCC_SYSTEM:
         if (o->decl->is_main) return "Main is the entry point, so it keeps its name.";
@@ -2728,6 +2948,16 @@ static bool local_named(const stmt *s, const str name)
             if (local_named(s->stmts.items[i], name)) return true;
         }
     }
+    if (s->kind == S_SWITCH) {
+        for (int i = 0; i < s->cases.count; i++) {
+            for (int k = 0; k < s->cases.items[i].body.count; k++) {
+                if (local_named(s->cases.items[i].body.items[k], name)) return true;
+            }
+        }
+    }
+    if (s->kind == S_EXPR) return local_named(s->value->block, name);
+    if (s->kind == S_FOREACH) return str_eq(s->name, name) || local_named(s->then_stmt, name);
+    if (s->kind == S_WHILE || s->kind == S_FOR) return local_named(s->init, name) || local_named(s->then_stmt, name);
     return s->kind == S_IF && (local_named(s->then_stmt, name) || local_named(s->else_stmt, name));
 }
 
@@ -2780,7 +3010,9 @@ static const char *check_new_name(const occurrence *target, const str name)
     static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with", "without", "if",
                                            "else", "return", "true", "false", "switch", "case", "default", "break"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
-                                           "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility"};
+                                           "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
+                                           "GUI", "GUILayout", "Screen", "Anchor", "Block", "Session", "SessionState",
+                                           "DisconnectReason", "Connected", "Disconnected"};
     static char message[160];
 
     if (name.len == 0 || !(isalpha((unsigned char)name.ptr[0]) || name.ptr[0] == '_')) return "Names start with a letter.";
@@ -2965,6 +3197,7 @@ static const struct {
     {"float3x3", {"float3x3(float3 c0, float3 c1, float3 c2)", "float3x3(quaternion rotation)"}, NULL},
     {"float4x4", {"float4x4(float4 c0, float4 c1, float4 c2, float4 c3)", "float4x4(float3x3 rotation, float3 translation)"}, NULL},
     {"Color", {"Color(float r, float g, float b)", "Color(float r, float g, float b, float a)"}, "Channels from 0 to 1."},
+    {"Rect", {"Rect(float x, float y, float width, float height)"}, "From the top left of the screen, y down, in GUI units."},
     {"PlayerID", {"PlayerID(int index)"}, "A player by index, for local play and tests."},
     {"Spawn", {"Spawn(components...)"}, "Creates an entity with these components. It's added at the end of the tick."},
     {"Send", {"Send(event)"}, "Sends an event to the whole world, handled at the end of the tick."},
@@ -3019,6 +3252,10 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
     } else if (method && str_eq_c(DOC->toks[open - 3].text, "Scene")) {
         for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
             if (str_eq_c(name, scene_calls[i].name)) add_signature(&s, scene_calls[i].form, scene_calls[i].doc);
+        }
+    } else if (method && str_eq_c(DOC->toks[open - 3].text, "Session")) {
+        for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
+            if (str_eq_c(name, session_calls[i].name)) add_signature(&s, session_calls[i].form, session_calls[i].doc);
         }
     } else if (method && str_eq_c(name, "Send")) {
         add_signature(&s, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.");
@@ -3100,7 +3337,7 @@ static const char *token_start(const token *t)
 static bool ends_operand(const tok_kind k)
 {
     return k == T_IDENT || k == T_INT || k == T_FLOAT || k == T_STRING || k == T_RPAREN || k == T_RBRACKET
-        || k == T_TRUE || k == T_FALSE;
+        || k == T_TRUE || k == T_FALSE || k == T_INTERP || k == T_INTERP_PART;
 }
 
 // Whether the ':' at token `i` ends a switch's label, like `case Page.Title:`,
@@ -3121,9 +3358,23 @@ static bool space_between(const fmt_item *a, const fmt_item *b)
     const tok_kind x = DOC->toks[a->tok].kind;
     const tok_kind y = DOC->toks[b->tok].kind;
     if (y == T_COLON && is_label_colon(b->tok)) return false;
+    // $"a {x:F2} b": the values in text sit against its braces
+    if (y == T_INTERP_PART || y == T_INTERP_FORMAT) return false;
+    if ((x == T_INTERP || x == T_INTERP_PART) && DOC->toks[a->tok].text.ptr[DOC->toks[a->tok].text.len - 1] == '{') return false;
     if (y == T_RPAREN || y == T_RBRACKET || y == T_COMMA || y == T_SEMI || y == T_DOT) return false;
     if (x == T_LPAREN || x == T_LBRACKET || x == T_DOT) return false;
     if (a->unary || x == T_NOT || x == T_TILDE) return false;
+    // List<Item>: a type, not a comparison
+    if (x == T_IDENT && y == T_LT && str_eq_c(DOC->toks[a->tok].text, "List")) return false;
+    if (x == T_LT && a->tok > 0 && str_eq_c(DOC->toks[a->tok - 1].text, "List")) return false;
+    if (y == T_GT) {
+        int k = b->tok - 1;
+        while (k > 0 && (DOC->toks[k].kind == T_IDENT || DOC->toks[k].kind == T_DOT)) k--;
+        if (k > 0 && DOC->toks[k].kind == T_LT && str_eq_c(DOC->toks[k - 1].text, "List")) return false;
+    }
+    // i++ and ++i: against what they change
+    if ((y == T_PLUS_PLUS || y == T_MINUS_MINUS) && ends_operand(x)) return false;
+    if ((x == T_PLUS_PLUS || x == T_MINUS_MINUS) && !(a->tok > 0 && ends_operand(DOC->toks[a->tok - 1].kind))) return false;
     // `operator +(`: the symbol names the operator, like a method's name.
     const bool operator_name = a->tok > 0 && DOC->toks[a->tok - 1].kind == T_IDENT
                             && str_eq_c(DOC->toks[a->tok - 1].text, "operator");

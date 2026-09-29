@@ -1,0 +1,116 @@
+// The GUI: widgets in views, laid out or at a rect, containers of our own,
+// and functions that draw. It starts in a local scene, with no match.
+
+enum Page
+{
+    Title,
+    Options,
+}
+
+local singleton Menu
+{
+    Page page;
+    int plays;
+    int quits;
+    int corner;
+    bool fullscreen;
+    bool audioOpen;
+    float volume = 0.5;
+    int players = 2;
+    float2 offset;
+    Color tint = Color.white;
+    int twice;
+    int rows;
+    string player = "cat";
+}
+
+local component Tag
+{
+    int clicks;
+}
+
+local scene Main { }
+
+local event(Spawned) Setup(with Main)
+{
+    Spawn(Tag);
+    Spawn(Tag);
+}
+
+// A container of our own: runs its content only while open.
+void Foldout(string title, mut bool open, Block content)
+{
+    GUILayout.Toggle(title, open);
+    if (open) content();
+}
+
+// Runs its content twice, side by side.
+void Twice(Block content)
+{
+    GUILayout.Horizontal()
+    {
+        content();
+        content();
+    }
+}
+
+// A widget of our own, made of another: a function that draws.
+bool Choice(string text, mut int count)
+{
+    if (!GUILayout.Button(text)) return false;
+    count += 1;
+    return true;
+}
+
+view Corner(mut Menu menu)
+{
+    if (GUI.Button(Rect(Screen.width - 210, 10, 200, 40), "Corner")) menu.corner += 1;
+}
+
+view Pages(mut Menu menu)
+{
+    GUILayout.Area(Anchor.MiddleCenter)
+    {
+        switch (menu.page)
+        {
+            case Page.Title:
+                if (Choice("Play", menu.plays)) menu.page = Page.Options;
+                Choice("Quit", menu.quits);
+                break;
+            case Page.Options:
+                GUILayout.Label("Options");
+                Foldout("Audio", menu.audioOpen)
+                {
+                    GUILayout.Slider("Volume", menu.volume, 0, 1);
+                    GUILayout.IntField("Players", menu.players);
+                }
+                GUILayout.Toggle("Fullscreen", menu.fullscreen);
+                GUILayout.Float2Field("Offset", menu.offset);
+                GUILayout.ColorField("Tint", menu.tint);
+                Twice()
+                {
+                    if (GUILayout.Button("Again")) menu.twice += 1;
+                }
+                if (GUILayout.Button("Back")) menu.page = Page.Title;
+                break;
+        }
+    }
+}
+
+// Made in a loop: each round's button is its own.
+view Rows(mut Menu menu)
+{
+    for (var i = 0; i < 3; i++)
+    {
+        if (GUILayout.Button("Row")) menu.rows += 1;
+    }
+    GUILayout.Label($"Rows: {menu.rows}");
+    GUILayout.TextField("Name", menu.player);
+    GUILayout.Label($"Hello, {menu.player}");
+}
+
+// Once per entity: each one's button is its own.
+view Tags(mut Tag tag)
+{
+    if (GUILayout.Button("Tag")) tag.clicks += 1;
+}

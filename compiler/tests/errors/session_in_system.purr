@@ -1,0 +1,6 @@
+// expect: the match runs the same on every machine, so it can't start or leave one
+scene Main { }
+system Quit()
+{
+    Session.Leave();
+}

@@ -273,7 +273,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Types and values
 
-- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit), `Entity` and `LocalEntity` (see Local state). There is no `double`. Vector types are under Vector math, and `Color` under Views and drawing.
+- Built-in scalar types are `bool`, `int` (32-bit), `float` (32-bit), `Entity` and `LocalEntity` (see Local state). There is no `double`. Vector types are under Vector math, `Color` under Views and drawing, `string` under Text and `List<T>` under Lists.
 - `1.5` is a `float`; the `f` suffix is optional. An `int` converts to `float` implicitly, never the other way.
 - In `cond ? a : b`, the condition is a `bool`, and the two sides have the same type or one converts to the other's, as in C#: `ready ? 1 : 0.5` is a `float`. It binds looser than every binary operator and groups to the right.
 - Integer arithmetic wraps on overflow. Integer division and modulo by zero give 0, so no input can crash the simulation.
@@ -303,7 +303,15 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Syntax
 
-- Statements: blocks, `if`/`else`, `switch`, `break;`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), and calls to `Spawn`, `Add`, `Remove`, `Destroy`, `Send` and the `Draw` functions. There are no loops yet.
+- Statements: blocks, `if`/`else`, `switch`, loops (see Loops), `break;`, `continue;`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), `i++` and `i--`, and calls: of `Spawn`, `Add`, `Remove`, `Destroy`, `Send`, the `Draw` and GUI functions, lists' methods, and methods and functions, with a block after the ones that take one.
+
+### Functions and blocks
+
+- A call with a block after it is a statement, and the block's braces go on lines of their own, like any other's. A function that takes a Block returns nothing, since its call is a statement: it changes what its caller passes as `mut` instead.
+- Only functions take a Block, not methods, and a Block is never `mut`. A Block can't be stored in a field or a local.
+- In the block, `return` ends the caller, as if the block were written there, and `break` ends the caller's switch, even if the function runs the block inside a switch of its own. `return` in the function's own code ends the function.
+- A function that takes a Block is copied into each call in generated C, with its locals renamed, so its names never hide the caller's in the block.
+- A `mut string` parameter is the caller's text, a local's or a field's, which the function changes.
 - Operators and their precedence follow C#. Comments are `//` and `/* */`.
 
 ### Limits
@@ -518,6 +526,77 @@ system Advance(mut Match match)
 - Ordering enums (`<`), and turning an int into an enum.
 - A warning when a switch on an enum has no `default` and misses a member.
 
+## Loops
+
+### Decided
+
+- `for`, `foreach` and `while`, with `break` and `continue`, as in C#.
+
+### Provisional
+
+- `for (var i = 0; i < n; i++) { ... }`: its start, condition and step are each optional. The variable it declares changes in its step, and is read-only in its body unless it's declared `mut var`.
+- `foreach (var item in list) { ... }` goes through a list's elements in order; `foreach (Type item in list)` names their type. Each element is a copy, read-only. The list's `Count` is read each round, so elements added along the way are reached too.
+- `i++`, `i--`, `++i` and `--i` are statements, on ints and floats, the same as `i += 1` and `i -= 1`. They aren't expressions.
+- `break` ends the innermost loop or switch; `continue` goes on to the innermost loop's next round, from inside a switch too. In a block after a call, both are the caller's: they end or continue the caller's loop, even if the function runs the block inside a loop of its own.
+- `Spawn`, `Scene.Load` and widgets can't be in a loop's condition or a for's step, which run again and again; they go in its body.
+- `while (true)` and `for (;;)` with no `break` of their own never end, so nothing needs to follow them: a function can end with one, and so can a switch's section.
+- `in` is only a keyword in a foreach; `while`, `for`, `foreach` and `continue` are keywords everywhere.
+- There's no `do ... while` yet.
+
+## Text
+
+### Decided
+
+- `string` is text, as a value: assigning copies it, and nothing is ever shared.
+- A string's `Length` counts characters (Unicode code points), not bytes.
+- Components, singletons, structs and events can hold text. A world keeps it in its heap, part of the world, with a size fixed when the game is built, so snapshots copy it and every machine runs out of room at the same point.
+- Nothing about text fails: past the end of a string, positions are clamped, and when there's no room left, text stops growing.
+
+### Provisional
+
+- Text is UTF-8. Literals can hold any UTF-8 character, and `\"`, `\\` and `\n`.
+- `$"score {score}"` puts values in text. After a value, a colon and a format, as in C#: `{x:F2}` for two decimals, `{n:D3}` for at least three digits (`007`), `{n:X}` for hex. Floats take F, and ints D, X and F. `{{` and `}}` are braces, and `?:` in a value goes in parentheses: `{(won ? 1 : 0)}`.
+- Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color` (`RGBA(1, 0, 0, 1)`), `Rect`, entities (`Entity(3:1)`) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, plainly from 1e-7 to 1e21 and with an exponent beyond (`1.5E+21`), the same on every platform: computed exactly, never with the platform's printf.
+- `+` joins text with anything it can show: `"score " + score`, `1 + "st"`. `==` and `!=` compare text byte by byte. There's no `<` for text.
+- `Length`, and the methods `Contains`, `StartsWith`, `EndsWith`, `IndexOf` (-1 if it's not there), `Substring(start)` and `Substring(start, length)`, `ToUpper` and `ToLower` (ASCII letters only, for now), `Trim` and `Replace(from, to)`.
+- Text that code makes, joining and formatting, lives in a scratch area that's cleared once the system, view or handler that made it is done, for each entity. It's only ever copied into a world's heap.
+- Heap text never changes once it's written: changing a field writes new text. What's released only goes back once the code running is done, so a copy of a field made before it changed still reads the old text, with no copying.
+- The heap is 256 KiB by default (`PURR_HEAP_BYTES`). When it's full, a field keeps its old text.
+- An input can't hold text: what players send each tick is numbers, bools and enums.
+- `GUILayout.TextField(label, mut text)` and `GUI.TextField(rect, label, mut text)`: a field the player types into, which changes the text as they type. Enter or Escape stop typing, and Backspace takes off the last character.
+- Systems that change the match's text or lists wait for each other, as their heap is one: `purrc --schedule` says "both change text or lists".
+
+### Open
+
+- A `char` type, and indexing text by character.
+- Text with a caret that moves, selection, and pasting in text fields.
+- Case for letters past ASCII.
+
+## Lists
+
+### Decided
+
+- `List<T>` is a list of values, as a value: assigning or passing one copies it, and changing a copy never changes the original.
+- A world keeps its lists in its heap, like text.
+- Nothing about lists fails: past the end, a read gives the element type's zero and a write does nothing, and when there's no room left, adding does nothing.
+
+### Provisional
+
+- A list starts empty. `[a, b, c]` is a list where one goes, from what it goes into: `List<int> scores = [1, 2, 3];`, `scores = [];`, a field's default, an argument. `var x = [1, 2]` is an error, as it doesn't say the type.
+- `Count`, `items[i]` to read, `items[i] = x` and `items[i] += x` to write, and the methods `Add(item)`, `Insert(index, item)` (the index clamped), `RemoveAt(index)`, `Clear()`, and for elements that `==` compares (numbers, bools, enums, text, entities and players) `Contains(item)`, `IndexOf(item)` (-1 if it's not there) and `Remove(item)`, which returns whether it found one.
+- An element is a copy, as with C#'s List of structs: `items[i].count = 1` is an error that says to take it out, change it and put it back. A `mut` parameter or a mut method can't change an element in place either.
+- Changing a list needs it to be something that can change: a `mut` component or singleton, or a `mut` local.
+- Elements are values: built-in types, text, enums and structs, not ECS data (keep an `Entity` instead), and not lists, or structs with lists in them, yet.
+- Components, singletons, structs and events can hold lists; inputs can't.
+- Taking a whole list out of a field or variable copies it; its elements, count, methods and `foreach` don't. A read-only list argument is passed without a copy unless a `mut` argument of the same call could change it.
+- Lists in code (not in a world) live in the scratch area, like text.
+
+### Open
+
+- Lists of lists, dictionaries and sets.
+- Sorting, and searching with a condition.
+- Fixed-size arrays inside components, which need no heap.
+
 ## Input
 
 ### Decided
@@ -526,9 +605,12 @@ system Advance(mut Match match)
 - Input is one value per player per tick. The engine writes it, and the simulation can only read it.
 - `Owner` is a built-in component that ties an entity to a player. It's a normal component: it can be read, written, added and removed. Writing it hands control over.
 - Players are identified by a built-in `PlayerID` type, not an `int`. Like `Entity`, it's opaque, comparable with `==`, and has a null value. The simulation only sees `PlayerID`s and never connections, so a player who reconnects and gets their `PlayerID` back (PurrNet style) keeps everything they owned. `PlayerID(0)` names a player by index, for local play and tests.
-- **Sampling is PurrLang code:** the input's `Sample(Devices devices)` method. The engine calls it on the client once per tick. Fields start at their defaults, and `Sample` assigns them by name, without `mut`. It runs outside the simulation: it can read `Devices` but not components or singletons.
+- **Sampling is PurrLang code:** the input's `Sample()` method. The engine calls it on the client once per tick. Fields start at their defaults, and `Sample` assigns them by name, without `mut`. It runs outside the simulation: it reads this machine's `Devices`, and the local singletons it takes, but not the match.
+- **Devices are read both ways.** Local code (views, and the input's `Sample`) reads this machine's as `Devices`: `Devices.keyboard.escape.down`. Match code takes a parameter, `Devices devices`: the devices of the player who owns the entity, or the server's, as with an input parameter. The input sends what match code reads of them, and nothing else, and the engine repairs them, since it knows their ranges.
+- The input stays, for what's worked out on the player's machine: an aim direction from the mouse, or anything that depends on local state. The match can't read the mouse's position, which is in this machine's window; `Sample` works out what the match needs from it.
+- Singletons stay parameters, in `Sample` too: `Sample(Settings settings)`.
 - **Input carries whether buttons are held, not whether they just went down,** because a missing remote input is guessed by repeating the last one. On a device, `.pressed` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.down` and `.up`, computed against the previous tick, inside structs too (`input.aim.fire.down`).
-- An input parameter in a system gives the input of the player who owns the entity. Entities without an `Owner`, or whose owner isn't a known player, get the **server's input**, and so do systems that run once per tick. This is how the server controls what no player owns (PurrNet style). An input parameter doesn't filter entities: add `with Owner` to only run on owned ones.
+- An input parameter in a system gives the input of the player who owns the entity, and so does a `Devices` parameter. Entities without an `Owner`, or whose owner isn't a known player, get the **server's input**, and so do systems that run once per tick. This is how the server controls what no player owns (PurrNet style). An input parameter doesn't filter entities: add `with Owner` to only run on owned ones.
 - An input can have a `Sanitize()` method. Every input passes through it before the simulation reads it, including input from other players, so systems can rely on what it guarantees without checking again. It assigns the input's fields by name, like `Sample`, and reads nothing else.
 - Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`, and so can the fields of structs an input holds. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector.
 - **Input is an attack point,** so the engine is forgiving with it. Before `Sanitize` runs, NaN and infinite floats become the field's default. Nothing a client sends can put NaN in the simulation, and `Sanitize` only deals with values that are merely out of range.
@@ -544,19 +626,26 @@ input PlayerInput
     float2 move;
     bool jump;
 
-    Sample(Devices devices)
+    Sample()
     {
-        var keys = devices.keyboard;
+        var keys = Devices.keyboard;
         if (keys.d.pressed) move.x += 1;
         if (keys.a.pressed) move.x -= 1;
-        move += devices.gamepad.leftStick;
-        jump = keys.space.pressed || devices.gamepad.buttonSouth.pressed;
+        move += Devices.gamepad.leftStick;
+        jump = keys.space.pressed || Devices.gamepad.buttonSouth.pressed;
     }
 }
 
 system Jump(PlayerInput input, mut Velocity velocity)
 {
     if (input.jump.down)
+        velocity.value.y = 5;
+}
+
+// The same without an input: the player's devices, as they read them.
+system Hop(Devices devices, mut Velocity velocity)
+{
+    if (devices.keyboard.space.down || devices.gamepad.buttonSouth.down)
         velocity.value.y = 5;
 }
 ```
@@ -568,7 +657,7 @@ input PlayerInput
     [Min(0), Max(3)] int gear = 1;
     bool boost;
 
-    Sample(Devices devices) { move = devices.gamepad.leftStick; }
+    Sample() { move = Devices.gamepad.leftStick; }
 
     // After the bounds: what attributes can't say.
     Sanitize()
@@ -582,12 +671,18 @@ input PlayerInput
 
 - `input` is only a keyword at the start of a declaration, so it can still name parameters and locals.
 - A player, or the server, whose input isn't set for a tick keeps their last one. Until then, inputs are the defaults.
-- In local play, the machine is also the server: `purr/run.h` gives the devices to player 0 and to the server.
 - The input's defaults go through the same steps as any input: NaN repair, bounds, then `Sanitize`.
 - Up to 16 players for now.
 - A system can have one input parameter.
 - Extra device members beyond the list above: mouse `back` and `forward`, gamepad `leftStickButton` and `rightStickButton`, and the full key list in `engine/include/purr/devices.h`.
-- The types inside `Devices` (keyboard, button, and so on) have no names in PurrLang; use `var`.
+- The types inside `Devices` are `Keyboard`, `Mouse`, `Gamepad`, `Dpad` and `Button`. Functions take them and `Devices` as parameters, read-only, passed without a copy: `float2 Steer(Gamepad pad)`.
+- `Sample` takes local singletons, read-only: `Sample(Settings settings)`. Hosts pass the local state to `purr_input_sample`.
+- `Devices` in views is this frame's: `.down` and `.up` since the last frame, and the mouse's `delta` and `scroll` too. What the GUI is using is hidden from views, as from `Sample`. A function that reads `Devices` needs the frame, like one that draws: views and the functions they call can call it, and `Sample` can't (pass it `Devices` instead).
+- A `Devices` parameter goes in systems and match event handlers, one per system; views and local handlers read `Devices`. Match code can't read `Devices`: the error says to take the parameter.
+- What the input sends of the devices comes from the whole program: each value read through a `Devices` parameter, in systems and handlers and in the functions and methods they call, and every value of a part used whole, like `var pad = devices.gamepad;`. A game without an `input` declaration gets one that only sends the devices.
+- Buttons are sent as held (`.pressed`), like bool input fields: `.down` and `.up` in match code are against last tick's input, so a guessed input that repeats the last one doesn't press them again. A button let go and pressed again between two ticks is one press.
+- Repairs: sticks -1 to 1 on each axis, with NaN 0; triggers 0 to 1; the mouse's `delta` and `scroll` finite, or 0.
+- On the server's machine, its own player's input is the server's too, so entities without an owner read it. A server with no player of its own keeps the defaults.
 ### Open
 
 - Players joining, leaving and reconnecting.
@@ -601,12 +696,53 @@ input PlayerInput
 
 - Drawing is immediate mode: code calls `Draw` functions every frame, and nothing is kept between frames.
 - Views never change the match. They can change local state (see Local state).
+- Views draw at whatever frame rate the game renders, not the tick rate, and see the match blended between its last two ticks, so motion is smooth even at 20 ticks per second. They draw up to a tick late for it.
+- Floats are blended by default: every float, vector, quaternion and color a view reads of the match. Ints, bools, enums, entities and text are as they are at the latest tick. `[Snap]` on a field keeps it out of blending, for angles that wrap and values that jump:
+
+```csharp
+component Body
+{
+    float2 position;        // Blended
+    [Snap] float heading;   // Wraps from 360 to 0: as it is
+    int lives;              // Ints are as they are
+}
+```
+
+- Something that jumps, like a respawn, a portal or a camera cut, says so from match code: `entity.Snap()` or `singleton.Snap()`. For the tick it happens in, views draw it as it is instead of sliding from where it was.
+- A struct or component can say how it blends, like PurrNet's `Interpolate` override: `T Interpolate(T from, T to, float t)`, declared in it like an operator, with no value of its own. It replaces the default blend for that type wherever views see it:
+
+```csharp
+struct Angle
+{
+    float degrees;
+
+    Angle Interpolate(Angle from, Angle to, float t)
+    {
+        mut var d = to.degrees - from.degrees;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        return Angle { degrees = from.degrees + d * t };
+    }
+}
+
+component Body
+{
+    float2 position; // Blended as usual
+    Angle heading;   // Blended the short way round
+}
+
+event(Died dead) Respawn(Entity self, mut Body body, Arena arena)
+{
+    body.position = arena.start;
+    self.Snap(); // No sliding from where it died
+}
+```
 
 ### Provisional
 
 - `view` declares a view. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick. Its `mut` parameters, `Spawn`, `Add`, `Remove`, `Destroy` and `Send` are local (see Local state); input parameters are errors in a view.
 - Views run in declaration order, after all the systems of the frame's ticks. Within a view, entities run in the same order as in systems.
-- `Draw` functions can only be called from views for now. Calling them from systems needs to tell predicted ticks from verified or replayed ones, which comes with multiplayer.
+- `Draw` functions can only be called from views and the functions they call (see Functions). Calling them from systems needs to tell predicted ticks from verified or replayed ones, which comes with multiplayer.
 - `view` is only a keyword at the start of a declaration, like `input`.
 - Positions and sizes are in world units with `y` up. The camera maps them to the screen.
 - The Draw functions:
@@ -618,7 +754,12 @@ input PlayerInput
   - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the height.
 - Later Draw calls draw over earlier ones.
 - `Color` is a built-in value type with `r`, `g`, `b` and `a`, floats from 0 to 1, as in Unity. It's built with `Color(r, g, b)` (alpha 1) or `Color(r, g, b, a)`. The constants are `Color.white`, `black`, `red`, `green`, `blue`, `yellow`, `cyan`, `magenta`, `gray` and `clear`, with Unity's values and names. Components and singletons can hold colors. There are no operators on colors yet.
-- Text is written in double quotes, with the escapes `\"`, `\\` and `\n`, in printable ASCII. For now, text can only be passed directly to `Draw.Text`.
+- Text is written in double quotes, with the escapes `\"`, `\\` and `\n`. Its type is `string` (see Text).
+- Blending: a view's match components and singletons are copies, their fields that blend set between last tick's value and this tick's, as far as this moment is between the two ticks. Vectors, matrices, colors and rects blend component by component, quaternions the short way round (normalized), and structs field by field. An entity that wasn't there last tick is drawn as it is. Local state isn't blended: it's this machine's, as it is.
+- `[Snap]` goes on floats, vectors, quaternions, colors and rects of components, singletons and structs; on anything else it's an error that says why.
+- `entity.Snap()` is recorded and applied at the end of the tick, like `Destroy`, so it never makes systems wait. Each entity counts its snaps, and views only blend it between two ticks with the same count. `singleton.Snap()` needs the singleton as a `mut` parameter. Local state is never blended, so snapping it is an error, and so is `component.Snap()`, which says to snap the entity.
+- `Interpolate` isn't for code to call. Singletons have no methods, so a singleton blends its own way through a struct in it that has an `Interpolate`. A `[Snap]` field of such a type is still drawn as it is.
+- Hosts pass the two ticks and how far between them this moment is to `purr_frame`; sessions work that out (`purr_session_view`).
 
 ```csharp
 view DrawBalls(Body body, Ball ball)
@@ -637,8 +778,6 @@ view DrawHud(Arena arena)
 
 - Drawing from systems, with the prediction stage (verified, predicted, replayed) visible to the code.
 - Views reading input, for example to draw where the local player aims before the tick runs.
-- Smoothing between ticks: views currently see only the latest tick.
-- Text with values in it, such as C#'s `$"score {score}"`.
 - 3D drawing, sprites and textures, layers.
 
 ## GUI
@@ -655,7 +794,8 @@ view DrawHud(Arena arena)
 - Whatever the GUI is using, such as a click on a button or typing in a field, is hidden from the input's `Sample`.
 - Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position.
 - `Screen.width`, `Screen.height` and `Screen.scale` describe the window.
-- The widgets: `Label`, `Button`, `Toggle`, `Slider`, `IntSlider`, `TextField`, `IntField`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field`, `ColorField` and `Space`, and the containers `Horizontal`, `Vertical` and `Area`.
+- The widgets: `Label`, `Button`, `Toggle`, `Slider`, `IntSlider`, `TextField`, `IntField`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field`, `ColorField` and `Space`, and the containers `Horizontal`, `Vertical`, `Area` and `Modal`.
+- `GUILayout.Modal(anchor, mut bool open) { ... }` is a panel over the whole screen while `open` is true, like a pause menu. While it's up, it has the focus, the widgets outside it don't work, the game and views get nothing from the devices, and back (Escape or the east button) closes it.
 
 ```csharp
 local singleton Settings
@@ -667,10 +807,10 @@ local singleton Settings
 
 view Options(mut Settings settings)
 {
-    if (GUI.Button(Rect(Screen.width - 210, 10, 200, 40), "Options")) settings.open = !settings.open;
-    if (!settings.open) return;
+    if (GUI.Button(Rect(Screen.width - 210, 10, 200, 40), "Options")) settings.open = true;
+    if (Devices.keyboard.escape.down || Devices.gamepad.start.down) settings.open = true;
 
-    GUILayout.Area(Anchor.MiddleCenter)
+    GUILayout.Modal(Anchor.MiddleCenter, settings.open)
     {
         GUILayout.Toggle("Fullscreen", settings.fullscreen);
         GUILayout.Slider("Volume", settings.volume, 0, 1);
@@ -680,19 +820,32 @@ view Options(mut Settings settings)
 
 ### Provisional
 
-Claude's picks, not yet approved or implemented:
+Implemented, awaiting approval:
 
 - Positions and sizes are in units of a screen 1080 units tall, whose width follows the window's shape, so a GUI laid out once fits every window. `Screen.width` and `Screen.height` are in those units, and `Screen.scale` is pixels per unit.
-- `Rect(x, y, width, height)` is measured from the top left corner, with `y` down, as in Unity's GUI. World drawing and the mouse have `y` up.
-- `GUILayout.Area(anchor)` places an area sized to its content at one of nine anchors, named as Unity's `TextAnchor` (`UpperLeft` to `LowerRight`). `GUILayout.Area(rect)` places it at a rect.
-- The pieces widgets are made of: a control's ID, which the compiler derives from the call as for the built-in widgets, and whether that control is hovered, pressed or focused.
+- `Rect(x, y, width, height)` is a built-in value type measured from the top left corner, with `y` down, as in Unity's GUI, with `x`, `y`, `width` and `height`. World drawing and the mouse have `y` up. `GUI`'s rects are on the screen, inside an area or not.
+- `GUILayout.Area(anchor)` places a panel sized to its content at one of nine anchors, the built-in enum `Anchor`, named as Unity's `TextAnchor` (`UpperLeft` to `LowerRight`), 24 units from the screen's edges. `GUILayout.Area(rect)` places it at a rect. An anchored area is placed with its size from the frame before, and moves at the end of the frame if the size changed.
+- `GUILayout` widgets outside any area stack from the screen's top left, across every view. In a vertical container, buttons, toggles, sliders and fields stretch to the widest widget's width. Labelled widgets put their label in a column at least 240 wide, so a column of them lines up.
+- The widgets, with `GUI`'s taking a `Rect rect` first (`TextField` too, see Text):
+  - `Label(string text)` and `Button(string text) -> bool`, which returns whether it was pressed.
+  - `Toggle(string text, mut bool value)`, `Slider(string label, mut float value, float min, float max)`, `IntSlider(string label, mut int value, int min, int max)`, `IntField(string label, mut int value)`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field` and `ColorField` (a swatch, and fields for r, g, b and a, from 0 to 1). Each returns whether it changed its value.
+  - `GUILayout.Space(float size)`, and the containers `GUILayout.Vertical()`, `GUILayout.Horizontal()` and `GUILayout.Area(...)`.
+- A widget's `mut` argument is the variable itself, so its type matches exactly: `Slider` takes a `float` variable, not an `int`.
+- Widget IDs come from where each call is in the program, mixed with the entity a view runs for, and for a function that draws, with where it's called from. Calls from one place with the same entity count up, in the order they run.
+- Widgets draw as they're called, so, like `Spawn`, they can't be on the right of `&&` or `||` or in a side of `?:`. A statement with several runs them left to right.
+- Navigation: Tab and Shift+Tab move the focus between widgets, in the order they were drawn. The arrows, d-pad and left stick move it once a widget has it, and only start moving it while the game isn't reading the devices, so a HUD's button never takes the d-pad from the player. Enter, Space and the south button press; Escape and the east button let go. With the focus, left and right step a slider or number field.
+- Typing: clicking a number field, or pressing Enter on it, starts typing into it with its value selected, so the first character replaces it; typing a number into a focused field starts too. Enter or leaving the field keeps a valid number; Escape keeps the old value.
+- Hidden from the input's `Sample` and from views' `Devices`: the keyboard and gamepad while a widget has the focus, and the mouse's buttons and scroll while it's over a widget or an area, or pressing a widget. While a modal is up, everything is, the mouse's movement too.
+- A modal is an anchored area over the screen, dimmed. The one drawn last is on top, and only its widgets work. Its first widget takes the focus the frame after it comes up, and back doesn't close it on the frame it came up, so the press that opened it doesn't. `GUI` has no modal at a rect yet.
+- The drawing: a dark panel behind each area and the engine's default font, with no style to change yet.
 
 ### Open
 
 - A field for any enum. A game couldn't write one itself until there are generics.
 - Styles and themes.
 - More than one block per function, like Swift's labelled trailing closures.
-- `TextField` waits for strings, and labels showing values wait for text with values in it.
+- The pieces widgets are made of, so a game can build its own like the built-in ones: a control's ID, which the compiler derives from the call as for the built-in widgets, whether it's hovered, pressed or focused, and drawing in GUI units.
+- Scrolling, clipping, and keys that repeat while held.
 
 ## Local state
 
@@ -706,7 +859,7 @@ Claude's picks, not yet approved or implemented:
 - Local structural changes and local events are handled at the end of the frame, as the match's are at the end of the tick.
 - The GUI is immediate mode, drawn from views (see GUI).
 - **The compiler enforces the boundary,** so no mistake can reach a running game:
-  - Match code (systems, match event handlers, match scenes) can't read or write anything local, and can't read `Devices`. The input's `Sample` reads them, and writes only the input.
+  - Match code (systems, match event handlers, match scenes) can't read or write anything local, and can't read this machine's `Devices`: it takes a `Devices` parameter, the owner's, which the input sends. The input's `Sample` reads this machine's, and writes only the input.
   - Local code (views, local event handlers, local scenes) can read the match but never change it: no `mut` on match components or singletons, and no spawning, changing or sending match things.
   - The only way from local code into the match is input. Starting, joining and leaving a match are session calls, which never touch a running match.
   - Errors say where to go instead: "a view can't change the match: put it in the input and handle it in a system."
@@ -746,7 +899,6 @@ system Count(Spark spark) { }
 
 ### Open
 
-- The session API: starting, hosting, joining and leaving a match, and the connection's status.
 - Local handlers of match events (see Events).
 - Time for local code, such as the frame's length.
 - Saving local state, such as settings, between runs.
@@ -766,7 +918,7 @@ system Count(Spark spark) { }
 - **Visibility:** scenes are public by default, seen by every player in the world. `Scene.Load(Hand { ... }, SceneVisibility.Private)` loads a private one, which only the server and the players given it see: `Scene.AddPlayer(scene, player)` and `Scene.RemovePlayer(scene, player)`. Membership is match state, so the server decides it, and a player who's added receives the scene's state.
 - A private scene with no players exists only on the server, which is where secrets like RNG seeds go. Code that reads a private scene only predicts correctly on machines that see it, and the server corrects the others.
 - A client never loads match scenes on its own: it has the ones the server has it in.
-- `system Main()` is an error that says to write `scene Main`.
+- A system named `Main` is an ordinary system. Without a `scene Main`, the missing entry point's error says so.
 
 ```csharp
 scene Arena
@@ -815,6 +967,67 @@ system Collapse(Entity self, Arena arena)
 - The server's own code: creating worlds from scenes, and moving players between them.
 - Entity references that say what they point to, so the compiler can check `Scene.Unload` on an entity read from a field. It can already check one that comes from a system taking the scene's component, as in `Collapse`.
 - The details of private scenes: what players outside one see of it, and how an added player catches up.
+
+## Sessions
+
+### Decided
+
+- Single-player and multiplayer are the same: every match runs on a server, and this machine's player connects to it, over a loopback transport when the server is on this machine. The engine assumes nothing about what a game does with it, like pausing; games build that from inputs and state.
+- Local code decides which match this machine is in: `Session.Play(scene)` starts one on this machine alone, `Session.Host(scene)` one others can join, `Session.Join(address)` joins another machine's, and `Session.Leave()` leaves. `Play` and `Host` name the scene the match starts in, with its values like `Scene.Load`'s: `Session.Host(Arena { size = 30 })`. `Join` gets whatever the server runs.
+- Local code sees where this machine stands through a built-in local singleton, `Session` (taken as a parameter like any singleton), and the built-in local events `Connected` and `Disconnected`.
+- Clients have no input delay: their own input applies at once, and they run ahead of the server so it arrives in time. Only other players' inputs are ever guessed.
+- The desktop transport is our own thin layer on UDP.
+
+```csharp
+local scene Main { }
+
+scene Arena
+{
+    int size = 20;
+}
+
+view Menu(Session session)
+{
+    if (session.state != SessionState.Offline) return;
+    GUILayout.Area(Anchor.MiddleCenter)
+    {
+        if (GUILayout.Button("Play")) Session.Play(Arena);
+        if (GUILayout.Button("Host")) Session.Host(Arena { size = 40 });
+        if (GUILayout.Button("Join")) Session.Join("192.168.1.5");
+    }
+}
+
+local event(Disconnected gone) BackToMenu()
+{
+    // gone.reason says why: Left, TimedOut, Refused, ServerLeft or Failed.
+}
+```
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- `Session` has `state` (`SessionState.Offline`, `Connecting` or `Connected`), `player` (this machine's `PlayerID`, once connected), `ping` (the round trip to the server, in milliseconds) and `server` (whether this machine runs it). It's read-only.
+- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, or no room), `ServerLeft` (the server ended the match) or `Failed` (it couldn't start: no network, a port in use, an address that isn't one).
+- `Session.Host(scene, port)` takes players on `port`, 7777 without one. `Session.Join(address)` takes `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"`.
+- Session calls are statements, in views and local handlers. Functions can't make them yet, nor can match code, which runs the same on every machine, nor `Sample`.
+- A match can't start in a scene that holds text or lists yet.
+- Starting a match leaves the one this machine is in first, which sends `Disconnected` with `Left` before the new one's `Connected`.
+- The server's player joins before the match's first tick, as `PlayerJoined` handled at the end of it; the server only starts ticking then.
+- When `Main` is the match's, `purr/run.h` plays it at once, or hosts or joins with `--host [port]` and `--join address` on the command line (and `purr run --host` and `--join`).
+- Up to 16 players.
+- A client predicts at most a second ahead of the last tick the server confirmed, however many ticks that is at the match's tick rate; beyond it, it waits for the server. The server keeps four seconds of ticks to send again; a player further behind gets the whole world again.
+- **Coming back:** joining a server gives this machine a cookie, and `Session.Join` to the same server again presents it, so the player gets their `PlayerID` back, and with it whatever the game kept for them. If the server still has them connected (their old connection went quiet), the new one takes over with no events at all; if they'd left, `PlayerJoined` comes again with the same `PlayerID`. A server keeps a slot for a player who left until it has no slot that was never used; then it gives away the one away longest, and that player's cookie stops working.
+- The cookie lives as long as the program: it doesn't survive a restart yet, and it's not safe against someone on the network guessing it.
+- Web games can only `Play` for now: `Host` and `Join` fail with `Failed`.
+
+### Open
+
+- Keeping the cookie across restarts, and making it unguessable.
+- Servers with no window and no player of their own.
+- Browsers joining matches, over WebSocket, WebTransport or WebRTC.
+- Lobbies, finding matches, and reaching machines behind routers.
+- Telling predicted state from verified state in game code (see AGENTS.md, Networking).
 
 ## Open
 

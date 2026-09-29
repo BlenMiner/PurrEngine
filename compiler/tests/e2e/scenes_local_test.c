@@ -5,11 +5,12 @@
 
 static purr_local local;
 static purr_draw_list draw;
+static purr_gui gui;
 
 static void frame(void)
 {
     purr_draw_reset(&draw);
-    purr_frame(NULL, &local, &draw); // No match
+    purr_frame(NULL, NULL, 1.0f, &local, &draw, &gui); // No match
 }
 
 PURR_TEST(scenes_local_main_opens_a_menu)

@@ -33,8 +33,9 @@ A networking-first game engine:
   - The view reads the world and draws it. It never writes simulation state.
   - The platform layer's only link to the simulation is filling `Devices`.
   - Game code and raylib never share a source file: generated headers name types after the game's components (`Transform`), and raylib defines many of the same names. Hosts include `purr/platform.h`, which doesn't include raylib, and `purr_platform` keeps raylib private.
-- `purr/run.h` is the standard host: `purr_run(&(purr_run_desc){.title = "..."})` opens a window, ticks the game at a fixed rate with player 0's input from the devices, and draws its views. Player 0 joins before the first tick. A game needs no other C.
+- `purr/run.h` is the standard host: `purr_run(&(purr_run_desc){.title = "...", .argc = argc, .argv = argv})` opens a window and runs the game in a session (`purr/session.h`), sampling this machine's input from the devices once per tick it runs, and draws its views and their GUI. When `Main` is the match's, it plays at once, or hosts or joins with `--host [port]` or `--join address`. This machine's player joins before the first tick. A game needs no other C.
 - Views are written in PurrLang (`view` declarations). Their `Draw` calls record commands into a renderer-agnostic draw list (`purr/draw.h`). The platform layer renders the list (`purr_platform_draw`), so replacing raylib only means rewriting that function.
+- The GUI (`GUI` and `GUILayout` in PurrLang, `purr/gui.h` in C) is immediate mode, like Draw, and local: widgets change local state, never the match. It records into a list of its own, which `purr_gui_end` adds after the world's, in GUI units (a screen 1080 tall, y down). It measures text with the platform's font (`purr_platform_measure_text`). Views read the devices through it (`Devices` in PurrLang): `purr_gui_begin` works out what changed since last frame and hides what the GUI uses.
 
 ## Tech stack
 
@@ -50,7 +51,7 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 - Build only: `cmake --build --preset debug`
 - Run tests: `ctest --preset debug`, or run `build/debug/bin/purr_tests [name-filter]` directly
 - Run the sandbox: `build/debug/bin/sandbox`
-- Run the demo: `build/debug/bin/demo`, or open `build/web-release/bin/demo.html` in a browser after a web build.
+- Run the demo: `build/debug/bin/demo`, or open `build/web-release/bin/demo.html` in a browser after a web build. Two players: `demo --host` in one window and `demo --join 127.0.0.1` in another (or another machine's address).
 
 There are two presets for everyday work. `debug` has no optimization. `release` is optimized and keeps debug info for profiling. Web builds, MinGW builds and the package have their own (see below).
 
@@ -91,22 +92,26 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 
 The generated header is the API between the game and the host. Namespaced declarations have their namespace in their C name: `Combat.Health` is `Combat_Health`, read with `purr_get_Combat_Health`.
 
-- `purr_world`: the whole simulation state as plain data. Copying it is a snapshot.
+- `purr_world`: the whole simulation state as plain data. Copying it is a snapshot. When fields hold text or lists, it has a `heap` they're kept in; hosts read a text field with `purr_text_read(&w->heap, field)`.
 - `purr_world_init(w, dt)`: clears the world, sets `Time.dt` and singleton defaults, and loads the `Main` scene if it's the match's.
 - `PURR_MAIN_IS_LOCAL` is defined when `Main` is a local scene: the program starts outside any match.
 - `purr_world_tick(w)`: runs every system once, then applies structural changes.
 - `purr_local`: this machine's local state, outside every world. `purr_local_init(local)` clears it and sets its singletons' defaults.
-- `purr_frame(w, local, draw)`: runs every view once, adding their Draw calls to a `purr_draw_list`, then applies the local changes they made. Call it once per frame, after `purr_draw_reset(draw)`, then render the list with `purr_platform_draw(draw)`. Outside a match `w` is NULL, and views that read the match don't run.
+- `purr_frame(w, previous, alpha, local, draw, gui)`: runs every view once, adding their Draw calls to a `purr_draw_list` and their widgets to a `purr_gui`, then applies the local changes they made. Views see the match's floats blended from `previous`, the tick before `w`, by `alpha` (0 to 1), so they're smooth at any tick rate; `purr_session_view` gives all three. Pass NULL and 1 to draw `w` as it is. Call it once per frame, after `purr_draw_reset(draw)` and `purr_gui_begin(gui, devices, purr_platform_screen_size(), purr_platform_measure_text)`, then `purr_gui_end(gui, draw)` and render the list with `purr_platform_draw(draw)`. Outside a match `w` is NULL, and views that read the match don't run. A zeroed `purr_gui` is ready to use.
 - `purr_get_<Component>(w, entity)`: a component of an entity, or `NULL`. A local component's takes the `purr_local`.
 - `purr_world_player_joined(w, player)` and `purr_world_player_left(w, player)`: send `PlayerJoined` and `PlayerLeft`, handled at the end of the next tick. Every machine calls them before the same tick.
 - `purr_world_entity_count(w)` and `purr_world_print(w)`: for debugging.
-- If the game declares an input, `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices)` runs the input's `Sample` on the client (call `purr_devices_consume(devices)` after it). `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.
+- `purr_world_copy(to, from)` and `purr_world_hash(w)`: snapshots and state hashes between ticks, covering only what's in use.
+- `purr_world_start(w, dt, start)`: `purr_world_init`, starting the match in the scene `start` names (`purr_start`, from `Session.Play` and `Session.Host`), or `Main` for NULL.
+- `purr_game_api`: the game as sessions run it (`purr_game` in `purr/session.h`): the world's size and functions, and the input packed for the network.
+- Local code's requests of the session (`Session.Play` and the like) wait in the local state: `purr_local_take_request(local, &request, &start)` takes them. Hosts tell local code where it stands with `purr_local_set_session(local, state, player, ping, server)`, `purr_local_connected(local)` and `purr_local_disconnected(local, reason)`.
+- If the game has an input (it declares one, or systems take `Devices`), `PURR_HAS_INPUT` is defined and `purr_input` names its type. `purr_input_sample(devices, local)` runs the input's `Sample` on the client, with this machine's local state: give it a copy of the devices that `purr_gui_hide(gui, &copy)` took what the GUI is using out of, then call `purr_devices_consume(devices)` on the real ones. The input holds what match code reads of the devices (`purr_dev`), everything else zero. `purr_world_set_input(w, player, input)` sets a player's input for the next tick, and `purr_world_set_server_input(w, input)` the server's, which entities without an owner read. Both repair NaN and infinite floats, apply the fields' `[Clamp]`, `[Min]` and `[Max]`, then run the input's `Sanitize`, if it has one.
 
 ## Packaging and releases
 
 Users get PurrEngine as the `purr` command, not this repo: see README.md.
 
-- `purr run`, `purr build [--release] [--web]`, `purr schedule`, `purr editors`, `purr upgrade` and `purr version` (`compiler/cli/`, owned by Claude). It runs purrc's front end in-process, compiles the generated C and the engine's sources with the determinism flags (as separate files, like the CMake build), and links the prebuilt platform layer.
+- `purr run [--host [port] | --join address]`, `purr build [--release] [--web]`, `purr schedule`, `purr editors`, `purr upgrade` and `purr version` (`compiler/cli/`, owned by Claude). It runs purrc's front end in-process, compiles the generated C and the engine's sources with the determinism flags (as separate files, like the CMake build), and links the prebuilt platform layer.
 - Packages have clang and lld built into purr (`PURR_EMBED_LLVM`, `compiler/cli/llvm/cc.cpp`), so users need no compiler: `purr cc` is clang, whose compiles run in purr's process and whose links go to lld in it. purr links the static libraries of LLVM's own release, downloaded once into `build/llvm-<version>` and pinned (`cmake/LLVM.cmake`, which also builds the zlib, zstd and libxml2 they were built with; unpacking needs the `zstd` program). macOS's release holds them as LLVM bitcode, so purr links there with that release's lld. Builds of this repo without the option use an installed clang (`--web` needs `wasm-ld` next to it).
 - The package brings the C library for web games (wasi-libc) and for Windows games, which build for MinGW-w64 (see MinGW builds): Microsoft's C runtime can't ship with purr, and the UCRT is part of Windows, so players need nothing else. Linux games use the system's C development files, and macOS games the SDK of Apple's command-line tools (purr sets `SDKROOT`).
 - A game is a folder of `.purr` files. purr keeps its work in `<folder>/.purr/` (hidden on Windows too, and it ignores itself in git) and puts `purr build` output in `<folder>/build/`.
@@ -135,11 +140,16 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
 ### Runtime written by Claude for now
 
 - `engine/include/purr/entity.h` and `engine/src/entity.c` (the entity table) are a temporary implementation Claude wrote so generated code could run. The owner takes them over later. Until then Claude maintains them. Generated code depends on the functions declared in `entity.h`.
-- `engine/include/purr/devices.h`, `engine/src/devices.c` (input devices) and `engine/include/purr/player.h` (`PlayerID`) are Claude's too, on the same terms. purrc reads the device member lists from `devices.h`, so PurrLang and C always agree.
+- `engine/include/purr/devices.h`, `engine/src/devices.c` (input devices) and `engine/include/purr/player.h` (`PlayerID`) are Claude's too, on the same terms. purrc reads the device member lists from `devices.h`, so PurrLang and C always agree. `purr_devices` has no padding the compiler adds: the input holds one when match code reads devices.
 - `engine/include/purr/math.h` and `engine/src/math.c` (vectors, quaternions, matrices and transcendental functions) are Claude's too, on the same terms. Generated code calls them by the names `purr_<function>_<type>`. The transcendental functions are in-house, computed in double from basic operations; CORE-MATH remains an option to replace them.
 - `engine/include/purr/color.h`, `engine/include/purr/draw.h` and `engine/src/draw.c` (colors and the draw list) are Claude's too, on the same terms. Generated views call the `purr_draw_*` functions.
+- `engine/include/purr/heap.h`, `engine/src/heap.c` (a world's heap), `engine/include/purr/text.h`, `engine/src/text.c` (text, its formatting and the scratch area) and `engine/include/purr/list.h`, `engine/src/list.c` (lists) are Claude's too, on the same terms. Generated code calls the `purr_str_*`, `purr_text_*` and `purr_list_*` functions.
+- `engine/include/purr/net.h`, `engine/src/net.c` (addresses, transports, the loopback network, packing bytes and bits, snapshots and hashes), `engine/include/purr/session.h`, `engine/src/session.c` (servers, clients and sessions: the netcode) and `platform/src/udp.c` (the UDP transport) are Claude's too, on the same terms, as a first version the owner takes over. Generated code calls the `purr_bits_*` functions and fills a `purr_game`.
+- `engine/include/purr/gui.h` and `engine/src/gui.c` (the GUI's widgets, layout, focus and typing) are Claude's too, on the same terms. Generated views and the functions they call call the `purr_gui_*` functions, with IDs purrc derives from where each widget is called and the entity the view runs for. PurrLang's `Anchor` has `purr_anchor`'s values.
 - `platform/` (the platform layer) and `demo/` are Claude's too, on the same terms.
   - The platform layer reads keys by physical position everywhere. On the web, the page reads the DOM's `code`, never the typed character, which follows the keyboard layout. `platform/tests/web_keys.c` guards this with AZERTY-style events. Hosts and views should read input from `Devices` too, never raylib's key functions.
+  - The characters typed, which do follow the layout, are a separate channel (`purr_devices.text`, since the last poll) that only the GUI reads.
+  - On the web, a key or mouse button pressed and released between two frames reads as held for one, so taps aren't lost when frames are slow.
   - On the web, `purr_platform_run` never returns (the browser drives the frames), so hosts do all their work in the frame function.
 
 ## Language
@@ -162,8 +172,11 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 - Singletons hold state for the whole world, such as time, RNG and game rules (other ECSs call them resources). There is one of each per world, stored inside it, and systems declare them the same way as components.
 - The world is always passed as a pointer, never stored in a global. Several worlds can exist at once, for example predicted and verified copies, several matches on one server, or snapshots.
 - The world owns all simulation memory. Components hold offsets into world memory, never pointers. The allocator's state lives in the world too, so a snapshot captures everything.
+- Text and lists in fields live in the world's heap (`purr/heap.h`): a fixed size set when the game is built (`PURR_HEAP_BYTES`), and blocks handed out and reused in a fixed order, so every machine gets the same offsets and runs out at the same point. Freed memory is zeroed.
+- Text and lists that code makes along the way live in a scratch area outside the world, cleared after each system, view and handler runs, and are only ever copied into a world.
 - Local state (menus, settings, view state such as particles) belongs to one machine and lives outside every world. It's never sent, rolled back or hashed. The compiler keeps match code from reading it and local code from changing the match (see `docs/purrlang.md`).
 - Generated types (components, singletons, the input and structs) have no padding the compiler adds: purrc writes it out as members, which every value sets to zero, and the generated header checks each type's size (`_Static_assert`). Their bytes only depend on their fields, so snapshots and state hashes can compare memory directly. Input from outside gets its padding cleared along with its other repairs.
+- Past each count (an archetype's rows, the entity table's slots and free list, the heap's used bytes, the command queue), a world is zeros: removing a row clears the one it vacates, and a snapshot copy clears what the destination used beyond the source. So a world's bytes only depend on its state, and snapshots (`purr_world_copy`) and hashes (`purr_world_hash`) cover only what's in use: their cost follows the world's contents, not its capacity.
 
 ## Performance
 
@@ -175,7 +188,10 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 ## Networking
 
 - Rollback netcode with full server authority. The server is the source of truth. Clients predict ahead and roll back when the server disagrees.
-- Single-player is a match too: the machine runs the server itself and connects to it through a loopback transport, so there's no separate offline path.
+- Single-player is a match too: the machine runs the server itself and connects to it through a loopback transport, so there's no separate offline path. The engine assumes nothing about what games do with matches (no built-in pause): it gives them the tools.
+- Clients have no input delay: they run ahead of the server by about half the round trip plus a small margin, so their inputs arrive in time, and only other players' inputs are guessed.
+- Desktop matches use our own thin layer on UDP. The web will need another transport (WebSocket, WebTransport or WebRTC); the protocol above it stays the same.
+- How it works now (`purr/session.h`): the server ticks the one true world and sends each player every tick: who joined or left, the inputs that changed, and a hash of the world after it. Inputs that didn't change or arrive keep the last one, on every machine. A client keeps a snapshot of every tick from the last one the server confirmed (the verified world) to the one it predicted. A tick that arrives as the client guessed only has its hash checked against its snapshot; one that went otherwise runs on the snapshot before it, and the ticks after it run again. A client whose hash differs gets the whole world again, packed. Joining players get it too, and a cookie that gets them their `PlayerID` back when they join again. Everything is resent until acknowledged; nothing waits on a reliable stream.
 - Sync relies on determinism as much as possible. The main thing sent over the network is inputs.
 - Inputs come from clients, so they're attack points. The engine is forgiving with them and makes bad values hard to turn into broken math or a broken game: NaN and infinite floats in an input become the field's default before the game's `Sanitize` runs, and math functions avoid spreading NaN where they can (`Math.Clamp` always returns a value in range; `Math.Min` and `Math.Max` with one NaN return the other argument).
 - State corrections are supported. Divergence is detected through state hashing.
@@ -213,7 +229,7 @@ Given the same build and the same inputs, simulation results must be bit-identic
 - It is not an error for two systems to write the same component. It's normal.
 - Those systems run one after the other, in a deterministic order.
 - Tooling tells the user why they didn't run in parallel. Example: "`MoveSystem` runs after `GravitySystem`: both write `Position`."
-- Two systems conflict when one writes a component or singleton the other reads or writes, unless they can never touch the same entity: the compiler proves that from the archetypes (`with Player` against `with Enemy`). `Spawn`, `Add`, `Remove`, `Destroy` and `Send` never conflict, because they're recorded and applied at the end of the tick in order. Event handlers run then too, as each event's turn comes, so they aren't part of the tick's schedule. Input and `Time` are only read.
+- Two systems conflict when one writes a component or singleton the other reads or writes, unless they can never touch the same entity: the compiler proves that from the archetypes (`with Player` against `with Enemy`). Two systems that change the match's text or lists conflict too, as they share its heap. `Spawn`, `Add`, `Remove`, `Destroy` and `Send` never conflict, because they're recorded and applied at the end of the tick in order. Event handlers run then too, as each event's turn comes, so they aren't part of the tick's schedule. Input and `Time` are only read.
 - Conflicting systems keep their order in the tick, and `[Before]`/`[After]` order systems too. A system starts as soon as everything it waits for is done; there are no barriers between stages. A system's stage is only how deep it is in that chain.
 - A system splitting its entities across threads is the other kind of parallelism, and it doesn't change results either.
 - The tick doesn't run on threads yet, but the plan already exists (`analyze_parallelism` in `compiler/src/parallel.c`): the language server shows each system's stage and waits above it and on hover, and `purrc --schedule` (or the `<game>_schedule` build target) prints it as text for CI and agents. `compiler/tests/schedule/` pins its output.

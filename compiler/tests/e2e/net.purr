@@ -1,0 +1,80 @@
+// A match over a bad network: players join, move and leave, and every machine
+// must keep the server's world exactly.
+
+component Mover
+{
+    float2 position;
+    int jumps;
+}
+
+component Ball
+{
+    float2 position;
+    float2 velocity;
+}
+
+input Controls
+{
+    float2 move;
+    bool jump;
+}
+
+singleton Players
+{
+    int joined;
+    int left;
+}
+
+scene Main { }
+
+scene Arena
+{
+    int size = 10;
+}
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Ball { velocity = float2(1, 0.5) });
+}
+
+event(Spawned) Fill(Arena arena)
+{
+    Spawn(Ball { velocity = float2(arena.size, 0) });
+}
+
+event(PlayerJoined joined) Join(mut Players players)
+{
+    players.joined += 1;
+    Spawn(Mover { position = float2(players.joined, 0) }, Owner { player = joined.player });
+}
+
+event(PlayerLeft left) Leave(mut Players players)
+{
+    players.left += 1;
+}
+
+system Move(Controls input, Time time, mut Mover mover, with Owner)
+{
+    mover.position += input.move * time.dt * 5;
+    if (input.jump.down) mover.jumps += 1;
+}
+
+system Roll(Time time, mut Ball ball)
+{
+    ball.position += ball.velocity * time.dt;
+    if (Math.Abs(ball.position.x) > 20) ball.velocity.x = -ball.velocity.x;
+    if (Math.Abs(ball.position.y) > 20) ball.velocity.y = -ball.velocity.y;
+}
+
+// Starting a match from local code.
+local singleton Menu
+{
+    bool play;
+}
+
+view Start(mut Menu menu)
+{
+    if (!menu.play) return;
+    menu.play = false;
+    Session.Play(Arena { size = 3 });
+}

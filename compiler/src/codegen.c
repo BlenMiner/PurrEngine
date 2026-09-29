@@ -6,6 +6,8 @@
 
 #include "types.h"
 
+#include "purr/devices.h" // purr_devices' size, which the input holds when match code reads devices
+
 // Emits C for a checked program. Everything specific to the game is generated
 // here: component structs, archetype storage, deferred structural changes and
 // events, system, view and handler bodies, dispatch loops, the tick and
@@ -15,6 +17,34 @@ typedef struct transition {
     int from;
     int to;
 } transition;
+
+// Code copied into a call of a function that takes a Block: the function's
+// body, whose own locals and parameters get a prefix. The caller's block runs
+// where the body runs `content()`, as the caller's code again.
+typedef struct gen_frame {
+    const decl *routine;         // The function
+    const char *prefix;          // Its locals' and parameters' C names start with it
+    const char *end;             // The label its `return` goes to
+    bool end_used;
+    int containers;              // GUI containers open when it started
+    struct gen_frame *caller;    // The frame the call is in; NULL for the routine's own code
+    const decl *caller_routine;
+    const stmt *block;           // The block written after the call
+} gen_frame;
+
+// A switch or loop being generated: what `break` and `continue` go to. In a
+// block copied into a call, C's break and continue would go to the function's
+// own loop or switch if it's closer, so they jump to the labels instead.
+typedef struct gen_target {
+    const gen_frame *frame; // Whose code it is
+    int containers;         // GUI containers open when it started
+    bool loop;
+    bool plain_continue;    // A while: C's continue goes on to its next round (a for's runs its step first)
+    const char *end;        // After it
+    bool end_used;
+    const char *next;       // A loop: the end of its body
+    bool next_used;
+} gen_target;
 
 typedef struct gen {
     program *prog;
@@ -31,6 +61,15 @@ typedef struct gen {
     int spawn_temps;     // Temporaries for hoisted spawns, numbered per function.
     bool has_scene;      // The body being generated has purr_scene: the scene of the entity it runs for
     bool scene_local;    // ...an entity of the local world
+    gen_frame *frame;    // Inlined code being generated, or NULL for the routine's own
+    VEC(const char *) containers; // GUI containers open: the variable each one's purr_gui_close takes
+    VEC(gen_target) targets;
+    int labels;          // Names made up so far (inlined calls, containers, switches), numbered per program
+    int sites;           // GUI calls so far: each one's place in the program, for its widget ID
+    int call_temps;      // Temporaries for hoisted GUI calls, per function
+    const expr *raw_place; // A text field being generated as the purr_text it is, not read as text
+    uint64_t game_hash;    // Of the header: tells builds of different games apart
+    const decl *blending;  // The view whose run function is being generated: its blended parameters are copies
 } gen;
 
 // ---------------------------------------------------------------------------
@@ -99,9 +138,14 @@ static const char *local_cname(const gen *g, const str name)
         const decl *d = g->prog->decls.items[i];
         if (d->kind != DECL_SYSTEM && str_eq_c(name, type_cname(d))) clash = true;
     }
-    char *out = arena_alloc((size_t)name.len + 2);
-    memcpy(out, name.ptr, (size_t)name.len);
-    if (clash) out[name.len] = '_';
+    // Inlined code's names start with its prefix, so the caller's block,
+    // copied inside it, still sees the caller's.
+    const char *prefix = g->frame ? g->frame->prefix : "";
+    const size_t n = strlen(prefix);
+    char *out = arena_alloc(n + (size_t)name.len + 2);
+    memcpy(out, prefix, n);
+    memcpy(out + n, name.ptr, (size_t)name.len);
+    if (clash) out[n + (size_t)name.len] = '_';
     return out;
 }
 
@@ -113,6 +157,100 @@ static const char *c_type(const type t)
     }
     if (t.kind == TY_RECORD) return t.decl->c_name;
     return type_c_name(t);
+}
+
+// A declaration of a read-only local or parameter: `const T name`.
+static const char *const_decl(const type t, const char *name)
+{
+    sb b = {0};
+    sb_printf(&b, "const %s %s", c_type(t), name);
+    return b.data;
+}
+
+// Whether a value of type `t` has text or a list in it, in its own fields or
+// its structs': data a world keeps in its heap.
+static bool type_has_text(const type t)
+{
+    if (t.kind == TY_STRING || t.kind == TY_LIST) return true;
+    if (t.kind != TY_STRUCT) return false;
+    for (int i = 0; i < t.decl->fields.count; i++) {
+        if (type_has_text(t.decl->fields.items[i].type)) return true;
+    }
+    return false;
+}
+
+static bool decl_has_text(const decl *d)
+{
+    for (int i = 0; i < d->fields.count; i++) {
+        if (type_has_text(d->fields.items[i].type)) return true;
+    }
+    return false;
+}
+
+// A field with heap data: text, or a list (`list` is its type).
+typedef struct heap_path {
+    const char *path;
+    const decl *list;
+} heap_path;
+
+typedef VEC(heap_path) path_list;
+
+// The text and list fields of `d`'s values, as member paths from `prefix`:
+// "name", "stats.title".
+static void text_paths(const decl *d, const char *prefix, path_list *out)
+{
+    for (int i = 0; i < d->fields.count; i++) {
+        const field *f = &d->fields.items[i];
+        if (!type_has_text(f->type)) continue;
+        sb path = {0};
+        sb_printf(&path, "%s%s", prefix, field_cname(f));
+        if (f->type.kind == TY_STRING || f->type.kind == TY_LIST) {
+            const heap_path hp = {path.data, f->type.kind == TY_LIST ? f->type.decl : NULL};
+            vec_push(*out, hp);
+        } else {
+            sb_put(&path, ".");
+            text_paths(f->type.decl, path.data, out);
+        }
+    }
+}
+
+// Whether a value of type `t` has a list in it: taking it out of a place copies it.
+static bool type_has_list(const type t)
+{
+    if (t.kind == TY_LIST) return true;
+    if (t.kind != TY_STRUCT && t.kind != TY_COMPONENT && t.kind != TY_SINGLETON && t.kind != TY_EVENT) return false;
+    for (int i = 0; i < t.decl->fields.count; i++) {
+        if (type_has_list(t.decl->fields.items[i].type)) return true;
+    }
+    return false;
+}
+
+// A list's element: its type, and its C type in the list (text is a purr_text).
+static type list_elem(const decl *list)
+{
+    return list->fields.items[0].type;
+}
+
+static const char *c_type(type t);
+
+// An element's C type in the list: text is a purr_text.
+static const char *elem_ctype(const type t)
+{
+    return t.kind == TY_STRING ? "purr_text" : c_type(t);
+}
+
+// An element's value in C: text as a purr_str, anything else as it's stored.
+static const char *elem_vtype(const type t)
+{
+    return t.kind == TY_STRING ? "purr_str" : c_type(t);
+}
+
+// A name for generated code, unique in the program: purr_<what><n>.
+static const char *made_up(gen *g, const char *what)
+{
+    sb b = {0};
+    sb_printf(&b, "purr_%s%d", what, g->labels++);
+    return b.data;
 }
 
 // Page.Title is Page_Title in C: a constant of the enum's int type.
@@ -206,7 +344,7 @@ static bool is_load_archetype(const gen *g, const int a)
 // changes.
 static bool is_pointer_param(const param *p)
 {
-    if (p->function_param) return p->mode == PARAM_MUT;
+    if (p->function_param) return p->mode == PARAM_MUT || p->type.kind == TY_RECORD;
     const type_kind k = p->type.kind;
     return k == TY_COMPONENT || k == TY_SINGLETON || k == TY_INPUT || k == TY_RECORD || k == TY_EVENT;
 }
@@ -290,6 +428,7 @@ static const char *routine_cname(const decl *m)
 }
 
 static void gen_as(gen *g, sb *o, expr *e, type want);
+static void gen_value_of(gen *g, sb *o, expr *e, type want);
 
 // A struct's operator applied to `l` and `r` (NULL for one operand).
 static void gen_operator_call(gen *g, sb *o, const decl *m, expr *l, expr *r)
@@ -459,7 +598,13 @@ static void gen_value(gen *g, sb *o, const decl *d, const field_init *inits, con
         }
         if (!value) continue;
         sb_printf(o, "%s.%s = ", written++ ? ", " : "", field_cname(f));
-        gen_as(g, o, value, f->type);
+        if (f->type.kind == TY_STRING) { // Borrowed text; a world takes its own copy when the value goes in
+            sb_put(o, "purr_text_temp(");
+            gen_expr(g, o, value);
+            sb_put(o, ")");
+            continue;
+        }
+        gen_value_of(g, o, value, f->type);
     }
     if (written == 0) sb_put(o, "0");
     sb_put(o, "}");
@@ -547,6 +692,72 @@ static const char *c_op(const tok_kind op)
     }
 }
 
+static void gen_text_add(gen *g, sb *o, const char *so_far, const expr *value, int32_t format);
+
+// A text field of a component, singleton, struct or event: a purr_text, read
+// as text through purr_text_view and changed through purr_text_set.
+static bool is_text_field(const expr *e)
+{
+    if (e->type.kind != TY_STRING) return false;
+    if (e->kind == E_MEMBER) return e->field != NULL;
+    return e->kind == E_NAME && e->bind == BIND_FIELD;
+}
+
+// A function's `mut string` parameter: a purr_textref.
+static bool is_text_ref(const expr *e)
+{
+    return e->kind == E_NAME && e->bind == BIND_PARAM && e->param->function_param && e->param->mode == PARAM_MUT
+        && e->param->type.kind == TY_STRING;
+}
+
+// Whether `e` makes a new value, rather than naming one that's somewhere: a
+// call's result, or a literal. A value named elsewhere with a list in it is
+// copied as it's taken, so no two variables share a list.
+static bool is_fresh(const expr *e)
+{
+    return e->kind == E_CALL || e->kind == E_METHOD || e->kind == E_LIST || e->kind == E_LITERAL;
+}
+
+// `e` as a value going somewhere else: converted to `want`, and its lists
+// copied if it's taken out of a place.
+static void gen_value_of(gen *g, sb *o, expr *e, const type want)
+{
+    if (!type_has_list(e->type) || is_fresh(e)) {
+        gen_as(g, o, e, want);
+        return;
+    }
+    if (e->type.kind == TY_LIST) sb_printf(o, "purr_list%d_copy(", e->type.decl->index);
+    else sb_printf(o, "purr_copy_%s(", type_cname(e->type.decl));
+    gen_expr(g, o, e);
+    sb_put(o, ")");
+}
+
+// The field itself, as the purr_text it is.
+static void gen_raw_place(gen *g, sb *o, const expr *e)
+{
+    const expr *outer = g->raw_place;
+    g->raw_place = e;
+    gen_expr(g, o, e);
+    g->raw_place = outer;
+}
+
+// A `mut string` argument: the caller's text, a field's, a local's, or the
+// caller's own `mut string` parameter passed on.
+static void gen_text_ref(gen *g, sb *o, const expr *e)
+{
+    if (is_text_ref(e)) {
+        sb_put(o, local_cname(g, e->name));
+    } else if (is_text_field(e)) {
+        sb_put(o, "((purr_textref){&(");
+        gen_raw_place(g, o, e);
+        sb_put(o, "), NULL})");
+    } else {
+        sb_put(o, "((purr_textref){NULL, &(");
+        gen_expr(g, o, e);
+        sb_put(o, ")})");
+    }
+}
+
 static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const type result, const decl *overload)
 {
     if (overload) {
@@ -554,6 +765,18 @@ static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const
         return;
     }
     const type lt = l->type;
+    if (lt.kind == TY_STRING || r->type.kind == TY_STRING) {
+        if (op == T_EQ || op == T_NE) {
+            sb_printf(o, "%spurr_str_eq(%s, %s)", op == T_NE ? "!" : "", expr_text(g, l), expr_text(g, r));
+            return;
+        }
+        // Joining: the text so far, then the other value.
+        sb left = {0};
+        if (lt.kind == TY_STRING) gen_expr(g, &left, l);
+        else gen_text_add(g, &left, "PURR_STR_EMPTY", l, 0);
+        gen_text_add(g, o, left.data, r, 0);
+        return;
+    }
     const type rt = r->type;
     const type float_t = {TY_FLOAT, NULL};
 
@@ -767,29 +990,152 @@ static void gen_construct(gen *g, sb *o, const expr *e)
         if (e->args.count == 3) sb_put(o, ", 1.0f");
         sb_put(o, "}");
         break;
+
+    case CTOR_RECT:
+        sb_put(o, "(purr_rect){");
+        for (int i = 0; i < e->args.count; i++) {
+            if (i) sb_put(o, ", ");
+            gen_as(g, o, e->args.items[i], float_t);
+        }
+        sb_put(o, "}");
+        break;
     }
 }
 
-// "text" as a C string literal. PurrLang's escapes (\" \\ \n) mean the same in
-// C; '?' is escaped so no trigraph can form.
-static void gen_string(sb *o, const str text)
+// Text as a C string literal. PurrLang's escapes (\" \\ \n) mean the same in
+// C; '?' is escaped so no trigraph can form, and bytes past ASCII are written
+// as octal escapes. In text with values, {{ and }} are single braces.
+static void gen_c_literal(sb *o, const str text, const bool values)
 {
     sb_put(o, "\"");
     for (int i = 0; i < text.len; i++) {
-        if (text.ptr[i] == '?') sb_put(o, "\\?");
-        else sb_putn(o, &text.ptr[i], 1);
+        const unsigned char c = (unsigned char)text.ptr[i];
+        if (values && (c == '{' || c == '}') && i + 1 < text.len && text.ptr[i + 1] == (char)c) i++;
+        if (c == '\\' && i + 1 < text.len) {
+            sb_putn(o, &text.ptr[i], 2);
+            i++;
+        } else if (c == '?') {
+            sb_put(o, "\\?");
+        } else if (c >= 0x80) {
+            sb_printf(o, "\\%03o", c);
+        } else {
+            sb_putn(o, &text.ptr[i], 1);
+        }
     }
     sb_put(o, "\"");
+}
+
+// Text as a purr_str: the literal, its bytes and its characters.
+static void gen_text_literal(sb *o, const str text, const bool values)
+{
+    int bytes = 0;
+    int chars = 0;
+    for (int i = 0; i < text.len; i++) {
+        const unsigned char c = (unsigned char)text.ptr[i];
+        if ((c == '\\' && i + 1 < text.len) || (values && (c == '{' || c == '}') && i + 1 < text.len && text.ptr[i + 1] == (char)c)) {
+            i++; // An escape or a doubled brace: one character
+        }
+        bytes++;
+        chars += (c & 0xC0u) != 0x80u;
+    }
+    if (bytes == 0) {
+        sb_put(o, "PURR_STR_EMPTY");
+        return;
+    }
+    sb_put(o, "((purr_str){");
+    gen_c_literal(o, text, values);
+    sb_printf(o, ", %d, %d})", bytes, chars);
+}
+
+// Text for a C function that takes a `const char *`, like Draw.Text's.
+static void gen_c_text(gen *g, sb *o, const expr *e)
+{
+    if (e->kind == E_STRING) {
+        gen_c_literal(o, e->text, false);
+        return;
+    }
+    sb_put(o, "purr_str_c(");
+    gen_expr(g, o, e);
+    sb_put(o, ")");
+}
+
+// The text `so_far` followed by `value`, written with `format`.
+static void gen_text_add(gen *g, sb *o, const char *so_far, const expr *value, const int32_t format)
+{
+    const type t = value->type;
+    const char *v = expr_text(g, value);
+    char f[32] = "0";
+    if (format) snprintf(f, sizeof f, "PURR_FORMAT('%c', %d)", (char)(format >> 8), (int)(format & 0xFF));
+    switch (t.kind) {
+    case TY_STRING: sb_printf(o, "purr_str_add(%s, %s)", so_far, v); return;
+    case TY_INT: sb_printf(o, "purr_str_add_int(%s, %s, %s)", so_far, v, f); return;
+    case TY_FLOAT: sb_printf(o, "purr_str_add_float(%s, %s, %s)", so_far, v, f); return;
+    case TY_BOOL: sb_printf(o, "purr_str_add_bool(%s, %s)", so_far, v); return;
+    case TY_ENUM: sb_printf(o, "purr_text_%s(%s, %s)", type_cname(t.decl), so_far, v); return;
+    case TY_ENTITY:
+    case TY_LOCAL_ENTITY:
+        sb_printf(o, "purr_str_add_entity(%s, %s, %s)", so_far, v, t.kind == TY_LOCAL_ENTITY ? "true" : "false");
+        return;
+    case TY_PLAYER: sb_printf(o, "purr_str_add_player(%s, %s)", so_far, v); return;
+    case TY_COLOR: sb_printf(o, "purr_str_add_color(%s, %s, %s)", so_far, v, f); return;
+    case TY_RECT: sb_printf(o, "purr_str_add_rect(%s, %s, %s)", so_far, v, f); return;
+    default: sb_printf(o, "purr_str_add_%s(%s, %s, %s)", type_suffix(t), so_far, v, f); return; // Vectors, quaternion
+    }
+}
+
+// $"a {x} b": the first part, then each value and the part after it.
+static void gen_interp(gen *g, sb *o, const expr *e)
+{
+    sb start = {0};
+    gen_text_literal(&start, e->parts.items[0], true);
+    const char *so_far = start.data;
+    for (int i = 0; i < e->args.count; i++) {
+        sb step = {0};
+        gen_text_add(g, &step, so_far, e->args.items[i], e->format_codes.items[i]);
+        const str after = e->parts.items[i + 1];
+        if (after.len > 0) {
+            sb joined = {0};
+            sb_printf(&joined, "purr_str_add(%s, ", step.data);
+            gen_text_literal(&joined, after, true);
+            sb_put(&joined, ")");
+            so_far = joined.data;
+        } else {
+            so_far = step.data;
+        }
+    }
+    sb_put(o, so_far);
 }
 
 // A call of a method or function. A method gets its value as the first
 // argument: a copy, or for a mut method its address. A mut parameter gets the
 // caller's variable by address, and the others copies.
+// Devices, or a part of them, passed to a function: by address, without a copy
+// when it's a variable's.
+static void gen_record_address(gen *g, sb *o, const expr *arg)
+{
+    const expr *root = arg;
+    while (root->kind == E_MEMBER) root = root->object;
+    const bool place = root->kind == E_NAME;
+    sb_printf(o, place ? "&(" : "(const %s[1]){", c_type(arg->type));
+    gen_expr(g, o, arg);
+    sb_put(o, place ? ")" : "}");
+}
+
 static void gen_routine_call(gen *g, sb *o, const expr *e)
 {
     const decl *m = e->method;
+    if (e->hoisted) {
+        sb_put(o, e->hoisted); // Already ran, before the statement
+        return;
+    }
     sb_printf(o, "%s(", routine_cname(m));
     int args = 0;
+    // A function that draws gets the frame: the draw list, the GUI, and a seed
+    // for its widgets' IDs that's different at each place it's called from.
+    if (m->draws) {
+        sb_printf(o, "purr_draw, purr_ui, purr_gui_seed(purr_seed, %du)", ++g->sites);
+        args++;
+    }
     if (m->owner && e->kind == E_CALL) { // IsDead() inside another method: the same value
         const bool have_address = g->routine->is_mut_method;
         sb_put(o, m->is_mut_method ? "purr_self" : have_address ? "*purr_self" : "purr_self");
@@ -800,12 +1146,51 @@ static void gen_routine_call(gen *g, sb *o, const expr *e)
         if (m->is_mut_method) sb_put(o, ")");
         args++;
     }
+    // A read-only list argument is passed as it is, unless a mut argument could
+    // change it during the call: then it's a copy.
+    bool mut_list = false;
+    for (int i = 0; i < e->args.count && i < m->params.count; i++) {
+        mut_list |= m->params.items[i].mode == PARAM_MUT && type_has_list(m->params.items[i].type);
+    }
     for (int i = 0; i < e->args.count; i++) {
         if (args++) sb_put(o, ", ");
-        if (m->params.items[i].mode == PARAM_MUT) {
+        if (mut_list && m->params.items[i].mode != PARAM_MUT && type_has_list(m->params.items[i].type)) {
+            gen_value_of(g, o, e->args.items[i], e->arg_want.items[i]);
+        } else if (m->params.items[i].mode == PARAM_MUT && m->params.items[i].type.kind == TY_STRING) {
+            gen_text_ref(g, o, e->args.items[i]);
+        } else if (m->params.items[i].mode == PARAM_MUT) {
             sb_put(o, "&(");
             gen_expr(g, o, e->args.items[i]);
             sb_put(o, ")");
+        } else if (m->params.items[i].type.kind == TY_RECORD) {
+            gen_record_address(g, o, e->args.items[i]);
+        } else {
+            gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
+        }
+    }
+    sb_put(o, ")");
+}
+
+// GUILayout.Button(text): the GUI, the widget's ID from where it's called,
+// then the arguments, a mut one by address.
+static void gen_gui_call(gen *g, sb *o, const expr *e)
+{
+    if (e->hoisted) {
+        sb_put(o, e->hoisted); // Already ran, before the statement
+        return;
+    }
+    sb_printf(o, "%s(purr_ui", e->c_callee);
+    if (e->gui & GUI_ID) sb_printf(o, ", purr_gui_id(purr_ui, purr_seed, %du)", ++g->sites);
+    for (int i = 0; i < e->args.count; i++) {
+        sb_put(o, ", ");
+        if ((e->arg_mut & (1u << i)) && e->arg_want.items[i].kind == TY_STRING) {
+            gen_text_ref(g, o, e->args.items[i]);
+        } else if (e->arg_mut & (1u << i)) {
+            sb_put(o, "&(");
+            gen_expr(g, o, e->args.items[i]);
+            sb_put(o, ")");
+        } else if (e->arg_want.items[i].kind == TY_STRING) {
+            gen_c_text(g, o, e->args.items[i]);
         } else {
             gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
         }
@@ -841,15 +1226,58 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         sb_put(o, e->bool_value ? "true" : "false");
         break;
     case E_STRING:
-        gen_string(o, e->text);
+        gen_text_literal(o, e->text, false);
         break;
+    case E_INTERP:
+        gen_interp(g, o, e);
+        break;
+    case E_INDEX: // items[i], or its zero past the end
+        sb_printf(o, "purr_list%d_get(", e->object->type.decl->index);
+        gen_expr(g, o, e->object);
+        sb_put(o, ", ");
+        gen_expr(g, o, e->lhs);
+        sb_put(o, ")");
+        break;
+    case E_LIST: { // [a, b, c], in the scratch area
+        const type element = list_elem(e->type.decl);
+        if (e->args.count == 0) {
+            sb_put(o, "((purr_list){0})");
+            break;
+        }
+        sb_printf(o, "purr_list_from((%s[]){", elem_ctype(element));
+        for (int i = 0; i < e->args.count; i++) {
+            if (i) sb_put(o, ", ");
+            if (element.kind == TY_STRING) {
+                sb_put(o, "purr_text_temp(");
+                gen_expr(g, o, e->args.items[i]);
+                sb_put(o, ")");
+            } else {
+                gen_as(g, o, e->args.items[i], element);
+            }
+        }
+        sb_printf(o, "}, %d, sizeof(%s))", e->args.count, elem_ctype(element));
+        break;
+    }
     case E_NAME:
+        if (is_text_ref(e)) {
+            sb_printf(o, "purr_textref_get(%s)", local_cname(g, e->name));
+            break;
+        }
+        if (is_text_field(e) && e != g->raw_place) {
+            sb_put(o, "purr_text_view(");
+            gen_raw_place(g, o, e);
+            sb_put(o, ")");
+            break;
+        }
         if (e->bind == BIND_FIELD) {
             // Inside the input's Sample or Sanitize, or a method: a mut method has its value by address.
             const bool by_address = g->routine && g->routine->is_mut_method;
             sb_printf(o, "purr_self%s%s", by_address ? "->" : ".", field_cname(e->field));
         } else if (e->bind == BIND_LOCAL) {
             sb_put(o, local_cname(g, e->name));
+        } else if (e->bind == BIND_DEVICES) {
+            // This machine's devices: Sample's, or this frame's in views and the functions they call.
+            sb_put(o, g->in_input ? "(*purr_dev)" : "purr_ui->devices");
         } else if (e->bind == BIND_PARAM && is_pointer_param(e->param)) {
             sb_printf(o, "(*%s)", local_cname(g, e->name));
         } else {
@@ -857,6 +1285,24 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         }
         break;
     case E_MEMBER: {
+        if (is_text_field(e) && e != g->raw_place) {
+            sb_put(o, "purr_text_view(");
+            gen_raw_place(g, o, e);
+            sb_put(o, ")");
+            break;
+        }
+        if (e->object->type.kind == TY_LIST) { // items.Count
+            sb_put(o, "purr_list_count(");
+            gen_expr(g, o, e->object);
+            sb_put(o, ")");
+            break;
+        }
+        if (e->object->type.kind == TY_STRING) { // name.Length
+            sb_put(o, "(");
+            gen_expr(g, o, e->object);
+            sb_put(o, ").chars");
+            break;
+        }
         if (e->enum_member) {
             sb_put(o, enum_member_cname(e->type_decl, e->enum_member));
             break;
@@ -948,11 +1394,39 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             sb_put(o, e->hoisted); // Already ran, before the statement
         } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) {
             gen_routine_call(g, o, e);
+        } else if (e->call == CALL_GUI) {
+            gen_gui_call(g, o, e);
+        } else if (e->call == CALL_LIST) { // items.Add(x): the list, by address if the method changes it
+            const int k = e->type_decl->index;
+            const bool reads = str_eq_c(e->name, "Contains") || str_eq_c(e->name, "IndexOf");
+            char lower[32];
+            snprintf(lower, sizeof lower, "%s", str_eq_c(e->name, "RemoveAt") ? "remove_at" : str_eq_c(e->name, "IndexOf") ? "index_of"
+                                                                                                            : str_to_cstr(e->name));
+            for (char *c = lower; *c; c++) *c = (char)(*c >= 'A' && *c <= 'Z' ? *c - 'A' + 'a' : *c);
+            sb_printf(o, "purr_list%d_%s(%s", k, lower, reads ? "" : "&(");
+            gen_expr(g, o, e->object);
+            if (!reads) sb_put(o, ")");
+            const type element = list_elem(e->type_decl);
+            for (int i = 0; i < e->args.count; i++) {
+                sb_put(o, ", ");
+                const bool is_element = i == e->args.count - 1 && !str_eq_c(e->name, "RemoveAt");
+                gen_as(g, o, e->args.items[i], is_element ? element : (type){TY_INT, NULL});
+            }
+            sb_put(o, ")");
+        } else if (e->call == CALL_TEXT) { // name.Contains("cat"): the text first
+            sb_printf(o, "%s(", e->c_callee);
+            gen_expr(g, o, e->object);
+            for (int i = 0; i < e->args.count; i++) {
+                sb_put(o, ", ");
+                gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
+            }
+            sb_put(o, ")");
         } else if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
             sb_printf(o, "%s(%s", e->c_callee, e->call == CALL_DRAW ? "purr_draw" : "");
             for (int i = 0; i < e->args.count; i++) {
                 if (i || e->call == CALL_DRAW) sb_put(o, ", ");
-                gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
+                if (e->arg_want.items[i].kind == TY_STRING) gen_c_text(g, o, e->args.items[i]);
+                else gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
             }
             sb_put(o, ")");
         }
@@ -967,6 +1441,17 @@ static void gen_method(gen *g, const expr *e)
     const char *world = e->local_world ? "purr_l" : "purr_w";
     const char *prefix = e->local_world ? "purr_local_" : "purr_";
     indent(g, o);
+    if (e->call == CALL_SNAP && e->type_decl) { // camera.Snap(): it counts its snaps itself
+        gen_expr(g, o, e->object);
+        sb_put(o, ".purr_snaps++;\n");
+        return;
+    }
+    if (e->call == CALL_SNAP) {
+        sb_put(o, "purr_cmd_snap(purr_w, ");
+        gen_expr(g, o, e->object);
+        sb_put(o, ");\n");
+        return;
+    }
     sb_put(o, "{ purr_entity purr_e = ");
     gen_expr(g, o, e->object);
     sb_put(o, ";");
@@ -1048,17 +1533,78 @@ static void collect_spawns(expr *e, expr_list *out)
     case E_CONDITIONAL:
         collect_spawns(e->cond, out); // The checker keeps spawns out of the sides, which may not run
         break;
+    case E_INTERP:
+    case E_LIST:
+        collect_spawn_list(e->args.items, e->args.count, out);
+        break;
+    case E_INDEX:
+        collect_spawns(e->object, out);
+        collect_spawns(e->lhs, out);
+        break;
     default:
         break;
     }
 }
 
-// Emits the spawns of a statement's expressions (in the order given) before it.
+// Calls that draw or use the GUI, whose order matters too: widgets appear in
+// the order they're called. Not on the right of && or ||, or in a side of ?:,
+// which only run sometimes (the checker keeps widgets out of those).
+static void collect_frame_calls(expr *e, expr_list *out)
+{
+    if (!e) return;
+    switch (e->kind) {
+    case E_MEMBER:
+        collect_frame_calls(e->object, out);
+        break;
+    case E_METHOD:
+    case E_CALL:
+        if (e->kind == E_METHOD) collect_frame_calls(e->object, out);
+        for (int i = 0; i < e->args.count; i++) collect_frame_calls(e->args.items[i], out);
+        if (e->type.kind != TY_VOID
+            && (e->call == CALL_GUI || ((e->call == CALL_FUNCTION || e->call == CALL_METHOD) && e->method->draws))) {
+            vec_push(*out, e);
+        }
+        break;
+    case E_LITERAL:
+        for (int i = 0; i < e->inits.count; i++) collect_frame_calls(e->inits.items[i].value, out);
+        break;
+    case E_BINARY:
+        collect_frame_calls(e->lhs, out);
+        if (e->op != T_AND && e->op != T_OR) collect_frame_calls(e->rhs, out);
+        break;
+    case E_UNARY:
+        collect_frame_calls(e->lhs, out);
+        break;
+    case E_CONDITIONAL:
+        collect_frame_calls(e->cond, out);
+        break;
+    case E_INTERP:
+    case E_LIST:
+        for (int i = 0; i < e->args.count; i++) collect_frame_calls(e->args.items[i], out);
+        break;
+    case E_INDEX:
+        collect_frame_calls(e->object, out);
+        collect_frame_calls(e->lhs, out);
+        break;
+    default:
+        break;
+    }
+}
+
+// Emits the spawns of a statement's expressions (in the order given) before
+// it, so they run left to right whatever order C picks. Calls that draw run
+// before it too when there's more than one, or a spawn.
 static void hoist_spawns(gen *g, expr *a, expr *b)
 {
     expr_list spawns = {0};
     collect_spawns(a, &spawns);
     collect_spawns(b, &spawns);
+    expr_list calls = {0};
+    collect_frame_calls(a, &calls);
+    collect_frame_calls(b, &calls);
+    // Code copied into several calls is generated again each time.
+    for (int i = 0; i < spawns.count; i++) spawns.items[i]->hoisted = NULL;
+    for (int i = 0; i < calls.count; i++) calls.items[i]->hoisted = NULL;
     for (int i = 0; i < spawns.count; i++) {
         expr *spawn = spawns.items[i];
         sb name = {0};
@@ -1070,9 +1616,56 @@ static void hoist_spawns(gen *g, expr *a, expr *b)
         line(g, &g->c, "(void)%s;", name.data);
         spawn->hoisted = name.data;
     }
+    if (spawns.count == 0 && calls.count < 2) return;
+    for (int i = 0; i < calls.count; i++) {
+        expr *call = calls.items[i];
+        sb name = {0};
+        sb_printf(&name, "purr_called%d", g->call_temps++);
+        indent(g, &g->c);
+        sb_printf(&g->c, "%s = ", const_decl(call->type, name.data));
+        gen_expr(g, &g->c, call);
+        sb_put(&g->c, ";\n");
+        call->hoisted = name.data;
+    }
 }
 
 static void gen_stmt(gen *g, const stmt *s);
+static void gen_body_stmt(gen *g, const stmt *s);
+
+// Session.Play(Arena { ... }), Host, Join and Leave: recorded in the local
+// state, for the host program to act on after the frame.
+static void gen_session_call(gen *g, const expr *e)
+{
+    sb *o = &g->c;
+    if (str_eq_c(e->name, "Join")) {
+        indent(g, o);
+        sb_put(o, "purr_request_join(purr_l, ");
+        gen_c_text(g, o, e->args.items[0]);
+        sb_put(o, ");\n");
+        return;
+    }
+    const bool host = str_eq_c(e->name, "Host");
+    indent(g, o);
+    sb_printf(o, "purr_l->purr_request = (purr_session_request){.kind = %s",
+              str_eq_c(e->name, "Play") ? "PURR_REQUEST_PLAY" : host ? "PURR_REQUEST_HOST" : "PURR_REQUEST_LEAVE");
+    if (host && e->args.count == 2) {
+        sb_put(o, ", .port = (uint32_t)(");
+        gen_expr(g, o, e->args.items[1]);
+        sb_put(o, ")");
+    } else if (host) {
+        sb_put(o, ", .port = PURR_DEFAULT_PORT");
+    }
+    sb_put(o, "};\n");
+    if (!e->type_decl) return;
+    int index = 0;
+    while (g->prog->start_scenes.items[index] != e->type_decl) index++;
+    const expr *arg = e->args.items[0];
+    indent(g, o);
+    sb_printf(o, "purr_l->purr_request_start = (purr_start){.scene = %d, .value.%s = ", index, type_cname(e->type_decl));
+    if (arg->kind == E_LITERAL) gen_value(g, o, e->type_decl, arg->inits.items, arg->inits.count);
+    else gen_value(g, o, e->type_decl, NULL, 0);
+    sb_put(o, "};\n");
+}
 
 // Whether C text is one parenthesized group, like (a == b), and not (a) && (b).
 static bool wrapped_in_parens(const char *text)
@@ -1101,6 +1694,108 @@ static void gen_body_stmt(gen *g, const stmt *s)
     } else {
         gen_stmt(g, s);
     }
+}
+
+// GUILayout.Vertical() { ... }: opens the container, runs the block, and
+// closes it, and whatever the block left open.
+static void gen_container(gen *g, const expr *e)
+{
+    sb *o = &g->c;
+    const char *depth = made_up(g, "depth");
+    line(g, o, "{");
+    g->indent++;
+    indent(g, o);
+    sb_printf(o, "const int %s = ", depth);
+    gen_gui_call(g, o, e);
+    sb_put(o, ";\n");
+    // A modal that isn't up runs nothing, and has nothing to close.
+    const bool skips = (e->gui & GUI_SKIPS) != 0;
+    if (skips) {
+        line(g, o, "if (%s >= 0) {", depth);
+        g->indent++;
+    }
+    vec_push(g->containers, depth);
+    gen_body_stmt(g, e->block);
+    g->containers.count--;
+    line(g, o, "purr_gui_close(purr_ui, %s);", depth);
+    if (skips) {
+        g->indent--;
+        line(g, o, "}");
+    }
+    g->indent--;
+    line(g, o, "}");
+}
+
+// Foldout("Audio", menu.audioOpen) { ... }: a function that takes a Block is
+// copied into the call. Its parameters are locals, a mut one pointing at the
+// caller's variable, and its body runs the block where it calls `content()`.
+static void gen_inline(gen *g, const expr *e)
+{
+    sb *o = &g->c;
+    const decl *fn = e->method;
+    const char *prefix = made_up(g, "in");
+    gen_frame frame = {fn, arena_alloc(strlen(prefix) + 2), NULL, false, g->containers.count, g->frame, g->routine, e->block};
+    strcpy((char *)frame.prefix, prefix);
+    strcat((char *)frame.prefix, "_");
+    sb end = {0};
+    sb_printf(&end, "%send", frame.prefix);
+    frame.end = end.data;
+
+    line(g, o, "{ // " STR_FMT, STR_ARG(fn->qualified));
+    g->indent++;
+    // The arguments, in the caller's code
+    const char **names = arena_alloc(sizeof(char *) * (size_t)(fn->params.count + 1));
+    for (int i = 0; i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (p->type.kind == TY_BLOCK) continue;
+        gen_frame *caller = g->frame;
+        g->frame = &frame;
+        names[i] = local_cname(g, p->name);
+        g->frame = caller;
+        indent(g, o);
+        if (p->mode == PARAM_MUT && p->type.kind == TY_STRING) {
+            sb_printf(o, "const purr_textref %s = ", names[i]);
+            gen_text_ref(g, o, e->args.items[i]);
+            sb_put(o, ";\n");
+        } else if (p->mode == PARAM_MUT) {
+            sb_printf(o, "%s *const %s = &(", c_type(p->type), names[i]);
+            gen_expr(g, o, e->args.items[i]);
+            sb_put(o, ");\n");
+        } else if (p->type.kind == TY_RECORD) {
+            sb_printf(o, "const %s *const %s = ", c_type(p->type), names[i]);
+            gen_record_address(g, o, e->args.items[i]);
+            sb_put(o, ";\n");
+        } else {
+            sb_printf(o, "%s = ", const_decl(p->type, names[i]));
+            gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
+            sb_put(o, ";\n");
+        }
+        line(g, o, "(void)%s;", names[i]);
+    }
+    g->frame = &frame;
+    g->routine = fn;
+    for (int i = 0; i < fn->body->stmts.count; i++) gen_stmt(g, fn->body->stmts.items[i]);
+    g->frame = frame.caller;
+    g->routine = frame.caller_routine;
+    if (frame.end_used) line(g, o, "%s:;", frame.end);
+    g->indent--;
+    line(g, o, "}");
+}
+
+// content(): the block written after the call, as the caller's code.
+static void gen_block_run(gen *g)
+{
+    sb *o = &g->c;
+    gen_frame *frame = g->frame;
+    line(g, o, "{");
+    g->indent++;
+    g->frame = frame->caller;
+    g->routine = frame->caller_routine;
+    gen_body_stmt(g, frame->block);
+    g->frame = frame;
+    g->routine = frame->routine;
+    g->indent--;
+    line(g, o, "}");
 }
 
 static void gen_stmt(gen *g, const stmt *s)
@@ -1146,9 +1841,11 @@ static void gen_stmt(gen *g, const stmt *s)
         break;
     }
 
-    case S_SWITCH:
+    case S_SWITCH: {
         // Each section in braces, for its locals. The checker makes sure every
         // one ends in break or return, so none falls through.
+        const gen_target sw = {g->frame, g->containers.count, false, false, made_up(g, "switch_end"), false, NULL, false};
+        vec_push(g->targets, sw);
         indent(g, o);
         sb_put(o, "switch (");
         gen_expr(g, o, s->cond);
@@ -1172,28 +1869,135 @@ static void gen_stmt(gen *g, const stmt *s)
             line(g, o, "}");
         }
         line(g, o, "}");
+        const gen_target done = g->targets.items[--g->targets.count];
+        if (done.end_used) line(g, o, "%s:;", done.end);
         break;
+    }
+
+    case S_WHILE:
+    case S_FOR: {
+        // A for is its start, then a while that runs its step at the end of each round.
+        if (s->kind == S_FOR) {
+            line(g, o, "{");
+            g->indent++;
+            if (s->init) gen_stmt(g, s->init);
+        }
+        const char *cond = s->cond ? expr_text(g, s->cond) : "true";
+        indent(g, o);
+        if (wrapped_in_parens(cond)) sb_printf(o, "while %s {\n", cond);
+        else sb_printf(o, "while (%s) {\n", cond);
+        g->indent++;
+        const gen_target loop = {g->frame, g->containers.count, true, s->kind == S_WHILE, made_up(g, "loop_end"), false,
+                                 made_up(g, "next"), false};
+        vec_push(g->targets, loop);
+        gen_body_stmt(g, s->then_stmt);
+        const gen_target done = g->targets.items[--g->targets.count];
+        if (done.next_used) line(g, o, "%s:;", done.next);
+        if (s->step) gen_stmt(g, s->step);
+        g->indent--;
+        line(g, o, "}");
+        if (done.end_used) line(g, o, "%s:;", done.end);
+        if (s->kind == S_FOR) {
+            g->indent--;
+            line(g, o, "}");
+        }
+        break;
+    }
+
+    case S_FOREACH: {
+        // The list's Count is read each round, so changes to it while it's gone
+        // through count; each element is a copy.
+        const int k = s->value->type.decl->index;
+        const char *list = made_up(g, "list");
+        const char *index = made_up(g, "i");
+        line(g, o, "{");
+        g->indent++;
+        indent(g, o);
+        if (is_fresh(s->value)) {
+            sb_printf(o, "const purr_list %s_value = ", list);
+            gen_expr(g, o, s->value);
+            sb_printf(o, ";\n");
+            line(g, o, "const purr_list *const %s = &%s_value;", list, list);
+        } else {
+            sb_printf(o, "const purr_list *const %s = &(", list);
+            gen_expr(g, o, s->value);
+            sb_put(o, ");\n");
+        }
+        line(g, o, "for (int32_t %s = 0; %s < purr_list_count(*%s); %s++) {", index, index, list, index);
+        g->indent++;
+        line(g, o, "const %s %s = purr_list%d_get(*%s, %s);", elem_vtype(s->type), local_cname(g, s->name), k, list, index);
+        line(g, o, "(void)%s;", local_cname(g, s->name));
+        const gen_target loop = {g->frame, g->containers.count, true, true, made_up(g, "loop_end"), false, made_up(g, "next"), false};
+        vec_push(g->targets, loop);
+        gen_body_stmt(g, s->then_stmt);
+        const gen_target done = g->targets.items[--g->targets.count];
+        if (done.next_used) line(g, o, "%s:;", done.next);
+        g->indent--;
+        line(g, o, "}");
+        if (done.end_used) line(g, o, "%s:;", done.end);
+        g->indent--;
+        line(g, o, "}");
+        break;
+    }
 
     case S_BREAK:
-        line(g, o, "break;");
-        break;
-
-    case S_RETURN:
-        if (s->value) {
-            indent(g, o);
-            sb_put(o, "return ");
-            gen_as(g, o, s->value, g->routine->return_type);
-            sb_put(o, ";\n");
+    case S_CONTINUE: {
+        // What it goes to is the innermost loop (or for break, switch) of the
+        // code it's in; copied code may have put others inside that.
+        const bool is_break = s->kind == S_BREAK;
+        int target = g->targets.count - 1;
+        while (target > 0 && (g->targets.items[target].frame != g->frame || (!is_break && !g->targets.items[target].loop))) {
+            target--;
+        }
+        gen_target *t = &g->targets.items[target];
+        if (g->containers.count > t->containers) {
+            line(g, o, "purr_gui_close(purr_ui, %s);", g->containers.items[t->containers]);
+        }
+        bool innermost = true; // Nothing C's break or continue would go to first
+        for (int i = target + 1; i < g->targets.count; i++) innermost &= !is_break && !g->targets.items[i].loop;
+        if (is_break && innermost) {
+            line(g, o, "break;");
+        } else if (is_break) {
+            line(g, o, "goto %s;", t->end);
+            t->end_used = true;
+        } else if (innermost && t->plain_continue) {
+            line(g, o, "continue;");
         } else {
+            line(g, o, "goto %s;", t->next);
+            t->next_used = true;
+        }
+        break;
+    }
+
+    case S_RETURN: {
+        // Containers the code opened close first. In copied code, return goes
+        // to the end of the copy.
+        const int base = g->frame ? g->frame->containers : 0;
+        const char *close = g->containers.count > base ? g->containers.items[base] : NULL;
+        if (g->frame) {
+            if (close) line(g, o, "purr_gui_close(purr_ui, %s);", close);
+            line(g, o, "goto %s;", g->frame->end);
+            g->frame->end_used = true;
+        } else if (s->value) {
+            indent(g, o);
+            if (close) sb_printf(o, "{ %s = ", const_decl(g->routine->return_type, "purr_result"));
+            else sb_put(o, "return ");
+            gen_value_of(g, o, s->value, g->routine->return_type);
+            if (close) sb_printf(o, "; purr_gui_close(purr_ui, %s); return purr_result; }\n", close);
+            else sb_put(o, ";\n");
+        } else {
+            if (close) line(g, o, "purr_gui_close(purr_ui, %s);", close);
             line(g, o, g->in_input ? "return purr_self;" : "return;");
         }
         break;
+    }
 
     case S_VAR: {
         const char *name = local_cname(g, s->name);
         indent(g, o);
-        sb_printf(o, "%s%s %s = ", s->is_mut ? "" : "const ", c_type(s->type), name);
-        gen_as(g, o, s->value, s->type);
+        if (s->is_mut || s->loop_var) sb_printf(o, "%s %s = ", c_type(s->type), name); // A for's step changes its own
+        else sb_printf(o, "%s = ", const_decl(s->type, name));
+        gen_value_of(g, o, s->value, s->type);
         sb_printf(o, ";\n");
         line(g, o, "(void)%s;", name);
         break;
@@ -1201,6 +2005,47 @@ static void gen_stmt(gen *g, const stmt *s)
 
     case S_ASSIGN: {
         const expr *target = s->target;
+        if (target->kind == E_INDEX) { // items[i] = x
+            indent(g, o);
+            sb_printf(o, "purr_list%d_set(&(", target->object->type.decl->index);
+            gen_expr(g, o, target->object);
+            sb_put(o, "), ");
+            gen_expr(g, o, target->lhs);
+            sb_put(o, ", ");
+            if (s->op == T_ASSIGN) gen_as(g, o, s->value, target->type);
+            else gen_binary(g, o, compound_op(s->op), s->target, s->value, target->type, s->operator_decl);
+            sb_put(o, ");\n");
+            break;
+        }
+        if (target->type.kind == TY_LIST) { // items = other: its own copy, never shared
+            indent(g, o);
+            sb_printf(o, "purr_list%d_assign(&(", target->type.decl->index);
+            gen_expr(g, o, target);
+            sb_put(o, "), ");
+            gen_value_of(g, o, s->value, target->type);
+            sb_put(o, ");\n");
+            break;
+        }
+        const bool field = is_text_field(target);
+        const bool ref = is_text_ref(target);
+        const bool holder = (target->type.kind == TY_STRUCT || target->type.kind == TY_COMPONENT
+                             || target->type.kind == TY_SINGLETON) && decl_has_text(target->type.decl);
+        if (field || ref || holder) {
+            // Text never shares: a field gets its own copy (see purr/text.h).
+            indent(g, o);
+            if (ref) {
+                sb_printf(o, "purr_textref_set(%s, ", local_cname(g, target->name));
+            } else {
+                if (field) sb_put(o, "purr_text_set(&(");
+                else sb_printf(o, "purr_assign_%s(&(", type_cname(target->type.decl));
+                gen_raw_place(g, o, target);
+                sb_put(o, "), ");
+            }
+            if (s->op == T_ASSIGN) gen_value_of(g, o, s->value, target->type);
+            else gen_binary(g, o, compound_op(s->op), s->target, s->value, target->type, s->operator_decl);
+            sb_put(o, ");\n");
+            break;
+        }
         indent(g, o);
         if (target->kind == E_MEMBER && target->swizzle_len > 1) {
             // v.xz = value: compute into a temporary, then write each component.
@@ -1243,7 +2088,16 @@ static void gen_stmt(gen *g, const stmt *s)
             sb_put(o, ", ");
             gen_expr(g, o, s->value->args.items[1]);
             sb_printf(o, ", %s);\n", str_eq_c(s->value->name, "AddPlayer") ? "true" : "false");
-        } else if (s->value->call == CALL_METHOD || s->value->call == CALL_FUNCTION || s->value->call == CALL_DRAW) {
+        } else if (s->value->call == CALL_SESSION) {
+            gen_session_call(g, s->value);
+        } else if (s->value->call == CALL_GUI && s->value->block) {
+            gen_container(g, s->value);
+        } else if (s->value->call == CALL_FUNCTION && s->value->method->takes_block) {
+            gen_inline(g, s->value);
+        } else if (s->value->call == CALL_BLOCK) {
+            gen_block_run(g);
+        } else if (s->value->call == CALL_METHOD || s->value->call == CALL_FUNCTION || s->value->call == CALL_DRAW
+                   || s->value->call == CALL_GUI || s->value->call == CALL_LIST) {
             indent(g, o);
             gen_expr(g, o, s->value);
             sb_put(o, ";\n");
@@ -1279,10 +2133,11 @@ static layout type_layout(const type t)
 {
     if (t.kind == TY_BOOL) return (layout){1, 1};
     if (t.kind == TY_STRUCT) return decl_layout(t.decl);
+    if (t.kind == TY_RECORD) return (layout){(int)sizeof(purr_devices), 4}; // The input's devices
     if (type_dim(t) > 0) return (layout){4 * type_dim(t), 4};
     if (matrix_dim(t) > 0) return (layout){4 * matrix_dim(t) * matrix_dim(t), 4};
     switch (t.kind) {
-    case TY_QUATERNION: case TY_COLOR: return (layout){16, 4};
+    case TY_QUATERNION: case TY_COLOR: case TY_RECT: return (layout){16, 4};
     case TY_ENTITY: case TY_LOCAL_ENTITY: return (layout){8, 4};
     case TY_PLAYER: return (layout){4, 4};
     default: return (layout){4, 4};
@@ -1329,7 +2184,7 @@ static void gen_fields(const gen *g, sb *o, const decl *d)
         if (pad[i]) sb_printf(o, "    uint8_t purr_pad%d[%d];\n", pads++, pad[i]);
         if (i == d->fields.count) break;
         const field *f = &d->fields.items[i];
-        sb_printf(o, "    %s %s;\n", c_type(f->type), field_cname(f));
+        sb_printf(o, "    %s %s;\n", f->type.kind == TY_STRING ? "purr_text" : c_type(f->type), field_cname(f));
     }
     (void)g;
 }
@@ -1354,7 +2209,8 @@ static void gen_header(gen *g)
     sb_put(o, "#pragma once\n\n");
     sb_put(o, "#include <stdbool.h>\n#include <stdint.h>\n\n");
     sb_put(o, "#include \"purr/color.h\"\n#include \"purr/devices.h\"\n#include \"purr/draw.h\"\n#include \"purr/entity.h\"\n"
-              "#include \"purr/math.h\"\n#include \"purr/player.h\"\n\n");
+              "#include \"purr/gui.h\"\n#include \"purr/math.h\"\n#include \"purr/list.h\"\n#include \"purr/player.h\"\n#include \"purr/session.h\"\n"
+              "#include \"purr/text.h\"\n\n");
     sb_put(o, "#ifndef PURR_ARCHETYPE_CAPACITY\n#define PURR_ARCHETYPE_CAPACITY 1024u\n#endif\n\n");
     sb_put(o, "#ifndef PURR_MAX_COMMANDS\n#define PURR_MAX_COMMANDS 4096u\n#endif\n\n");
 
@@ -1465,7 +2321,17 @@ static void gen_header(gen *g)
         sb_printf(o, "    %s inputs[PURR_MAX_PLAYERS + 1];\n", name);
         sb_printf(o, "    %s previous_inputs[PURR_MAX_PLAYERS + 1];\n", name);
     }
+    if (prog->uses_heap) sb_put(o, "    purr_heap heap; // The text its fields hold\n");
     sb_put(o, "} purr_world;\n\n");
+
+    sb_put(o, "// How a match starts: the scene Session.Play or Session.Host named, with its values.\n");
+    sb_put(o, "typedef struct purr_start {\n    int32_t scene; // Its place below, or -1: Main\n    union {\n");
+    sb_put(o, "        uint8_t purr_none;\n");
+    for (int i = 0; i < prog->start_scenes.count; i++) {
+        const char *name = type_cname(prog->start_scenes.items[i]);
+        sb_printf(o, "        %s %s; // %d\n", name, name, i);
+    }
+    sb_put(o, "    } value;\n} purr_start;\n\n");
 
     sb_put(o, "// This machine's own state, outside every world: never sent, rolled back or hashed.\n\n");
     sb_put(o, "typedef struct purr_local {\n");
@@ -1481,6 +2347,9 @@ static void gen_header(gen *g)
         sb_printf(o, "    purr_%s %s;\n", name, name);
     }
     sb_put(o, "    uint32_t command_count;\n    purr_command commands[PURR_MAX_COMMANDS];\n");
+    if (prog->uses_heap) sb_put(o, "    purr_heap heap;\n");
+    sb_put(o, "    purr_session_request purr_request; // What local code asked of the session: Session.Play and the like\n");
+    sb_put(o, "    purr_start purr_request_start;\n");
     sb_put(o, "} purr_local;\n\n");
 
     if (prog->main->is_local) {
@@ -1489,21 +2358,45 @@ static void gen_header(gen *g)
     sb_put(o, "// Clears the world and sets Time.dt and singleton defaults. If Main is the match's\n");
     sb_put(o, "// scene, loads it, with everything its Spawned handlers create.\n");
     sb_put(o, "void purr_world_init(purr_world *w, float dt);\n\n");
+    sb_put(o, "// The same, starting the match in `start`'s scene instead (NULL: Main).\n");
+    sb_put(o, "void purr_world_start(purr_world *w, float dt, const purr_start *start);\n\n");
     sb_put(o, "// Runs every system once, in declaration order, then applies structural changes.\n");
     sb_put(o, "void purr_world_tick(purr_world *w);\n\n");
+    sb_put(o, "// Snapshots between ticks: `to` becomes `from`, copying only what's in use (rows up\n");
+    sb_put(o, "// to each archetype's count, and so on), and the hash of what's in use. Past the\n");
+    sb_put(o, "// counts a world is all zeros, so a copy is the same bytes as copying it whole.\n");
+    sb_put(o, "void purr_world_copy(purr_world *to, const purr_world *from);\n");
+    sb_put(o, "uint64_t purr_world_hash(const purr_world *w);\n\n");
     sb_put(o, "// Clears the local state and sets its singletons' defaults. If Main is a local scene,\n");
     sb_put(o, "// loads it.\n");
     sb_put(o, "void purr_local_init(purr_local *local);\n\n");
-    sb_put(o, "// Runs every view once, in declaration order, adding their Draw calls to `draw`,\n");
-    sb_put(o, "// then applies the local changes they made. Call once per frame; reset the list\n");
-    sb_put(o, "// first with purr_draw_reset. Outside a match `w` is NULL, and views that read the\n");
-    sb_put(o, "// match don't run.\n");
-    sb_put(o, "void purr_frame(const purr_world *w, purr_local *local, purr_draw_list *draw);\n\n");
+    sb_put(o, "// Runs every view once, in declaration order, adding their Draw calls to `draw`\n");
+    sb_put(o, "// and their widgets to `gui`, then applies the local changes they made. Call once\n");
+    sb_put(o, "// per frame, between purr_gui_begin and purr_gui_end; reset the list first with\n");
+    sb_put(o, "// purr_draw_reset. Outside a match `w` is NULL, and views that read the match\n");
+    sb_put(o, "// don't run.\n");
+    sb_put(o, "// Views draw at the frame rate, and see the match between its last two ticks: floats\n");
+    sb_put(o, "// blended from `previous` to `w` by `alpha` (0 to 1), so motion is smooth at any tick\n");
+    sb_put(o, "// rate; everything else as it is in `w`. Pass NULL and 1 to see `w` as it is.\n");
+    sb_put(o, "void purr_frame(const purr_world *w, const purr_world *previous, float alpha, purr_local *local, purr_draw_list *draw,\n"
+              "                purr_gui *gui);\n\n");
     sb_put(o, "// Send PlayerJoined or PlayerLeft to the world. They're handled at the end of the\n");
     sb_put(o, "// next tick, before anything that tick sends; every machine calls them before\n");
     sb_put(o, "// the same tick.\n");
     sb_put(o, "void purr_world_player_joined(purr_world *w, purr_player_id player);\n");
     sb_put(o, "void purr_world_player_left(purr_world *w, purr_player_id player);\n\n");
+    sb_put(o, "// What local code asked of the session since the last call (Session.Play, Host,\n");
+    sb_put(o, "// Join or Leave), and the match's start for Play and Host. False if nothing.\n");
+    sb_put(o, "bool purr_local_take_request(purr_local *local, purr_session_request *request, purr_start *start);\n\n");
+    sb_put(o, "// Where this machine stands, for local code: the Session singleton. `state` is a\n");
+    sb_put(o, "// purr_session_state.\n");
+    sb_put(o, "void purr_local_set_session(purr_local *local, uint32_t state, purr_player_id player, uint32_t ping, bool server);\n\n");
+    sb_put(o, "// Send the local events Connected and Disconnected (`reason` is a purr_disconnect_reason),\n");
+    sb_put(o, "// handled at the end of the next purr_frame.\n");
+    sb_put(o, "void purr_local_connected(purr_local *local);\n");
+    sb_put(o, "void purr_local_disconnected(purr_local *local, uint32_t reason);\n\n");
+    sb_put(o, "// The game, as sessions run it (purr/session.h).\n");
+    sb_put(o, "extern const purr_game purr_game_api;\n\n");
     sb_put(o, "uint32_t purr_world_entity_count(const purr_world *w);\n");
     sb_put(o, "uint32_t purr_local_entity_count(const purr_local *local);\n\n");
     sb_put(o, "// Prints every entity and its components, for debugging.\n");
@@ -1518,9 +2411,10 @@ static void gen_header(gen *g)
 
     if (prog->input) {
         const char *name = type_cname(prog->input);
-        sb_put(o, "\n// Client side: builds the local player's input from the devices by running the\n");
-        sb_put(o, "// input's Sample. Call once per tick, then purr_devices_consume(devices).\n");
-        sb_printf(o, "%s purr_input_sample(const purr_devices *devices);\n\n", name);
+        sb_put(o, "\n// Client side: builds the local player's input from this machine's devices and\n");
+        sb_put(o, "// local state by running the input's Sample. Call once per tick, then\n");
+        sb_put(o, "// purr_devices_consume(devices). `local` can be NULL if Sample takes nothing.\n");
+        sb_printf(o, "%s purr_input_sample(const purr_devices *devices, const purr_local *local);\n\n", name);
         sb_put(o, "// Sets a player's input for the next tick. A player whose input isn't set keeps\n");
         sb_put(o, "// their last one, which is also the usual guess for a remote player. Inputs set\n");
         sb_put(o, "// here are untrusted: NaN and infinite floats become the field's default, the\n");
@@ -1534,6 +2428,295 @@ static void gen_header(gen *g)
 
 // ---------------------------------------------------------------------------
 // Source: runtime helpers
+
+// For each type that holds text: taking its own copy of borrowed text as a
+// value goes into a world, letting go of it as it leaves, and assigning one
+// value to another without sharing text (see purr/text.h).
+// For each List<T>: its elements' text, owned where the list is a world's,
+// and the operations PurrLang has, forgiving past the end.
+static void gen_list_helpers(gen *g, const bool bodies)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    for (int k = 0; k < prog->lists.count; k++) {
+        const type e = list_elem(prog->lists.items[k]);
+        const char *ec = elem_ctype(e);
+        const char *vc = elem_vtype(e);
+        const bool text = type_has_text(e);
+        const char *owner = e.kind == TY_STRUCT && text ? type_cname(e.decl) : NULL;
+        const bool compares = e.kind == TY_INT || e.kind == TY_FLOAT || e.kind == TY_BOOL || e.kind == TY_ENUM
+                           || e.kind == TY_ENTITY || e.kind == TY_LOCAL_ENTITY || e.kind == TY_PLAYER || e.kind == TY_STRING;
+        if (!bodies) {
+            sb_printf(o, "// List<%s>\n", type_name(e));
+            sb_printf(o, "PURR_HELPER %s purr_list%d_get(purr_list l, int32_t i);\n", vc, k);
+            sb_printf(o, "PURR_HELPER void purr_list%d_set(purr_list *l, int32_t i, %s v);\n", k, vc);
+            sb_printf(o, "PURR_HELPER void purr_list%d_add(purr_list *l, %s v);\n", k, vc);
+            sb_printf(o, "PURR_HELPER void purr_list%d_insert(purr_list *l, int32_t i, %s v);\n", k, vc);
+            sb_printf(o, "PURR_HELPER void purr_list%d_remove_at(purr_list *l, int32_t i);\n", k);
+            sb_printf(o, "PURR_HELPER void purr_list%d_clear(purr_list *l);\n", k);
+            sb_printf(o, "PURR_HELPER purr_list purr_list%d_copy(purr_list l);\n", k);
+            sb_printf(o, "PURR_HELPER void purr_list%d_assign(purr_list *to, purr_list value);\n", k);
+            sb_printf(o, "PURR_HELPER void purr_list%d_own(purr_list *l);\n", k);
+            sb_printf(o, "PURR_HELPER void purr_list%d_release(purr_list *l);\n", k);
+            if (compares) {
+                sb_printf(o, "PURR_HELPER int32_t purr_list%d_index_of(purr_list l, %s v);\n", k, vc);
+                sb_printf(o, "PURR_HELPER bool purr_list%d_contains(purr_list l, %s v);\n", k, vc);
+                sb_printf(o, "PURR_HELPER bool purr_list%d_remove(purr_list *l, %s v);\n", k, vc);
+            }
+            sb_put(o, "\n");
+            continue;
+        }
+        const char *sz = elem_ctype(e);
+        sb_printf(o, "// List<%s>\n", type_name(e));
+        sb_printf(o, "PURR_HELPER %s purr_list%d_get(const purr_list l, const int32_t i)\n{\n", vc, k);
+        sb_printf(o, "    const %s *p = purr_list_at(l, i, sizeof(%s));\n", ec, sz);
+        if (e.kind == TY_STRING) sb_put(o, "    return p ? purr_text_view(*p) : PURR_STR_EMPTY;\n}\n\n");
+        else sb_printf(o, "    return p ? *p : (%s){0};\n}\n\n", ec);
+        // Putting a value in a slot, and taking one out: its text the list's own
+        sb_printf(o, "PURR_HELPER void purr_list%d_put(%s *slot, const %s v)\n{\n", k, ec, vc);
+        if (e.kind == TY_STRING) sb_put(o, "    purr_text_set(slot, v);\n}\n\n");
+        else if (owner) sb_printf(o, "    purr_assign_%s(slot, v);\n}\n\n", owner);
+        else sb_put(o, "    *slot = v;\n}\n\n");
+        sb_printf(o, "PURR_HELPER void purr_list%d_drop(%s *slot)\n{\n", k, ec);
+        if (e.kind == TY_STRING) sb_put(o, "    purr_text_release(slot);\n}\n\n");
+        else if (owner) sb_printf(o, "    purr_release_%s(slot);\n}\n\n", owner);
+        else sb_put(o, "    (void)slot;\n}\n\n");
+        sb_printf(o, "PURR_HELPER void purr_list%d_take(%s *slot)\n{\n", k, ec);
+        if (e.kind == TY_STRING) sb_put(o, "    purr_text_own(slot);\n}\n\n");
+        else if (owner) sb_printf(o, "    purr_own_%s(slot);\n}\n\n", owner);
+        else sb_put(o, "    (void)slot;\n}\n\n");
+        sb_printf(o, "PURR_HELPER void purr_list%d_set(purr_list *l, const int32_t i, const %s v)\n{\n"
+                     "    %s *p = purr_list_at(*l, i, sizeof(%s));\n    if (p) purr_list%d_put(p, v);\n}\n\n", k, vc, ec, sz, k);
+        sb_printf(o, "PURR_HELPER void purr_list%d_add(purr_list *l, const %s v)\n{\n"
+                     "    %s *p = purr_list_add(l, sizeof(%s));\n    if (p) purr_list%d_put(p, v);\n}\n\n", k, vc, ec, sz, k);
+        sb_printf(o, "PURR_HELPER void purr_list%d_insert(purr_list *l, const int32_t i, const %s v)\n{\n"
+                     "    %s *p = purr_list_insert(l, i, sizeof(%s));\n    if (p) purr_list%d_put(p, v);\n}\n\n", k, vc, ec, sz, k);
+        sb_printf(o, "PURR_HELPER void purr_list%d_remove_at(purr_list *l, const int32_t i)\n{\n"
+                     "    %s *p = purr_list_at(*l, i, sizeof(%s));\n    if (!p) return;\n    purr_list%d_drop(p);\n"
+                     "    purr_list_remove_at(l, i, sizeof(%s));\n}\n\n", k, ec, sz, k, sz);
+        sb_printf(o, "PURR_HELPER void purr_list%d_clear(purr_list *l)\n{\n", k);
+        if (text) sb_printf(o, "    for (int32_t i = 0; i < purr_list_count(*l); i++) purr_list%d_drop(purr_list_at(*l, i, sizeof(%s)));\n", k, sz);
+        sb_printf(o, "    purr_list_clear(l, sizeof(%s));\n}\n\n", sz);
+        sb_printf(o, "PURR_HELPER purr_list purr_list%d_copy(const purr_list l)\n{\n    return purr_list_copy(l, sizeof(%s));\n}\n\n", k, sz);
+        sb_printf(o, "PURR_HELPER void purr_list%d_assign(purr_list *to, const purr_list value)\n{\n", k);
+        if (text) sb_printf(o, "    for (int32_t i = 0; i < purr_list_count(*to); i++) purr_list%d_drop(purr_list_at(*to, i, sizeof(%s)));\n", k, sz);
+        sb_printf(o, "    purr_list_set(to, value, sizeof(%s));\n", sz);
+        if (text) sb_printf(o, "    for (int32_t i = 0; i < purr_list_count(*to); i++) purr_list%d_take(purr_list_at(*to, i, sizeof(%s)));\n", k, sz);
+        sb_put(o, "}\n\n");
+        sb_printf(o, "PURR_HELPER void purr_list%d_own(purr_list *l)\n{\n    purr_list_own(l, sizeof(%s));\n", k, sz);
+        if (text) sb_printf(o, "    for (int32_t i = 0; i < purr_list_count(*l); i++) purr_list%d_take(purr_list_at(*l, i, sizeof(%s)));\n", k, sz);
+        sb_put(o, "}\n\n");
+        sb_printf(o, "PURR_HELPER void purr_list%d_release(purr_list *l)\n{\n", k);
+        if (text) sb_printf(o, "    for (int32_t i = 0; i < purr_list_count(*l); i++) purr_list%d_drop(purr_list_at(*l, i, sizeof(%s)));\n", k, sz);
+        sb_put(o, "    purr_list_release(l);\n}\n\n");
+        if (compares) {
+            const char *eq = e.kind == TY_STRING                                   ? "purr_str_eq(purr_list%d_get(l, i), v)"
+                           : e.kind == TY_ENTITY || e.kind == TY_LOCAL_ENTITY      ? "purr_entity_equal(purr_list%d_get(l, i), v)"
+                           : e.kind == TY_PLAYER                                   ? "purr_player_equal(purr_list%d_get(l, i), v)"
+                                                                                   : "purr_list%d_get(l, i) == v";
+            sb_printf(o, "PURR_HELPER int32_t purr_list%d_index_of(const purr_list l, const %s v)\n{\n"
+                         "    for (int32_t i = 0; i < purr_list_count(l); i++) {\n        if (", k, vc);
+            sb_printf(o, eq, k);
+            sb_put(o, ") return i;\n    }\n    return -1;\n}\n\n");
+            sb_printf(o, "PURR_HELPER bool purr_list%d_contains(const purr_list l, const %s v)\n{\n"
+                         "    return purr_list%d_index_of(l, v) >= 0;\n}\n\n", k, vc, k);
+            sb_printf(o, "PURR_HELPER bool purr_list%d_remove(purr_list *l, const %s v)\n{\n"
+                         "    const int32_t i = purr_list%d_index_of(*l, v);\n    if (i < 0) return false;\n"
+                         "    purr_list%d_remove_at(l, i);\n    return true;\n}\n\n", k, vc, k, k);
+        }
+    }
+}
+
+// For each type that holds text or lists: taking its own copy of borrowed
+// data as a value goes into a world, letting go of it as it leaves, assigning
+// one value to another without sharing, and copying its lists for a value
+// taken out of a place (see purr/text.h and purr/list.h).
+static void gen_text_helpers(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    if (!prog->uses_heap && prog->lists.count == 0) return;
+    sb_put(o, "// Text and lists in values: a world's own copy going in, released going out, never shared.\n\n");
+    gen_list_helpers(g, false);
+    for (int i = 0; i < prog->decls.count; i++) {
+        const decl *d = prog->decls.items[i];
+        const bool value_type = d->kind == DECL_STRUCT || d->kind == DECL_COMPONENT || d->kind == DECL_SINGLETON
+                             || d->kind == DECL_EVENT;
+        if (!value_type || !decl_has_text(d)) continue;
+        const char *name = type_cname(d);
+        path_list paths = {0};
+        text_paths(d, "", &paths);
+        sb_printf(o, "PURR_HELPER void purr_own_%s(%s *v)\n{\n", name, name);
+        for (int k = 0; k < paths.count; k++) {
+            const heap_path *hp = &paths.items[k];
+            if (hp->list) sb_printf(o, "    purr_list%d_own(&v->%s);\n", hp->list->index, hp->path);
+            else sb_printf(o, "    purr_text_own(&v->%s);\n", hp->path);
+        }
+        sb_printf(o, "}\n\nPURR_HELPER void purr_release_%s(%s *v)\n{\n", name, name);
+        for (int k = 0; k < paths.count; k++) {
+            const heap_path *hp = &paths.items[k];
+            if (hp->list) sb_printf(o, "    purr_list%d_release(&v->%s);\n", hp->list->index, hp->path);
+            else sb_printf(o, "    purr_text_release(&v->%s);\n", hp->path);
+        }
+        sb_printf(o, "}\n\nPURR_HELPER void purr_assign_%s(%s *to, const %s value)\n{\n    %s next = value;\n", name, name,
+                  name, name);
+        for (int k = 0; k < paths.count; k++) sb_printf(o, "    next.%s = to->%s;\n", paths.items[k].path, paths.items[k].path);
+        sb_put(o, "    *to = next;\n");
+        for (int k = 0; k < paths.count; k++) {
+            const heap_path *hp = &paths.items[k];
+            if (hp->list) sb_printf(o, "    purr_list%d_assign(&to->%s, value.%s);\n", hp->list->index, hp->path, hp->path);
+            else sb_printf(o, "    purr_text_set(&to->%s, purr_text_view(value.%s));\n", hp->path, hp->path);
+        }
+        sb_put(o, "}\n\n");
+        if (type_has_list((type){d->kind == DECL_STRUCT ? TY_STRUCT : d->kind == DECL_COMPONENT ? TY_COMPONENT
+                                 : d->kind == DECL_SINGLETON ? TY_SINGLETON : TY_EVENT, (decl *)d})) {
+            sb_printf(o, "PURR_HELPER %s purr_copy_%s(%s v)\n{\n", name, name, name);
+            for (int k = 0; k < paths.count; k++) {
+                const heap_path *hp = &paths.items[k];
+                if (hp->list) sb_printf(o, "    v.%s = purr_list%d_copy(v.%s);\n", hp->path, hp->list->index, hp->path);
+            }
+            sb_put(o, "    return v;\n}\n\n");
+        }
+    }
+    gen_list_helpers(g, true);
+    // A spawn's values, as they go into the command queue or are dropped.
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (!prog->spawn_target.items[a]) continue;
+        const uint64_t mask = prog->archetypes.items[a];
+        bool any = false;
+        for (int c = 0; c < prog->components.count; c++) any |= has_component(mask, c) && decl_has_text(prog->components.items[c]);
+        if (!any) continue;
+        for (int pass = 0; pass < 2; pass++) {
+            sb_printf(o, "PURR_HELPER void purr_%s_spawn%d(purr_spawn%d *v)\n{\n", pass ? "release" : "own", a, a);
+            for (int c = 0; c < prog->components.count; c++) {
+                const decl *comp = prog->components.items[c];
+                if (!has_component(mask, c) || !decl_has_text(comp)) continue;
+                sb_printf(o, "    purr_%s_%s(&v->%s);\n", pass ? "release" : "own", type_cname(comp), type_cname(comp));
+            }
+            sb_put(o, "}\n\n");
+        }
+    }
+}
+
+// Whether spawns of archetype `a` carry text.
+static bool spawn_has_text(const gen *g, const int a)
+{
+    for (int c = 0; c < g->prog->components.count; c++) {
+        if (has_component(g->prog->archetypes.items[a], c) && decl_has_text(g->prog->components.items[c])) return true;
+    }
+    return false;
+}
+
+static bool field_blends(const field *f);
+static bool decl_blends(const decl *d);
+
+// Sets `v` between `before` and itself: `t` of the way from `before`.
+static void gen_blend_value(gen *g, const char *v, const char *before, const type t)
+{
+    sb *o = &g->c;
+    char a[256];
+    char b[256];
+    const int dim = type_dim(t);
+    const int columns = matrix_dim(t);
+    if (t.kind == TY_FLOAT) {
+        line(g, o, "%s = purr_lerp_f(%s, %s, t);", v, before, v);
+    } else if (dim >= 2) {
+        line(g, o, "%s = purr_lerp_f%d(%s, %s, purr_f%d_splat(t));", v, dim, before, v, dim);
+    } else if (columns > 0) {
+        for (int c = 0; c < columns; c++) {
+            snprintf(a, sizeof a, "%s.c%d", v, c);
+            snprintf(b, sizeof b, "%s.c%d", before, c);
+            gen_blend_value(g, a, b, vector_type(true, columns));
+        }
+    } else if (t.kind == TY_QUATERNION) {
+        line(g, o, "%s = purr_nlerp_q(%s, %s, t);", v, before, v);
+    } else if (t.kind == TY_COLOR || t.kind == TY_RECT) {
+        static const char *const channels[] = {"r", "g", "b", "a"};
+        static const char *const sides[] = {"x", "y", "width", "height"};
+        for (int i = 0; i < 4; i++) {
+            snprintf(a, sizeof a, "%s.%s", v, t.kind == TY_RECT ? sides[i] : channels[i]);
+            snprintf(b, sizeof b, "%s.%s", before, t.kind == TY_RECT ? sides[i] : channels[i]);
+            gen_blend_value(g, a, b, (type){TY_FLOAT, NULL});
+        }
+    } else if (t.kind == TY_STRUCT) {
+        line(g, o, "purr_blend_%s(&%s, &%s, t);", type_cname(t.decl), v, before);
+    }
+}
+
+static void gen_blend_fields(gen *g, const decl *d)
+{
+    if (d->interpolate) { // Its own way
+        line(g, &g->c, "*v = %s(*before, *v, t);", routine_cname(d->interpolate));
+        return;
+    }
+    for (int i = 0; i < d->fields.count; i++) {
+        const field *f = &d->fields.items[i];
+        if (!field_blends(f)) continue;
+        char v[256];
+        char before[256];
+        snprintf(v, sizeof v, "v->%s", field_cname(f));
+        snprintf(before, sizeof before, "before->%s", field_cname(f));
+        gen_blend_value(g, v, before, f->type);
+    }
+}
+
+// Views see the match between its last two ticks: for each type with fields
+// that blend, a function that blends a value, and for each such component,
+// one that finds an entity's in last tick's world.
+static void gen_blend_helpers(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    g->indent = 1;
+    for (int i = 0; i < prog->structs.count; i++) {
+        const decl *d = prog->structs.items[i];
+        if (!decl_blends(d)) continue;
+        const char *name = type_cname(d);
+        sb_printf(o, "PURR_HELPER void purr_blend_%s(%s *v, const %s *before, float t)\n{\n", name, name, name);
+        gen_blend_fields(g, d);
+        sb_put(o, "}\n\n");
+    }
+    for (int side = 0; side < 2; side++) {
+        decl *const *items = side ? prog->singletons.items : prog->components.items;
+        const int count = side ? prog->singletons.count : prog->components.count;
+        for (int i = 0; i < count; i++) {
+            const decl *d = items[i];
+            if (d->is_local || !decl_blends(d)) continue;
+            const char *name = type_cname(d);
+            sb_printf(o, "PURR_HELPER void purr_blend_%s(%s *v, const %s *before, float t)\n{\n    if (!before) return;\n",
+                      name, name, name);
+            if (d->snapped) sb_put(o, "    if (before->purr_snaps != v->purr_snaps) return; // It jumped\n");
+            gen_blend_fields(g, d);
+            sb_put(o, "}\n\n");
+            if (side) continue;
+            // An entity's in last tick's world, unless it wasn't there or it jumped since
+            sb_printf(o, "PURR_HELPER const %s *purr_prev_%s(const purr_world *w, const purr_world *now, purr_entity e)\n{\n",
+                      name, name);
+            sb_put(o, "    const purr_location at = purr_entity_location(&w->entities, e);\n");
+            sb_put(o, "    if (at.archetype == PURR_ARCHETYPE_NONE) return NULL;\n");
+            sb_put(o, "    if (purr_entity_snaps(&w->entities, e) != purr_entity_snaps(&now->entities, e)) return NULL;\n");
+            sb_put(o, "    switch (at.archetype) {\n");
+            for (int a = 0; a < prog->archetypes.count; a++) {
+                if (arch_local(g, a) || !has_component(prog->archetypes.items[a], d->index)) continue;
+                sb_printf(o, "    case %d: return &w->%s.%s[at.row];\n", a, arch_name(g, a), name);
+            }
+            sb_put(o, "    default: return NULL;\n    }\n}\n\n");
+        }
+    }
+    g->indent = 0;
+}
+
+// What views and local handlers call for Session.Join.
+static void gen_session_helpers(gen *g)
+{
+    sb *o = &g->c;
+    sb_put(o, "// Session.Join(address): the address, cut short if it's too long to be one.\n");
+    sb_put(o, "PURR_HELPER void purr_request_join(purr_local *l, const char *address)\n{\n");
+    sb_put(o, "    l->purr_request = (purr_session_request){.kind = PURR_REQUEST_JOIN};\n");
+    sb_put(o, "    size_t n = strlen(address);\n");
+    sb_put(o, "    if (n >= sizeof l->purr_request.address) n = sizeof l->purr_request.address - 1u;\n");
+    sb_put(o, "    memcpy(l->purr_request.address, address, n);\n}\n\n");
+}
 
 static void gen_prelude(gen *g)
 {
@@ -1553,6 +2736,24 @@ static void gen_prelude(gen *g)
         "    abort();\n"
         "}\n\n"
         "// Arithmetic on ints, vectors, quaternions and matrices comes from purr/math.h.\n\n");
+
+    // An enum in text is its member's name, or its number when it's none of them.
+    if (!g->prog->uses_text) return;
+    for (int i = 0; i < g->prog->decls.count; i++) {
+        const decl *d = g->prog->decls.items[i];
+        if (d->kind != DECL_ENUM) continue;
+        sb_printf(o, "PURR_HELPER purr_str purr_text_%s(const purr_str so_far, const int32_t v)\n{\n    switch (v) {\n",
+                  type_cname(d));
+        for (int k = 0; k < d->members.count; k++) {
+            const enum_member *m = &d->members.items[k];
+            bool repeated = false; // Two members with one value: the first one's name
+            for (int j = 0; j < k; j++) repeated |= d->members.items[j].number == m->number;
+            if (repeated) continue;
+            sb_printf(o, "    case %s: return purr_str_add_cstr(so_far, \"" STR_FMT "\");\n", enum_member_cname(d, m),
+                      STR_ARG(m->name));
+        }
+        sb_put(o, "    default: return purr_str_add_int(so_far, v, 0);\n    }\n}\n\n");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,21 +2768,30 @@ static void gen_remove_rows(gen *g)
 {
     const program *prog = g->prog;
     sb *o = &g->c;
-    sb_put(o, "// Swap-remove a row, moving the last entity into the gap.\n\n");
+    sb_put(o, "// Swap-remove a row, moving the last entity into the gap. The last row is\n");
+    sb_put(o, "// cleared, so past its count an archetype is zeros.\n\n");
     for (int a = 0; a < prog->archetypes.count; a++) {
         const char *name = arch_name(g, a);
         const uint64_t mask = prog->archetypes.items[a];
         sb_printf(o, "PURR_HELPER void purr_remove_row%d(%s *w, uint32_t row)\n{\n", a, world_type(arch_local(g, a)));
         sb_printf(o, "    purr_%s *a = &w->%s;\n", name, name);
-        sb_put(o, "    uint32_t last = --a->count;\n    if (row == last) return;\n");
-        sb_put(o, "    a->entity[row] = a->entity[last];\n");
-        if (has_scenes(prog, arch_local(g, a))) sb_put(o, "    a->scene[row] = a->scene[last];\n");
+        sb_put(o, "    const uint32_t last = --a->count;\n    if (row != last) {\n");
+        sb_put(o, "        a->entity[row] = a->entity[last];\n");
+        if (has_scenes(prog, arch_local(g, a))) sb_put(o, "        a->scene[row] = a->scene[last];\n");
         for (int i = 0; i < prog->components.count; i++) {
             if (!has_component(mask, i)) continue;
             const char *comp = type_cname(prog->components.items[i]);
-            sb_printf(o, "    a->%s[row] = a->%s[last];\n", comp, comp);
+            sb_printf(o, "        a->%s[row] = a->%s[last];\n", comp, comp);
         }
-        sb_printf(o, "    purr_entity_set_location(&w->entities, a->entity[row], (purr_location){%d, row});\n}\n\n", a);
+        sb_printf(o, "        purr_entity_set_location(&w->entities, a->entity[row], (purr_location){%d, row});\n    }\n", a);
+        sb_put(o, "    memset(&a->entity[last], 0, sizeof a->entity[0]);\n");
+        if (has_scenes(prog, arch_local(g, a))) sb_put(o, "    memset(&a->scene[last], 0, sizeof a->scene[0]);\n");
+        for (int i = 0; i < prog->components.count; i++) {
+            if (!has_component(mask, i)) continue;
+            const char *comp = type_cname(prog->components.items[i]);
+            sb_printf(o, "    memset(&a->%s[last], 0, sizeof a->%s[0]);\n", comp, comp);
+        }
+        sb_put(o, "}\n\n");
     }
 }
 
@@ -1655,7 +2865,7 @@ static void gen_command_recorders(gen *g)
     sb *o = &g->c;
 
     sb_put(o, "enum { PURR_CMD_SPAWN, PURR_CMD_ADD, PURR_CMD_REMOVE, PURR_CMD_DESTROY, PURR_CMD_EVENT, PURR_CMD_UNLOAD,\n"
-              "       PURR_CMD_SCENE_PLAYER };\n\n");
+              "       PURR_CMD_SCENE_PLAYER, PURR_CMD_SNAP };\n\n");
     for (int side = 0; side < 2; side++) {
         const bool local = side == 1;
         const char *p = world_prefix(local);
@@ -1683,6 +2893,10 @@ static void gen_command_recorders(gen *g)
             "}\n\n",
             p, world_type(local), local ? "frame" : "tick", p, world_type(local), p, p, world_type(local), p, p,
             world_type(local), p);
+        if (!local) {
+            sb_put(o, "// entity.Snap(): views draw it as it is, from the end of this tick\n");
+            sb_put(o, "PURR_HELPER void purr_cmd_snap(purr_world *w, purr_entity e)\n{\n    purr_cmd_push(w, PURR_CMD_SNAP, 0, e);\n}\n\n");
+        }
     }
     sb_put(o,
         "// Who sees a scene: `add` or remove a player.\n"
@@ -1708,7 +2922,9 @@ static void gen_command_recorders(gen *g)
         sb_put(o, "    purr_entity e = purr_entity_create(&w->entities);\n");
         sb_put(o, "    if (purr_entity_is_null(e)) purr_fatal(\"too many entities (raise PURR_MAX_ENTITIES)\");\n");
         sb_printf(o, "    purr_command *c = %scmd_push(w, PURR_CMD_SPAWN, %d, e);\n", world_prefix(local), a);
-        sb_printf(o, "    c->data.spawn%d = values;\n    c->scene = %s;\n    return e;\n}\n\n", a, load ? "e" : "scene");
+        sb_printf(o, "    c->data.spawn%d = values;\n", a);
+        if (spawn_has_text(g, a)) sb_printf(o, "    purr_own_spawn%d(&c->data.spawn%d);\n", a, a);
+        sb_printf(o, "    c->scene = %s;\n    return e;\n}\n\n", load ? "e" : "scene");
     }
 
     for (int c = 0; c < prog->components.count; c++) {
@@ -1716,7 +2932,10 @@ static void gen_command_recorders(gen *g)
         const decl *d = prog->components.items[c];
         const char *comp = type_cname(d);
         sb_printf(o, "PURR_HELPER void purr_cmd_add_%s(%s *w, purr_entity e, %s value)\n{\n", comp, world_type(d->is_local), comp);
-        sb_printf(o, "    %scmd_push(w, PURR_CMD_ADD, %d, e)->data.%s = value;\n}\n\n", world_prefix(d->is_local), c, comp);
+        sb_printf(o, "    purr_command *c = %scmd_push(w, PURR_CMD_ADD, %d, e);\n    c->data.%s = value;\n", world_prefix(d->is_local),
+                  c, comp);
+        if (decl_has_text(d)) sb_printf(o, "    purr_own_%s(&c->data.%s);\n", comp, comp);
+        sb_put(o, "}\n\n");
     }
 
     for (int i = 0; i < prog->events.count; i++) {
@@ -1726,8 +2945,10 @@ static void gen_command_recorders(gen *g)
         sb_printf(o, "// Send: " STR_FMT ", to `target` or, with the null entity, to the world\n", STR_ARG(d->qualified));
         sb_printf(o, "PURR_HELPER void purr_cmd_send_%s(%s *w, purr_entity target, %s value)\n{\n", name,
                   world_type(d->is_local), name);
-        sb_printf(o, "    %scmd_push(w, PURR_CMD_EVENT, %d, target)->data.event_%s = value;\n}\n\n", world_prefix(d->is_local),
-                  d->index, name);
+        sb_printf(o, "    purr_command *c = %scmd_push(w, PURR_CMD_EVENT, %d, target);\n    c->data.event_%s = value;\n",
+                  world_prefix(d->is_local), d->index, name);
+        if (decl_has_text(d)) sb_printf(o, "    purr_own_%s(&c->data.event_%s);\n", name, name);
+        sb_put(o, "}\n\n");
     }
 }
 
@@ -1768,7 +2989,7 @@ static void gen_apply(gen *g, const bool local)
 
     // Spawn
     // A program may have no spawns at all, leaving `w` unused.
-    sb_printf(o, "PURR_HELPER void %sapply_spawn(%s *w, const purr_command *c)\n{\n    (void)w;\n    switch (c->id) {\n", p, world);
+    sb_printf(o, "PURR_HELPER void %sapply_spawn(%s *w, purr_command *c)\n{\n    (void)w;\n    switch (c->id) {\n", p, world);
     for (int a = 0; a < prog->archetypes.count; a++) {
         if (!g->prog->spawn_target.items[a] || arch_local(g, a) != local) continue;
         const uint64_t mask = prog->archetypes.items[a];
@@ -1780,6 +3001,7 @@ static void gen_apply(gen *g, const bool local)
         if (has_scenes(prog, local)) {
             sb_put(o, "        // A spawn into a scene that's been unloaded by now doesn't happen.\n");
             sb_put(o, "        if (!purr_entity_is_null(c->scene) && !purr_entity_alive(&w->entities, c->scene)) {\n");
+            if (spawn_has_text(g, a)) sb_printf(o, "            purr_release_spawn%d(&c->data.spawn%d);\n", a, a);
             sb_put(o, "            purr_entity_destroy(&w->entities, c->entity);\n            break;\n        }\n");
         }
         sb_put(o, "        uint32_t row = a->count++;\n        a->entity[row] = c->entity;\n");
@@ -1796,9 +3018,15 @@ static void gen_apply(gen *g, const bool local)
     sb_put(o, "    default: break;\n    }\n}\n\n");
 
     // Add: replace the value if the entity already has the component, otherwise move.
-    sb_printf(o, "PURR_HELPER void %sapply_add(%s *w, const purr_command *c)\n{\n", p, world);
+    sb_printf(o, "PURR_HELPER void %sapply_add(%s *w, purr_command *c)\n{\n", p, world);
     sb_put(o, "    purr_location loc = purr_entity_location(&w->entities, c->entity);\n");
-    sb_put(o, "    if (loc.archetype == PURR_ARCHETYPE_NONE) return; // Destroyed earlier.\n");
+    sb_put(o, "    if (loc.archetype == PURR_ARCHETYPE_NONE) { // Destroyed earlier.\n        switch (c->id) {\n");
+    for (int comp_i = 0; comp_i < prog->components.count; comp_i++) {
+        const decl *comp = prog->components.items[comp_i];
+        if (!has_component(prog->added_mask, comp_i) || comp->is_local != local || !decl_has_text(comp)) continue;
+        sb_printf(o, "        case %d: purr_release_%s(&c->data.%s); break;\n", comp_i, type_cname(comp), type_cname(comp));
+    }
+    sb_put(o, "        default: break;\n        }\n        return;\n    }\n");
     sb_put(o, "    switch (c->id) {\n");
     for (int comp_i = 0; comp_i < prog->components.count; comp_i++) {
         if (!has_component(prog->added_mask, comp_i) || prog->components.items[comp_i]->is_local != local) continue;
@@ -1808,7 +3036,12 @@ static void gen_apply(gen *g, const bool local)
             if (arch_local(g, a) != local) continue;
             const uint64_t mask = prog->archetypes.items[a];
             if (has_component(mask, comp_i)) {
-                sb_printf(o, "        case %d: w->%s.%s[loc.row] = c->data.%s; break;\n", a, arch_name(g, a), comp, comp);
+                if (decl_has_text(prog->components.items[comp_i])) {
+                    sb_printf(o, "        case %d: purr_release_%s(&w->%s.%s[loc.row]); w->%s.%s[loc.row] = c->data.%s; break;\n", a,
+                              comp, arch_name(g, a), comp, arch_name(g, a), comp, comp);
+                } else {
+                    sb_printf(o, "        case %d: w->%s.%s[loc.row] = c->data.%s; break;\n", a, arch_name(g, a), comp, comp);
+                }
             } else {
                 const int to = find_arch(g, mask | ((uint64_t)1 << comp_i), local);
                 sb_printf(o, "        case %d: w->%s.%s[purr_move%d_%d(w, loc.row)] = c->data.%s; break;\n",
@@ -1820,7 +3053,7 @@ static void gen_apply(gen *g, const bool local)
     sb_put(o, "    default: break;\n    }\n}\n\n");
 
     // Remove: nothing happens if the entity doesn't have the component.
-    sb_printf(o, "PURR_HELPER void %sapply_remove(%s *w, const purr_command *c)\n{\n", p, world);
+    sb_printf(o, "PURR_HELPER void %sapply_remove(%s *w, purr_command *c)\n{\n", p, world);
     sb_put(o, "    purr_location loc = purr_entity_location(&w->entities, c->entity);\n");
     sb_put(o, "    if (loc.archetype == PURR_ARCHETYPE_NONE) return; // Destroyed earlier.\n");
     sb_put(o, "    switch (c->id) {\n");
@@ -1831,7 +3064,13 @@ static void gen_apply(gen *g, const bool local)
             const uint64_t mask = prog->archetypes.items[a];
             if (arch_local(g, a) != local || !has_component(mask, comp_i)) continue;
             const int to = find_arch(g, mask & ~((uint64_t)1 << comp_i), local);
-            sb_printf(o, "        case %d: purr_move%d_%d(w, loc.row); break;\n", a, a, to);
+            const decl *comp = prog->components.items[comp_i];
+            if (decl_has_text(comp)) {
+                sb_printf(o, "        case %d: purr_release_%s(&w->%s.%s[loc.row]); purr_move%d_%d(w, loc.row); break;\n", a,
+                          type_cname(comp), arch_name(g, a), type_cname(comp), a, to);
+            } else {
+                sb_printf(o, "        case %d: purr_move%d_%d(w, loc.row); break;\n", a, a, to);
+            }
         }
         sb_put(o, "        default: break;\n        }\n        break;\n");
     }
@@ -1844,12 +3083,14 @@ static void gen_apply(gen *g, const bool local)
     for (int a = 0; a < prog->archetypes.count; a++) {
         if (arch_local(g, a) != local) continue;
         // Destroyed's handlers run first, while the components can still be read.
-        if (handled_for(prog, prog->destroyed, a)) {
-            sb_printf(o, "    case %d: %sdispatch_%s(w, e, &(%s){0}); purr_remove_row%d(w, loc.row); break;\n", a, p,
-                      destroyed, destroyed, a);
-        } else {
-            sb_printf(o, "    case %d: purr_remove_row%d(w, loc.row); break;\n", a, a);
+        sb_printf(o, "    case %d:", a);
+        if (handled_for(prog, prog->destroyed, a)) sb_printf(o, " %sdispatch_%s(w, e, &(%s){0});", p, destroyed, destroyed);
+        for (int c = 0; c < prog->components.count; c++) {
+            const decl *comp = prog->components.items[c];
+            if (!has_component(prog->archetypes.items[a], c) || !decl_has_text(comp)) continue;
+            sb_printf(o, " purr_release_%s(&w->%s.%s[loc.row]);", type_cname(comp), arch_name(g, a), type_cname(comp));
         }
+        sb_printf(o, " purr_remove_row%d(w, loc.row); break;\n", a);
     }
     sb_put(o, "    default: return; // Already destroyed.\n    }\n");
     sb_put(o, "    purr_entity_destroy(&w->entities, e);\n}\n\n");
@@ -1872,7 +3113,7 @@ static void gen_apply(gen *g, const bool local)
     }
 
     // Destroy: a scene's entity unloads the scene.
-    sb_printf(o, "PURR_HELPER void %sapply_destroy(%s *w, const purr_command *c)\n{\n", p, world);
+    sb_printf(o, "PURR_HELPER void %sapply_destroy(%s *w, purr_command *c)\n{\n", p, world);
     if (scenes) {
         sb_put(o, "    switch (purr_entity_location(&w->entities, c->entity).archetype) {\n");
         for (int a = 0; a < prog->archetypes.count; a++) {
@@ -1883,7 +3124,7 @@ static void gen_apply(gen *g, const bool local)
     sb_printf(o, "    %sdestroy_now(w, c->entity);\n}\n\n", p);
 
     // Unload: nothing happens to an entity that isn't a scene.
-    sb_printf(o, "PURR_HELPER void %sapply_unload(%s *w, const purr_command *c)\n{\n    (void)w;\n    (void)c;\n", p, world);
+    sb_printf(o, "PURR_HELPER void %sapply_unload(%s *w, purr_command *c)\n{\n    (void)w;\n    (void)c;\n", p, world);
     if (scenes) {
         sb_put(o, "    switch (purr_entity_location(&w->entities, c->entity).archetype) {\n");
         for (int a = 0; a < prog->archetypes.count; a++) {
@@ -1895,7 +3136,7 @@ static void gen_apply(gen *g, const bool local)
 
     // Who sees a scene, as bits of its purr_players.
     if (!local) {
-        sb_put(o, "PURR_HELPER void purr_apply_scene_player(purr_world *w, const purr_command *c)\n{\n");
+        sb_put(o, "PURR_HELPER void purr_apply_scene_player(purr_world *w, purr_command *c)\n{\n");
         sb_put(o, "    const int32_t index = purr_player_index(c->data.player);\n    if (index < 0) return;\n");
         sb_put(o, "    const int32_t bit = (int32_t)(1u << index);\n    (void)bit;\n");
         sb_put(o, "    const purr_location loc = purr_entity_location(&w->entities, c->entity);\n    switch (loc.archetype) {\n");
@@ -1911,12 +3152,15 @@ static void gen_apply(gen *g, const bool local)
     }
 
     // Event: its handlers, in order. Events nothing handles do nothing.
-    sb_printf(o, "PURR_HELPER void %sapply_event(%s *w, const purr_command *c)\n{\n    (void)w;\n    switch (c->id) {\n", p, world);
+    sb_printf(o, "PURR_HELPER void %sapply_event(%s *w, purr_command *c)\n{\n    (void)w;\n    switch (c->id) {\n", p, world);
     for (int i = 0; i < prog->events.count; i++) {
         const decl *d = prog->events.items[i];
-        if (!is_queued(prog, d) || d->is_local != local || !has_handlers(d, local)) continue;
-        sb_printf(o, "    case %d: %sdispatch_%s(w, c->entity, &c->data.event_%s); break;\n", d->index, p, type_cname(d),
-                  type_cname(d));
+        const bool handled = has_handlers(d, local);
+        if (!is_queued(prog, d) || d->is_local != local || (!handled && !decl_has_text(d))) continue;
+        sb_printf(o, "    case %d:", d->index);
+        if (handled) sb_printf(o, " %sdispatch_%s(w, c->entity, &c->data.event_%s);", p, type_cname(d), type_cname(d));
+        if (decl_has_text(d)) sb_printf(o, " purr_release_%s(&c->data.event_%s);", type_cname(d), type_cname(d));
+        sb_put(o, " break;\n");
     }
     sb_put(o, "    default: break;\n    }\n}\n\n");
 
@@ -1928,7 +3172,7 @@ static void gen_apply(gen *g, const bool local)
         "static void %sapply_commands(%s *w)\n"
         "{\n"
         "    for (uint32_t i = 0; i < w->command_count; i++) {\n"
-        "        const purr_command *c = &w->commands[i];\n"
+        "        purr_command *c = &w->commands[i];\n"
         "        switch (c->kind) {\n"
         "        case PURR_CMD_SPAWN: %sapply_spawn(w, c); break;\n"
         "        case PURR_CMD_ADD: %sapply_add(w, c); break;\n"
@@ -1936,6 +3180,7 @@ static void gen_apply(gen *g, const bool local)
         "        case PURR_CMD_DESTROY: %sapply_destroy(w, c); break;\n"
         "        case PURR_CMD_EVENT: %sapply_event(w, c); break;\n"
         "        case PURR_CMD_UNLOAD: %sapply_unload(w, c); break;\n"
+        "        case PURR_CMD_SNAP: purr_entity_snap(&w->entities, c->entity); break;\n"
         "%s"
         "        default: break;\n"
         "        }\n"
@@ -1943,8 +3188,10 @@ static void gen_apply(gen *g, const bool local)
         "    // Cleared, so a world's bytes only depend on its state, never on what it did before.\n"
         "    memset(w->commands, 0, sizeof w->commands[0] * w->command_count);\n"
         "    w->command_count = 0;\n"
+        "%s"
         "}\n\n",
-        p, world, p, p, p, p, p, p, local ? "" : "        case PURR_CMD_SCENE_PLAYER: purr_apply_scene_player(w, c); break;\n");
+        p, world, p, p, p, p, p, p, local ? "" : "        case PURR_CMD_SCENE_PLAYER: purr_apply_scene_player(w, c); break;\n",
+        prog->uses_heap ? "    purr_heap_flush(&w->heap);\n" : "");
 
     if (prog->input && !local) {
         const char *name = type_cname(prog->input);
@@ -1990,7 +3237,8 @@ static void gen_system_body(gen *g, const decl *sys)
               STR_ARG(sys->qualified));
     // PURR_HELPER: a system that no entity matches is never called.
     if (sys->is_view) {
-        sb_printf(o, "PURR_HELPER void purr_view_%s(const purr_world *purr_w, purr_local *purr_l, purr_draw_list *purr_draw", name);
+        sb_printf(o, "PURR_HELPER void purr_view_%s(const purr_world *purr_w, purr_local *purr_l, purr_draw_list *purr_draw, "
+                     "purr_gui *purr_ui, uint32_t purr_seed", name);
     } else if (sys->is_handler) {
         sb_printf(o, "PURR_HELPER void purr_handler_%s(%s *%s, const %s *restrict %s", name, world_type(sys->is_local),
                   sys->is_local ? "purr_l" : "purr_w", type_cname(sys->event), trigger_cname(g, sys));
@@ -2017,10 +3265,12 @@ static void gen_system_body(gen *g, const decl *sys)
     sb_put(o, ")\n{\n");
     g->indent = 1;
     g->spawn_temps = 0;
+    g->call_temps = 0;
+    g->routine = NULL;
     if (g->has_scene) line(g, o, "(void)purr_scene;");
     if (sys->is_view || !sys->is_local) line(g, o, "(void)purr_w;");
     if (sys->is_view || sys->is_local) line(g, o, "(void)purr_l;");
-    if (sys->is_view) line(g, o, "(void)purr_draw;");
+    if (sys->is_view) line(g, o, "(void)purr_draw; (void)purr_ui; (void)purr_seed;");
     if (sys->is_handler) line(g, o, "(void)%s;", trigger_cname(g, sys));
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
@@ -2033,6 +3283,38 @@ static void gen_system_body(gen *g, const decl *sys)
     sb_put(o, "}\n");
     line_reset(g);
     sb_put(o, "\n");
+}
+
+// Whether field `f` is left out of blending.
+static bool field_snaps(const field *f)
+{
+    for (int k = 0; k < f->attributes.count; k++) {
+        if (str_eq_c(f->attributes.items[k].name, "Snap")) return true;
+    }
+    return false;
+}
+
+// Views see these fields blended between the last two ticks.
+static bool field_blends(const field *f)
+{
+    return !f->hidden && !field_snaps(f) && type_blends(f->type);
+}
+
+static bool decl_blends(const decl *d)
+{
+    if (d->interpolate) return true;
+    for (int i = 0; i < d->fields.count; i++) {
+        if (field_blends(&d->fields.items[i])) return true;
+    }
+    return false;
+}
+
+// A view's parameter it sees blended: the match's data, with fields that blend.
+static bool param_blends(const param *p)
+{
+    const type_kind k = p->type.kind;
+    return (k == TY_COMPONENT || k == TY_SINGLETON) && (p->mode == PARAM_READ) && !p->type.decl->is_local
+        && decl_blends(p->type.decl);
 }
 
 // Arguments that bind one entity's data to the system's parameters. `mask` is
@@ -2048,12 +3330,12 @@ static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const
             sb_printf(o, ", %s->entity[purr_i]", arch_var);
             break;
         case TY_SINGLETON:
-            sb_printf(o, ", &%s->%s", p->type.decl->is_local ? "purr_l" : "purr_w", type_cname(p->type.decl));
+            if (g->blending == sys && param_blends(p)) sb_printf(o, ", &purr_v%d", i);
+            else sb_printf(o, ", &%s->%s", p->type.decl->is_local ? "purr_l" : "purr_w", type_cname(p->type.decl));
             break;
         case TY_COMPONENT:
-            if (p->mode == PARAM_READ || p->mode == PARAM_MUT) {
-                sb_printf(o, ", &%s->%s[purr_i]", arch_var, type_cname(p->type.decl));
-            }
+            if (g->blending == sys && param_blends(p)) sb_printf(o, ", &purr_v%d", i);
+            else if (p->mode == PARAM_READ || p->mode == PARAM_MUT) sb_printf(o, ", &%s->%s[purr_i]", arch_var, type_cname(p->type.decl));
             break;
         case TY_INPUT:
             // This tick's input and last tick's: the owner's, or the server's for
@@ -2064,6 +3346,15 @@ static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const
                 sb_printf(o, ", purr_input_of(purr_w, %s->%s[purr_i].player, true)", arch_var, owner);
             } else {
                 sb_put(o, ", &purr_w->inputs[PURR_SERVER_INPUT], &purr_w->previous_inputs[PURR_SERVER_INPUT]");
+            }
+            break;
+        case TY_RECORD:
+            // The devices the input sent: the owner's, or the server's.
+            if (arch_var && has_component(mask, g->prog->owner->index)) {
+                sb_printf(o, ", &purr_input_of(purr_w, %s->%s[purr_i].player, false)->purr_dev", arch_var,
+                          type_cname(g->prog->owner));
+            } else {
+                sb_put(o, ", &purr_w->inputs[PURR_SERVER_INPUT].purr_dev");
             }
             break;
         default:
@@ -2085,6 +3376,7 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
     const char *world = local ? "purr_l" : "purr_w";
     sb_printf(o, "// " STR_FMT "'s %shandlers, in the order they run\n", STR_ARG(event->qualified), local ? "local " : "");
     sb_printf(o, "%s\n{\n", dispatch_signature(event, local));
+    if (prog->uses_text) sb_put(o, "    const uint32_t purr_mark = purr_scratch_mark();\n    (void)purr_mark;\n");
     sb_printf(o, "    const purr_location purr_loc = purr_entity_location(&%s->entities, purr_target);\n", world);
     sb_put(o, "    if (!purr_entity_is_null(purr_target) && purr_loc.archetype == PURR_ARCHETYPE_NONE) return; // Gone by its turn\n");
     for (int i = 0; i < event->handlers.count; i++) {
@@ -2093,10 +3385,14 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
         sb call = {0};
         sb_printf(&call, "purr_handler_%s(%s, purr_event", decl_cname(h), world);
         sb_printf(o, "    // " STR_FMT "\n", STR_ARG(h->qualified));
+        sb clear_text = {0};
+        if (prog->uses_text) sb_put(&clear_text, " purr_scratch_reset(purr_mark);");
+        if (prog->uses_heap) sb_printf(&clear_text, " purr_heap_flush(&%s->heap);", world);
+        const char *clear = clear_text.data ? clear_text.data : "";
         if (!h->per_entity) {
             sb_printf(o, "    %s", call.data);
             gen_system_args(g, h, NULL, 0);
-            sb_put(o, ");\n");
+            sb_printf(o, ");%s\n", clear);
             continue;
         }
         sb_put(o, "    switch (purr_loc.archetype) {\n");
@@ -2108,7 +3404,7 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
             sb_put(o, "        const uint32_t purr_i = purr_loc.row;\n");
             sb_printf(o, "        %s", call.data);
             gen_system_args(g, h, "purr_a", prog->archetypes.items[a]);
-            sb_put(o, ");\n        break;\n    }\n");
+            sb_printf(o, ");%s\n        break;\n    }\n", clear);
         }
         sb_put(o, "    default: break;\n    }\n");
     }
@@ -2123,14 +3419,20 @@ static void gen_routine_signature(gen *g, sb *o, const decl *m)
 {
     sb_printf(o, "PURR_HELPER %s %s(", m->return_type.kind == TY_VOID ? "void" : c_type(m->return_type), routine_cname(m));
     int n = 0;
-    if (m->owner && !m->is_operator) {
+    if (m->draws) {
+        sb_put(o, "purr_draw_list *purr_draw, purr_gui *purr_ui, uint32_t purr_seed");
+        n++;
+    }
+    if (m->owner && !m->is_operator && !m->is_interpolate) {
         sb_printf(o, m->is_mut_method ? "%s *purr_self" : "const %s purr_self", type_cname(m->owner));
         n++;
     }
     for (int i = 0; i < m->params.count; i++) {
         const param *p = &m->params.items[i];
-        sb_printf(o, p->mode == PARAM_MUT ? "%s%s *%s" : "%sconst %s %s", n++ ? ", " : "", c_type(p->type),
-                  local_cname(g, p->name));
+        if (p->mode == PARAM_MUT && p->type.kind == TY_STRING) sb_printf(o, "%spurr_textref %s", n++ ? ", " : "", local_cname(g, p->name));
+        else if (p->mode == PARAM_MUT) sb_printf(o, "%s%s *%s", n++ ? ", " : "", c_type(p->type), local_cname(g, p->name));
+        else if (p->type.kind == TY_RECORD) sb_printf(o, "%sconst %s *restrict %s", n++ ? ", " : "", c_type(p->type), local_cname(g, p->name));
+        else sb_printf(o, "%s%s", n++ ? ", " : "", const_decl(p->type, local_cname(g, p->name)));
     }
     if (n == 0) sb_put(o, "void");
     sb_put(o, ")");
@@ -2145,7 +3447,10 @@ static void gen_routine(gen *g, const decl *m)
     sb_put(o, "\n{\n");
     g->indent = 1;
     g->routine = m;
-    if (m->owner && !m->is_operator) line(g, o, "(void)purr_self;");
+    g->spawn_temps = 0;
+    g->call_temps = 0;
+    if (m->owner && !m->is_operator && !m->is_interpolate) line(g, o, "(void)purr_self;");
+    if (m->draws) line(g, o, "(void)purr_draw; (void)purr_ui; (void)purr_seed;");
     for (int i = 0; i < m->params.count; i++) line(g, o, "(void)%s;", local_cname(g, m->params.items[i].name));
     for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);
     g->routine = NULL;
@@ -2161,7 +3466,7 @@ static void gen_routines(gen *g)
     VEC(const decl *) all = {0};
     for (int i = 0; i < g->prog->decls.count; i++) {
         const decl *d = g->prog->decls.items[i];
-        if (d->kind == DECL_FUNCTION) vec_push(all, d);
+        if (d->kind == DECL_FUNCTION && !d->takes_block) vec_push(all, d); // Those are copied into each call
         for (int k = 0; k < d->methods.count; k++) vec_push(all, d->methods.items[k]);
     }
     if (all.count == 0) return;
@@ -2175,21 +3480,92 @@ static void gen_routines(gen *g)
     for (int i = 0; i < all.count; i++) gen_routine(g, all.items[i]);
 }
 
+// The devices as the input sends them: the values match code reads, repaired,
+// and nothing else, so the input's bytes only depend on those.
+static void gen_keep_devices(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    sb_put(o, "// A stick's axis: -1 to 1, and 0 for NaN.\n");
+    sb_put(o, "PURR_HELPER float purr_stick_axis(const float v)\n{\n    return v == v ? purr_clamp_f(v, -1.0f, 1.0f) : 0.0f;\n}\n\n");
+    sb_put(o, "// The devices as the input sends them: what match code reads, and nothing else.\n");
+    sb_put(o, "static void purr_keep_devices(purr_devices *restrict d)\n{\n");
+    sb_put(o, "    const purr_devices in = *d;\n    memset(d, 0, sizeof *d);\n    (void)in;\n");
+    for (int i = 0; i < prog->device_leaves.count; i++) {
+        if (!(prog->device_uses[i / 64] & ((uint64_t)1 << (i % 64)))) continue;
+        const device_leaf *leaf = &prog->device_leaves.items[i];
+        const char *p = leaf->path;
+        const type t = leaf->field->type;
+        if (t.kind == TY_RECORD) { // A button: whether it's held. The tick works out .down and .up.
+            sb_printf(o, "    d->%s.pressed = in.%s.pressed;\n", p, p);
+        } else if (t.kind == TY_FLOAT2 && strncmp(p, "gamepad.", 8) == 0) { // A stick: -1 to 1
+            sb_printf(o, "    d->%s = purr_f2(purr_stick_axis(in.%s.x), purr_stick_axis(in.%s.y));\n", p, p, p);
+        } else if (t.kind == TY_FLOAT2) {
+            sb_printf(o, "    d->%s = purr_f2(purr_is_finite_f(in.%s.x) ? in.%s.x : 0.0f, purr_is_finite_f(in.%s.y) ? in.%s.y : 0.0f);\n",
+                      p, p, p, p, p);
+        } else if (t.kind == TY_FLOAT) { // A trigger: 0 to 1
+            sb_printf(o, "    d->%s = purr_clamp_f(in.%s, 0.0f, 1.0f);\n", p, p);
+        } else {
+            sb_printf(o, "    d->%s = in.%s;\n", p, p);
+        }
+    }
+    sb_put(o, "}\n\n");
+
+    // The buttons' edges, against last tick's.
+    sb_put(o, "// The input sends whether buttons are held. Whether they went down or up is\n");
+    sb_put(o, "// against last tick's input, so an input guessed by repeating the last one\n");
+    sb_put(o, "// doesn't press them again.\n");
+    sb_put(o, "static void purr_device_edges(purr_world *w)\n{\n");
+    sb_put(o, "    for (uint32_t i = 0; i <= PURR_MAX_PLAYERS; i++) {\n");
+    sb_put(o, "        purr_devices *restrict d = &w->inputs[i].purr_dev;\n");
+    sb_put(o, "        const purr_devices *restrict last = &w->previous_inputs[i].purr_dev;\n");
+    sb_put(o, "        (void)d; (void)last;\n");
+    for (int i = 0; i < prog->device_leaves.count; i++) {
+        if (!(prog->device_uses[i / 64] & ((uint64_t)1 << (i % 64)))) continue;
+        const device_leaf *leaf = &prog->device_leaves.items[i];
+        if (leaf->field->type.kind != TY_RECORD) continue;
+        const char *p = leaf->path;
+        sb_printf(o, "        d->%s.down = d->%s.pressed && !last->%s.pressed;\n", p, p, p);
+        sb_printf(o, "        d->%s.up = !d->%s.pressed && last->%s.pressed;\n", p, p, p);
+    }
+    sb_put(o, "    }\n}\n\n");
+}
+
 static void gen_sample(gen *g)
 {
     const decl *input = g->prog->input;
     sb *o = &g->c;
     const char *name = type_cname(input);
-    const char *devices = input->params.count > 0 ? local_cname(g, input->params.items[0].name) : "devices";
+    const char *params = "const purr_devices *restrict purr_dev, const purr_local *restrict purr_l";
 
-    sb_printf(o, "// " STR_FMT "'s Sample\n", STR_ARG(input->name));
-    sb_printf(o, "%s purr_input_sample(const purr_devices *restrict %s)\n{\n", name, devices);
+    sb_put(o, "// The input's Sample\n");
+    // With text, the body is a function of its own, and purr_input_sample clears what it made.
+    if (g->prog->uses_text) {
+        sb_printf(o, "static %s purr_input_sample_body(%s);\n\n", name, params);
+        sb_printf(o, "%s purr_input_sample(%s)\n{\n"
+                     "    const uint32_t purr_mark = purr_scratch_mark();\n"
+                     "    const %s input = purr_input_sample_body(purr_dev, purr_l);\n"
+                     "    purr_scratch_reset(purr_mark);\n    return input;\n}\n\n", name, params, name);
+    }
+    sb_printf(o, "%s%s purr_input_sample%s(%s)\n{\n", g->prog->uses_text ? "static " : "", name,
+              g->prog->uses_text ? "_body" : "", params);
     g->indent = 1;
     indent(g, o);
     sb_printf(o, "%s purr_self = ", name);
     gen_value(g, o, input, NULL, 0);
     sb_put(o, ";\n");
-    line(g, o, "(void)%s;", devices);
+    line(g, o, "(void)purr_dev; (void)purr_l;");
+    if (g->prog->match_devices) {
+        line(g, o, "purr_self.purr_dev = *purr_dev;");
+        line(g, o, "purr_keep_devices(&purr_self.purr_dev);");
+    }
+    // Its local singletons
+    for (int i = 0; i < input->params.count; i++) {
+        const param *p = &input->params.items[i];
+        const char *pname = local_cname(g, p->name);
+        line(g, o, "const %s *restrict %s = &purr_l->%s;", c_type(p->type), pname, type_cname(p->type.decl));
+        line(g, o, "(void)%s;", pname);
+    }
     g->in_input = true;
     if (input->body) {
         for (int i = 0; i < input->body->stmts.count; i++) gen_stmt(g, input->body->stmts.items[i]);
@@ -2209,7 +3585,15 @@ static void gen_sanitize(gen *g)
     const decl *input = g->prog->input;
     sb *o = &g->c;
     sb_printf(o, "// " STR_FMT "'s Sanitize\n", STR_ARG(input->name));
-    sb_printf(o, "static %s purr_input_sanitize(%s purr_self)\n{\n", type_cname(input), type_cname(input));
+    if (g->prog->uses_text) {
+        sb_printf(o, "static %s purr_input_sanitize_body(%s purr_self);\n\n", type_cname(input), type_cname(input));
+        sb_printf(o, "static %s purr_input_sanitize(%s input)\n{\n"
+                     "    const uint32_t purr_mark = purr_scratch_mark();\n"
+                     "    input = purr_input_sanitize_body(input);\n"
+                     "    purr_scratch_reset(purr_mark);\n    return input;\n}\n\n", type_cname(input), type_cname(input));
+    }
+    sb_printf(o, "static %s purr_input_sanitize%s(%s purr_self)\n{\n", type_cname(input), g->prog->uses_text ? "_body" : "",
+              type_cname(input));
     g->indent = 1;
     g->in_input = true;
     for (int i = 0; i < input->sanitize->stmts.count; i++) gen_stmt(g, input->sanitize->stmts.items[i]);
@@ -2227,7 +3611,7 @@ static bool has_floats(const type t)
 {
     switch (t.kind) {
     case TY_FLOAT: case TY_FLOAT2: case TY_FLOAT3: case TY_FLOAT4: case TY_QUATERNION:
-    case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4: case TY_COLOR:
+    case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4: case TY_COLOR: case TY_RECT:
         return true;
     case TY_STRUCT:
         for (int i = 0; i < t.decl->fields.count; i++) {
@@ -2262,6 +3646,7 @@ static bool needs_repair(const decl *d)
     for (int i = 0; i < d->fields.count; i++) {
         const field *f = &d->fields.items[i];
         if (has_floats(f->type) || has_enums(f->type) || f->attributes.count > 0) return true;
+        if (f->type.kind == TY_RECORD) return true; // The devices
         if (f->type.kind == TY_STRUCT && needs_repair(f->type.decl)) return true;
     }
     return false;
@@ -2299,11 +3684,12 @@ static void gen_repair_value(gen *g, const char *in, const char *def, const type
         snprintf(a, sizeof a, "%s.value", in);
         snprintf(b, sizeof b, "%s.value", def);
         gen_repair_value(g, a, b, vector_type(true, 4));
-    } else if (t.kind == TY_COLOR) {
+    } else if (t.kind == TY_COLOR || t.kind == TY_RECT) {
         static const char *const channels[] = {"r", "g", "b", "a"};
+        static const char *const sides[] = {"x", "y", "width", "height"};
         for (int i = 0; i < 4; i++) {
-            snprintf(a, sizeof a, "%s.%s", in, channels[i]);
-            snprintf(b, sizeof b, "%s.%s", def, channels[i]);
+            snprintf(a, sizeof a, "%s.%s", in, t.kind == TY_RECT ? sides[i] : channels[i]);
+            snprintf(b, sizeof b, "%s.%s", def, t.kind == TY_RECT ? sides[i] : channels[i]);
             gen_repair_value(g, a, b, (type){TY_FLOAT, NULL});
         }
     } else if (t.kind == TY_STRUCT) {
@@ -2383,7 +3769,7 @@ static void gen_repair(gen *g)
     g->indent = 1;
     sb_printf(o, "    const %s purr_def = ", name);
     gen_value(g, o, input, NULL, 0);
-    sb_put(o, ";\n");
+    sb_put(o, ";\n    (void)purr_def;\n");
     for (int i = 0; i < input->fields.count; i++) {
         const field *f = &input->fields.items[i];
         if (!has_floats(f->type) && !has_enums(f->type)) continue;
@@ -2393,6 +3779,7 @@ static void gen_repair(gen *g)
         snprintf(def, sizeof def, "purr_def.%s", field_cname(f));
         gen_repair_value(g, in, def, f->type);
     }
+    if (g->prog->match_devices) line(g, o, "purr_keep_devices(&purr_in.purr_dev);");
     gen_bounds(g, input, "purr_in.");
     gen_clear_padding(g, input, "purr_in.");
     line(g, o, "return purr_in;");
@@ -2417,21 +3804,48 @@ static void gen_system_run(gen *g, const decl *sys)
     const char *name = decl_cname(sys);
     // How the body is called: its name and the arguments before the parameters.
     sb call = {0};
-    if (view) sb_printf(&call, "purr_view_%s(purr_w, purr_l, purr_draw", name);
-    else sb_printf(&call, "purr_system_%s(purr_w", name);
+    // A view's widgets are told apart by the entity it runs for.
+    int view_number = 0;
+    while (view && g->prog->views.items[view_number] != sys) view_number++;
+    if (view && sys->per_entity) {
+        sb_printf(&call, "purr_view_%s(purr_w, purr_l, purr_draw, purr_ui, "
+                         "purr_gui_seed(purr_gui_seed(%du, purr_a->entity[purr_i].index), purr_a->entity[purr_i].generation)",
+                  name, view_number + 1);
+    } else if (view) {
+        sb_printf(&call, "purr_view_%s(purr_w, purr_l, purr_draw, purr_ui, %du", name, view_number + 1);
+    } else {
+        sb_printf(&call, "purr_system_%s(purr_w", name);
+    }
 
     if (view) {
-        sb_printf(o, "static void purr_run_view_%s(const purr_world *purr_w, purr_local *purr_l, purr_draw_list *purr_draw)\n{\n",
+        sb_printf(o, "static void purr_run_view_%s(const purr_world *purr_w, const purr_world *purr_prev, float purr_alpha, "
+                     "purr_local *purr_l, purr_draw_list *purr_draw, purr_gui *purr_ui)\n{\n",
                   name);
         if (reads_match(sys)) sb_put(o, "    if (!purr_w) return; // It reads the match, and there's none.\n");
+        // What it reads of the match, between last tick and this one
+        sb_put(o, "    const bool purr_blend = purr_prev && purr_alpha < 1.0f;\n    (void)purr_blend;\n");
+        for (int i = 0; i < sys->params.count; i++) {
+            const param *p = &sys->params.items[i];
+            if (p->type.kind != TY_SINGLETON || !param_blends(p)) continue;
+            const char *s = type_cname(p->type.decl);
+            sb_printf(o, "    %s purr_v%d = purr_w->%s;\n", s, i, s);
+            sb_printf(o, "    if (purr_blend) purr_blend_%s(&purr_v%d, &purr_prev->%s, purr_alpha);\n", s, i, s);
+        }
+        g->blending = sys;
     } else {
         sb_printf(o, "static void purr_run_%s(purr_world *purr_w)\n{\n", name);
     }
 
+    // Text the code made goes once it's done: after each entity.
+    sb clear_text = {0};
+    if (prog->uses_text) sb_put(&clear_text, " purr_scratch_reset(purr_mark);");
+    if (prog->uses_heap) sb_printf(&clear_text, " purr_heap_flush(&%s->heap);", view ? "purr_l" : "purr_w");
+    const char *clear = clear_text.data ? clear_text.data : "";
+    if (prog->uses_text) sb_put(o, "    const uint32_t purr_mark = purr_scratch_mark();\n    (void)purr_mark;\n");
     if (!sys->per_entity) {
         sb_printf(o, "    %s", call.data);
         gen_system_args(g, sys, NULL, 0);
-        sb_put(o, ");\n");
+        sb_printf(o, ");%s\n", clear);
     } else {
         bool any = false;
         const char *world = sys->entity_local ? "purr_l" : "purr_w";
@@ -2445,15 +3859,24 @@ static void gen_system_run(gen *g, const decl *sys)
             // Views only read the match; the local world is theirs to change.
             sb_printf(o, "        %spurr_%s *purr_a = &%s->%s;\n", view && !sys->entity_local ? "const " : "", arch, world, arch);
             sb_put(o, "        for (uint32_t purr_i = 0; purr_i < purr_a->count; purr_i++) {\n");
+            for (int i = 0; view && i < sys->params.count; i++) {
+                const param *p = &sys->params.items[i];
+                if (p->type.kind != TY_COMPONENT || !param_blends(p)) continue;
+                const char *c = type_cname(p->type.decl);
+                sb_printf(o, "            %s purr_v%d = purr_a->%s[purr_i];\n", c, i, c);
+                sb_printf(o, "            if (purr_blend) purr_blend_%s(&purr_v%d, purr_prev_%s(purr_prev, purr_w, purr_a->entity[purr_i]), purr_alpha);\n",
+                          c, i, c);
+            }
             sb_printf(o, "            %s", call.data);
             gen_system_args(g, sys, "purr_a", mask);
-            sb_put(o, ");\n        }\n    }\n");
+            sb_printf(o, ");%s\n        }\n    }\n", clear);
         }
         if (!any) {
-            sb_printf(o, "    (void)purr_w;%s // No entity matches this %s.\n", view ? " (void)purr_l; (void)purr_draw;" : "",
-                      view ? "view" : "system");
+            sb_printf(o, "    (void)purr_w;%s // No entity matches this %s.\n",
+                      view ? " (void)purr_l; (void)purr_draw; (void)purr_ui;" : "", view ? "view" : "system");
         }
     }
+    g->blending = NULL;
     sb_put(o, "}\n\n");
 }
 
@@ -2464,6 +3887,8 @@ static void gen_print_value(sb *o, const type t, const char *access)
 {
     char part[300];
     switch (t.kind) {
+    case TY_STRING: sb_printf(o, "        printf(\"\\\"%%s\\\"\", purr_text_read(&w->heap, %s).ptr);\n", access); return;
+    case TY_LIST: sb_printf(o, "        printf(\"List(%%d)\", (int)purr_list_count(%s));\n", access); return;
     case TY_BOOL: sb_printf(o, "        printf(\"%%s\", %s ? \"true\" : \"false\");\n", access); return;
     case TY_INT: sb_printf(o, "        printf(\"%%d\", (int)%s);\n", access); return;
     case TY_FLOAT: sb_printf(o, "        printf(\"%%g\", (double)%s);\n", access); return;
@@ -2490,6 +3915,10 @@ static void gen_print_value(sb *o, const type t, const char *access)
         return;
     case TY_COLOR:
         sb_printf(o, "        printf(\"Color(%%g, %%g, %%g, %%g)\", (double)%s.r, (double)%s.g, (double)%s.b, (double)%s.a);\n",
+                  access, access, access, access);
+        return;
+    case TY_RECT:
+        sb_printf(o, "        printf(\"Rect(%%g, %%g, %%g, %%g)\", (double)%s.x, (double)%s.y, (double)%s.width, (double)%s.height);\n",
                   access, access, access, access);
         return;
     case TY_STRUCT:
@@ -2542,18 +3971,32 @@ static void gen_print_fields(sb *o, const decl *d, const char *base)
     sb_put(o, "        printf(\" }\");\n");
 }
 
+// The match's archetype of a scene alone: what loading it creates.
+static int lone_archetype(const gen *g, const decl *scene)
+{
+    for (int a = 0; a < g->prog->archetypes.count; a++) {
+        if (!arch_local(g, a) && g->prog->archetypes.items[a] == (uint64_t)1 << scene->index) return a;
+    }
+    return 0;
+}
+
 static void gen_api(gen *g)
 {
     const program *prog = g->prog;
     sb *o = &g->c;
 
-    sb_put(o, "void purr_world_init(purr_world *w, float dt)\n{\n    memset(w, 0, sizeof *w);\n    w->Time.dt = dt;\n");
+    const char *use_match = prog->uses_heap ? "    purr_text_use(&w->heap, w, sizeof *w, NULL, NULL, 0);\n" : "";
+    sb_put(o, "void purr_world_init(purr_world *w, float dt)\n{\n    purr_world_start(w, dt, NULL);\n}\n\n");
+    sb_printf(o, "void purr_world_start(purr_world *w, float dt, const purr_start *start)\n{\n    memset(w, 0, sizeof *w);\n%s"
+                 "    w->Time.dt = dt;\n",
+              use_match);
     for (int i = 0; i < prog->singletons.count; i++) {
         decl *d = prog->singletons.items[i];
         if (d->is_local || !has_defaults(d)) continue;
         sb_printf(o, "    w->%s = ", type_cname(d));
         gen_value(g, o, d, NULL, 0);
         sb_put(o, ";\n");
+        if (decl_has_text(d)) sb_printf(o, "    purr_own_%s(&w->%s);\n", type_cname(d), type_cname(d));
     }
     if (prog->input) {
         // The defaults go through the same checks as any input, so even before
@@ -2566,14 +4009,25 @@ static void gen_api(gen *g)
         sb_put(o, "    for (uint32_t i = 0; i <= PURR_SERVER_INPUT; i++) {\n");
         sb_put(o, "        w->inputs[i] = purr_defaults;\n        w->previous_inputs[i] = purr_defaults;\n    }\n");
     }
+    // The scene the match starts in: the one named, or Main if it's the match's.
+    sb_put(o, "    switch (start ? start->scene : -1) {\n");
+    for (int i = 0; i < prog->start_scenes.count; i++) {
+        const decl *scene = prog->start_scenes.items[i];
+        const int a = lone_archetype(g, scene);
+        sb_printf(o, "    case %d: purr_cmd_load%d(w, (purr_spawn%d){.%s = start->value.%s}, 0); break;\n", i, a, a,
+                  type_cname(scene), type_cname(scene));
+    }
+    sb_put(o, "    default:\n");
     if (!prog->main->is_local) {
-        sb_printf(o, "    purr_cmd_load%d(w, (purr_spawn%d){.%s = ", prog->main_archetype, prog->main_archetype, type_cname(prog->main));
+        sb_printf(o, "        purr_cmd_load%d(w, (purr_spawn%d){.%s = ", prog->main_archetype, prog->main_archetype, type_cname(prog->main));
         gen_value(g, o, prog->main, NULL, 0);
         sb_put(o, "}, 0);\n");
     }
+    sb_put(o, "        break;\n    }\n");
     sb_put(o, "    purr_apply_commands(w);\n}\n\n");
 
-    sb_put(o, "void purr_world_tick(purr_world *w)\n{\n");
+    sb_printf(o, "void purr_world_tick(purr_world *w)\n{\n%s", use_match);
+    if (prog->match_devices) sb_put(o, "    purr_device_edges(w);\n");
     for (int i = 0; i < prog->systems.count; i++) {
         sb_printf(o, "    purr_run_%s(w);\n", decl_cname(prog->systems.items[i]));
     }
@@ -2582,12 +4036,14 @@ static void gen_api(gen *g)
     sb_put(o, "    w->Time.tick++;\n}\n\n");
 
     sb_put(o, "void purr_local_init(purr_local *local)\n{\n    memset(local, 0, sizeof *local);\n");
+    if (prog->uses_heap) sb_put(o, "    purr_text_use(NULL, NULL, 0, &local->heap, local, sizeof *local);\n");
     for (int i = 0; i < prog->singletons.count; i++) {
         decl *d = prog->singletons.items[i];
         if (!d->is_local || !has_defaults(d)) continue;
         sb_printf(o, "    local->%s = ", type_cname(d));
         gen_value(g, o, d, NULL, 0);
         sb_put(o, ";\n");
+        if (decl_has_text(d)) sb_printf(o, "    purr_own_%s(&local->%s);\n", type_cname(d), type_cname(d));
     }
     if (prog->main->is_local) {
         sb_printf(o, "    purr_cmd_load%d(local, (purr_spawn%d){.%s = ", prog->main_archetype, prog->main_archetype,
@@ -2597,11 +4053,17 @@ static void gen_api(gen *g)
     }
     sb_put(o, "}\n\n");
 
-    sb_put(o, "void purr_frame(const purr_world *w, purr_local *local, purr_draw_list *draw)\n{\n");
-    for (int i = 0; i < prog->views.count; i++) {
-        sb_printf(o, "    purr_run_view_%s(w, local, draw);\n", decl_cname(prog->views.items[i]));
+    sb_put(o, "void purr_frame(const purr_world *w, const purr_world *previous, float alpha, purr_local *local, purr_draw_list *draw,\n"
+              "                purr_gui *gui)\n{\n");
+    sb_put(o, "    (void)previous;\n    (void)alpha;\n");
+    if (prog->uses_heap) {
+        // Views only read the match, so its heap is theirs to read, not change.
+        sb_put(o, "    purr_text_use(w ? (purr_heap *)&w->heap : NULL, w, sizeof *w, &local->heap, local, sizeof *local);\n");
     }
-    if (prog->views.count == 0) sb_put(o, "    (void)w;\n    (void)draw;\n");
+    for (int i = 0; i < prog->views.count; i++) {
+        sb_printf(o, "    purr_run_view_%s(w, previous, alpha, local, draw, gui);\n", decl_cname(prog->views.items[i]));
+    }
+    if (prog->views.count == 0) sb_put(o, "    (void)w;\n    (void)draw;\n    (void)gui;\n");
     sb_put(o, "    purr_local_apply_commands(local);\n}\n\n");
 
     const char *joined = type_cname(prog->player_joined);
@@ -2646,6 +4108,7 @@ static void gen_api(gen *g)
     }
 
     sb_put(o, "void purr_world_print(const purr_world *w)\n{\n");
+    if (prog->uses_heap) sb_put(o, "    purr_text_use((purr_heap *)&w->heap, w, sizeof *w, NULL, NULL, 0); // Its lists' heap\n");
     sb_put(o, "    printf(\"tick %d, %u entities\\n\", (int)w->Time.tick, (unsigned)purr_world_entity_count(w));\n");
     for (int s = 0; s < prog->singletons.count; s++) {
         const decl *d = prog->singletons.items[s];
@@ -2698,6 +4161,241 @@ static bool write_file(const char *path, const sb *b)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Source: the game, as sessions run it
+
+// Packs or unpacks one value of an input, as bits: bools take one, numbers
+// and enums 32, and a button of the devices whether it's held.
+static void gen_bits(gen *g, const char *at, const type t, const bool write, uint32_t *bits)
+{
+    sb *o = &g->c;
+    char inner[512];
+    const int dim = type_dim(t);
+    const int columns = matrix_dim(t);
+    if (t.kind == TY_BOOL) {
+        if (write) line(g, o, "purr_bits_put_bool(&b, %s);", at);
+        else line(g, o, "%s = purr_bits_get_bool(&b);", at);
+        *bits += 1;
+    } else if (t.kind == TY_FLOAT) {
+        if (write) line(g, o, "purr_bits_put_f32(&b, %s);", at);
+        else line(g, o, "%s = purr_bits_get_f32(&b);", at);
+        *bits += 32;
+    } else if (t.kind == TY_INT || t.kind == TY_ENUM) {
+        if (write) line(g, o, "purr_bits_put(&b, (uint32_t)%s, 32);", at);
+        else line(g, o, "%s = (int32_t)purr_bits_get(&b, 32);", at);
+        *bits += 32;
+    } else if (t.kind == TY_PLAYER) {
+        snprintf(inner, sizeof inner, "%s.id", at);
+        if (write) line(g, o, "purr_bits_put(&b, %s, 32);", inner);
+        else line(g, o, "%s = purr_bits_get(&b, 32);", inner);
+        *bits += 32;
+    } else if (t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY) {
+        static const char *const parts[] = {"index", "generation"};
+        for (int i = 0; i < 2; i++) {
+            snprintf(inner, sizeof inner, "%s.%s", at, parts[i]);
+            if (write) line(g, o, "purr_bits_put(&b, %s, 32);", inner);
+            else line(g, o, "%s = purr_bits_get(&b, 32);", inner);
+            *bits += 32;
+        }
+    } else if (dim >= 2) {
+        for (int i = 0; i < dim; i++) {
+            snprintf(inner, sizeof inner, "%s.%s", at, xyzw[i]);
+            gen_bits(g, inner, vector_type(type_is_float_based(t), 1), write, bits);
+        }
+    } else if (columns > 0) {
+        for (int i = 0; i < columns; i++) {
+            snprintf(inner, sizeof inner, "%s.c%d", at, i);
+            gen_bits(g, inner, vector_type(true, columns), write, bits);
+        }
+    } else if (t.kind == TY_QUATERNION) {
+        snprintf(inner, sizeof inner, "%s.value", at);
+        gen_bits(g, inner, vector_type(true, 4), write, bits);
+    } else if (t.kind == TY_COLOR || t.kind == TY_RECT) {
+        static const char *const channels[] = {"r", "g", "b", "a"};
+        static const char *const sides[] = {"x", "y", "width", "height"};
+        for (int i = 0; i < 4; i++) {
+            snprintf(inner, sizeof inner, "%s.%s", at, t.kind == TY_RECT ? sides[i] : channels[i]);
+            gen_bits(g, inner, (type){TY_FLOAT, NULL}, write, bits);
+        }
+    } else if (t.kind == TY_STRUCT) {
+        for (int i = 0; i < t.decl->fields.count; i++) {
+            const field *f = &t.decl->fields.items[i];
+            snprintf(inner, sizeof inner, "%s.%s", at, field_cname(f));
+            gen_bits(g, inner, f->type, write, bits);
+        }
+    } else if (t.kind == TY_RECORD) { // The devices: what match code reads of them
+        const program *prog = g->prog;
+        for (int i = 0; i < prog->device_leaves.count; i++) {
+            if (!(prog->device_uses[i / 64] & ((uint64_t)1 << (i % 64)))) continue;
+            const device_leaf *leaf = &prog->device_leaves.items[i];
+            const type lt = leaf->field->type;
+            if (lt.kind == TY_RECORD) snprintf(inner, sizeof inner, "%s.%s.pressed", at, leaf->path);
+            else snprintf(inner, sizeof inner, "%s.%s", at, leaf->path);
+            gen_bits(g, inner, lt.kind == TY_RECORD ? (type){TY_BOOL, NULL} : lt, write, bits);
+        }
+    }
+}
+
+// Snapshots: the world's parts in the order purr_world has them, each only as
+// far as it's in use. Copying clears what `to` used beyond `from`.
+static void gen_world_copy(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    sb_put(o, "void purr_world_copy(purr_world *restrict to, const purr_world *restrict from)\n{\n");
+    for (int i = 0; i < prog->singletons.count; i++) {
+        if (prog->singletons.items[i]->is_local) continue;
+        const char *name = type_cname(prog->singletons.items[i]);
+        sb_printf(o, "    to->%s = from->%s;\n", name, name);
+    }
+    sb_put(o, "    purr_entities_copy(&to->entities, &from->entities);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (arch_local(g, a)) continue;
+        const char *name = arch_name(g, a);
+        const uint64_t mask = prog->archetypes.items[a];
+        sb_printf(o, "    { // %s\n", arch_label(g, a));
+        sb_printf(o, "        purr_%s *t = &to->%s;\n        const purr_%s *f = &from->%s;\n", name, name, name, name);
+        sb_put(o, "        const uint32_t n = f->count;\n        const uint32_t stale = t->count > n ? t->count - n : 0u;\n");
+        sb_put(o, "        t->count = n;\n");
+        const char *columns[64 + 2]; // Components are at most 64
+        int count = 0;
+        columns[count++] = "entity";
+        if (has_scenes(prog, false)) columns[count++] = "scene";
+        for (int i = 0; i < prog->components.count; i++) {
+            if (has_component(mask, i)) columns[count++] = type_cname(prog->components.items[i]);
+        }
+        for (int k = 0; k < count; k++) {
+            sb_printf(o, "        memcpy(t->%s, f->%s, n * sizeof t->%s[0]);\n", columns[k], columns[k], columns[k]);
+            sb_printf(o, "        memset(t->%s + n, 0, stale * sizeof t->%s[0]);\n", columns[k], columns[k]);
+        }
+        sb_put(o, "    }\n");
+    }
+    sb_put(o, "    {\n        const uint32_t n = from->command_count;\n");
+    sb_put(o, "        if (to->command_count > n) memset(to->commands + n, 0, (to->command_count - n) * sizeof to->commands[0]);\n");
+    sb_put(o, "        to->command_count = n;\n        memcpy(to->commands, from->commands, n * sizeof to->commands[0]);\n    }\n");
+    if (prog->input) {
+        sb_put(o, "    memcpy(to->inputs, from->inputs, sizeof to->inputs);\n");
+        sb_put(o, "    memcpy(to->previous_inputs, from->previous_inputs, sizeof to->previous_inputs);\n");
+    }
+    if (prog->uses_heap) sb_put(o, "    purr_heap_copy(&to->heap, &from->heap);\n");
+    sb_put(o, "}\n\n");
+
+    sb_put(o, "uint64_t purr_world_hash(const purr_world *w)\n{\n    uint64_t h = PURR_HASH_START;\n");
+    for (int i = 0; i < prog->singletons.count; i++) {
+        if (prog->singletons.items[i]->is_local) continue;
+        const char *name = type_cname(prog->singletons.items[i]);
+        sb_printf(o, "    h = purr_hash_more(h, &w->%s, sizeof w->%s);\n", name, name);
+    }
+    sb_put(o, "    h = purr_entities_hash(h, &w->entities);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (arch_local(g, a)) continue;
+        const char *name = arch_name(g, a);
+        const uint64_t mask = prog->archetypes.items[a];
+        sb_printf(o, "    h = purr_hash_more(h, &w->%s.count, sizeof w->%s.count);\n", name, name);
+        sb_printf(o, "    h = purr_hash_more(h, w->%s.entity, w->%s.count * sizeof w->%s.entity[0]);\n", name, name, name);
+        if (has_scenes(prog, false)) {
+            sb_printf(o, "    h = purr_hash_more(h, w->%s.scene, w->%s.count * sizeof w->%s.scene[0]);\n", name, name, name);
+        }
+        for (int i = 0; i < prog->components.count; i++) {
+            if (!has_component(mask, i)) continue;
+            const char *comp = type_cname(prog->components.items[i]);
+            sb_printf(o, "    h = purr_hash_more(h, w->%s.%s, w->%s.count * sizeof w->%s.%s[0]);\n", name, comp, name, name, comp);
+        }
+    }
+    sb_put(o, "    h = purr_hash_more(h, &w->command_count, sizeof w->command_count);\n");
+    sb_put(o, "    h = purr_hash_more(h, w->commands, w->command_count * sizeof w->commands[0]);\n");
+    if (prog->input) {
+        sb_put(o, "    h = purr_hash_more(h, w->inputs, sizeof w->inputs);\n");
+        sb_put(o, "    h = purr_hash_more(h, w->previous_inputs, sizeof w->previous_inputs);\n");
+    }
+    if (prog->uses_heap) sb_put(o, "    h = purr_heap_hash(h, &w->heap);\n");
+    sb_put(o, "    return purr_hash_end(h);\n}\n\n");
+}
+
+// What sessions (purr/session.h) need: the local state's side, the input
+// packed for the network, and purr_game_api.
+static void gen_game_api(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    gen_world_copy(g);
+
+    sb_put(o, "bool purr_local_take_request(purr_local *local, purr_session_request *request, purr_start *start)\n{\n");
+    sb_put(o, "    if (local->purr_request.kind == PURR_REQUEST_NONE) return false;\n");
+    sb_put(o, "    *request = local->purr_request;\n    *start = local->purr_request_start;\n");
+    sb_put(o, "    local->purr_request = (purr_session_request){0};\n");
+    sb_put(o, "    local->purr_request_start = (purr_start){0};\n    return true;\n}\n\n");
+
+    const decl *session = prog->session;
+    const char *name = type_cname(session);
+    sb_put(o, "void purr_local_set_session(purr_local *local, uint32_t state, purr_player_id player, uint32_t ping, bool server)\n{\n");
+    sb_printf(o, "    local->%s.%s = (int32_t)state;\n", name, field_cname(&session->fields.items[0]));
+    sb_printf(o, "    local->%s.%s = player;\n", name, field_cname(&session->fields.items[1]));
+    sb_printf(o, "    local->%s.%s = (int32_t)ping;\n", name, field_cname(&session->fields.items[2]));
+    sb_printf(o, "    local->%s.%s = server;\n}\n\n", name, field_cname(&session->fields.items[3]));
+    const char *connected = type_cname(prog->connected);
+    const char *disconnected = type_cname(prog->disconnected);
+    sb_printf(o, "void purr_local_connected(purr_local *local)\n{\n    purr_cmd_send_%s(local, (purr_entity){0}, (%s){0});\n}\n\n",
+              connected, connected);
+    sb_printf(o, "void purr_local_disconnected(purr_local *local, uint32_t reason)\n{\n"
+                 "    purr_cmd_send_%s(local, (purr_entity){0}, (%s){.%s = (int32_t)reason});\n}\n\n",
+              disconnected, disconnected, field_cname(&prog->disconnected->fields.items[0]));
+
+    sb_put(o, "// The game, as sessions run it\n\n");
+    sb_put(o, "static void purr_game_start(void *w, float dt, const void *start)\n{\n    purr_world_start(w, dt, start);\n}\n\n");
+    sb_put(o, "static void purr_game_tick(void *w)\n{\n    purr_world_tick(w);\n}\n\n");
+    sb_put(o, "static void purr_game_copy(void *to, const void *from)\n{\n    purr_world_copy(to, from);\n}\n\n");
+    sb_put(o, "static uint64_t purr_game_hash(const void *w)\n{\n    return purr_world_hash(w);\n}\n\n");
+    sb_put(o, "static void purr_game_joined(void *w, purr_player_id player)\n{\n    purr_world_player_joined(w, player);\n}\n\n");
+    sb_put(o, "static void purr_game_left(void *w, purr_player_id player)\n{\n    purr_world_player_left(w, player);\n}\n\n");
+    uint32_t bits = 0;
+    const decl *input = prog->input;
+    if (input) {
+        const char *in = type_cname(input);
+        sb_printf(o, "static void purr_game_set_input(void *w, purr_player_id player, const void *input)\n{\n"
+                     "    purr_world_set_input(w, player, *(const %s *)input);\n}\n\n", in);
+        sb_printf(o, "static void purr_game_set_server_input(void *w, const void *input)\n{\n"
+                     "    purr_world_set_server_input(w, *(const %s *)input);\n}\n\n", in);
+        // Packed field by field, in bits. Unpacking starts from zeros, so padding stays zero.
+        sb_printf(o, "static uint32_t purr_game_write_input(const void *input, uint8_t *out, uint32_t capacity)\n{\n"
+                     "    const %s *in = input;\n    purr_bits b = {out, capacity, 0, false};\n", in);
+        g->indent = 1;
+        for (int i = 0; i < input->fields.count; i++) {
+            const field *f = &input->fields.items[i];
+            char at[256];
+            snprintf(at, sizeof at, "in->%s", field_cname(f));
+            gen_bits(g, at, f->type, true, &bits);
+        }
+        sb_put(o, "    return purr_bits_end(&b);\n}\n\n");
+        sb_printf(o, "static bool purr_game_read_input(const uint8_t *data, uint32_t size, void *input)\n{\n"
+                     "    %s *in = input;\n    *in = (%s){0};\n    purr_bits b = {(uint8_t *)data, size, 0, false};\n", in, in);
+        uint32_t read_bits = 0;
+        for (int i = 0; i < input->fields.count; i++) {
+            const field *f = &input->fields.items[i];
+            char at[256];
+            snprintf(at, sizeof at, "in->%s", field_cname(f));
+            gen_bits(g, at, f->type, false, &read_bits);
+        }
+        g->indent = 0;
+        sb_put(o, "    return !b.overflow;\n}\n\n");
+    }
+    const uint32_t bytes = (bits + 7u) / 8u;
+    sb_put(o, "const purr_game purr_game_api = {\n");
+    sb_printf(o, "    .hash = 0x%016llXull,\n", (unsigned long long)g->game_hash);
+    sb_put(o, "    .world_size = sizeof(purr_world),\n");
+    sb_printf(o, "    .input_size = %s,\n", input ? "sizeof(purr_input)" : "0");
+    sb_printf(o, "    .max_input_bytes = %uu,\n", bytes ? bytes : 1u);
+    sb_put(o, "    .start_size = sizeof(purr_start),\n");
+    sb_put(o, "    .start = purr_game_start,\n    .tick = purr_game_tick,\n");
+    sb_put(o, "    .copy_world = purr_game_copy,\n    .hash_world = purr_game_hash,\n");
+    sb_put(o, "    .player_joined = purr_game_joined,\n    .player_left = purr_game_left,\n");
+    if (input) {
+        sb_put(o, "    .set_input = purr_game_set_input,\n    .set_server_input = purr_game_set_server_input,\n");
+        sb_put(o, "    .write_input = purr_game_write_input,\n    .read_input = purr_game_read_input,\n");
+    }
+    sb_put(o, "};\n");
+}
+
 bool codegen(program *prog, const codegen_options *opts)
 {
     gen g = {0};
@@ -2717,8 +4415,14 @@ bool codegen(program *prog, const codegen_options *opts)
     g.c_path = forward_slashes(path.data);
 
     gen_header(&g);
+    // The game's hash: its header, but for the first line, which names files.
+    const char *types = strchr(g.h.data, '\n');
+    g.game_hash = 0xCBF29CE484222325ull;
+    for (const char *p = types ? types : g.h.data; *p; p++) g.game_hash = (g.game_hash ^ (uint8_t)*p) * 0x100000001B3ull;
 
     gen_prelude(&g);
+    gen_session_helpers(&g);
+    gen_text_helpers(&g);
     gen_remove_rows(&g);
     gen_moves(&g);
     gen_command_recorders(&g);
@@ -2726,6 +4430,8 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_apply(&g, false);
     gen_apply(&g, true);
     gen_routines(&g);
+    gen_blend_helpers(&g); // After the routines: a type's Interpolate is one
+    if (prog->match_devices) gen_keep_devices(&g);
     if (prog->input) gen_sample(&g);
     if (prog->input && prog->input->sanitize) gen_sanitize(&g);
     if (prog->input && input_needs_repair(prog->input)) gen_repair(&g);
@@ -2740,6 +4446,7 @@ bool codegen(program *prog, const codegen_options *opts)
     for (int i = 0; i < prog->systems.count; i++) gen_system_run(&g, prog->systems.items[i]);
     for (int i = 0; i < prog->views.count; i++) gen_system_run(&g, prog->views.items[i]);
     gen_api(&g);
+    gen_game_api(&g);
 
     sb h_path = {0};
     sb_printf(&h_path, "%s/%s.h", opts->out_dir, opts->name);

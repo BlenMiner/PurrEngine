@@ -1,0 +1,8 @@
+// expect: an entity jumps as a whole: take its Entity and snap that, like 'self.Snap()'
+component Body { float2 position; }
+scene Main { }
+system Teleport(mut Body body)
+{
+    body.position = float2(0, 0);
+    body.Snap();
+}

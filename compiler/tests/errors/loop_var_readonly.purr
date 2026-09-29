@@ -1,0 +1,11 @@
+// expect: 'i' is read-only here
+scene Main { }
+component Tally { int n; }
+system Count(mut Tally t)
+{
+    for (var i = 0; i < 10; i++)
+    {
+        i += 1;
+        t.n += i;
+    }
+}

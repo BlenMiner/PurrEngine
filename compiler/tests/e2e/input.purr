@@ -22,16 +22,16 @@ input PlayerInput
     bool jump;
     float speed = 1;
 
-    Sample(Devices devices)
+    Sample()
     {
-        var keys = devices.keyboard;
+        var keys = Devices.keyboard;
         if (keys.d.pressed) move.x += 1;
         if (keys.a.pressed) move.x -= 1;
         if (keys.w.pressed) move.y += 1;
         if (keys.s.pressed) move.y -= 1;
-        move += devices.gamepad.leftStick;
-        jump = keys.space.pressed || devices.gamepad.buttonSouth.pressed;
-        if (devices.mouse.left.down)
+        move += Devices.gamepad.leftStick;
+        jump = keys.space.pressed || Devices.gamepad.buttonSouth.pressed;
+        if (Devices.mouse.left.down)
             speed = 2;
     }
 

@@ -1,0 +1,4 @@
+// expect: did you mean 'Contains'?
+scene Main { }
+component Tally { int n; }
+system S(mut Tally t) { if ("cat".Contain("a")) t.n = 1; }

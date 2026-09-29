@@ -81,9 +81,9 @@ function(purr_add_game target)
 #include "@name@.h"
 #include "purr/run.h"
 
-int main(void)
+int main(int argc, char **argv)
 {
-    purr_run(&(purr_run_desc){.title = "@title@", .stats = @stats@});
+    purr_run(&(purr_run_desc){.title = "@title@", .stats = @stats@, .argc = argc, .argv = argv});
 }
 ]])
         add_executable(${target} "${main}" "${out_c}" "${out_h}")

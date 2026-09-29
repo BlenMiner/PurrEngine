@@ -1,0 +1,6 @@
+// expect: a list's element is a copy, so 'Heal' can't change it
+scene Main { }
+struct Stats { int health; }
+component Party { List<Stats> members; }
+void Heal(mut Stats s) { s.health += 1; }
+system S(mut Party party) { Heal(party.members[0]); }

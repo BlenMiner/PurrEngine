@@ -1,0 +1,4 @@
+// expect: did you mean 'Length'?
+scene Main { }
+component Tally { int n; }
+system S(mut Tally t) { t.n = "cat".length; }

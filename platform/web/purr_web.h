@@ -15,7 +15,8 @@ PURR_WEB_IMPORT(canvas_width) int purr_web_canvas_width(void);
 PURR_WEB_IMPORT(canvas_height) int purr_web_canvas_height(void);
 
 // The mouse over the canvas, in canvas pixels from its top left. Buttons are a
-// bit mask in raylib's order: left, right, middle, back, forward.
+// bit mask in raylib's order: left, right, middle, back, forward. A button
+// pressed since the last call reads as held, even if it's already up again.
 PURR_WEB_IMPORT(mouse_x) float purr_web_mouse_x(void);
 PURR_WEB_IMPORT(mouse_y) float purr_web_mouse_y(void);
 PURR_WEB_IMPORT(mouse_buttons) int purr_web_mouse_buttons(void);
@@ -24,9 +25,14 @@ PURR_WEB_IMPORT(take_wheel_x) float purr_web_take_wheel_x(void);
 PURR_WEB_IMPORT(take_wheel_y) float purr_web_take_wheel_y(void);
 
 // Keys by the DOM's `code`, which names physical positions: `index` is ours.
-// Held keys are released when the page loses focus.
+// Held keys are released when the page loses focus. A key pressed since the
+// last call reads as held, even if it's already up again.
 PURR_WEB_IMPORT(watch_key) void purr_web_watch_key(int index, const char *code);
 PURR_WEB_IMPORT(key_held) bool purr_web_key_held(int index);
+
+// The next character typed, as a Unicode code point, or 0 once there are no
+// more. They follow the keyboard layout, unlike keys.
+PURR_WEB_IMPORT(take_char) int purr_web_take_char(void);
 
 // Gamepads in the browser's standard mapping: axes -1 to 1 (y down), buttons
 // 0 to 1 (triggers are analog buttons 6 and 7).

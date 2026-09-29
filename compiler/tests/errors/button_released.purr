@@ -2,6 +2,6 @@
 input PlayerInput
 {
     bool jump;
-    Sample(Devices devices) { jump = devices.keyboard.space.released; }
+    Sample() { jump = Devices.keyboard.space.released; }
 }
 scene Main { }

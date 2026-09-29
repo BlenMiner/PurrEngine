@@ -3,7 +3,7 @@ component Jumps { int count; }
 input PlayerInput
 {
     bool jump;
-    Sample(Devices devices) { jump = devices.keyboard.space.pressed; }
+    Sample() { jump = Devices.keyboard.space.pressed; }
 }
 scene Main { }
 

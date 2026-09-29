@@ -1,6 +1,0 @@
-// expect: text can only be passed straight to Draw.Text for now
-scene Main { }
-view Label()
-{
-    var name = "player";
-}

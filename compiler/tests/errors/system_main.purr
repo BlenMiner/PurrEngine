@@ -1,3 +1,3 @@
-// expect: the program starts in the scene named Main, not a system
+// expect: it's the scene named Main, 'scene Main { }'; a system named Main is an ordinary one
 component Body { float2 position; }
-system Main() { Spawn(Body); }
+system Main(mut Body body) { body.position.x += 1; }
