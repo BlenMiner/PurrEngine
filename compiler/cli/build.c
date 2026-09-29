@@ -117,6 +117,7 @@ static const char *const release_flags[] = {"-O2", "-DNDEBUG", NULL};
 // Windows games use the MinGW-w64 target, whose C runtime comes with purr (as
 // in cmake/mingw-toolchain.cmake): Microsoft's can't be redistributed. Its C
 // library is the UCRT, part of Windows, so games need no DLLs of their own.
+// The package holds exactly these libraries (platform/CMakeLists.txt).
 #define NATIVE_TARGET "--target=x86_64-w64-windows-gnu"
 #define NATIVE_RUNTIME "mingw"
 static const char *const native_libs[] = {"-lmingw32", "-lmingwex", "-lmoldname", "-lmsvcrt", "-lkernel32",
