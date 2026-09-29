@@ -11,10 +11,10 @@
 //         purr_run(&(purr_run_desc){.title = "Sandbox"});
 //     }
 //
-// The simulation ticks at a fixed rate. If the game declares an input, the
-// devices are sampled every tick as player 0's input and, since this machine is
-// also the server, as the server's. The views draw every frame. Close the
-// window to quit.
+// The simulation ticks at a fixed rate. Player 0 joins before the first tick.
+// If the game declares an input, the devices are sampled every tick as player
+// 0's input and, since this machine is also the server, as the server's. The
+// views draw every frame. Close the window to quit.
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later.
@@ -90,5 +90,6 @@ _Noreturn static inline void purr_run(const purr_run_desc *desc)
                                            .width = purr_run_settings.width,
                                            .height = purr_run_settings.height});
     purr_world_init(&purr_run_world, 1.0f / (float)purr_run_settings.tick_rate);
+    purr_world_player_joined(&purr_run_world, purr_player_from_index(0)); // Local play: player 0 is here from the start
     purr_platform_run(purr_run_frame, NULL);
 }

@@ -111,11 +111,23 @@
     "declarations": {
       "patterns": [
         {
-          "comment": "component Transform, singleton Time, struct Stats, input PlayerInput",
-          "match": "\\b(component|singleton|struct|input)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "comment": "component Transform, singleton Time, struct Stats, input PlayerInput, event Hit",
+          "match": "\\b(component|singleton|struct|input|event)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.purrlang" },
             "2": { "name": "entity.name.type.purrlang" }
+          }
+        },
+        {
+          "comment": "event(Hit hit) TakeHit: an event handler, with the event it handles",
+          "match": "\\b(event)\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\))\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.purrlang" },
+            "2": { "name": "punctuation.parenthesis.open.purrlang" },
+            "3": { "patterns": [{ "include": "#types" }] },
+            "4": { "name": "variable.parameter.purrlang" },
+            "5": { "name": "punctuation.parenthesis.close.purrlang" },
+            "6": { "name": "entity.name.function.purrlang" }
           }
         },
         {
@@ -136,7 +148,7 @@
         },
         {
           "comment": "Methods and functions: [mut] Type Name(, at the start of a line",
-          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|namespace|using)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|namespace|using)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.modifier.purrlang" },
             "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
@@ -214,16 +226,16 @@
         {
           "comment": "Built-in singletons, components, records and function groups",
           "name": "support.class.purrlang",
-          "match": "\\b(Time|Math|Draw|Owner|Devices)\\b"
+          "match": "\\b(Time|Math|Draw|Owner|Devices|Spawned|Destroyed|PlayerJoined|PlayerLeft)\\b"
         },
         {
-          "comment": "Spawn(...)",
+          "comment": "Spawn(...), Send(...)",
           "name": "support.function.purrlang",
-          "match": "\\bSpawn(?=\\s*\\()"
+          "match": "\\b(Spawn|Send)(?=\\s*\\()"
         },
         {
-          "comment": "e.Add(...), e.Remove(...), e.Destroy()",
-          "match": "(\\.)\\s*(Add|Remove|Destroy)(?=\\s*\\()",
+          "comment": "e.Add(...), e.Remove(...), e.Destroy(), e.Send(...)",
+          "match": "(\\.)\\s*(Add|Remove|Destroy|Send)(?=\\s*\\()",
           "captures": {
             "1": { "name": "punctuation.accessor.purrlang" },
             "2": { "name": "support.function.purrlang" }

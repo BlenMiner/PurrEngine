@@ -351,7 +351,7 @@ static stmt *parse_stmt(parser *p);
 // start, so they can still name parameters and locals.
 static bool is_decl_word(const str text)
 {
-    return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct")
+    return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct") || str_eq_c(text, "event")
         || str_eq_c(text, "namespace") || str_eq_c(text, "using");
 }
 
@@ -391,6 +391,7 @@ static bool at_decl_start_or_function(const parser *p, const bool functions)
     if (t->kind == T_COMPONENT || t->kind == T_SINGLETON || t->kind == T_SYSTEM) return true;
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(p->toks, p->pos);
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text)) return true;
+    if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_LPAREN && str_eq_c(t->text, "event")) return true;
     return functions && (t->kind == T_IDENT || t->kind == T_MUT) && t->at.col == 1 && at_method(p);
 }
 
@@ -742,6 +743,7 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
     const char *what = kind == DECL_COMPONENT   ? "component name"
                        : kind == DECL_SINGLETON ? "singleton name"
                        : kind == DECL_STRUCT    ? "struct name"
+                       : kind == DECL_EVENT     ? "event name"
                                                 : "input name";
     const token *name = expect_ident(p, what);
     decl *d = new_decl(kind, name);
@@ -791,13 +793,10 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
     return d;
 }
 
-// system Name(Time time, mut Transform trs, with Player, without Dead) { ... }
-// Views have the same shape: view Name(Transform trs, with Player) { ... }
-static decl *parse_system(parser *p, const bool is_view)
+// (Time time, mut Transform trs, with Player, without Dead) { ... }: the rest
+// of a system, view or event handler.
+static void parse_query_rest(parser *p, decl *d)
 {
-    const token *name = expect_ident(p, is_view ? "view name" : "system name");
-    decl *d = new_decl(DECL_SYSTEM, name);
-    d->is_view = is_view;
     expect(p, T_LPAREN, "'('");
     if (!at(p, T_RPAREN)) {
         do {
@@ -827,6 +826,41 @@ static decl *parse_system(parser *p, const bool is_view)
     expect(p, T_RPAREN, "')' after parameters");
     d->body = parse_block(p);
     d->end = d->body->end;
+}
+
+// system Name(Time time, mut Transform trs, with Player, without Dead) { ... }
+// Views have the same shape: view Name(Transform trs, with Player) { ... }
+static decl *parse_system(parser *p, const bool is_view)
+{
+    const token *name = expect_ident(p, is_view ? "view name" : "system name");
+    decl *d = new_decl(DECL_SYSTEM, name);
+    d->is_view = is_view;
+    parse_query_rest(p, d);
+    return d;
+}
+
+// event(Hit hit) TakeHit(mut Health health) { ... }: runs when a Hit is sent.
+// The trigger is the first parameter; an event without fields needs no name.
+static decl *parse_handler(parser *p)
+{
+    expect(p, T_LPAREN, "'(' and the event it handles");
+    param trigger = {0};
+    trigger.mode = PARAM_EVENT;
+    trigger.at = peek(p)->at;
+    const qname type = parse_qname(p, "the event it handles, like 'event(Hit hit)'");
+    trigger.type_name = type.text;
+    trigger.type_qual_at = type.at;
+    trigger.type_at = type.name_at;
+    if (at(p, T_IDENT)) {
+        trigger.name_at = peek(p)->at;
+        trigger.name = advance(p)->text;
+    }
+    expect(p, T_RPAREN, "')' after the event");
+    const token *name = expect_ident(p, "handler name, like 'event(Hit hit) TakeHit(...)'");
+    decl *d = new_decl(DECL_SYSTEM, name);
+    d->is_handler = true;
+    vec_push(d->params, trigger);
+    parse_query_rest(p, d);
     return d;
 }
 
@@ -926,7 +960,9 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "input")) d = parse_data_decl(&p, DECL_INPUT);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "view")) d = parse_system(&p, true);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "struct")) d = parse_data_decl(&p, DECL_STRUCT);
-        else fail_at(&p, t, "'component', 'singleton', 'struct', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "event")) d = parse_data_decl(&p, DECL_EVENT);
+        else if (t->kind == T_IDENT && at(&p, T_LPAREN) && str_eq_c(t->text, "event")) d = parse_handler(&p);
+        else fail_at(&p, t, "'component', 'singleton', 'struct', 'event', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
         d->unit = p.unit;
         d->attributes.items = p.pending.items;
         d->attributes.count = p.pending.count;

@@ -1,0 +1,6 @@
+// expect: systems and event handlers are ordered separately
+event Ping { }
+system Main() { Send(Ping); }
+system Tick() { }
+[After(Tick)]
+event(Ping) A() { }

@@ -35,11 +35,12 @@ typedef enum type_kind {
     TY_INPUT,      // The game's input declaration
     TY_RECORD,     // Built-in read-only data: Devices, Keyboard, Button, ...
     TY_STRUCT,     // A struct: plain data, copied like any value
+    TY_EVENT,      // An event's value: what `Send` sends and a handler receives
 } type_kind;
 
 typedef struct type {
     type_kind kind;
-    decl *decl; // For components, singletons, inputs, records and structs.
+    decl *decl; // For components, singletons, inputs, records, structs and events.
 } type;
 
 // ---------------------------------------------------------------------------
@@ -89,12 +90,13 @@ typedef enum param_mode {
     PARAM_MUT,
     PARAM_WITH,
     PARAM_WITHOUT,
+    PARAM_EVENT, // An event handler's trigger: `event(Hit hit)`, always its first parameter
 } param_mode;
 
 typedef struct param {
     param_mode mode;
     str type_name;
-    str name; // Empty for with/without.
+    str name; // Empty for with/without, and for a trigger without a name: `event(Spawned)`.
     loc at;   // The first token, a modifier or the type
     type type;
     loc type_at;      // The type's name (the last part if it's qualified)
@@ -133,6 +135,7 @@ typedef enum decl_kind {
     DECL_STRUCT, // struct Stats { fields }: a value type for fields and locals
     DECL_METHOD, // bool IsDead() { ... } in a struct or component; in its `methods`, not program.decls
     DECL_FUNCTION, // void Heal(mut Stats stats, float amount) { ... }: code other code calls
+    DECL_EVENT,    // event Hit { fields }: something that happened, sent with Send
 } decl_kind;
 
 typedef struct decl {
@@ -146,9 +149,14 @@ typedef struct decl {
     bool builtin;
     const char *c_name; // Records: the C struct name.
 
-    // Components, singletons, inputs, records and structs
+    // Components, singletons, inputs, records, structs and events
     VEC(field) fields;
-    int index; // Component bit / singleton index / system order.
+    int index; // Component bit / singleton index / event index / system order.
+
+    // Events
+    bool world_event;        // Built-in events the engine sends to the world, never to an entity
+    const struct decl *needs_target; // A handler that takes data from the entity the event is sent to, or NULL
+    VEC(struct decl *) handlers;     // Its handlers, in the order they run
 
     // Structs and components: their methods
     VEC(struct decl *) methods;
@@ -170,6 +178,8 @@ typedef struct decl {
     stmt *sanitize; // An input's Sanitize() { ... }
     loc sanitize_at;
     bool is_view;        // A view: a DECL_SYSTEM that runs once per frame, reads the world and draws.
+    bool is_handler;     // An event handler: a DECL_SYSTEM that runs when its event is sent, `event(Hit hit) Name(...)`.
+    struct decl *event;  // A handler's event
     bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
     uint64_t need_mask;  // Components an entity must have (access and `with`).
@@ -211,6 +221,7 @@ typedef enum builtin_call {
     CALL_DESTROY,
     CALL_METHOD,    // stats.IsDead(), or IsDead() inside another of Stats' methods
     CALL_FUNCTION,  // Heal(unit.stats, 5), or Combat.Heal(...)
+    CALL_SEND,      // Send(RoundOver { ... }), or target.Send(Hit { ... }): type_decl is the event
 } builtin_call;
 
 // How a constructor call builds its value.
@@ -233,7 +244,7 @@ typedef enum binding_kind {
     BIND_NONE,
     BIND_PARAM,
     BIND_LOCAL,
-    BIND_TYPE,  // A component name used as a value: Spawn(Player), Spawn(Combat.Health).
+    BIND_TYPE,  // A component or event name used as a value: Spawn(Player), Send(RoundOver).
     BIND_FIELD, // A field of the input, named directly inside its Sample or Sanitize.
     BIND_NAMESPACE, // `Combat` in Combat.Health
 } binding_kind;
@@ -268,7 +279,7 @@ struct expr {
     binding_kind bind;
     param *param;       // BIND_PARAM
     stmt *local;        // BIND_LOCAL: the S_VAR declaring it
-    decl *type_decl;    // BIND_TYPE, and E_LITERAL's component
+    decl *type_decl;    // BIND_TYPE, E_LITERAL's type, and CALL_SEND's event
 
     // E_MEMBER, E_METHOD
     expr *object;
@@ -357,6 +368,12 @@ typedef struct program {
     VEC(decl *) singletons;
     VEC(decl *) systems; // Excluding Main.
     VEC(decl *) views;
+    VEC(decl *) handlers; // Every event handler, in the order they run
+    VEC(decl *) events;   // Built-in ones first
+    decl *spawned;        // Built-in events
+    decl *destroyed;
+    decl *player_joined;
+    decl *player_left;
     decl *main;
     decl *input;         // The input declaration, if any.
     decl *owner;         // The built-in Owner component.

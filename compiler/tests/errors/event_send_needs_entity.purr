@@ -1,0 +1,6 @@
+// expect: 'TakeHit' needs the entity a Hit is sent to, and this Send has none
+component Health { int value; }
+event Hit { int damage; }
+system Main() { Spawn(Health); }
+system Strike() { Send(Hit { damage = 1 }); }
+event(Hit hit) TakeHit(mut Health health) { health.value -= hit.damage; }

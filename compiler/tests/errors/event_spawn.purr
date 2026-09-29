@@ -1,0 +1,3 @@
+// expect: Spawn takes components, and 'Hit' is an event
+event Hit { int damage; }
+system Main() { Spawn(Hit { damage = 1 }); }

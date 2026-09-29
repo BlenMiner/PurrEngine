@@ -22,15 +22,15 @@ typedef struct diagnostic {
 
 // A name in the source and what it refers to.
 typedef enum occ_kind {
-    OCC_TYPE,     // Component, singleton, input, record or built-in value type
-    OCC_SYSTEM,   // System or view
+    OCC_TYPE,     // Component, singleton, input, record, struct, event or built-in value type
+    OCC_SYSTEM,   // System, view or event handler
     OCC_FIELD,
     OCC_PARAM,
     OCC_LOCAL,
     OCC_OWNER,    // Math, Draw
-    OCC_FUNCTION, // Math.Dot, Draw.Circle, Spawn, and the game's functions (with `decl`)
+    OCC_FUNCTION, // Math.Dot, Draw.Circle, Spawn, Send, and the game's functions (with `decl`)
     OCC_CONSTANT, // Math.PI, Color.red
-    OCC_METHOD,   // e.Add, e.Remove, e.Destroy, and methods of structs and components (with `decl`)
+    OCC_METHOD,   // e.Add, e.Remove, e.Destroy, e.Send, and methods of structs and components (with `decl`)
     OCC_MEMBER,   // Swizzles, color channels, quaternion.value, matrix columns, input .down/.up
     OCC_NAMESPACE, // Combat in `namespace Combat;` or Combat.Health
     OCC_ATTRIBUTE, // Before, After, Clamp, Min, Max
@@ -207,7 +207,7 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
     const str name = last_part(text);
     occurrence o = {.at = at, .len = name.len, .kind = OCC_TYPE, .name = name, .type = t};
     if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
-        || t.kind == TY_STRUCT) {
+        || t.kind == TY_STRUCT || t.kind == TY_EVENT) {
         o.decl = t.decl;
     } else if (!builtin_type_named(name, &o.type)) {
         // Unresolved, for example a component used as a field type: still a type.
@@ -329,7 +329,7 @@ static void walk_expr(const expr *e)
         if (e->call == CALL_CONSTRUCT) {
             o.kind = OCC_TYPE;
             add_occ(o);
-        } else if (e->call == CALL_SPAWN) {
+        } else if (e->call == CALL_SPAWN || e->call == CALL_SEND) {
             o.kind = OCC_FUNCTION;
             add_occ(o);
         } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // IsDead() in a method, or Heal(...)
@@ -350,7 +350,7 @@ static void walk_expr(const expr *e)
             o.owner = e->object->name;
             o.c_name = e->c_callee;
             add_occ(o);
-        } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY) {
+        } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY || e->call == CALL_SEND) {
             o.kind = OCC_METHOD;
             add_occ(o);
         } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // stats.IsDead(), Combat.Heal(...)
@@ -653,9 +653,16 @@ static const char *decl_keyword(const decl *d)
     case DECL_STRUCT: return "struct";
     case DECL_METHOD: return "method";
     case DECL_FUNCTION: return "function";
-    case DECL_SYSTEM: return d->is_view ? "view" : "system";
+    case DECL_EVENT: return "event";
+    case DECL_SYSTEM: return d->is_view ? "view" : d->is_handler ? "event" : "system";
     }
     return "";
+}
+
+// What a declaration is, in words: "event handler" rather than the keyword.
+static const char *decl_what(const decl *d)
+{
+    return d->kind == DECL_SYSTEM && d->is_handler ? "event handler" : decl_keyword(d);
 }
 
 static void format_param(const param *p, sb *out)
@@ -664,20 +671,39 @@ static void format_param(const param *p, sb *out)
     case PARAM_MUT: sb_put(out, "mut "); break;
     case PARAM_WITH: sb_put(out, "with "); break;
     case PARAM_WITHOUT: sb_put(out, "without "); break;
-    case PARAM_READ: break;
+    case PARAM_READ: case PARAM_EVENT: break;
     }
     sb_printf(out, STR_FMT, STR_ARG(p->type_name));
     if (p->name.len > 0) sb_printf(out, " " STR_FMT, STR_ARG(p->name));
 }
 
+// `system Move(mut Body body)`, or a handler's `event(Hit hit) TakeHit(mut Health health)`.
 static void format_header(const decl *d, sb *out)
 {
-    sb_printf(out, "%s " STR_FMT "(", decl_keyword(d), STR_ARG(d->name));
-    for (int i = 0; i < d->params.count; i++) {
-        if (i) sb_put(out, ", ");
+    int first = 0;
+    if (d->is_handler && d->params.count > 0) {
+        sb_put(out, "event(");
+        format_param(&d->params.items[0], out);
+        sb_printf(out, ") " STR_FMT "(", STR_ARG(d->name));
+        first = 1;
+    } else {
+        sb_printf(out, "%s " STR_FMT "(", decl_keyword(d), STR_ARG(d->name));
+    }
+    for (int i = first; i < d->params.count; i++) {
+        if (i > first) sb_put(out, ", ");
         format_param(&d->params.items[i], out);
     }
     sb_put(out, ")");
+}
+
+// What the engine's own events are for.
+static const char *builtin_event_doc(const program *prog, const decl *d)
+{
+    if (d == prog->spawned) return "Sent to each entity as it's spawned: its handlers set new entities up.";
+    if (d == prog->destroyed) return "Sent to each entity as it's destroyed, while its components can still be read.";
+    if (d == prog->player_joined) return "Sent to the world when a player joins.";
+    if (d == prog->player_left) return "Sent to the world when a player leaves.";
+    return NULL;
 }
 
 // `mut void Damage(float amount)`: a method's or function's signature.
@@ -758,7 +784,9 @@ static void describe(const occurrence *o, sb *out)
         if (o->decl) {
             format_data_decl(o->decl, &code);
             code_block(out, code.data);
-            if (o->decl->builtin) sb_put(out, "\n\nBuilt into the engine.");
+            if (o->decl->kind == DECL_EVENT && o->decl->builtin) sb_printf(out, "\n\n%s", builtin_event_doc(A.prog, o->decl));
+            else if (o->decl->builtin) sb_put(out, "\n\nBuilt into the engine.");
+            else if (o->decl->kind == DECL_EVENT) sb_put(out, "\n\nSent with `Send`, and handled by `event(...)` handlers at the end of the tick.");
         } else {
             code_block(out, type_name(o->type));
             const char *doc = builtin_type_doc(o->type.kind);
@@ -768,10 +796,20 @@ static void describe(const occurrence *o, sb *out)
     case OCC_SYSTEM:
         format_header(o->decl, &code);
         code_block(out, code.data);
-        sb_put(out, o->decl->is_view ? "\n\nRuns once per frame and only reads the world."
-                                     : o->decl->is_main ? "\n\nThe entry point: runs once when the world is created."
-                                     : o->decl->per_entity ? "\n\nRuns once per tick for every matching entity."
-                                     : "\n\nRuns once per tick.");
+        if (o->decl->is_handler && o->decl->event) {
+            const str event = o->decl->event->name;
+            if (o->decl->per_entity) {
+                sb_printf(out, "\n\nRuns when a `" STR_FMT "` is sent to an entity that matches its parameters, "
+                               "at the end of the tick.", STR_ARG(event));
+            } else {
+                sb_printf(out, "\n\nRuns once for every `" STR_FMT "` sent, at the end of the tick.", STR_ARG(event));
+            }
+        } else {
+            sb_put(out, o->decl->is_view ? "\n\nRuns once per frame and only reads the world."
+                                         : o->decl->is_main ? "\n\nThe entry point: runs once when the world is created."
+                                         : o->decl->per_entity ? "\n\nRuns once per tick for every matching entity."
+                                         : "\n\nRuns once per tick.");
+        }
         describe_order(o->decl, out);
         break;
     case OCC_FIELD:
@@ -785,6 +823,7 @@ static void describe(const occurrence *o, sb *out)
         format_param(o->param, &code);
         code_block(out, code.data);
         if (o->param->type.kind == TY_INPUT) sb_put(out, "\n\nThe input of the player who owns the entity.");
+        else if (o->param->mode == PARAM_EVENT) sb_put(out, "\n\nThe event being handled, read-only.");
         else if (o->param->mode == PARAM_MUT) sb_put(out, "\n\nParameter, writable.");
         else sb_put(out, "\n\nParameter, read-only.");
         break;
@@ -807,7 +846,11 @@ static void describe(const occurrence *o, sb *out)
             sb_put(out, "\n\nFunction: runs when it's called.");
             break;
         }
-        if (o->kind == OCC_FUNCTION && o->owner.len == 0) {
+        if (o->kind == OCC_FUNCTION && o->owner.len == 0 && str_eq_c(o->name, "Send")) {
+            code_block(out, "Send(event)");
+            sb_put(out, "\n\nSends an event to the whole world. Its handlers run at the end of the tick, in the order "
+                        "everything was sent.");
+        } else if (o->kind == OCC_FUNCTION && o->owner.len == 0) {
             code_block(out, "Spawn(components...) -> Entity");
             sb_put(out, "\n\nCreates an entity with these components. It's added at the end of the tick; the "
                         "handle works right away.");
@@ -842,6 +885,11 @@ static void describe(const occurrence *o, sb *out)
                         "players, so systems can rely on what it guarantees.");
         } else if (str_eq_c(o->name, "Destroy")) {
             code_block(out, "entity.Destroy()");
+        } else if (str_eq_c(o->name, "Send")) {
+            code_block(out, "entity.Send(event)");
+            sb_put(out, "\n\nSends an event to the entity: handlers that take its components run for it, at the end "
+                        "of the tick.");
+            break;
         } else {
             sb_printf(&code, "entity." STR_FMT "(components...)", STR_ARG(o->name));
             code_block(out, code.data);
@@ -904,6 +952,18 @@ static const char *ordinal(const int n)
 static void describe_order(const decl *d, sb *out)
 {
     if (d->is_main) return;
+    if (d->is_handler) {
+        if (!d->event || d->event->handlers.count < 2) return;
+        int index = 0;
+        while (index < d->event->handlers.count && d->event->handlers.items[index] != d) index++;
+        sb_printf(out, "\n\nRuns %s of %d handlers of `" STR_FMT "`", ordinal(index + 1), d->event->handlers.count,
+                  STR_ARG(d->event->name));
+        for (int i = 0; i < d->after.count; i++) {
+            sb_printf(out, "%s`" STR_FMT "`", i ? ", " : ", after ", STR_ARG(d->after.items[i]->qualified));
+        }
+        sb_put(out, ".");
+        return;
+    }
     const int count = d->is_view ? A.prog->views.count : A.prog->systems.count;
     sb_printf(out, "\n\nRuns %s of %d %s", ordinal(d->index + 1), count,
               d->is_view ? "views each frame (later views draw on top)" : "systems each tick");
@@ -1322,7 +1382,16 @@ void analysis_definition(const char *uri, const int line, const int character, j
 // Document symbols: the outline
 
 enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_FIELD = 8, SYMBOL_INTERFACE = 11, SYMBOL_FUNCTION = 12,
-       SYMBOL_STRUCT = 23 };
+       SYMBOL_STRUCT = 23, SYMBOL_EVENT = 24 };
+
+static int symbol_kind(const decl *d)
+{
+    return d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? SYMBOL_STRUCT
+         : d->kind == DECL_SINGLETON                            ? SYMBOL_CLASS
+         : d->kind == DECL_INPUT                                ? SYMBOL_INTERFACE
+         : d->kind == DECL_EVENT                                ? SYMBOL_EVENT
+                                                                : SYMBOL_FUNCTION;
+}
 
 void analysis_symbols(jbuf *out)
 {
@@ -1331,16 +1400,13 @@ void analysis_symbols(jbuf *out)
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->builtin || d->at.file != A.doc) continue; // This document's declarations
-        const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? SYMBOL_STRUCT
-                       : d->kind == DECL_SINGLETON ? SYMBOL_CLASS
-                       : d->kind == DECL_INPUT ? SYMBOL_INTERFACE
-                                               : SYMBOL_FUNCTION;
+        const int kind = symbol_kind(d);
         const loc start = {d->at.line, 1, d->at.file};
         const loc end = d->end.line > 0 ? d->end : d->at;
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"name\":");
         jb_string_n(out, d->name.ptr, (size_t)d->name.len);
-        jb_printf(out, ",\"detail\":\"%s\",\"kind\":%d,\"range\":{\"start\":", decl_keyword(d), kind);
+        jb_printf(out, ",\"detail\":\"%s\",\"kind\":%d,\"range\":{\"start\":", decl_what(d), kind);
         write_position(out, start);
         jb_put(out, ",\"end\":");
         write_position(out, (loc){end.line, end.col + 1, end.file});
@@ -1519,10 +1585,7 @@ void analysis_workspace_symbols(const char *query, jbuf *out)
     for (int i = 0; A.prog && i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->builtin) continue;
-        const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? SYMBOL_STRUCT
-                       : d->kind == DECL_SINGLETON ? SYMBOL_CLASS
-                       : d->kind == DECL_INPUT ? SYMBOL_INTERFACE
-                                               : SYMBOL_FUNCTION;
+        const int kind = symbol_kind(d);
         const str ns = d->unit ? d->unit->ns : (str){"", 0};
         if (fuzzy_match(d->name, query)) workspace_symbol(out, &written, d->name, kind, d->at, d->name.len, ns);
         for (int k = 0; k < d->methods.count; k++) {
@@ -1586,7 +1649,7 @@ static void classify(const occurrence *o, int *type, int *mods)
         }
         // Components and structs are structs, singletons classes, inputs
         // interfaces, and the device records types: editors can color each kind.
-        *type = o->decl->kind == DECL_COMPONENT || o->decl->kind == DECL_STRUCT ? ST_STRUCT
+        *type = o->decl->kind == DECL_COMPONENT || o->decl->kind == DECL_STRUCT || o->decl->kind == DECL_EVENT ? ST_STRUCT
               : o->decl->kind == DECL_INPUT     ? ST_INTERFACE
               : o->decl->kind == DECL_RECORD    ? ST_TYPE
                                                 : ST_CLASS;
@@ -1658,7 +1721,7 @@ void analysis_semantic_tokens(jbuf *out)
 
 enum {
     CK_METHOD = 2, CK_FUNCTION = 3, CK_FIELD = 5, CK_VARIABLE = 6, CK_CLASS = 7, CK_INTERFACE = 8, CK_MODULE = 9,
-    CK_PROPERTY = 10, CK_KEYWORD = 14, CK_SNIPPET = 15, CK_CONSTANT = 21, CK_STRUCT = 22,
+    CK_PROPERTY = 10, CK_KEYWORD = 14, CK_SNIPPET = 15, CK_CONSTANT = 21, CK_STRUCT = 22, CK_EVENT = 23,
 };
 
 typedef struct completion {
@@ -1784,7 +1847,7 @@ static bool is_swizzle(const str member, const int dim)
 static type member_type(const type t, const str member)
 {
     if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
-                   || t.kind == TY_STRUCT)) {
+                   || t.kind == TY_STRUCT || t.kind == TY_EVENT)) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             if (str_eq(t.decl->fields.items[i].name, member)) return t.decl->fields.items[i].type;
         }
@@ -1813,7 +1876,7 @@ static void complete_routine(completion *c, const decl *m, const char *name)
 static void list_members(completion *c, const type t, const bool edges, const scope *sc)
 {
     if (t.decl && (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
-                   || t.kind == TY_STRUCT)) {
+                   || t.kind == TY_STRUCT || t.kind == TY_EVENT)) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             const field *f = &t.decl->fields.items[i];
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
@@ -1851,6 +1914,8 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "Add", CK_METHOD, "entity.Add(components...)", "Adds components, or replaces their values.", "Add($1)");
         item(c, "Remove", CK_METHOD, "entity.Remove(components...)", "Removes components.", "Remove($1)");
         item(c, "Destroy", CK_METHOD, "entity.Destroy()", "Destroys the entity at the end of the tick.", "Destroy()");
+        item(c, "Send", CK_METHOD, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.",
+             "Send($1)");
     }
     if (edges && t.kind == TY_BOOL) {
         item(c, "down", CK_PROPERTY, "bool", "True on the tick it became true.", NULL);
@@ -1950,6 +2015,16 @@ static void complete_types(completion *c, const bool components, const bool sing
     }
 }
 
+// Events: what handlers handle and Send sends. `builtin` includes the engine's own.
+static void complete_events(completion *c, const bool builtin)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->kind != DECL_EVENT || (d->builtin && !builtin)) continue;
+        item(c, name_for(d), CK_EVENT, "event", d->builtin ? builtin_event_doc(A.prog, d) : NULL, NULL);
+    }
+}
+
 // Structs: field and local types, and values like Stats { ... }.
 static void complete_structs(completion *c)
 {
@@ -2006,7 +2081,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
         if (!d->unit || !str_eq(d->unit->ns, ns) || d->is_main) continue;
         if (systems != (d->kind == DECL_SYSTEM)) continue;
         const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
-                       : d->kind == DECL_SYSTEM ? CK_FUNCTION : CK_CLASS;
+                       : d->kind == DECL_EVENT ? CK_EVENT : d->kind == DECL_SYSTEM ? CK_FUNCTION : CK_CLASS;
         item(c, str_to_cstr(d->name), kind, decl_keyword(d), NULL, NULL);
     }
     return any;
@@ -2071,7 +2146,10 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     if (sc.decl && !view && !sc.in_input && !routine) {
         item(c, "Spawn", CK_FUNCTION, "Spawn(components...) -> Entity", "Creates an entity with these components.",
              "Spawn($1)");
+        item(c, "Send", CK_FUNCTION, "Send(event)", "Sends an event to the whole world, handled at the end of the tick.",
+             "Send($1)");
         complete_types(c, true, false, false);
+        complete_events(c, false);
     }
     complete_value_types(c, true);
     complete_structs(c);
@@ -2091,6 +2169,10 @@ static void complete_declarations(completion *c)
          "view ${1:Name}($2)\n{\n    $0\n}");
     item(c, "input", CK_SNIPPET, "input Name { fields; Sample }", "What a player sends each tick.",
          "input ${1:Name}\n{\n    $0\n\n    Sample(Devices devices)\n    {\n    }\n}");
+    item(c, "event", CK_SNIPPET, "event Name { fields }", "Something that happened, sent with Send.",
+         "event ${1:Name}\n{\n    $0\n}");
+    item(c, "event handler", CK_SNIPPET, "event(Event e) Name(parameters) { ... }",
+         "Runs when the event is sent, at the end of the tick.", "event(${1:Event} ${2:e}) ${3:Name}($4)\n{\n    $0\n}");
     item(c, "function", CK_SNIPPET, "Type Name(parameters) { ... }", "Code other code calls, like 'float Heal(mut Stats stats)'.",
          "${1:void} ${2:Name}($3)\n{\n    $0\n}");
     item(c, "namespace", CK_KEYWORD, "namespace Name;", "The namespace of everything in this file. Goes at the top.",
@@ -2137,8 +2219,11 @@ static bool starts_declaration(const int i)
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(DOC->toks, i); // Attributes
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "struct")
-            || str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"))) {
+            || str_eq_c(t->text, "event") || str_eq_c(t->text, "namespace") || str_eq_c(t->text, "using"))) {
         return true;
+    }
+    if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_LPAREN && str_eq_c(t->text, "event")) {
+        return true; // event(Hit hit) TakeHit(...)
     }
     return starts_function(i);
 }
@@ -2251,8 +2336,19 @@ void analysis_completion(const int line, const int character, jbuf *out)
         break;
 
     case CTX_HEADER: {
-        const bool sample = f.open < 2 || !(DOC->toks[f.open - 2].kind == T_SYSTEM || str_eq_c(DOC->toks[f.open - 2].text, "view"));
-        if (sample) {
+        // event(Hit hit): the trigger; event(Hit hit) TakeHit(...): a handler's parameters.
+        const bool trigger = f.open >= 1 && DOC->toks[f.open - 1].kind == T_IDENT && str_eq_c(DOC->toks[f.open - 1].text, "event");
+        const bool handler = f.open >= 2 && DOC->toks[f.open - 2].kind == T_RPAREN;
+        const bool sample = !trigger && !handler
+                         && (f.open < 2 || !(DOC->toks[f.open - 2].kind == T_SYSTEM || str_eq_c(DOC->toks[f.open - 2].text, "view")));
+        if (trigger) {
+            if (pk == T_LPAREN) {
+                complete_events(&c, true);
+                complete_namespaces(&c, false);
+            } else if (pk == T_IDENT) {
+                complete_param_name(&c, prev->text);
+            }
+        } else if (sample) {
             if (pk == T_LPAREN) item(&c, "Devices", CK_CLASS, "The keyboard, mouse and gamepad", NULL, NULL);
             else if (pk == T_IDENT) item(&c, "devices", CK_VARIABLE, NULL, NULL, NULL);
         } else if (pk == T_WITH || pk == T_WITHOUT) {
@@ -2316,7 +2412,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             const str name = DOC->toks[f.open - 1].text;
             for (int i = 0; i < A.prog->decls.count; i++) {
                 const decl *d = A.prog->decls.items[i];
-                if ((d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT) || !str_eq(d->name, name)) continue;
+                if ((d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT && d->kind != DECL_EVENT) || !str_eq(d->name, name)) continue;
                 for (int k = 0; k < d->fields.count; k++) {
                     const field *fl = &d->fields.items[k];
                     sb snippet = {0};
@@ -2513,7 +2609,8 @@ static const char *check_new_name(const occurrence *target, const str name)
 {
     static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with",
                                            "without", "if", "else", "return", "true", "false"};
-    static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn"};
+    static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
+                                           "Destroyed", "PlayerJoined", "PlayerLeft"};
     static char message[160];
 
     if (name.len == 0 || !(isalpha((unsigned char)name.ptr[0]) || name.ptr[0] == '_')) return "Names start with a letter.";
@@ -2695,6 +2792,7 @@ static const struct {
     {"Color", {"Color(float r, float g, float b)", "Color(float r, float g, float b, float a)"}, "Channels from 0 to 1."},
     {"PlayerID", {"PlayerID(int index)"}, "A player by index, for local play and tests."},
     {"Spawn", {"Spawn(components...)"}, "Creates an entity with these components. It's added at the end of the tick."},
+    {"Send", {"Send(event)"}, "Sends an event to the whole world, handled at the end of the tick."},
 };
 
 void analysis_signature_help(const int line, const int character, jbuf *out)
@@ -2743,6 +2841,8 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
         builtin_signatures(DOC->toks[open - 3].text, name, visit_signature, &s);
     } else if (method && (str_eq_c(name, "Add") || str_eq_c(name, "Remove"))) {
         add_signature(&s, str_eq_c(name, "Add") ? "entity.Add(components...)" : "entity.Remove(components...)", NULL);
+    } else if (method && str_eq_c(name, "Send")) {
+        add_signature(&s, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.");
     } else if (!method) {
         for (size_t i = 0; i < sizeof call_forms / sizeof call_forms[0]; i++) {
             if (!str_eq_c(name, call_forms[i].name)) continue;

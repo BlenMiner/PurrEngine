@@ -24,6 +24,7 @@ typedef struct checker {
     VEC(stmt *) locals;       // S_VAR statements currently in scope.
     VEC(int) scope_marks;
     VEC(expr *) spawns;       // Spawn calls, patched with archetype indices at the end.
+    VEC(expr *) sends;        // Send calls, checked against the handlers at the end.
 } checker;
 
 static const type T_ERR = {TY_ERROR, NULL};
@@ -42,15 +43,16 @@ static type decl_type(decl *d)
     case DECL_INPUT: return (type){TY_INPUT, d};
     case DECL_RECORD: return (type){TY_RECORD, d};
     case DECL_STRUCT: return (type){TY_STRUCT, d};
+    case DECL_EVENT: return (type){TY_EVENT, d};
     default: return T_ERR;
     }
 }
 
-// Does this type have fields (components, singletons, inputs, records, structs)?
+// Does this type have fields (components, singletons, inputs, records, structs, events)?
 static bool has_fields(const type t)
 {
     return t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_RECORD
-        || t.kind == TY_STRUCT;
+        || t.kind == TY_STRUCT || t.kind == TY_EVENT;
 }
 
 // int or float, not a vector.
@@ -211,6 +213,26 @@ static void suggest_structs(suggestion *s, const program *prog)
     }
 }
 
+static void suggest_events(suggestion *s, const program *prog)
+{
+    for (int i = 0; i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->kind == DECL_EVENT) suggest_consider(s, prog->decls.items[i]->name);
+    }
+}
+
+// "a component", "an event": what a declaration is, for messages.
+static const char *decl_what(const decl *d)
+{
+    switch (d->kind) {
+    case DECL_COMPONENT: return "a component";
+    case DECL_SINGLETON: return "a singleton";
+    case DECL_INPUT: return "the input";
+    case DECL_STRUCT: return "a struct";
+    case DECL_EVENT: return "an event";
+    default: return "not a type";
+    }
+}
+
 static void suggest_fields(suggestion *s, const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) suggest_consider(s, d->fields.items[i].name);
@@ -295,19 +317,20 @@ static uint64_t bit(const decl *component)
     return (uint64_t)1 << component->index;
 }
 
-// Checks `Transform { position = ... }` and `Stats { armor = 2 }`.
+// Checks `Transform { position = ... }`, `Stats { armor = 2 }` and `Hit { damage = 5 }`.
 static type check_literal(checker *c, expr *e)
 {
     decl *d = find_type(c, e->name, e->at);
-    if (!d || (d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT)) {
+    if (!d || (d->kind != DECL_COMPONENT && d->kind != DECL_STRUCT && d->kind != DECL_EVENT)) {
         if (d) {
-            diag_error(e->at, "'" STR_FMT "' isn't a component or struct; only those have values like this",
+            diag_error(e->at, "'" STR_FMT "' isn't a component, struct or event; only those have values like this",
                        STR_ARG(e->name));
         } else {
-            diag_error(e->at, "unknown component or struct '" STR_FMT "'", STR_ARG(e->name));
+            diag_error(e->at, "unknown component, struct or event '" STR_FMT "'", STR_ARG(e->name));
             suggestion s = suggest_start(e->name);
             suggest_decls(&s, c->prog, true, false, false);
             suggest_structs(&s, c->prog);
+            suggest_events(&s, c->prog);
             suggest_note(&s);
         }
         for (int i = 0; i < e->inits.count; i++) check_expr(c, e->inits.items[i].value);
@@ -323,7 +346,8 @@ static type check_literal(checker *c, expr *e)
         }
         if (!init->field) {
             diag_error(init->at, "%s '" STR_FMT "' has no field '" STR_FMT "'",
-                       d->kind == DECL_STRUCT ? "struct" : "component", STR_ARG(d->name), STR_ARG(init->name));
+                       d->kind == DECL_STRUCT ? "struct" : d->kind == DECL_EVENT ? "event" : "component", STR_ARG(d->name),
+                       STR_ARG(init->name));
             suggestion s = suggest_start(init->name);
             suggest_fields(&s, d);
             suggest_note(&s);
@@ -351,6 +375,9 @@ static decl *check_component_arg(checker *c, expr *arg, const char *fn)
         if (t.kind == TY_STRUCT) {
             diag_error(arg->at, "%s takes components, and '" STR_FMT "' is a struct", fn, STR_ARG(t.decl->name));
             diag_note("put it in a component, like 'component Name { " STR_FMT " value; }'", STR_ARG(t.decl->name));
+        } else if (t.kind == TY_EVENT) {
+            diag_error(arg->at, "%s takes components, and '" STR_FMT "' is an event", fn, STR_ARG(t.decl->name));
+            diag_note("send it instead, like 'Send(" STR_FMT " { ... })'", STR_ARG(t.decl->name));
         }
         return t.kind == TY_COMPONENT ? t.decl : NULL;
     }
@@ -367,12 +394,16 @@ static decl *check_component_arg(checker *c, expr *arg, const char *fn)
             arg->type = (type){TY_COMPONENT, d};
             return d;
         }
-        if (d && d->kind == DECL_STRUCT) {
+        if (d && (d->kind == DECL_STRUCT || d->kind == DECL_EVENT)) {
             if (arg->kind == E_MEMBER) mark_namespaces(arg->object);
             arg->bind = BIND_TYPE;
             arg->type_decl = d;
-            diag_error(arg->at, "%s takes components, and '" STR_FMT "' is a struct", fn, STR_ARG(d->name));
-            diag_note("put it in a component, like 'component Name { " STR_FMT " value; }'", STR_ARG(d->name));
+            diag_error(arg->at, "%s takes components, and '" STR_FMT "' is %s", fn, STR_ARG(d->name), decl_what(d));
+            if (d->kind == DECL_STRUCT) {
+                diag_note("put it in a component, like 'component Name { " STR_FMT " value; }'", STR_ARG(d->name));
+            } else {
+                diag_note("send it instead, like 'Send(" STR_FMT ")'", STR_ARG(d->name));
+            }
             return NULL;
         }
     }
@@ -548,6 +579,84 @@ static bool in_view(const checker *c)
     return c->system && c->system->is_view;
 }
 
+static const char *routines(const checker *c);
+
+// The event Send takes: `RoundOver` with its defaults, `Hit { ... }`, or any
+// value of an event type, like a handler's own event passed on. Returns the
+// event, or NULL after reporting an error.
+static decl *check_event_arg(checker *c, expr *arg)
+{
+    if (arg->kind == E_LITERAL) {
+        const type t = check_literal(c, arg);
+        if (t.kind == TY_EVENT) return t.decl;
+        if (t.kind != TY_ERROR) {
+            diag_error(arg->at, "Send takes events, and '" STR_FMT "' is %s", STR_ARG(t.decl->name), decl_what(t.decl));
+            diag_note("declare what happened as 'event Name { ... }'");
+        }
+        return NULL;
+    }
+    // RoundOver, or Game.RoundOver
+    str name;
+    const expr *root = arg->kind == E_NAME || arg->kind == E_MEMBER ? chain_root(arg) : NULL;
+    if (root && root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
+        && qualified_text(arg, &name)) {
+        decl *d = find_type(c, name, arg->at);
+        if (d) {
+            if (arg->kind == E_MEMBER) mark_namespaces(arg->object);
+            arg->bind = BIND_TYPE;
+            arg->type_decl = d;
+            if (d->kind == DECL_EVENT) {
+                arg->type = (type){TY_EVENT, d};
+                return d;
+            }
+            diag_error(arg->at, "Send takes events, and '" STR_FMT "' is %s", STR_ARG(d->name), decl_what(d));
+            diag_note("declare what happened as 'event Name { ... }'");
+            return NULL;
+        }
+    }
+    const type t = check_expr(c, arg);
+    if (t.kind == TY_EVENT) return t.decl;
+    if (t.kind != TY_ERROR) {
+        diag_error(arg->at, "Send takes an event, like 'Send(RoundOver)' or 'target.Send(Hit { damage = 5 })', not %s",
+                   type_name(t));
+    }
+    return NULL;
+}
+
+// Send(RoundOver { ... }) to the whole world, or target.Send(Hit { ... }) to an
+// entity. Whether an event needs an entity depends on its handlers, so sends
+// are checked against them once every handler is known (see check_sends).
+static type check_send(checker *c, expr *e)
+{
+    const char *error = NULL;
+    if (c->method) error = "%s can't send events; systems and event handlers do";
+    else if (c->in_input) error = "%s runs outside the simulation, so it can't send events";
+    else if (in_view(c)) error = "views only read the world, so they can't send events";
+    if (error) {
+        diag_error(e->at, error, c->method ? routines(c) : input_code(c));
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        return T_ERR;
+    }
+    e->call = CALL_SEND;
+    if (e->args.count != 1) {
+        diag_error(e->at, "Send takes one event, like 'Send(RoundOver)' or 'target.Send(Hit { damage = 5 })'");
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        return T_ERR;
+    }
+    decl *event = check_event_arg(c, e->args.items[0]);
+    if (!event) return T_ERR;
+    if (event->builtin) {
+        diag_error(e->args.items[0]->at, "the engine sends '" STR_FMT "'; games can't", STR_ARG(event->name));
+        if (event == c->prog->spawned) diag_note("it's sent to each entity as it's spawned");
+        else if (event == c->prog->destroyed) diag_note("it's sent to each entity as it's destroyed");
+        else diag_note("it's sent when a player joins or leaves");
+        return T_ERR;
+    }
+    e->type_decl = event;
+    vec_push(c->sends, e);
+    return T_VOID_;
+}
+
 // The arguments of a call of method or function `m`, against its parameters.
 // A mut parameter takes the caller's variable itself, which it changes.
 static void check_method_args(checker *c, expr *e, decl *m)
@@ -611,6 +720,8 @@ static type check_call(checker *c, expr *e)
     type builtin;
     if (builtin_type_named(e->name, &builtin)) return check_construct(c, e, builtin);
 
+    if (str_eq_c(e->name, "Send")) return check_send(c, e);
+
     if (str_eq_c(e->name, "Spawn")) {
         if (c->method) {
             diag_error(e->at, "%s can't spawn entities; systems do", routines(c));
@@ -647,9 +758,9 @@ static type check_call(checker *c, expr *e)
     for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
 
     const decl *d = find_type(c, e->name, e->at);
-    if (d && (d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT)) {
-        diag_error(e->at, "write '" STR_FMT " { ... }' to make a %s value", STR_ARG(e->name),
-                   d->kind == DECL_STRUCT ? "struct" : "component");
+    if (d && (d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT || d->kind == DECL_EVENT)) {
+        diag_error(e->at, "write '" STR_FMT " { ... }' to make %s value", STR_ARG(e->name),
+                   d->kind == DECL_STRUCT ? "a struct" : d->kind == DECL_EVENT ? "an event" : "a component");
         return T_ERR;
     }
     diag_error(e->at, "unknown function '" STR_FMT "'", STR_ARG(e->name));
@@ -661,6 +772,7 @@ static type check_call(checker *c, expr *e)
     } else {
         suggestion s = suggest_start(e->name);
         suggest_consider_c(&s, "Spawn");
+        suggest_consider_c(&s, "Send");
         suggest_builtin_types(&s);
         suggest_note(&s);
     }
@@ -730,6 +842,7 @@ static type check_method(checker *c, expr *e)
         diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
         return T_ERR;
     }
+    if (str_eq_c(e->name, "Send")) return check_send(c, e);
     if (c->method) {
         diag_error(e->at, "%s can't change entities; systems do", routines(c));
         return T_ERR;
@@ -776,11 +889,12 @@ static type check_method(checker *c, expr *e)
         return T_VOID_;
     }
 
-    diag_error(e->at, "Entity has no method '" STR_FMT "'; it has Add, Remove and Destroy", STR_ARG(e->name));
+    diag_error(e->at, "Entity has no method '" STR_FMT "'; it has Add, Remove, Destroy and Send", STR_ARG(e->name));
     suggestion s = suggest_start(e->name);
     suggest_consider_c(&s, "Add");
     suggest_consider_c(&s, "Remove");
     suggest_consider_c(&s, "Destroy");
+    suggest_consider_c(&s, "Send");
     suggest_note(&s);
     return T_ERR;
 }
@@ -1262,6 +1376,8 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
             diag_note("entity handles can't be reassigned");
         } else if (root->param->type.kind == TY_INPUT) {
             diag_note("input comes from the players; the simulation can only read it");
+        } else if (root->param->type.kind == TY_EVENT) {
+            diag_note("an event can't change once it's sent; copy it into a 'mut var' to send a changed one");
         } else if (root->param->type.kind == TY_RECORD) {
             diag_note("devices can only be read");
         } else if (root->param->type.kind == TY_SINGLETON && root->param->type.decl->builtin) {
@@ -1463,7 +1579,8 @@ static void check_stmt(checker *c, stmt *s)
         const builtin_call call = s->value->call;
         const bool effect = (s->value->kind == E_METHOD
                              && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
-                         || (s->value->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION;
+                         || (s->value->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION
+                         || call == CALL_SEND;
         if (!effect && s->value->type.kind != TY_ERROR) diag_error(s->value->at, "this expression does nothing on its own");
         break;
     }
@@ -1621,7 +1738,10 @@ static void resolve_field_types(const checker *c, const decl *d)
         if (t && t->kind == DECL_STRUCT) {
             f->type = (type){TY_STRUCT, t};
         } else if (t) {
-            const char *what = t->kind == DECL_COMPONENT ? "components" : t->kind == DECL_SINGLETON ? "singletons" : "inputs";
+            const char *what = t->kind == DECL_COMPONENT   ? "components"
+                               : t->kind == DECL_SINGLETON ? "singletons"
+                               : t->kind == DECL_EVENT     ? "events"
+                                                           : "inputs";
             diag_error(at, "fields can't hold %s", what);
             diag_note("to share fields between types, declare a struct, like 'struct Name { ... }', and use it in both");
         } else {
@@ -1690,7 +1810,7 @@ static type method_type(const checker *c, const str name, const loc at, const bo
     if (d && (d->kind == DECL_STRUCT || d->kind == DECL_COMPONENT)) return decl_type(d);
     if (d) {
         diag_error(at, "methods take and return built-in types, structs and components, not %s",
-                   d->kind == DECL_SINGLETON ? "singletons" : "inputs");
+                   d->kind == DECL_SINGLETON ? "singletons" : d->kind == DECL_EVENT ? "events" : "inputs");
     } else if (str_eq_c(name, "void")) {
         diag_error(at, "'void' only goes before a method that returns nothing");
     } else {
@@ -1848,6 +1968,27 @@ static void check_method_body(checker *c, decl *m)
     c->system = NULL;
 }
 
+// A handler's trigger, `event(Hit hit)`: the event it handles.
+static void check_trigger(const checker *c, decl *handler, param *p, decl *d)
+{
+    const loc at = p->type_at.line ? p->type_at : p->at;
+    if (!d || d->kind != DECL_EVENT) {
+        if (d) {
+            diag_error(at, "'" STR_FMT "' is %s; a handler handles an event", STR_ARG(d->name), decl_what(d));
+            diag_note("declare what happened as 'event Name { ... }' and send it with Send");
+        } else {
+            diag_error(at, "unknown event '" STR_FMT "'", STR_ARG(p->type_name));
+            suggestion s = suggest_start(p->type_name);
+            suggest_events(&s, c->prog);
+            suggest_note(&s);
+        }
+        p->type = T_ERR;
+        return;
+    }
+    p->type = (type){TY_EVENT, d};
+    handler->event = d;
+}
+
 static void check_params(const checker *c, decl *sys)
 {
     const program *prog = c->prog;
@@ -1867,6 +2008,11 @@ static void check_params(const checker *c, decl *sys)
                     diag_error(p->at, "parameter '" STR_FMT "' is declared twice", STR_ARG(p->name));
                 }
             }
+        }
+
+        if (p->mode == PARAM_EVENT) {
+            check_trigger(c, sys, p, d);
+            continue;
         }
 
         if (sys->is_view && p->mode == PARAM_MUT) {
@@ -1901,6 +2047,19 @@ static void check_params(const checker *c, decl *sys)
             suggest_note(&s);
             const fix create = {.kind = FIX_CREATE_COMPONENT, .at = p->type_at.line ? p->type_at : p->at, .name = p->type_name};
             vec_push(c->prog->fixes, create);
+            p->type = T_ERR;
+            continue;
+        }
+
+        if (d->kind == DECL_EVENT) {
+            diag_error(p->type_at.line ? p->type_at : p->at, "'" STR_FMT "' is an event; systems take components and singletons",
+                       STR_ARG(d->name));
+            if (sys->is_handler) {
+                diag_note("a handler handles one event, named before it: 'event(" STR_FMT " ...) " STR_FMT "(...)'",
+                          STR_ARG(d->name), STR_ARG(sys->name));
+            } else {
+                diag_note("handle it instead: 'event(" STR_FMT " ...) Name(...) { ... }'", STR_ARG(d->name));
+            }
             p->type = T_ERR;
             continue;
         }
@@ -1959,6 +2118,18 @@ static void check_params(const checker *c, decl *sys)
     }
     sys->per_entity = has_entity || seen != 0;
 
+    // A handler that takes components or an Entity reads the entity its event
+    // is sent to, so every Send of that event must name one (see check_sends).
+    if (sys->is_handler && sys->event && sys->per_entity) {
+        if (sys->event->world_event) {
+            diag_error(sys->at, "'" STR_FMT "' is sent to the world, not to an entity, so '" STR_FMT "' can't take "
+                       "components or an Entity", STR_ARG(sys->event->name), STR_ARG(sys->name));
+            diag_note("read what the event carries instead, like its 'player'");
+        } else if (!sys->event->needs_target) {
+            sys->event->needs_target = sys;
+        }
+    }
+
     if (sys->is_main && has_input) {
         diag_error(sys->at, "Main runs once when the world is created, before any input arrives");
         diag_note("read the input in a system; it runs every tick");
@@ -1978,21 +2149,37 @@ static void warn_unused_params(checker *c, const decl *sys)
         const str type = p->type_name;
         if (!p->read && kind == TY_COMPONENT) {
             diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
-            diag_note("to only require the component, write 'with " STR_FMT "': a filter doesn't make other "
-                      "systems wait",
-                      STR_ARG(type));
+            if (sys->is_handler) {
+                diag_note("to only require the component, write 'with " STR_FMT "'", STR_ARG(type));
+            } else {
+                diag_note("to only require the component, write 'with " STR_FMT "': a filter doesn't make other "
+                          "systems wait",
+                          STR_ARG(type));
+            }
             const fix f = {.kind = FIX_USE_WITH, .at = p->name_at, .param = p};
             vec_push(c->prog->fixes, f);
         } else if (!p->read) {
             diag_warning(p->name_at, "'" STR_FMT "' is never used", STR_ARG(p->name));
-            diag_note("remove it: systems that write " STR_FMT " wait for this one while it's declared", STR_ARG(type));
+            if (sys->is_handler) diag_note("remove it");
+            else diag_note("remove it: systems that write " STR_FMT " wait for this one while it's declared", STR_ARG(type));
         } else if (p->mode == PARAM_MUT && !p->written && !sys->is_view) {
             diag_warning(p->at, "'" STR_FMT "' is declared mut but never written", STR_ARG(p->name));
-            diag_note("without 'mut', systems that read " STR_FMT " can run alongside this one", STR_ARG(type));
+            if (sys->is_handler) diag_note("remove 'mut': the handler only reads " STR_FMT, STR_ARG(type));
+            else diag_note("without 'mut', systems that read " STR_FMT " can run alongside this one", STR_ARG(type));
             const fix f = {.kind = FIX_REMOVE_MUT, .at = p->at, .param = p};
             vec_push(c->prog->fixes, f);
         }
     }
+}
+
+static decl *builtin_event(const char *name, const bool world)
+{
+    decl *d = NEW(decl);
+    d->kind = DECL_EVENT;
+    d->name = str_from(name);
+    d->builtin = true;
+    d->world_event = world;
+    return d;
 }
 
 static void add_builtins(program *prog)
@@ -2016,9 +2203,22 @@ static void add_builtins(program *prog)
     vec_push(owner->fields, player);
     prog->owner = owner;
 
+    // The events the engine sends: to each entity as it's spawned or destroyed,
+    // and to the world as players join and leave.
+    prog->spawned = builtin_event("Spawned", false);
+    prog->destroyed = builtin_event("Destroyed", false);
+    prog->player_joined = builtin_event("PlayerJoined", true);
+    prog->player_left = builtin_event("PlayerLeft", true);
+    vec_push(prog->player_joined->fields, player);
+    vec_push(prog->player_left->fields, player);
+
     VEC(decl *) decls = {0};
     vec_push(decls, time);
     vec_push(decls, owner);
+    vec_push(decls, prog->spawned);
+    vec_push(decls, prog->destroyed);
+    vec_push(decls, prog->player_joined);
+    vec_push(decls, prog->player_left);
     for (int i = 0; i < prog->decls.count; i++) vec_push(decls, prog->decls.items[i]);
     prog->decls.items = decls.items;
     prog->decls.count = decls.count;
@@ -2097,7 +2297,7 @@ static bool is_builtin_name(const str name)
 {
     type dummy;
     return builtin_type_named(name, &dummy) || str_eq_c(name, "Math") || str_eq_c(name, "Draw")
-        || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn");
+        || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn") || str_eq_c(name, "Send");
 }
 
 // What a declaration is called in generated C: Combat_Health for Combat.Health.
@@ -2168,6 +2368,10 @@ static void collect_decls(program *prog)
             d->index = prog->singletons.count;
             vec_push(prog->singletons, d);
             break;
+        case DECL_EVENT:
+            d->index = prog->events.count;
+            vec_push(prog->events, d);
+            break;
         case DECL_INPUT:
             if (prog->input) diag_error(d->at, "a game has one input declaration; '" STR_FMT "' is already it",
                                         STR_ARG(prog->input->name));
@@ -2182,6 +2386,9 @@ static void collect_decls(program *prog)
             if (d->is_view) {
                 d->index = prog->views.count;
                 vec_push(prog->views, d);
+            } else if (d->is_handler) {
+                d->index = prog->handlers.count;
+                vec_push(prog->handlers, d);
             } else if (str_eq_c(d->name, "Main")) {
                 d->is_main = true;
                 if (prog->main) {
@@ -2260,6 +2467,12 @@ too_many:
     diag_note("every Add and Remove can apply to any entity, so combinations multiply");
 }
 
+// "system", "view" or "event handler", for messages.
+static const char *system_what(const decl *sys)
+{
+    return sys->is_view ? "view" : sys->is_handler ? "event handler" : "system";
+}
+
 static void warn_unmatched(const program *prog, const decl *const *list, const int count)
 {
     for (int i = 0; i < count; i++) {
@@ -2271,14 +2484,43 @@ static void warn_unmatched(const program *prog, const decl *const *list, const i
             if ((mask & sys->need_mask) == sys->need_mask && !(mask & sys->without_mask)) matched = true;
         }
         if (!matched) {
-            diag_warning(sys->at, "%s '" STR_FMT "' never runs: no entity matches its parameters",
-                         sys->is_view ? "view" : "system", STR_ARG(sys->name));
+            diag_warning(sys->at, "%s '" STR_FMT "' never runs: no entity matches its parameters", system_what(sys),
+                         STR_ARG(sys->name));
             if (sys->need_mask) {
                 char names[512] = "";
                 append_component_names(prog, sys->need_mask, names, sizeof names);
                 diag_note("nothing spawns or adds an entity with %s", names);
             }
         }
+    }
+}
+
+// A Send without an entity, of an event whose handler reads the entity it's sent to.
+static void check_sends(const checker *c)
+{
+    for (int i = 0; i < c->sends.count; i++) {
+        const expr *e = c->sends.items[i];
+        const decl *event = e->type_decl;
+        if (e->kind == E_METHOD || !event->needs_target) continue;
+        diag_error(e->at, "'" STR_FMT "' needs the entity a " STR_FMT " is sent to, and this Send has none",
+                   STR_ARG(event->needs_target->name), STR_ARG(event->name));
+        diag_note("send it to an entity: 'entity.Send(" STR_FMT " { ... })'", STR_ARG(event->name));
+    }
+}
+
+// A handler of an event nothing sends never runs.
+static void warn_unsent(const checker *c)
+{
+    for (int i = 0; i < c->prog->handlers.count; i++) {
+        const decl *h = c->prog->handlers.items[i];
+        if (!h->event || h->event->builtin) continue;
+        bool sent = false;
+        for (int k = 0; k < c->sends.count && !sent; k++) sent = c->sends.items[k]->type_decl == h->event;
+        if (sent) continue;
+        diag_warning(h->at, "event handler '" STR_FMT "' never runs: nothing sends '" STR_FMT "'", STR_ARG(h->name),
+                     STR_ARG(h->event->name));
+        diag_note("send it with 'Send(" STR_FMT " { ... })', or to an entity with 'entity.Send(...)'",
+                  STR_ARG(h->event->name));
     }
 }
 
@@ -2363,7 +2605,7 @@ static void check_attributes(checker *c)
                 continue;
             }
             if (d->kind != DECL_SYSTEM) {
-                diag_error(attr->at, "'" STR_FMT "' orders systems and views; '" STR_FMT "' is neither",
+                diag_error(attr->at, "'" STR_FMT "' orders systems, views and event handlers; '" STR_FMT "' is none of them",
                            STR_ARG(attr->name), STR_ARG(d->name));
                 continue;
             }
@@ -2371,13 +2613,12 @@ static void check_attributes(checker *c)
                 diag_error(attr->at, "Main runs once when the world is created, before any system, so it isn't ordered");
                 continue;
             }
+            const char *kind = system_what(d);
             if (attr->args.count == 0) {
-                diag_error(attr->at, "'" STR_FMT "' needs the %s it runs %s, like [" STR_FMT "(Movement)]",
-                           STR_ARG(attr->name), d->is_view ? "views" : "systems", before ? "before" : "after",
-                           STR_ARG(attr->name));
+                diag_error(attr->at, "'" STR_FMT "' needs the %ss it runs %s, like [" STR_FMT "(Movement)]",
+                           STR_ARG(attr->name), kind, before ? "before" : "after", STR_ARG(attr->name));
                 continue;
             }
-            const char *kind = d->is_view ? "view" : "system";
             for (int k = 0; k < attr->args.count; k++) {
                 qname *q = &attr->args.items[k];
                 decl *other;
@@ -2387,7 +2628,8 @@ static void check_attributes(checker *c)
                     suggestion s = suggest_start(q->text);
                     for (int j = 0; j < c->prog->decls.count; j++) {
                         const decl *candidate = c->prog->decls.items[j];
-                        if (candidate->kind == DECL_SYSTEM && candidate->is_view == d->is_view && !candidate->is_main) {
+                        if (candidate->kind == DECL_SYSTEM && candidate->is_view == d->is_view
+                            && candidate->is_handler == d->is_handler && !candidate->is_main) {
                             suggest_consider(&s, candidate->name);
                         }
                     }
@@ -2405,6 +2647,13 @@ static void check_attributes(checker *c)
                     diag_error(q->name_at, "a %s can't run %s itself", kind, before ? "before" : "after");
                 } else if (target->is_main) {
                     diag_error(q->name_at, "Main runs once when the world is created, before every system");
+                } else if (target->is_handler != d->is_handler) {
+                    diag_error(q->name_at, "%s and event handlers are ordered separately: handlers run when their event "
+                                           "is sent, at the end of the tick", d->is_view || target->is_view ? "views" : "systems");
+                } else if (d->is_handler && d->event && target->event && d->event != target->event) {
+                    diag_error(q->name_at, "'" STR_FMT "' handles " STR_FMT " and '" STR_FMT "' handles " STR_FMT
+                               "; only handlers of the same event run in an order", STR_ARG(d->name), STR_ARG(d->event->name),
+                               STR_ARG(target->name), STR_ARG(target->event->name));
                 } else if (target->is_view != d->is_view) {
                     diag_error(q->name_at, "systems and views are ordered separately: views draw once per frame, "
                                            "after the ticks");
@@ -2467,8 +2716,8 @@ static void schedule(decl **list, const int n)
                     sb_printf(&chain, STR_FMT " runs after ", STR_ARG(path[i]->qualified));
                 }
                 sb_printf(&chain, STR_FMT, STR_ARG(d->qualified));
-                diag_error(d->at, "these %s must each run after the next, which can't happen: %s",
-                           d->is_view ? "views" : "systems", chain.data);
+                diag_error(d->at, "these %ss must each run after the next, which can't happen: %s", system_what(d),
+                           chain.data);
                 diag_note("remove one of the Before or After attributes that form the loop");
                 break;
             }
@@ -2540,11 +2789,17 @@ bool check(program *prog)
         check_stmt(&c, d->body);
         if (diag_error_count() == errors) warn_unused_params(&c, d); // Errors hide uses
     }
+    check_sends(&c);
 
     check_attributes(&c);
     if (diag_error_count() == 0) {
         schedule(prog->systems.items, prog->systems.count);
         schedule(prog->views.items, prog->views.count);
+        schedule(prog->handlers.items, prog->handlers.count);
+        for (int i = 0; i < prog->handlers.count; i++) {
+            decl *h = prog->handlers.items[i];
+            vec_push(h->event->handlers, h);
+        }
     }
 
     if (!prog->main) {
@@ -2571,6 +2826,8 @@ bool check(program *prog)
 
     warn_unmatched(prog, (const decl *const *)prog->systems.items, prog->systems.count);
     warn_unmatched(prog, (const decl *const *)prog->views.items, prog->views.count);
+    warn_unmatched(prog, (const decl *const *)prog->handlers.items, prog->handlers.count);
+    warn_unsent(&c);
     analyze_parallelism(prog);
     return true;
 }

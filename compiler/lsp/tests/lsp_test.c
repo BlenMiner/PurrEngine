@@ -542,6 +542,87 @@ PURR_TEST(lsp_semantic_tokens)
     PURR_CHECK(has(input, "1,4,6,11,0,")); // Sample: line +1, column 4
 }
 
+#define EVENTS                                                                 \
+    GAME_TYPES                                                                 \
+    "event Hit\n"                                                              \
+    "{\n"                                                                      \
+    "    int damage = 1;\n"                                                    \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "system Strike(Entity self, with Body)\n"                                  \
+    "{\n"                                                                      \
+    "    self.Send(Hit { damage = 2 });\n"                                     \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "event(Hit hit) TakeHit(mut Body body)\n"                                  \
+    "{\n"                                                                      \
+    "    body.radius -= hit.damage;\n"                                         \
+    "}\n"                                                                      \
+    "\n"                                                                       \
+    "event(Spawned) Grow(mut Body body)\n"                                     \
+    "{\n"                                                                      \
+    "    body.radius += 1;\n"                                                  \
+    "}\n"
+
+PURR_TEST(lsp_events)
+{
+    start();
+    open_document(EVENTS);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    // The handler: its trigger, and when it runs.
+    open_document(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e, with Body) { e.Send(Hit); }\n"
+                  "event(Hit hit) Take$Hit(mut Body body) { body.radius -= hit.damage; }\n");
+    const char *handler = request("textDocument/hover");
+    PURR_CHECK(has(handler, "event(Hit hit) TakeHit(mut Body body)"));
+    PURR_CHECK(has(handler, "Runs when a `Hit` is sent to an entity that matches its parameters"));
+
+    open_document(GAME_TYPES "event(Spawn$ed) Grow(mut Body body) { body.radius += 1; }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "Sent to each entity as it's spawned"));
+
+    open_document(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e, with Body) { e.Send(Hit); }\n"
+                  "event(Hit hit) TakeHit(mut Body body) { body.radius -= h$it.damage; }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "The event being handled"));
+
+    // Completion: declarations, the trigger, a handler's parameters, an event's fields, and Send.
+    const char *top = complete(GAME_TYPES "\n$");
+    PURR_CHECK(offers(top, "event"));
+    PURR_CHECK(offers(top, "event handler"));
+    const char *trigger = complete(GAME_TYPES "event Hit { int damage; }\nevent($)\n");
+    PURR_CHECK(offers(trigger, "Hit"));
+    PURR_CHECK(offers(trigger, "Spawned"));
+    PURR_CHECK(!offers(trigger, "Devices"));
+    const char *params = complete(GAME_TYPES "event Hit { int damage; }\nevent(Hit hit) TakeHit($)\n{\n}\n");
+    PURR_CHECK(offers(params, "mut"));
+    PURR_CHECK(offers(params, "Body"));
+    const char *fields = complete(GAME_TYPES "event Hit { int damage; }\nevent(Hit hit) TakeHit(mut Body body)\n{\n"
+                                  "    body.radius -= hit.$\n}\n");
+    PURR_CHECK(offers(fields, "damage"));
+    const char *send = complete(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e)\n{\n    e.$\n}\n");
+    PURR_CHECK(offers(send, "Send"));
+    const char *literal = complete(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e)\n{\n    e.Send(Hit { $ });\n}\n");
+    PURR_CHECK(offers(literal, "damage"));
+
+    // The outline: events are events (24), and handlers say what they are.
+    open_document(EVENTS);
+    const char *symbols = request("textDocument/documentSymbol");
+    PURR_CHECK(has(symbols, "\"name\":\"Hit\",\"detail\":\"event\",\"kind\":24"));
+    PURR_CHECK(has(symbols, "\"name\":\"TakeHit\",\"detail\":\"event handler\""));
+}
+
+PURR_TEST(lsp_format_events)
+{
+    start();
+    static const char messy[] = "event Hit { int damage; }\nsystem Main() { Send(Hit); }\n"
+                                "event (Hit hit) TakeHit( ) { }\nevent ( Spawned ) Grow() { }\n";
+    static const char expected[] = "event Hit { int damage; }\nsystem Main() { Send(Hit); }\n"
+                                   "event(Hit hit) TakeHit() { }\nevent(Spawned) Grow() { }\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
 #define STRUCTS                                                                \
     "struct Stats\n"                                                           \
     "{\n"                                                                      \
@@ -1009,7 +1090,9 @@ PURR_TEST(lsp_every_prefix_is_safe)
         "    mut var speed = Math.Length(body.position.xy) * 2;\n"
         "    if (controls.aim.x > 0 && speed < 10) { body.position += controls.aim * time.dt; }\n"
         "    else body.radius = Math.Clamp(body.radius, 1, 2);\n"
-        "    var e = Spawn(Body { position = float2(1, 2) });\n    e.Destroy();\n}\n"
+        "    var e = Spawn(Body { position = float2(1, 2) });\n    e.Send(Hit { damage = 2 });\n    e.Destroy();\n}\n"
+        "event Hit\n{\n    int damage = 1;\n}\n"
+        "event(Hit hit) TakeHit(mut Body body)\n{\n    body.radius -= hit.damage;\n}\n"
         "view DrawBody(Body body, Arena arena)\n{\n"
         "    Draw.Text(\"hi \\\"there\\\"\", body.position, 12, Color(1, 0.5, 0));\n"
         "    Draw.Circle(body.position, body.radius, Color.red);\n}\n";

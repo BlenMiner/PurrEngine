@@ -1,4 +1,4 @@
-// expect: orders systems and views
+// expect: orders systems, views and event handlers
 system Main() { }
 system Move() { }
 [After(Move)]

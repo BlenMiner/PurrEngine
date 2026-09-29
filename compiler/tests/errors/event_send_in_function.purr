@@ -1,0 +1,4 @@
+// expect: functions can't send events; systems and event handlers do
+event Ping { }
+system Main() { }
+void Notify() { Send(Ping); }

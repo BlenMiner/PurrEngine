@@ -7,8 +7,9 @@
 #include "types.h"
 
 // Emits C for a checked program. Everything specific to the game is generated
-// here: component structs, archetype storage, deferred structural changes,
-// system and view bodies, dispatch loops, the tick and drawing. See docs/purrlang.md.
+// here: component structs, archetype storage, deferred structural changes and
+// events, system, view and handler bodies, dispatch loops, the tick and
+// drawing. See docs/purrlang.md.
 
 typedef struct transition {
     int from;
@@ -104,7 +105,8 @@ static const char *local_cname(const gen *g, const str name)
 
 static const char *c_type(const type t)
 {
-    if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_STRUCT) {
+    if (t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_STRUCT
+        || t.kind == TY_EVENT) {
         return type_cname(t.decl);
     }
     if (t.kind == TY_RECORD) return t.decl->c_name;
@@ -148,12 +150,35 @@ static const char *arch_label(const gen *g, const int index)
 }
 
 // A system's components, singletons, input and devices are passed by pointer,
-// and so is what a method's or function's mut parameter changes.
+// and so are a handler's event and what a method's or function's mut parameter
+// changes.
 static bool is_pointer_param(const param *p)
 {
     if (p->function_param) return p->mode == PARAM_MUT;
     const type_kind k = p->type.kind;
-    return k == TY_COMPONENT || k == TY_SINGLETON || k == TY_INPUT || k == TY_RECORD;
+    return k == TY_COMPONENT || k == TY_SINGLETON || k == TY_INPUT || k == TY_RECORD || k == TY_EVENT;
+}
+
+// Events that wait in the command queue. Spawned and Destroyed are handled
+// right as the spawn or destroy is applied, so they never do.
+static bool is_queued(const program *prog, const decl *event)
+{
+    return event != prog->spawned && event != prog->destroyed;
+}
+
+// Whether handler `h` runs for an entity of archetype `mask`.
+static bool handler_matches(const decl *h, const uint64_t mask)
+{
+    return !h->per_entity || ((mask & h->need_mask) == h->need_mask && !(mask & h->without_mask));
+}
+
+// Whether any handler of `event` runs for an entity of archetype `mask`.
+static bool handled_for(const decl *event, const uint64_t mask)
+{
+    for (int i = 0; i < event->handlers.count; i++) {
+        if (handler_matches(event->handlers.items[i], mask)) return true;
+    }
+    return false;
 }
 
 // What an operator is called in C: add for +, negate for - with one parameter.
@@ -863,6 +888,23 @@ static void gen_method(gen *g, const expr *e)
     sb_put(o, " }\n");
 }
 
+// Send(RoundOver { ... }) and target.Send(Hit { ... }): recorded, and handled
+// at the end of the tick.
+static void gen_send(gen *g, const expr *e)
+{
+    sb *o = &g->c;
+    const decl *event = e->type_decl;
+    const expr *arg = e->args.items[0];
+    indent(g, o);
+    sb_printf(o, "purr_cmd_send_%s(purr_w, ", type_cname(event));
+    if (e->kind == E_METHOD) gen_expr(g, o, e->object);
+    else sb_put(o, "(purr_entity){0}");
+    sb_put(o, ", ");
+    if (arg->kind == E_NAME && arg->bind == BIND_TYPE) gen_value(g, o, event, NULL, 0); // Its defaults
+    else gen_expr(g, o, arg);
+    sb_put(o, ");\n");
+}
+
 // ---------------------------------------------------------------------------
 // Statements
 
@@ -1032,7 +1074,9 @@ static void gen_stmt(gen *g, const stmt *s)
     }
 
     case S_EXPR:
-        if (s->value->call == CALL_METHOD || s->value->call == CALL_FUNCTION || s->value->call == CALL_DRAW) {
+        if (s->value->call == CALL_SEND) {
+            gen_send(g, s->value);
+        } else if (s->value->call == CALL_METHOD || s->value->call == CALL_FUNCTION || s->value->call == CALL_DRAW) {
             indent(g, o);
             gen_expr(g, o, s->value);
             sb_put(o, ";\n");
@@ -1150,6 +1194,9 @@ static void gen_header(gen *g)
     if (prog->structs.count > 0) sb_put(o, "// Structs, each after the ones it contains\n\n");
     for (int i = 0; i < prog->structs.count; i++) gen_type(g, o, prog->structs.items[i]);
 
+    sb_put(o, "// Events: what Send sends and handlers receive\n\n");
+    for (int i = 0; i < prog->events.count; i++) gen_type(g, o, prog->events.items[i]);
+
     sb_put(o, "// Components\n\n");
     for (int i = 0; i < prog->components.count; i++) gen_type(g, o, prog->components.items[i]);
 
@@ -1194,9 +1241,13 @@ static void gen_header(gen *g)
         sb_printf(o, "} purr_spawn%d;\n\n", a);
     }
 
-    sb_put(o, "// Structural changes, deferred to the end of the tick\n\n");
-    sb_put(o, "typedef struct purr_command {\n    uint32_t kind;\n    uint32_t id; // Archetype for spawns, component for add and remove.\n");
-    sb_put(o, "    purr_entity entity;\n    union {\n        uint8_t purr_none;\n");
+    sb_put(o, "// Structural changes and events, deferred to the end of the tick\n\n");
+    sb_put(o, "typedef struct purr_command {\n    uint32_t kind;\n    uint32_t id; // Archetype for spawns, component for add and remove, event for sends.\n");
+    sb_put(o, "    purr_entity entity; // For sends, the entity it's sent to, or null for the world\n    union {\n        uint8_t purr_none;\n");
+    for (int i = 0; i < prog->events.count; i++) {
+        const decl *d = prog->events.items[i];
+        if (is_queued(prog, d)) sb_printf(o, "        %s event_%s;\n", type_cname(d), type_cname(d));
+    }
     for (int i = 0; i < prog->components.count; i++) {
         const decl *d = prog->components.items[i];
         if (!has_component(prog->added_mask, d->index)) continue;
@@ -1235,6 +1286,11 @@ static void gen_header(gen *g)
     sb_put(o, "// Runs every view once, in declaration order, adding their Draw calls to `draw`.\n");
     sb_put(o, "// Call once per frame; reset the list first with purr_draw_reset.\n");
     sb_put(o, "void purr_world_draw(const purr_world *w, purr_draw_list *draw);\n\n");
+    sb_put(o, "// Send PlayerJoined or PlayerLeft to the world. They're handled at the end of the\n");
+    sb_put(o, "// next tick, before anything that tick sends; every machine calls them before\n");
+    sb_put(o, "// the same tick.\n");
+    sb_put(o, "void purr_world_player_joined(purr_world *w, purr_player_id player);\n");
+    sb_put(o, "void purr_world_player_left(purr_world *w, purr_player_id player);\n\n");
     sb_put(o, "uint32_t purr_world_entity_count(const purr_world *w);\n\n");
     sb_put(o, "// Prints every entity and its components, for debugging.\n");
     sb_put(o, "void purr_world_print(const purr_world *w);\n\n");
@@ -1367,11 +1423,11 @@ static void gen_command_recorders(gen *g)
     const program *prog = g->prog;
     sb *o = &g->c;
 
-    sb_put(o, "enum { PURR_CMD_SPAWN, PURR_CMD_ADD, PURR_CMD_REMOVE, PURR_CMD_DESTROY };\n\n");
+    sb_put(o, "enum { PURR_CMD_SPAWN, PURR_CMD_ADD, PURR_CMD_REMOVE, PURR_CMD_DESTROY, PURR_CMD_EVENT };\n\n");
     sb_put(o,
         "PURR_HELPER purr_command *purr_cmd_push(purr_world *w, uint32_t kind, uint32_t id, purr_entity e)\n"
         "{\n"
-        "    if (w->command_count == PURR_MAX_COMMANDS) purr_fatal(\"too many structural changes in one tick (raise PURR_MAX_COMMANDS)\");\n"
+        "    if (w->command_count == PURR_MAX_COMMANDS) purr_fatal(\"too many structural changes and events in one tick (raise PURR_MAX_COMMANDS)\");\n"
         "    purr_command *c = &w->commands[w->command_count++];\n"
         "    c->kind = kind;\n"
         "    c->id = id;\n"
@@ -1404,6 +1460,37 @@ static void gen_command_recorders(gen *g)
         "{\n"
         "    purr_cmd_push(w, PURR_CMD_DESTROY, 0, e);\n"
         "}\n\n");
+
+    for (int i = 0; i < prog->events.count; i++) {
+        const decl *d = prog->events.items[i];
+        if (!is_queued(prog, d)) continue;
+        const char *name = type_cname(d);
+        sb_printf(o, "// Send: " STR_FMT ", to `target` or, with the null entity, to the world\n", STR_ARG(d->qualified));
+        sb_printf(o, "PURR_HELPER void purr_cmd_send_%s(purr_world *w, purr_entity target, %s value)\n{\n", name, name);
+        sb_printf(o, "    purr_cmd_push(w, PURR_CMD_EVENT, %d, target)->data.event_%s = value;\n}\n\n", d->index, name);
+    }
+}
+
+// Every event with handlers has a dispatcher, which runs them in order.
+static const char *dispatch_signature(const decl *event)
+{
+    sb b = {0};
+    sb_printf(&b, "static void purr_dispatch_%s(purr_world *purr_w, purr_entity purr_target, const %s *purr_event)",
+              type_cname(event), type_cname(event));
+    return b.data;
+}
+
+static void gen_dispatch_prototypes(gen *g)
+{
+    const program *prog = g->prog;
+    if (prog->handlers.count == 0) return;
+    sb *o = &g->c;
+    sb_put(o, "// Event dispatchers, defined after the handlers they call\n\n");
+    for (int i = 0; i < prog->events.count; i++) {
+        const decl *d = prog->events.items[i];
+        if (d->handlers.count > 0) sb_printf(o, "%s;\n", dispatch_signature(d));
+    }
+    sb_put(o, "\n");
 }
 
 static void gen_apply(gen *g)
@@ -1429,6 +1516,10 @@ static void gen_apply(gen *g)
             sb_printf(o, "        a->%s[row] = c->data.spawn%d.%s;\n", comp, a, comp);
         }
         sb_printf(o, "        purr_entity_set_location(&w->entities, c->entity, (purr_location){%d, row});\n", a);
+        if (handled_for(prog->spawned, mask)) {
+            sb_printf(o, "        purr_dispatch_%s(w, c->entity, &(%s){0});\n", type_cname(prog->spawned),
+                      type_cname(prog->spawned));
+        }
         sb_put(o, "        break;\n    }\n");
     }
     sb_put(o, "    default: break;\n    }\n}\n\n");
@@ -1479,13 +1570,31 @@ static void gen_apply(gen *g)
     sb_put(o, "    purr_location loc = purr_entity_location(&w->entities, c->entity);\n");
     sb_put(o, "    switch (loc.archetype) {\n");
     for (int a = 0; a < prog->archetypes.count; a++) {
-        sb_printf(o, "    case %d: purr_remove_row%d(w, loc.row); break;\n", a, a);
+        // Destroyed's handlers run first, while the components can still be read.
+        if (handled_for(prog->destroyed, prog->archetypes.items[a])) {
+            sb_printf(o, "    case %d: purr_dispatch_%s(w, c->entity, &(%s){0}); purr_remove_row%d(w, loc.row); break;\n", a,
+                      type_cname(prog->destroyed), type_cname(prog->destroyed), a);
+        } else {
+            sb_printf(o, "    case %d: purr_remove_row%d(w, loc.row); break;\n", a, a);
+        }
     }
     sb_put(o, "    default: return; // Already destroyed.\n    }\n");
     sb_put(o, "    purr_entity_destroy(&w->entities, c->entity);\n}\n\n");
 
+    // Event: its handlers, in order. Events nothing handles do nothing.
+    sb_put(o, "PURR_HELPER void purr_apply_event(purr_world *w, const purr_command *c)\n{\n    (void)w;\n    switch (c->id) {\n");
+    for (int i = 0; i < prog->events.count; i++) {
+        const decl *d = prog->events.items[i];
+        if (!is_queued(prog, d) || d->handlers.count == 0) continue;
+        sb_printf(o, "    case %d: purr_dispatch_%s(w, c->entity, &c->data.event_%s); break;\n", d->index, type_cname(d),
+                  type_cname(d));
+    }
+    sb_put(o, "    default: break;\n    }\n}\n\n");
+
     // Commands apply in the order they were recorded, which is deterministic:
-    // systems run in a fixed order and iterate entities in a fixed order.
+    // systems run in a fixed order and iterate entities in a fixed order. What
+    // handlers record goes on the end of the queue and is applied in turn, until
+    // nothing is left.
     sb_put(o,
         "static void purr_apply_commands(purr_world *w)\n"
         "{\n"
@@ -1496,9 +1605,12 @@ static void gen_apply(gen *g)
         "        case PURR_CMD_ADD: purr_apply_add(w, c); break;\n"
         "        case PURR_CMD_REMOVE: purr_apply_remove(w, c); break;\n"
         "        case PURR_CMD_DESTROY: purr_apply_destroy(w, c); break;\n"
+        "        case PURR_CMD_EVENT: purr_apply_event(w, c); break;\n"
         "        default: break;\n"
         "        }\n"
         "    }\n"
+        "    // Cleared, so a world's bytes only depend on its state, never on what it did before.\n"
+        "    memset(w->commands, 0, sizeof w->commands[0] * w->command_count);\n"
         "    w->command_count = 0;\n"
         "}\n\n");
 
@@ -1515,22 +1627,34 @@ static void gen_apply(gen *g)
 // ---------------------------------------------------------------------------
 // Source: systems
 
-// Systems get the world to record structural changes into. Views get it
-// read-only, with the draw list their Draw calls record into.
+// A handler's event parameter in C: its name, or purr_event without one.
+static const char *trigger_cname(const gen *g, const decl *handler)
+{
+    const param *trigger = &handler->params.items[0];
+    return trigger->name.len > 0 ? local_cname(g, trigger->name) : "purr_event";
+}
+
+// Systems and handlers get the world to record structural changes into. Views
+// get it read-only, with the draw list their Draw calls record into. A
+// handler's event comes first, before its other parameters.
 static void gen_system_body(gen *g, const decl *sys)
 {
     sb *o = &g->c;
-    sb_printf(o, "// %s " STR_FMT "\n", sys->is_view ? "view" : "system", STR_ARG(sys->qualified));
+    sb_printf(o, "// %s " STR_FMT "\n", sys->is_view ? "view" : sys->is_handler ? "event handler" : "system",
+              STR_ARG(sys->qualified));
     // PURR_HELPER: a system that no entity matches is never called.
     if (sys->is_view) {
         sb_printf(o, "PURR_HELPER void purr_view_" STR_FMT "(const purr_world *purr_w, purr_draw_list *purr_draw",
                   STR_ARG(str_from(decl_cname(sys))));
+    } else if (sys->is_handler) {
+        sb_printf(o, "PURR_HELPER void purr_handler_" STR_FMT "(purr_world *purr_w, const %s *restrict %s",
+                  STR_ARG(str_from(decl_cname(sys))), type_cname(sys->event), trigger_cname(g, sys));
     } else {
         sb_printf(o, "PURR_HELPER void purr_system_" STR_FMT "(purr_world *purr_w", STR_ARG(str_from(decl_cname(sys))));
     }
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
-        if (p->mode == PARAM_WITH || p->mode == PARAM_WITHOUT) continue;
+        if (p->mode == PARAM_WITH || p->mode == PARAM_WITHOUT || p->mode == PARAM_EVENT) continue;
         const char *name = local_cname(g, p->name);
         if (p->type.kind == TY_ENTITY) {
             sb_printf(o, ", purr_entity %s", name);
@@ -1546,9 +1670,10 @@ static void gen_system_body(gen *g, const decl *sys)
     g->spawn_temps = 0;
     line(g, o, "(void)purr_w;");
     if (sys->is_view) line(g, o, "(void)purr_draw;");
+    if (sys->is_handler) line(g, o, "(void)%s;", trigger_cname(g, sys));
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
-        if (p->name.len > 0) line(g, o, "(void)%s;", local_cname(g, p->name));
+        if (p->name.len > 0 && p->mode != PARAM_EVENT) line(g, o, "(void)%s;", local_cname(g, p->name));
         if (p->type.kind == TY_INPUT) line(g, o, "(void)%s;", prev_input_name(g, p->name));
     }
     for (int i = 0; i < sys->body->stmts.count; i++) gen_stmt(g, sys->body->stmts.items[i]);
@@ -1592,6 +1717,46 @@ static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const
             break;
         }
     }
+}
+
+// Runs an event's handlers in order. One that takes data from the entity the
+// event was sent to runs if that entity matches its parameters; one that takes
+// nothing from it runs once. An event sent to an entity that's gone by its
+// turn is dropped.
+static void gen_dispatcher(gen *g, const decl *event)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    sb_printf(o, "// " STR_FMT "'s handlers, in the order they run\n", STR_ARG(event->qualified));
+    sb_printf(o, "%s\n{\n", dispatch_signature(event));
+    sb_put(o, "    const purr_location purr_loc = purr_entity_location(&purr_w->entities, purr_target);\n");
+    sb_put(o, "    if (!purr_entity_is_null(purr_target) && purr_loc.archetype == PURR_ARCHETYPE_NONE) return; // Gone by its turn\n");
+    for (int i = 0; i < event->handlers.count; i++) {
+        const decl *h = event->handlers.items[i];
+        sb call = {0};
+        sb_printf(&call, "purr_handler_" STR_FMT "(purr_w, purr_event", STR_ARG(str_from(decl_cname(h))));
+        sb_printf(o, "    // " STR_FMT "\n", STR_ARG(h->qualified));
+        if (!h->per_entity) {
+            sb_printf(o, "    %s", call.data);
+            gen_system_args(g, h, NULL, 0);
+            sb_put(o, ");\n");
+            continue;
+        }
+        sb_put(o, "    switch (purr_loc.archetype) {\n");
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            const uint64_t mask = prog->archetypes.items[a];
+            if (!handler_matches(h, mask)) continue;
+            const char *name = arch_name(g, a);
+            sb_printf(o, "    case %d: { // %s\n", a, arch_label(g, a));
+            sb_printf(o, "        purr_%s *purr_a = &purr_w->%s;\n", name, name);
+            sb_put(o, "        const uint32_t purr_i = purr_loc.row;\n");
+            sb_printf(o, "        %s", call.data);
+            gen_system_args(g, h, "purr_a", mask);
+            sb_put(o, ");\n        break;\n    }\n");
+        }
+        sb_put(o, "    default: break;\n    }\n");
+    }
+    sb_put(o, "}\n\n");
 }
 
 // The input's Sample, as purr_input_sample: fields start at their defaults
@@ -2029,6 +2194,13 @@ static void gen_api(gen *g)
     if (prog->views.count == 0) sb_put(o, "    (void)w;\n    (void)draw;\n");
     sb_put(o, "}\n\n");
 
+    const char *joined = type_cname(prog->player_joined);
+    const char *left = type_cname(prog->player_left);
+    sb_printf(o, "void purr_world_player_joined(purr_world *w, purr_player_id player)\n{\n"
+                 "    purr_cmd_send_%s(w, (purr_entity){0}, (%s){.player = player});\n}\n\n", joined, joined);
+    sb_printf(o, "void purr_world_player_left(purr_world *w, purr_player_id player)\n{\n"
+                 "    purr_cmd_send_%s(w, (purr_entity){0}, (%s){.player = player});\n}\n\n", left, left);
+
     if (prog->input) {
         sb_printf(o, "void purr_world_set_input(purr_world *w, purr_player_id player, %s input)\n{\n",
                   type_cname(prog->input));
@@ -2133,6 +2305,7 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_remove_rows(&g);
     gen_moves(&g);
     gen_command_recorders(&g);
+    gen_dispatch_prototypes(&g);
     gen_apply(&g);
     gen_routines(&g);
     if (prog->input) gen_sample(&g);
@@ -2141,6 +2314,10 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_system_body(&g, prog->main);
     for (int i = 0; i < prog->systems.count; i++) gen_system_body(&g, prog->systems.items[i]);
     for (int i = 0; i < prog->views.count; i++) gen_system_body(&g, prog->views.items[i]);
+    for (int i = 0; i < prog->handlers.count; i++) gen_system_body(&g, prog->handlers.items[i]);
+    for (int i = 0; i < prog->events.count; i++) {
+        if (prog->events.items[i]->handlers.count > 0) gen_dispatcher(&g, prog->events.items[i]);
+    }
     for (int i = 0; i < prog->systems.count; i++) gen_system_run(&g, prog->systems.items[i]);
     for (int i = 0; i < prog->views.count; i++) gen_system_run(&g, prog->views.items[i]);
     gen_api(&g);

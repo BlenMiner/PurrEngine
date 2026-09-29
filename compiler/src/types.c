@@ -126,7 +126,8 @@ const char *type_name(const type t)
     case TY_SINGLETON:
     case TY_INPUT:
     case TY_RECORD:
-    case TY_STRUCT: {
+    case TY_STRUCT:
+    case TY_EVENT: {
         char *b = buf[next++ % 4];
         const str name = t.decl->qualified.len > 0 ? t.decl->qualified : t.decl->name;
         snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(name));

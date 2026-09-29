@@ -1,0 +1,7 @@
+// expect: only handlers of the same event run in an order
+event Ping { }
+event Pong { }
+system Main() { Send(Ping); Send(Pong); }
+event(Ping) A() { }
+[After(A)]
+event(Pong) B() { }

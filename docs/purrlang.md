@@ -38,6 +38,9 @@ PurrLang is a working name and may change.
 - `singleton` declares world-wide state (what other ECSs call a resource). There is exactly one instance **per world**, not per process.
 - `struct` declares a value type for fields and locals (see Structs).
 - `system` declares a system.
+- `event` declares an event, and `event(...)` code that runs when one is sent (see Events).
+- `scene` declares a scene (see Scenes).
+- `local` in front of a declaration makes it belong to the machine instead of the match (see Local state).
 - A function, `ReturnType Name(parameters) { ... }` with no keyword, declares code that other code calls (see Functions).
 
 ### Field defaults
@@ -134,8 +137,29 @@ system Burn(mut Unit unit)
 - A function is code that other code calls: systems, views, the input's `Sample` and `Sanitize`, methods and other functions. The engine never runs one by itself.
 - A parameter is a copy, read-only. A `mut` parameter is the caller's variable itself, which the function changes: the caller passes something it can write, and its signature still shows the write, so `Heal(unit.stats, 5)` needs `mut Unit unit`. The argument's type matches exactly.
 - Parameters and return values are built-in types, structs and components.
-- Functions follow the rules of methods: they see their parameters and `Math`, can't spawn, change entities or draw, and return a value on every path unless they return `void`.
+- Functions follow the rules of methods: they see their parameters and `Math`, can't spawn or change entities, and return a value on every path unless they return `void`.
+- A function can draw and use the GUI. Then only views, and other functions like it, can call it, as with `Draw`.
 - Namespaces apply: another namespace calls it `Combat.Heal(...)`. A function shares its name with nothing else in its namespace.
+- A function's last parameter can be a `Block`: code the caller writes in braces after the call, `Section("Audio") { ... }`. A function takes at most one, always last, and it's always written after the call, never inside the parentheses.
+- The function runs the block by calling it, `content();`, as many times as it chooses, including none. The block runs as if it were written at the call: it sees the caller's locals and parameters, and what it reads and writes counts toward the caller's signature.
+- A function that takes a `Block` is inlined where it's called, so blocks cost nothing and need no closures. It can't call itself, directly or through other functions, and a block can only be run, not stored.
+
+```csharp
+// A container of your own: runs its content only while open.
+void Foldout(string title, mut bool open, Block content)
+{
+    GUILayout.Toggle(title, open);
+    if (open) content();
+}
+
+view Options(mut Main menu, mut Settings settings)
+{
+    Foldout("Audio", menu.audioOpen)
+    {
+        GUILayout.Slider("Volume", settings.volume, 0, 1);
+    }
+}
+```
 
 ```csharp
 float Heal(mut Stats stats, float amount)
@@ -220,12 +244,15 @@ e.Remove(Stunned);
 
 ### Entry point
 
-- `system Main()` is the program's entry point, like `main` in C. There is exactly one.
-- It runs once when a world is created, before the first tick. It sets up the initial world, not the game loop: the engine runs the tick.
-- Structural changes made in `Main` follow the same deferral rule and are applied when `Main` returns.
+- The scene named `Main` is where the program starts (see Scenes). There is exactly one.
+- A local `Main` starts the program in it, usually a menu. A match `Main` starts a single-player match with it right away, the same as a menu starting one.
+- `Main` sets up the first scene, not the game loop: the engine runs the tick.
+- Until scenes are implemented, purrc takes `system Main()` instead. It runs once when a world is created, before the first tick, and its structural changes are applied when it returns.
 
 ```csharp
-system Main()
+scene Main { }
+
+event(Spawned) Setup(with Main)
 {
     Spawn(Transform { scale = float3(1, 1, 1) }, Player { speed = float3(0, 0, 5) });
 }
@@ -370,6 +397,79 @@ float2 flat = trs.position.xz;
 - Matrices: `Mul`, `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
 - Everything is deterministic (see AGENTS.md). The transcendental functions are PurrEngine's own, accurate to about 1 ulp but not correctly rounded.
 
+## Events
+
+### Decided
+
+- An event is something that happened, sent from one part of the game to the rest: a hit, a pickup, a round ending. `event Hit { ... }` declares one, with fields like a struct's, which carry its context.
+- `event(Hit hit) TakeHit(...)` declares a handler: code that runs when a `Hit` is sent. The same keyword declares both, and `event(` starts a handler. The first parentheses hold the trigger, exactly one event. The second list takes the same parameters as a system.
+- An event with no fields needs no name in the trigger: `event(Spawned) Arm(...)`.
+- `entity.Send(Hit { ... })` sends an event to an entity. `Send(RoundOver { ... })` sends it to the whole world.
+- A handler's components and `Entity` come from the entity the event was sent to, as a system's come from the entity it runs for. If that entity doesn't match the handler's parameters, the handler doesn't run for it.
+- A handler that takes components or an `Entity` needs that entity, so every `Send` of its event must name one. The compiler checks every `Send`: `Send(Hit { ... })` is an error when a `Hit` handler needs an entity, and says to write `entity.Send(...)`.
+- A handler that takes no components and no `Entity` runs once per event, whether it was sent to an entity or not.
+- The sender isn't recorded. When handlers need it, it goes in a field: the entity that sends is often not the one that matters, like a bomb sending a `Hit` for whoever threw it.
+- Events are handled at the end of the tick, with structural changes, in the order they were all recorded. A `Send` before a `Destroy` of the same entity is handled while the entity still exists. An event sent to an entity that's gone by its turn is dropped, as `Add` on a destroyed entity does nothing.
+- Handlers can send events and change entities in turn. Those are handled next, until nothing is left, so everything settles within the tick. Systems later in the same tick don't see an event's effects yet, as with `Spawn`.
+- The handlers of one event run in declaration order, and `[Before]` and `[After]` order them as they do systems.
+- Handlers can't draw. Drawing happens every frame, in views.
+- Events waiting to be handled are world state: a snapshot holds them, and re-simulating a tick sends and handles them again the same way.
+- **Built-in events** are declared like any other, and cost nothing where no handler takes them:
+  - `Spawned` and `Destroyed` are sent to an entity when it's spawned or destroyed. `Destroyed` handlers run while its components can still be read.
+  - `PlayerJoined` and `PlayerLeft` are sent to the world when a player joins or leaves, with the player's `PlayerID` in `player`. The server picks the tick, so every machine handles them on the same one.
+
+```csharp
+event Hit
+{
+    Entity attacker;
+    int damage;
+}
+
+system Explode(Entity self, Bomb bomb)
+{
+    if (bomb.timer > 0) return;
+    bomb.target.Send(Hit { attacker = bomb.owner, damage = 50 });
+    self.Destroy();
+}
+
+// Health and target come from the entity the Hit was sent to.
+event(Hit hit) TakeHit(Entity target, mut Health health)
+{
+    health.value -= hit.damage;
+    if (health.value <= 0) target.Destroy();
+}
+
+// Takes nothing from the entity, so it runs once per Hit.
+event(Hit hit) CountHits(mut Stats stats)
+{
+    stats.hits += 1;
+}
+
+// Spawned has no fields, so it needs no name.
+event(Spawned) Arm(Entity player, with Player)
+{
+    Spawn(Weapon { owner = player });
+}
+```
+
+### Provisional
+
+- `event` is only a keyword at the start of a declaration, like `input`.
+- A trigger's name is optional for any event: a handler that doesn't read the event leaves it out.
+- `Spawned` handlers run as the spawn is applied, and `Destroyed` handlers just before the entity goes, both in the queue's order. A spawn's `Spawned` handlers run before the next change in the queue.
+- Structural changes and events share one queue per tick, `PURR_MAX_COMMANDS` long (4096 by default). What handlers record goes on its end, so an endless chain of events fills it, and the program stops with a message naming the define to raise.
+- Events can be locals (`var h = hit;`) and can be sent on (`other.Send(hit)`), but they can't be fields, function parameters or system parameters.
+- `[Before]` and `[After]` only order handlers of the same event. Handlers and systems are ordered separately.
+- Games can't send the built-in events. The host sends `PlayerJoined` and `PlayerLeft` with `purr_world_player_joined` and `purr_world_player_left`: they're handled at the end of the next tick, before anything that tick sends. `purr/run.h` has player 0 join before the first tick.
+- A handler of an event nothing sends is a warning, and so is declared access a handler doesn't use, as for systems.
+- `purrc --schedule` lists each event's handlers in the order they run.
+
+### Open
+
+- Events for a component being added or removed.
+- Local handlers, such as playing a sound when a `Hit` happens (`local event(Hit hit) PlayHitSound()`). They have to run once even when rollback re-runs the tick that sent the event, and choose between predicted and verified ticks.
+- Handling a world event for every matching entity, such as resetting every player on `RoundOver`. It waits for loops over queries.
+
 ## Input
 
 ### Decided
@@ -452,10 +552,11 @@ input PlayerInput
 ### Decided
 
 - Drawing is immediate mode: code calls `Draw` functions every frame, and nothing is kept between frames.
+- Views never change the match. They can change local state (see Local state).
 
 ### Provisional
 
-- `view` declares a view. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick, and it only reads the world. `mut` parameters, input parameters, `Spawn`, `Add`, `Remove` and `Destroy` are errors in a view.
+- `view` declares a view. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick. Until local state is implemented, `mut` parameters, input parameters, `Spawn`, `Add`, `Remove` and `Destroy` are all errors in a view.
 - Views run in declaration order, after all the systems of the frame's ticks. Within a view, entities run in the same order as in systems.
 - `Draw` functions can only be called from views for now. Calling them from systems needs to tell predicted ticks from verified or replayed ones, which comes with multiplayer.
 - `view` is only a keyword at the start of a declaration, like `input`.
@@ -489,9 +590,161 @@ view DrawHud(Arena arena)
 - Drawing from systems, with the prediction stage (verified, predicted, replayed) visible to the code.
 - Views reading input, for example to draw where the local player aims before the tick runs.
 - Smoothing between ticks: views currently see only the latest tick.
-- State that belongs to views, such as animation timers and particles. It must stay outside the world so it never affects determinism.
 - Text with values in it, such as C#'s `$"score {score}"`.
 - 3D drawing, sprites and textures, layers.
+
+## GUI
+
+### Decided
+
+- The GUI is immediate mode, called from views, and drawn over the world. It follows Unity's IMGUI.
+- `GUILayout` lays widgets out automatically: they stack top to bottom, and `GUILayout.Horizontal()` puts them side by side. `GUI` has the same widgets, each at an explicit `Rect`, which comes first, as in Unity: `GUI.Button(rect, "Quit")`.
+- Containers take a block, and they're ordinary functions with a `Block` parameter (see Functions): `GUILayout.Horizontal() { ... }`, `GUILayout.Vertical() { ... }` and `GUILayout.Area(...) { ... }`. Calls always have parentheses.
+- Widgets edit values through `mut` parameters, and return whether the value changed: `GUILayout.Toggle("Fullscreen", settings.fullscreen)`. A button returns whether it was pressed.
+- Widgets have no IDs to write. They're told apart by where they're called from and the entity the view runs for.
+- The engine builds nothing a game couldn't build itself: containers are functions with a `Block`, and widgets are made of pieces games can use too.
+- Gamepad and keyboard navigation are built in: focus moves between widgets, the south button presses, the east button goes back.
+- Whatever the GUI is using, such as a click on a button or typing in a field, is hidden from the input's `Sample`.
+- Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position.
+- `Screen.width`, `Screen.height` and `Screen.scale` describe the window.
+- The widgets: `Label`, `Button`, `Toggle`, `Slider`, `IntSlider`, `TextField`, `IntField`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field`, `ColorField` and `Space`, and the containers `Horizontal`, `Vertical` and `Area`.
+
+```csharp
+local singleton Settings
+{
+    bool open;
+    bool fullscreen;
+    float volume = 1;
+}
+
+view Options(mut Settings settings)
+{
+    if (GUI.Button(Rect(Screen.width - 210, 10, 200, 40), "Options")) settings.open = !settings.open;
+    if (!settings.open) return;
+
+    GUILayout.Area(Anchor.MiddleCenter)
+    {
+        GUILayout.Toggle("Fullscreen", settings.fullscreen);
+        GUILayout.Slider("Volume", settings.volume, 0, 1);
+    }
+}
+```
+
+### Provisional
+
+Claude's picks, not yet approved or implemented:
+
+- Positions and sizes are in units of a screen 1080 units tall, whose width follows the window's shape, so a GUI laid out once fits every window. `Screen.width` and `Screen.height` are in those units, and `Screen.scale` is pixels per unit.
+- `Rect(x, y, width, height)` is measured from the top left corner, with `y` down, as in Unity's GUI. World drawing and the mouse have `y` up.
+- `GUILayout.Area(anchor)` places an area sized to its content at one of nine anchors, named as Unity's `TextAnchor` (`UpperLeft` to `LowerRight`). `GUILayout.Area(rect)` places it at a rect.
+- The pieces widgets are made of: a control's ID, which the compiler derives from the call as for the built-in widgets, and whether that control is hovered, pressed or focused.
+
+### Open
+
+- A field for any enum. A game couldn't write one itself until there are generics.
+- Styles and themes.
+- More than one block per function, like Swift's labelled trailing closures.
+- `TextField` waits for strings, and labels showing values wait for text with values in it.
+
+## Local state
+
+### Decided
+
+- The world holds a match: the state every machine simulates the same way. It only exists while a match is on. Single-player is a match too, on a server the machine runs itself and reaches through a loopback transport, the same path as any other connection.
+- Local state belongs to one machine and lives outside every world: menus, settings, connection status, animation timers, particles. It's never sent, rolled back or hashed.
+- `local` in front of a declaration makes it local: `local singleton`, `local component`, `local scene` and `local event`. Everything else belongs to the match. Structs and functions belong to neither, and both sides use them.
+- A local singleton exists once per machine, for the whole program. Local components make local entities.
+- Views run every frame, in a match or not. They read the match, and read and write local state: `mut` local parameters, and `Spawn`, `Add`, `Remove` and `Destroy` of local entities. A view only runs when everything it reads exists, so a view of match components or singletons doesn't run outside a match.
+- Local structural changes and local events are handled at the end of the frame, as the match's are at the end of the tick.
+- The GUI is immediate mode, drawn from views (see GUI).
+- **The compiler enforces the boundary,** so no mistake can reach a running game:
+  - Match code (systems, match event handlers, match scenes) can't read or write anything local, and can't read `Devices`. The input's `Sample` reads them, and writes only the input.
+  - Local code (views, local event handlers, local scenes) can read the match but never change it: no `mut` on match components or singletons, and no spawning, changing or sending match things.
+  - The only way from local code into the match is input. Starting, joining and leaving a match are session calls, which never touch a running match.
+  - Errors say where to go instead: "a view can't change the match: put it in the input and handle it in a system."
+
+```csharp
+local component Spark
+{
+    float2 position;
+    int framesLeft = 30;
+}
+
+// Reads the match and leaves a trail of local sparks behind every ball.
+view Trail(Body body, with Ball)
+{
+    Spawn(Spark { position = body.position });
+}
+
+view DrawSparks(Entity self, mut Spark spark)
+{
+    Draw.Circle(spark.position, 0.1, Color.yellow);
+    spark.framesLeft -= 1;
+    if (spark.framesLeft <= 0) self.Destroy();
+}
+
+// Error: match code can't read local state.
+system Count(Spark spark) { }
+```
+
+### Open
+
+- The session API: starting, hosting, joining and leaving a match, and the connection's status.
+- Local handlers of match events (see Events).
+- Time for local code, such as the frame's length.
+- Saving local state, such as settings, between runs.
+
+## Scenes
+
+### Decided
+
+- A scene is a group of entities that load and unload together: a menu, a level, an arena. Several scenes can be loaded at once, and several copies of the same one.
+- `scene Arena { ... }` declares one. A loaded scene is an entity like any other: the declaration is its component, and its fields are the scene's state. A system that takes `Arena` runs once per loaded arena.
+- `local scene` declares a local one (see Local state). A scene only holds entities of its own side.
+- `Scene.Load(Arena { size = 30 })` loads a scene into the current world and returns its entity. `Scene.Unload(scene)` unloads it, destroying every entity it owns. `Spawn` of a scene is an error that says to use `Scene.Load`.
+- Loading and unloading happen at the end of the tick, like `Spawn` and `Destroy`. `Spawned` handlers set a scene up, and its entities get `Destroyed` when it unloads, both within that tick (see Events).
+- **Ownership:** a spawn joins the scene of the entity the code runs for. In a handler, that's the entity the event was sent to. Code that isn't running for an entity, like a system that runs once per tick, spawns into no scene, and those entities live until they're destroyed.
+- A scene is never owned: it lives until it's unloaded, whoever loaded it.
+- Loaded scenes share their world: the same systems, singletons and `Time`. Scenes that share nothing are separate worlds, which never communicate. Only the server creates worlds, so match code can't (see Open).
+- **Visibility:** scenes are public by default, seen by every player in the world. `Scene.Load(Hand { ... }, SceneVisibility.Private)` loads a private one, which only the server and the players given it see: `Scene.AddPlayer(scene, player)` and `Scene.RemovePlayer(scene, player)`. Membership is match state, so the server decides it, and a player who's added receives the scene's state.
+- A private scene with no players exists only on the server, which is where secrets like RNG seeds go. Code that reads a private scene only predicts correctly on machines that see it, and the server corrects the others.
+- A client never loads match scenes on its own: it has the ones the server has it in.
+
+```csharp
+scene Arena
+{
+    int size = 20;
+}
+
+scene Hand
+{
+    PlayerID player;
+}
+
+// Sets up each arena. The floor joins that arena.
+event(Spawned) SetupArena(Arena arena)
+{
+    Spawn(Floor { size = arena.size });
+}
+
+// Deals each player a hand only they can see.
+event(PlayerJoined joined) DealIn()
+{
+    var hand = Scene.Load(Hand { player = joined.player }, SceneVisibility.Private);
+    Scene.AddPlayer(hand, joined.player);
+}
+
+system Collapse(Entity self, Arena arena)
+{
+    if (arena.size <= 0) Scene.Unload(self);
+}
+```
+
+### Open
+
+- The server's own code: creating worlds from scenes, and moving players between them.
+- Entity references that say what they point to, so the compiler can check `Scene.Unload` on an entity read from a field. It can already check one that comes from a system taking the scene's component, as in `Collapse`.
+- The details of private scenes: what players outside one see of it, and how an added player catches up.
 
 ## Open
 

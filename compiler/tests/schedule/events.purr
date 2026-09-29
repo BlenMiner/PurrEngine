@@ -1,0 +1,43 @@
+// Event handlers run at the end of the tick, outside the schedule: each
+// event's handlers are listed in the order they run.
+
+component Health
+{
+    int value = 10;
+}
+
+singleton Stats
+{
+    int hits;
+}
+
+event Hit
+{
+    int damage = 1;
+}
+
+system Main()
+{
+    Spawn(Health);
+}
+
+system Strike(Entity self, with Health)
+{
+    self.Send(Hit);
+}
+
+event(Hit hit) TakeHit(mut Health health)
+{
+    health.value -= hit.damage;
+}
+
+[Before(TakeHit)]
+event(Hit hit) CountHits(mut Stats stats)
+{
+    stats.hits += 1;
+}
+
+event(Spawned) Welcome(mut Stats stats)
+{
+    stats.hits = 0;
+}

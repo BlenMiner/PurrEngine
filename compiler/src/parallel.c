@@ -246,4 +246,20 @@ void print_schedule(const program *prog, const char *game, sb *out)
             sb_put(out, "\n");
         }
     }
+
+    if (prog->handlers.count > 0) {
+        sb_put(out, "\nEvent handlers, at the end of the tick, as their events are sent:\n");
+        for (int i = 0; i < prog->events.count; i++) {
+            const decl *event = prog->events.items[i];
+            if (event->handlers.count == 0) continue;
+            sb_put(out, "         ");
+            put_decl_name(out, event, "", NULL);
+            sb_put(out, ": ");
+            for (int k = 0; k < event->handlers.count; k++) {
+                if (k) sb_put(out, ", ");
+                put_decl_name(out, event->handlers.items[k], "", NULL);
+            }
+            sb_put(out, "\n");
+        }
+    }
 }
