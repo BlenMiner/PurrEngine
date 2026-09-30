@@ -1168,10 +1168,13 @@ static void play(purr_client *c)
     if (stale && c->ahead > c->verified) predict_again(c);
 
     // Keep its inputs the right number of ticks early: early enough to arrive
-    // in time, and no earlier, since further ahead is more to predict.
+    // in time, and no earlier, since further ahead is more to predict. A client
+    // that sends none (a game without an input) has no margin to keep: its
+    // clock stays as the world's arrival set it.
     const int32_t low = (int32_t)c->desc.lead;
     const int32_t high = low + 2;
-    if (c->margin_known && c->now >= c->hold_until && (c->margin < low || c->margin > high + 2)) {
+    const bool sends_inputs = c->game->set_input && c->desc.sample;
+    if (sends_inputs && c->margin_known && c->now >= c->hold_until && (c->margin < low || c->margin > high + 2)) {
         c->clock_base += c->margin < low ? low - c->margin : high - c->margin;
         c->hold_until = c->now + (double)c->rtt_ms / 1000.0 + 3.0 / c->tick_rate;
     }

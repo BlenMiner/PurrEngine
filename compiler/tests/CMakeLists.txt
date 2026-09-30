@@ -45,6 +45,7 @@ purr_e2e_test(crossplatform_text)
 purr_e2e_test(devices)
 purr_e2e_test(pause)
 purr_e2e_test(net)
+purr_e2e_test(net_no_input)
 purr_e2e_test(blend)
 purr_e2e_test(crlf) # Windows line endings, kept by .gitattributes
 purr_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.purr e2e/multi_file/b_main.purr

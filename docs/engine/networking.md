@@ -22,7 +22,7 @@ An input that didn't change, or didn't arrive, keeps its last value, on every ma
 
 ## Prediction and rollback
 
-Clients have no input delay. A client runs ahead of the server by about half the round trip, plus a small margin, so its inputs arrive in time for the tick they're meant for. Its own input applies at once, and only other players' inputs are guessed, by repeating their last one.
+Clients have no input delay. A client runs ahead of the server by about half the round trip, plus a small margin, so its inputs arrive in time for the tick they're meant for. Its own input applies at once, and only other players' inputs are guessed, by repeating their last one. In a game without an input there's nothing to get there in time, so clients keep the small lead they joined with.
 
 A client keeps a snapshot of every tick from the last one the server confirmed, the **verified tick**, to the one it's predicting. When the server's tick arrives:
 
