@@ -1,9 +1,11 @@
-# purr_add_game(<target> [SOURCES <file.purr>...] [HOST <file.c>...] [NAME <name>]
+# purr_add_game(<target> [SOURCES <file.purr|file.c>...] [HOST <file.c>...] [NAME <name>]
 #               [TITLE <title>] [STATS] [LAYOUT])
 #
 # Builds a PurrLang game as the program <target>. The game is every .purr file
 # in the current source folder and its subfolders (new ones are picked up by
-# the next build), or only the files listed after SOURCES.
+# the next build), or only the files listed after SOURCES. Its C files, which
+# define its extern functions, compile with it: every .c file in the folder
+# but the HOST ones, or the .c files listed after SOURCES.
 #
 # Without HOST, the game is the whole program: it opens a window titled TITLE
 # (default <target>) and runs (see platform/include/purr/run.h). STATS shows the
@@ -37,10 +39,15 @@ function(purr_add_game target)
     endif()
 
     set(sources "")
+    set(c_sources "")
     if(ARG_SOURCES)
         foreach(file IN LISTS ARG_SOURCES)
             get_filename_component(path "${file}" ABSOLUTE)
-            list(APPEND sources "${path}")
+            if(path MATCHES "\\.c$")
+                list(APPEND c_sources "${path}")
+            else()
+                list(APPEND sources "${path}")
+            endif()
         endforeach()
         set(manifest_paths ${sources})
     else()
@@ -50,6 +57,19 @@ function(purr_add_game target)
             message(FATAL_ERROR "purr_add_game(${target}): there are no .purr files in ${CMAKE_CURRENT_SOURCE_DIR} "
                                 "or its subfolders. Add one, or list the game's files after SOURCES")
         endif()
+        # Not in hidden folders or build/, where purr keeps what it makes (.purr/),
+        # generated C included.
+        file(GLOB_RECURSE found CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.c")
+        foreach(path IN LISTS found)
+            file(RELATIVE_PATH relative "${CMAKE_CURRENT_SOURCE_DIR}" "${path}")
+            if(NOT relative MATCHES "(^|/)\\." AND NOT relative MATCHES "^build/")
+                list(APPEND c_sources "${path}")
+            endif()
+        endforeach()
+        foreach(file IN LISTS ARG_HOST)
+            get_filename_component(path "${file}" ABSOLUTE)
+            list(REMOVE_ITEM c_sources "${path}")
+        endforeach()
         # The folder rather than its files, so editors see new files before the next build.
         set(manifest_paths "${CMAKE_CURRENT_SOURCE_DIR}/")
     endif()
@@ -71,7 +91,7 @@ function(purr_add_game target)
         VERBATIM)
 
     if(ARG_HOST)
-        add_executable(${target} ${ARG_HOST} "${out_c}" "${out_h}")
+        add_executable(${target} ${ARG_HOST} "${out_c}" "${out_h}" ${c_sources})
         target_link_libraries(${target} PRIVATE purr)
     else()
         if(NOT TARGET purr_platform)
@@ -93,7 +113,7 @@ int main(int argc, char **argv)
     purr_run(&(purr_run_desc){.title = "@title@", .stats = @stats@, .argc = argc, .argv = argv});
 }
 ]])
-        add_executable(${target} "${main}" "${out_c}" "${out_h}")
+        add_executable(${target} "${main}" "${out_c}" "${out_h}" ${c_sources})
         target_link_libraries(${target} PRIVATE purr_platform)
         purr_web_page(${target})
     endif()

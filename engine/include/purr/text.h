@@ -76,6 +76,10 @@ purr_str purr_str_add_rect(purr_str a, purr_rect v, int32_t format);
 // Text read from C: `s` measured, not copied.
 purr_str purr_str_from_cstr(const char *s);
 
+// Text an extern function returned: a copy in the scratch area, since C may
+// reuse its memory, and empty for NULL.
+purr_str purr_str_copy_cstr(const char *s);
+
 // Text for C: `s` itself when a NUL follows it, or a copy that ends in one.
 const char *purr_str_c(purr_str s);
 

@@ -418,7 +418,7 @@ static bool is_decl_word(const str text)
 {
     return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct") || str_eq_c(text, "event")
         || str_eq_c(text, "enum") || str_eq_c(text, "scene") || str_eq_c(text, "local") || str_eq_c(text, "namespace")
-        || str_eq_c(text, "using");
+        || str_eq_c(text, "using") || str_eq_c(text, "extern");
 }
 
 // Keywords that only start declarations, and the contextual ones at the start
@@ -862,8 +862,8 @@ static void parse_field(parser *p, decl *d)
     vec_push(d->fields, f);
 }
 
-// (Type name, ...) { ... }: the rest of a method, function or operator.
-static void parse_routine_rest(parser *p, decl *m, const token *name)
+// (Type name, ...): a method's, function's or operator's parameters.
+static void parse_routine_params(parser *p, decl *m)
 {
     expect(p, T_LPAREN, "'('");
     if (!at(p, T_RPAREN)) {
@@ -871,6 +871,13 @@ static void parse_routine_rest(parser *p, decl *m, const token *name)
             param prm = {0};
             prm.at = peek(p)->at;
             prm.mode = accept(p, T_MUT) ? PARAM_MUT : PARAM_READ;
+            // `in Stats stats`: `in` before a type and a name (the checker says it's only for extern functions)
+            const tok_kind after = peek_at(p, 2)->kind;
+            if (prm.mode == PARAM_READ && at(p, T_IDENT) && str_eq_c(peek(p)->text, "in") && peek_at(p, 1)->kind == T_IDENT
+                && (after == T_IDENT || after == T_DOT || after == T_LT)) {
+                advance(p);
+                prm.mode = PARAM_IN;
+            }
             prm.function_param = true;
             const qname type = parse_type(p, "parameter type");
             prm.type_name = type.text;
@@ -882,9 +889,38 @@ static void parse_routine_rest(parser *p, decl *m, const token *name)
         } while (accept(p, T_COMMA));
     }
     expect(p, T_RPAREN, "')' after parameters");
+}
+
+// (Type name, ...) { ... }: the rest of a method, function or operator.
+static void parse_routine_rest(parser *p, decl *m, const token *name)
+{
+    parse_routine_params(p, m);
     m->body_at = name->at;
     m->body = parse_block(p);
     m->end = m->body->end;
+}
+
+// extern float Noise(float x, float y);: a function written in C, which the
+// game's C files or libraries define.
+static decl *parse_extern(parser *p)
+{
+    const qname ret = parse_type(p, "return type");
+    const token *name = expect_ident(p, "function name");
+    decl *m = new_decl(DECL_FUNCTION, name);
+    m->unit = p->unit;
+    m->is_extern = true;
+    m->return_type_name = ret.text;
+    m->return_type_at = ret.name_at;
+    m->return_type_qual_at = ret.at;
+    parse_routine_params(p, m);
+    m->body_at = name->at;
+    if (at(p, T_LBRACE)) {
+        diag_error(peek(p)->at, "an extern function has no body: its code is in C");
+        diag_note("end it with ';', like 'extern float Noise(float x);', or remove 'extern' to write it in PurrLang");
+        longjmp(p->fail, 1);
+    }
+    m->end = expect(p, T_SEMI, "';' after the extern function: its code is in C")->at;
+    return m;
 }
 
 // [mut] ReturnType Name(Type name, ...) { ... }: a method of `owner`, or with
@@ -988,6 +1024,12 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
         if (at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN
             && (str_eq_c(peek(p)->text, "Sanitize") || str_eq_c(peek(p)->text, "sanitize"))) {
             parse_sanitize(p, d, advance(p));
+            continue;
+        }
+        if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "extern") && peek_at(p, 1)->kind == T_IDENT) {
+            diag_error(peek(p)->at, "extern functions go at the top of a file, outside '" STR_FMT "'", STR_ARG(name->text));
+            if (!p->recover) longjmp(p->fail, 1);
+            skip_statement(p);
             continue;
         }
         if (at_operator(p)) {
@@ -1116,7 +1158,8 @@ static void parse_attributes(parser *p)
         if (accept(p, T_LPAREN)) {
             if (!at(p, T_RPAREN)) {
                 do {
-                    vec_push(a.args, parse_qname(p, "a name"));
+                    if (at(p, T_STRING)) vec_push(a.values, parse_expr(p)); // [NativeName("stb_perlin_noise3")]
+                    else vec_push(a.args, parse_qname(p, "a name"));
                 } while (accept(p, T_COMMA));
             }
             expect(p, T_RPAREN, "')' after the attribute's arguments");
@@ -1209,7 +1252,12 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
             d->is_scene = true;
         }
         else if (t->kind == T_IDENT && at(&p, T_LPAREN) && str_eq_c(t->text, "event")) d = parse_handler(&p);
-        else fail_at(&p, t, "'component', 'scene', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view' or a function"); // Consumed, so recovery skips it
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "extern")) d = parse_extern(&p);
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "external")) {
+            diag_error(t->at, "did you mean 'extern'? It declares a function written in C: 'extern float Noise(float x);'");
+            longjmp(p.fail, 1);
+        }
+        else fail_at(&p, t, "'component', 'scene', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view', 'extern' or a function"); // Consumed, so recovery skips it
         d->unit = p.unit;
         if (local) {
             d->is_local = true;

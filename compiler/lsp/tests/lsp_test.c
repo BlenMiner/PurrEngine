@@ -1113,6 +1113,59 @@ PURR_TEST(lsp_methods_and_functions)
     if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
 }
 
+#define EXTERNS                                                                \
+    "[NativeName(\"stb_perlin_noise3\")]\n"                                    \
+    "extern float Noise(float x, float y);\n"                                  \
+    "extern int twice(int x);\n"                                               \
+    "extern float Weigh(in float3 v, List<float> weights, string name);\n"    \
+    "\n"                                                                       \
+    "component Ground { float height; }\n"                                     \
+    "scene Main { }\n"                                                         \
+    "event(Spawned) Setup(with Main)\n"                                        \
+    "{\n"                                                                      \
+    "    Spawn(Ground);\n"                                                     \
+    "}\n"
+
+PURR_TEST(lsp_extern_functions)
+{
+    start();
+    open_document(EXTERNS);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    // Hover says it's C's, and which C function.
+    open_document(EXTERNS "system Shape(mut Ground ground)\n{\n    ground.height = No$ise(1, 2);\n}\n");
+    const char *hover = request("textDocument/hover");
+    PURR_CHECK(has(hover, "extern float Noise(float x, float y)"));
+    PURR_CHECK(has(hover, "[NativeName(\\\"stb_perlin_noise3\\\")]"));
+    PURR_CHECK(has(hover, "C function `stb_perlin_noise3`"));
+    PURR_CHECK(has(request("textDocument/definition"), "\"range\":{\"start\":{\"line\":1,\"character\":13}"));
+    open_document(EXTERNS "system Shape(mut Ground ground)\n{\n    ground.height = tw$ice(2);\n}\n");
+    PURR_CHECK(has(request("textDocument/hover"), "C function `twice`"));
+    open_document(EXTERNS "system Shape(mut Ground ground)\n{\n    ground.height = We$igh(float3(1), [1], \"a\");\n}\n");
+    PURR_CHECK(has(request("textDocument/hover"), "extern float Weigh(in float3 v, List<float> weights, string name)"));
+
+    // Completion: the declaration, its return type and parameters, the attribute, and calls.
+    PURR_CHECK(offers(complete(EXTERNS "$"), "extern"));
+    PURR_CHECK(offers(complete(EXTERNS "extern $"), "float"));
+    const char *params = complete(EXTERNS "extern float Sum($");
+    PURR_CHECK(offers(params, "in") && offers(params, "mut") && offers(params, "float3"));
+    PURR_CHECK(offers(complete(EXTERNS "extern float Sum(in $"), "float3"));
+    PURR_CHECK(offers(complete(EXTERNS "[$"), "NativeName"));
+    PURR_CHECK(offers(complete(EXTERNS "system Shape(mut Ground ground)\n{\n    $\n}\n"), "Noise"));
+
+    // Errors come with the code around them.
+    open_document("scene Main { }\nextern void Log(List<string> lines);\n");
+    PURR_CHECK(has(last_sent(), "C functions can't take lists of text yet"));
+
+    // The formatter leaves an extern on its line.
+    static const char messy[] = "extern  float Noise( float x ,float y ) ;\nscene Main { }\n";
+    static const char expected[] = "extern float Noise(float x, float y);\nscene Main { }\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    PURR_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+}
+
 #define OPERATORS                                                              \
     "struct Money\n"                                                           \
     "{\n"                                                                      \
@@ -1454,6 +1507,7 @@ PURR_TEST(lsp_every_prefix_is_safe)
         "struct Range\n{\n    float lo;\n    float hi = 1;\n\n    float Width() { return hi - lo; }\n"
         "    mut void Scale(float by) { lo *= by; hi *= by; }\n}\n"
         "float Grow(mut Range range, float by)\n{\n    range.Scale(by);\n    return range.Width();\n}\n"
+        "[NativeName(\"c_noise\")]\nextern float Noise(float x, mut Range range);\n"
         "input Controls\n{\n    float2 aim;\n\n    Sample()\n    {\n"
         "        var keys = Devices.keyboard;\n        if (keys.w.pressed) aim.y += 1;\n    }\n}\n"
         "system Move(Controls controls, Devices devices, Time time, mut Body body, without Arena)\n{\n"

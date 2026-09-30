@@ -1,6 +1,6 @@
 # The purr command
 
-`purr` builds and runs games. A game is every `.purr` file in a folder and its subfolders. Commands take the game's folder, or use the current one.
+`purr` builds and runs games. A game is every `.purr` file in a folder and its subfolders, with the `.c` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)). Commands take the game's folder, or use the current one.
 
 ```
 purr <command> [folder] [options]
@@ -31,7 +31,7 @@ purr <command> [folder] [options]
 
 ## Hot reload
 
-While `purr run` plays a game, saving a `.purr` file rebuilds it, and the game carries on with the new code in the same window:
+While `purr run` plays a game, saving a `.purr` file rebuilds it, and so does saving one of its C files or libraries. The game carries on with the new code in the same window:
 
 - If you changed only code (systems, views, event handlers, methods), the match and everything local, like menus, carry on where they are.
 - If you changed data (components, fields, singletons, the input), the game is carried over to it by name, and goes on from where it was.
@@ -73,4 +73,4 @@ Hot reload is only for `purr run`: `purr build` makes a plain program, or a page
 
 ## Files
 
-`purr` keeps its work in a hidden `.purr` folder in the game's folder. You can delete it any time, and git ignores it. `purr build` puts what it makes in `build/`.
+`purr` keeps its work in a hidden `.purr` folder in the game's folder. You can delete it any time, and git ignores it. `purr build` puts what it makes in `build/`, with the game's `.dll`, `.so` or `.dylib` libraries next to the program. C files and libraries in hidden folders or in `build/` aren't part of the game.

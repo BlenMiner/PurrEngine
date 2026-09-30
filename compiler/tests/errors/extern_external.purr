@@ -1,0 +1,3 @@
+// expect: did you mean 'extern'?
+scene Main { }
+external float Noise(float x);

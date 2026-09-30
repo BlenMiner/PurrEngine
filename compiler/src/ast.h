@@ -73,7 +73,7 @@ typedef struct attribute {
     str name;
     loc at;
     VEC(qname) args;     // On declarations, names: [After(Physics.Gravity)]
-    VEC(expr *) values;  // On input fields, constant values: [Clamp(-1, 1)]
+    VEC(expr *) values;  // On input fields, constant values: [Clamp(-1, 1)]; on declarations, text: [NativeName("f")]
 } attribute;
 
 // ---------------------------------------------------------------------------
@@ -98,6 +98,7 @@ typedef enum param_mode {
     PARAM_WITH,
     PARAM_WITHOUT,
     PARAM_EVENT, // An event handler's trigger: `event(Hit hit)`, always its first parameter
+    PARAM_IN,    // `in Stats stats`, an extern function's: C gets a read-only pointer to the value
 } param_mode;
 
 // One value the devices send, like keyboard.space or gamepad.leftStick.
@@ -150,7 +151,7 @@ typedef enum decl_kind {
     DECL_RECORD, // Built-in device data; not in program.decls
     DECL_STRUCT, // struct Stats { fields }: a value type for fields and locals
     DECL_METHOD, // bool IsDead() { ... } in a struct or component; in its `methods`, not program.decls
-    DECL_FUNCTION, // void Heal(mut Stats stats, float amount) { ... }: code other code calls
+    DECL_FUNCTION, // void Heal(mut Stats stats, float amount) { ... }: code other code calls; `extern` ones are C's
     DECL_EVENT,    // event Hit { fields }: something that happened, sent with Send
     DECL_ENUM,     // enum Page { Title, Options }: a type with named values
     DECL_LIST,     // List<T>, one per element type: its one field is the element; in program.lists
@@ -176,7 +177,8 @@ typedef struct decl {
     bool is_local;    // `local`: belongs to this machine, not the match. Views are always local code.
     loc local_at;     // The `local` keyword
     bool is_scene;    // `scene Arena { ... }`: a DECL_COMPONENT whose entity is a loaded scene
-    const char *c_name; // Records: the C struct name.
+    bool is_extern;   // `extern float Noise(float x);`: a DECL_FUNCTION written in C, with no body
+    const char *c_name; // Records: the C struct name. Extern functions: the C function, from [NativeName] or the name.
     bool device_group;  // Devices, Keyboard, Mouse, Gamepad and Dpad: records made of device values
     int leaves_first;   // ...which are program.device_leaves from this one
     int leaves_count;
@@ -225,6 +227,7 @@ typedef struct decl {
     loc draws_at;        // ...where it first does
     bool frame_devices;  // ...and whether that's reading this frame's Devices, not drawing
     bool takes_block;    // A function whose last parameter is a Block: inlined where it's called
+    bool calls_c;        // Code that calls an extern function, itself or through others: its calls run in order
     bool writes_text;    // A system that writes text into its world: its heap, which one system changes at a time
     VEC(struct decl *) callees; // Functions it calls, once each
     VEC(loc) callee_at;         // ...and where it first calls each
@@ -370,7 +373,7 @@ struct expr {
     uint64_t spawn_mask;  // CALL_SPAWN: components the new entity has.
     int spawn_archetype;  // CALL_SPAWN: index into the archetype list.
     bool local_world;     // CALL_SPAWN, CALL_ADD, CALL_REMOVE, CALL_DESTROY and CALL_SEND: in the local world
-    const char *hoisted;  // CALL_SPAWN: the temporary codegen ran it into, before the statement.
+    const char *hoisted;  // Spawns, and calls, units and operators that keep their order: the temporary codegen ran it into, before the statement
     unsigned arg_mut;     // CALL_GUI: a bit per argument the call changes, which it takes by address
     int gui;              // CALL_GUI: GUI_ID and GUI_CONTAINER
     struct stmt *block;   // A call's block, written in braces after it: Foldout("Audio") { ... }

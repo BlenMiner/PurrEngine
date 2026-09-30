@@ -765,6 +765,7 @@ static void format_param(const param *p, sb *out)
 {
     switch (p->mode) {
     case PARAM_MUT: sb_put(out, "mut "); break;
+    case PARAM_IN: sb_put(out, "in "); break;
     case PARAM_WITH: sb_put(out, "with "); break;
     case PARAM_WITHOUT: sb_put(out, "without "); break;
     case PARAM_READ: case PARAM_EVENT: break;
@@ -806,8 +807,8 @@ static const char *builtin_event_doc(const program *prog, const decl *d)
 // `mut void Damage(float amount)`: a method's or function's signature.
 static void format_routine(const decl *m, sb *out)
 {
-    sb_printf(out, "%s" STR_FMT " " STR_FMT "(", m->is_mut_method ? "mut " : "", STR_ARG(m->return_type_name),
-              STR_ARG(m->name));
+    sb_printf(out, "%s%s" STR_FMT " " STR_FMT "(", m->is_extern ? "extern " : "", m->is_mut_method ? "mut " : "",
+              STR_ARG(m->return_type_name), STR_ARG(m->name));
     for (int i = 0; i < m->params.count; i++) {
         if (i) sb_put(out, ", ");
         format_param(&m->params.items[i], out);
@@ -963,6 +964,7 @@ static void describe(const occurrence *o, sb *out)
         code_block(out, code.data);
         if (o->param->type.kind == TY_INPUT) sb_put(out, "\n\nThe input of the player who owns the entity.");
         else if (o->param->mode == PARAM_EVENT) sb_put(out, "\n\nThe event being handled, read-only.");
+        else if (o->param->mode == PARAM_IN) sb_put(out, "\n\nParameter, read-only: C gets a pointer to the value.");
         else if (o->param->mode == PARAM_MUT) sb_put(out, "\n\nParameter, writable.");
         else sb_put(out, "\n\nParameter, read-only.");
         break;
@@ -990,9 +992,16 @@ static void describe(const occurrence *o, sb *out)
     case OCC_FUNCTION:
     case OCC_CONSTANT:
         if (is_routine(o->decl)) {
-            format_routine(o->decl, &code);
+            const decl *m = o->decl;
+            if (m->is_extern && m->c_name && !str_eq_c(m->name, m->c_name)) sb_printf(&code, "[NativeName(\"%s\")]\n", m->c_name);
+            format_routine(m, &code);
             code_block(out, code.data);
-            sb_put(out, "\n\nFunction: runs when it's called.");
+            if (m->is_extern) {
+                sb_printf(out, "\n\nC function `%s`, which the game's C files or libraries define.",
+                          o->decl->c_name ? o->decl->c_name : "?");
+            } else {
+                sb_put(out, "\n\nFunction: runs when it's called.");
+            }
             break;
         }
         if (o->kind == OCC_FUNCTION && str_eq_c(o->owner, "Scene")) {
@@ -2549,6 +2558,8 @@ static void complete_declarations(completion *c)
          "Runs when the event is sent, at the end of the tick.", "event(${1:Event} ${2:e}) ${3:Name}($4)\n{\n    $0\n}");
     item(c, "function", CK_SNIPPET, "Type Name(parameters) { ... }", "Code other code calls, like 'float Heal(mut Stats stats)'.",
          "${1:void} ${2:Name}($3)\n{\n    $0\n}");
+    item(c, "extern", CK_SNIPPET, "extern Type Name(parameters);",
+         "A function written in C, which the game's C files or libraries define.", "extern ${1:void} ${2:Name}($3);");
     item(c, "namespace", CK_KEYWORD, "namespace Name;", "The namespace of everything in this file. Goes at the top.",
          "namespace ${1:Name};");
     item(c, "using", CK_KEYWORD, "using Name;", "Names from another namespace, without writing it. Goes at the top.",
@@ -2595,7 +2606,7 @@ static bool starts_declaration(const int i)
         && (str_eq_c(t->text, "input") || str_eq_c(t->text, "view") || str_eq_c(t->text, "struct")
             || str_eq_c(t->text, "event") || str_eq_c(t->text, "enum") || str_eq_c(t->text, "scene")
             || str_eq_c(t->text, "local") || str_eq_c(t->text, "namespace")
-            || str_eq_c(t->text, "using"))) {
+            || str_eq_c(t->text, "using") || str_eq_c(t->text, "extern"))) {
         return true;
     }
     if (t->kind == T_IDENT && t->at.col == 1 && str_eq_c(t->text, "local")
@@ -2691,12 +2702,21 @@ void analysis_completion(const int line, const int character, jbuf *out)
     case CTX_TOP:
         if (pk == T_EOF || pk == T_RBRACE || pk == T_SEMI || pk == T_RBRACKET) complete_declarations(&c);
         else if (pk == T_IDENT && str_eq_c(prev->text, "using")) complete_namespaces(&c, true);
+        else if (pk == T_IDENT && str_eq_c(prev->text, "extern")) { // Its return type
+            item(&c, "void", CK_KEYWORD, "Returns nothing", NULL, NULL);
+            complete_value_types(&c, false);
+            complete_structs(&c);
+            complete_namespaces(&c, false);
+        }
         break;
 
     case CTX_ATTRIBUTE:
         if (pk == T_LBRACKET || pk == T_COMMA) {
             item(&c, "Before", CK_FUNCTION, "[Before(System)]", "This system runs before the ones named.", "Before($1)");
             item(&c, "After", CK_FUNCTION, "[After(System)]", "This system runs after the ones named.", "After($1)");
+            item(&c, "NativeName", CK_FUNCTION, "[NativeName(\"c_function\")]",
+                 "The C function the extern function after it calls, when its name isn't the function's own.",
+                 "NativeName(\"$1\")");
         }
         break;
 
@@ -2729,6 +2749,25 @@ void analysis_completion(const int line, const int character, jbuf *out)
         const bool handler = f.open >= 2 && DOC->toks[f.open - 2].kind == T_RPAREN;
         const bool sample = !trigger && !handler
                          && (f.open < 2 || !(DOC->toks[f.open - 2].kind == T_SYSTEM || str_eq_c(DOC->toks[f.open - 2].text, "view")));
+        // extern float Noise(...): what C takes
+        bool is_extern = false;
+        for (int k = f.open - 1; k >= 0 && DOC->toks[k].at.line == DOC->toks[f.open].at.line && !is_extern; k--) {
+            is_extern = DOC->toks[k].kind == T_IDENT && DOC->toks[k].at.col == 1 && str_eq_c(DOC->toks[k].text, "extern");
+        }
+        if (is_extern) {
+            if (pk == T_LPAREN || pk == T_COMMA) {
+                item(&c, "in", CK_KEYWORD, "C gets a read-only pointer to the value", NULL, NULL);
+                item(&c, "mut", CK_KEYWORD, "C gets a pointer to the caller's variable, which it can change", NULL, NULL);
+            }
+            if (pk == T_LPAREN || pk == T_COMMA || pk == T_MUT || (pk == T_IDENT && str_eq_c(prev->text, "in"))) {
+                complete_value_types(&c, false);
+                complete_structs(&c);
+                complete_namespaces(&c, false);
+            } else if (pk == T_IDENT) {
+                complete_param_name(&c, prev->text);
+            }
+            break;
+        }
         if (trigger) {
             if (pk == T_LPAREN) {
                 complete_events(&c, true);

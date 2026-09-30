@@ -8,6 +8,7 @@
 #include "common.h"
 #include "compile.h"
 #include "folders.h"
+#include "libraries.h"
 #include "serve.h"
 #include "sys.h"
 #include "toolchain.h"
@@ -82,6 +83,58 @@ static file_list game_files(const char *folder)
     free(dir);
     return list;
 }
+
+// The game's own files of other kinds (its C, its headers, its libraries):
+// not in a hidden folder, like .purr/, where purr keeps what it makes, or in
+// build/, where builds go.
+typedef struct own_files {
+    size_t prefix; // The folder's length, with its '/'
+    const char *const *extensions;
+    file_list list;
+} own_files;
+
+static bool has_extension(const char *path, const char *extension)
+{
+    const size_t n = strlen(path);
+    const size_t e = strlen(extension);
+    if (n <= e) return false;
+    for (size_t i = 0; i < e; i++) {
+        char ch = path[n - e + i];
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a'); // STEAM_API64.LIB
+        if (ch != extension[i]) return false;
+    }
+    return true;
+}
+
+static void add_own_file(void *user, const char *path)
+{
+    own_files *o = user;
+    bool wanted = false;
+    for (int i = 0; o->extensions[i] && !wanted; i++) wanted = has_extension(path, o->extensions[i]);
+    if (!wanted) return;
+    const char *relative = path + o->prefix;
+    if (strncmp(relative, "build/", 6) == 0) return;
+    for (const char *p = relative; *p; p++) {
+        if (*p == '.' && (p == relative || p[-1] == '/') && strchr(p, '/')) return; // A hidden folder
+    }
+    add_file(&o->list, path);
+}
+
+static file_list own_files_of(const char *folder, const char *const *extensions)
+{
+    char *dir = path_join(folder, "");
+    own_files o = {strlen(dir), extensions, {0}};
+    folder_find(dir, "", add_own_file, &o); // Every file, once
+    free(dir);
+    return o.list;
+}
+
+static const char *const c_extensions[] = {".c", NULL};
+static const char *const header_extensions[] = {".h", NULL};
+static const char *const library_extensions[] = {".a", ".lib", ".so", ".dll", ".dylib", NULL};
+// Whatever a build of the game reads, besides its .purr files: purr run builds
+// again when one changes.
+static const char *const c_side_extensions[] = {".c", ".h", ".a", ".lib", ".so", ".dll", ".dylib", NULL};
 
 // The folder's name, as a window title and a file name.
 static const char *game_name(const char *folder)
@@ -409,11 +462,186 @@ static bool build_engine(build *b)
     return engine.ok;
 }
 
-// Links `objects` and the engine's into `output`: a program, with the platform
-// layer, or with `shared`, a library of the game for a host to load (see
-// purr/host.h), whose debug info on Windows goes in `pdb`.
-static bool link_objects(const build *b, const file_list *objects, const char *output, const bool shared,
-                         const char *pdb)
+// ---------------------------------------------------------------------------
+// The game's C: the .c files in its folder, which define its extern functions,
+// and the prebuilt libraries there that were built for the target (see
+// libraries.h).
+
+typedef struct c_side {
+    file_list objects; // Its .c files, compiled
+    file_list link;    // Its libraries for the target, as the linker takes them
+    file_list dynamic; // ...those the program loads as it starts, which go next to it
+} c_side;
+
+static void free_game_c(c_side *c)
+{
+    free_files(&c->objects);
+    free_files(&c->link);
+    free_files(&c->dynamic);
+}
+
+static lib_platform target_platform(const build *b)
+{
+    if (b->opts->web) return LIB_WEB;
+#ifdef _WIN32
+    return LIB_WINDOWS;
+#elif defined(__APPLE__)
+    return LIB_MACOS;
+#else
+    return LIB_LINUX;
+#endif
+}
+
+static unsigned target_cpu(const build *b)
+{
+    if (b->opts->web) return LIB_WASM32;
+#if defined(_WIN32) || defined(__x86_64__)
+    return LIB_X64; // Windows games are always x86-64 (NATIVE_TARGET)
+#elif defined(__aarch64__) || defined(__arm64__)
+    return LIB_ARM64;
+#else
+    return LIB_OTHER_CPU;
+#endif
+}
+
+static uint64_t hash_text(uint64_t h, const char *text)
+{
+    for (const char *p = text; *p; p++) h = (h ^ (uint8_t)*p) * 0x100000001B3ull;
+    return h;
+}
+
+// A file's path and its stamp, which changes whenever it does.
+static uint64_t hash_file(const uint64_t h, const char *path)
+{
+    return (hash_text(h, path) ^ sys_file_stamp(path)) * 0x100000001B3ull;
+}
+
+// Compiles the game's .c files into `dir`, each one again only when it, a
+// header in the game's folder, or the flags changed: each object has a stamp
+// of what made it. Objects for a library are kept apart on Linux, as the
+// engine's are.
+static bool compile_game_c(const build *b, c_side *out)
+{
+    file_list sources = own_files_of(b->folder, c_extensions);
+    if (sources.count == 0) return true;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    char *dir = path_join(b->cache, b->library ? "c-pic" : "c");
+#else
+    char *dir = path_join(b->cache, "c");
+#endif
+    sys_mkdirs(dir);
+    char *flags = stamp_of(b);
+    uint64_t common = hash_text(0xCBF29CE484222325ull, flags);
+    free(flags);
+    file_list headers = own_files_of(b->folder, header_extensions);
+    for (int i = 0; i < headers.count; i++) common = hash_file(common, headers.items[i]);
+    free_files(&headers);
+    char *folder = path_join(b->folder, "");
+    const size_t prefix = strlen(folder);
+    free(folder);
+    bool ok = true;
+    for (int i = 0; i < sources.count && ok; i++) {
+        char name[512]; // lib/noise.c: lib_noise.c.o
+        snprintf(name, sizeof name, "%s.o", sources.items[i] + prefix);
+        for (char *p = name; *p; p++) {
+            if (*p == '/') *p = '_';
+        }
+        char *object = path_join(dir, name);
+        char *stamp_path = format("%s.stamp", object, NULL);
+        char stamp[32];
+        snprintf(stamp, sizeof stamp, "%016llx", (unsigned long long)hash_file(common, sources.items[i]));
+        char *old = sys_read_file(stamp_path, NULL);
+        if (!old || strcmp(old, stamp) != 0 || !sys_exists(object)) {
+            ok = compile_c(b, sources.items[i], object, NULL);
+            if (ok) sys_write_text(stamp_path, stamp);
+            else sys_remove(stamp_path);
+        }
+        add_file(&out->objects, object);
+        free(old);
+        free(stamp_path);
+        free(object);
+    }
+    free(dir);
+    free_files(&sources);
+    return ok;
+}
+
+// The game's libraries built for the target: static ones (and Windows import
+// libraries) are linked in, and dynamic ones are linked to and go next to the
+// program, which finds them there. A library purr can't read is left out,
+// saying so; one for another platform or CPU is left out quietly.
+static void find_libraries(const build *b, c_side *out)
+{
+    file_list libraries = own_files_of(b->folder, library_extensions);
+    const lib_platform platform = target_platform(b);
+    const unsigned cpu = target_cpu(b);
+    bool dynamic = false;
+    for (int i = 0; i < libraries.count; i++) {
+        const char *path = libraries.items[i];
+        const lib_info info = lib_identify_file(path);
+        if (info.platform == LIB_UNKNOWN) {
+            fprintf(stderr, "purr: left out %s: purr can't tell which platform it was built for\n", path);
+            continue;
+        }
+        if (info.platform != platform || !(info.cpus & cpu)) continue;
+        if (!info.dynamic) {
+            add_file(&out->link, path);
+            continue;
+        }
+        add_file(&out->dynamic, path);
+        dynamic = true;
+#ifdef _WIN32
+        // Linked through its import library (a .lib, static above): the .dll only goes next to the game
+#elif defined(__APPLE__)
+        add_file(&out->link, path);
+#else
+        // By its name, so the program looks for it by name: next to itself
+        char *dir = path_dir(path);
+        char *search = format("-L%s", dir, NULL);
+        char *name = format("-l:%s", path_base(path), NULL);
+        add_file(&out->link, search);
+        add_file(&out->link, name);
+        free(dir);
+        free(search);
+        free(name);
+#endif
+    }
+#ifdef __APPLE__
+    if (dynamic) add_file(&out->link, "-Wl,-rpath,@loader_path");
+#elif !defined(_WIN32)
+    if (dynamic) add_file(&out->link, "-Wl,-rpath,$ORIGIN");
+#else
+    (void)dynamic;
+#endif
+    free_files(&libraries);
+}
+
+// Copies the game's dynamic libraries into `dir`, next to its program. Ones
+// already there and up to date stay: the running game may have them open.
+static void copy_dynamic(const c_side *c, const char *dir)
+{
+    for (int i = 0; i < c->dynamic.count; i++) {
+        const char *from = c->dynamic.items[i];
+        char *to = path_join(dir, path_base(from));
+        const bool current = sys_file_size(to) == sys_file_size(from) && sys_mtime(to) >= sys_mtime(from);
+        if (strcmp(from, to) != 0 && !current) {
+            size_t len = 0;
+            char *data = sys_read_file(from, &len);
+            if (!data || !sys_write_file(to, data, len)) {
+                fprintf(stderr, "purr: can't copy %s next to the game, to %s\n", from, to);
+            }
+            free(data);
+        }
+        free(to);
+    }
+}
+
+// Links `objects`, the game's C (`c`, NULL for purr run's host) and the
+// engine's objects into `output`: a program, with the platform layer, or with
+// `shared`, a library of the game for a host to load (see purr/host.h), whose
+// debug info on Windows goes in `pdb`.
+static bool link_objects(const build *b, const file_list *objects, const c_side *c, const char *output,
+                         const bool shared, const char *pdb)
 {
     const build_options *opts = b->opts;
     args a = {0};
@@ -424,6 +652,8 @@ static bool link_objects(const build *b, const file_list *objects, const char *o
     }
     if (shared) arg(&a, "-shared");
     for (int i = 0; i < objects->count; i++) arg(&a, objects->items[i]);
+    for (int i = 0; c && i < c->objects.count; i++) arg(&a, c->objects.items[i]);
+    for (int i = 0; c && i < c->link.count; i++) arg(&a, c->link.items[i]);
     for (int i = 0; i < b->engine.count; i++) arg(&a, b->engine.items[i]);
     // The prebuilt platform layer, raylib inside (see platform/CMakeLists.txt).
     char *lib_dir = path_join(b->root, opts->web ? "lib/web" : "lib/native");
@@ -571,8 +801,9 @@ static bool make_page(const char *root, const char *program, const char *page)
 // ---------------------------------------------------------------------------
 
 // With `layout`, the generated code describes the data layout too, for hot
-// reloading.
-static bool generate(const char *folder, const char *gen, const bool layout)
+// reloading. `externs` gets the C function of each extern function, a line
+// each, until the next build.
+static bool generate(const char *folder, const char *gen, const bool layout, sb *externs)
 {
     file_list files = game_files(folder);
     if (files.count == 0) {
@@ -581,10 +812,47 @@ static bool generate(const char *folder, const char *gen, const bool layout)
         return false;
     }
     arena_reset(); // What an earlier build compiled, when a run rebuilds the game
-    const codegen_options codegen = {"game", gen, true, layout};
+    *externs = (sb){0};
+    const codegen_options codegen = {"game", gen, true, layout, externs};
     const bool ok = compile_program((const char **)files.items, files.count, &codegen, NULL);
     free_files(&files);
     return ok;
+}
+
+typedef struct web_imports {
+    const char *externs; // A C function a line
+    int missing;
+} web_imports;
+
+static void check_import(void *user, const char *name, const size_t len)
+{
+    web_imports *w = user;
+    for (const char *line = w->externs; *line;) {
+        const char *end = strchr(line, '\n');
+        if ((size_t)(end - line) == len && memcmp(line, name, len) == 0) {
+            fprintf(stderr, "purr: nothing defines the C function %.*s for the web\n", (int)len, name);
+            w->missing++;
+        }
+        line = end + 1;
+    }
+}
+
+// On the web, a C function nothing defines isn't a link error: the program
+// imports it from the page, which fails when it's called. So the game's extern
+// functions among its imports are errors. False after saying so.
+static bool check_web_externs(const char *program, const sb *externs)
+{
+    if (!externs->data || externs->len == 0) return true;
+    size_t size = 0;
+    char *wasm = sys_read_file(program, &size);
+    web_imports w = {externs->data, 0};
+    if (wasm) wasm_function_imports((const unsigned char *)wasm, size, "env", check_import, &w);
+    free(wasm);
+    if (w.missing > 0) {
+        fprintf(stderr, "  = note: the game's C files and WebAssembly libraries (.a) define its C functions on the web; "
+                        "for one that only exists natively, write a stand-in inside '#ifdef __wasm__'\n");
+    }
+    return w.missing == 0;
 }
 
 char *purr_build(const char *root, const build_options *opts)
@@ -594,7 +862,8 @@ char *purr_build(const char *root, const build_options *opts)
     char *gen = path_join(b.cache, "gen");
     sys_mkdirs(gen);
 
-    if (!generate(b.folder, gen, false)) return NULL;
+    sb externs;
+    if (!generate(b.folder, gen, false, &externs)) return NULL;
     char *main_c = path_join(gen, "main.c");
     write_main(main_c, opts->title ? opts->title : b.name, opts->stats);
     if (!build_engine(&b)) return NULL;
@@ -605,6 +874,9 @@ char *purr_build(const char *root, const build_options *opts)
     add_file(&objects, path_join(b.cache, "main.o"));
     if (!compile_c(&b, game_c, objects.items[0], gen)) return NULL;
     if (!compile_c(&b, main_c, objects.items[1], gen)) return NULL;
+    c_side c = {0};
+    if (!compile_game_c(&b, &c)) return NULL;
+    find_libraries(&b, &c);
 
     char *output;
     const char *suffix = opts->web ? ".html" : EXE_SUFFIX;
@@ -626,15 +898,17 @@ char *purr_build(const char *root, const build_options *opts)
         snprintf(file, sizeof file, "%s.wasm", b.name);
         program = path_join(b.cache, file);
     }
-    if (!link_objects(&b, &objects, program, false, NULL)) return NULL;
-    if (opts->web && !make_page(root, program, output)) return NULL;
+    if (!link_objects(&b, &objects, &c, program, false, NULL)) return NULL;
+    if (opts->web && (!check_web_externs(program, &externs) || !make_page(root, program, output))) return NULL;
+    copy_dynamic(&c, output_dir);
+    free_game_c(&c);
     return output;
 }
 
 // ---------------------------------------------------------------------------
 // `purr run`: the game as a library in a small host program, which swaps in
-// each new build of it (see purr/host.h), and a new build whenever a .purr
-// file changes. Each run has a folder of its own, .purr/<configuration>/run/
+// each new build of it (see purr/host.h), and a new build whenever one of the
+// game's files changes. Each run has a folder of its own, .purr/<configuration>/run/
 // <purr's process ID>, so two runs of one game (a server and a client) never
 // build over each other.
 
@@ -659,20 +933,28 @@ static char *build_path(const run *r, const uint32_t n, const char *suffix)
 // what's wrong.
 static bool build_library(run *r)
 {
-    if (!generate(r->b.folder, r->gen, true) || !build_engine(&r->b)) return false;
+    sb externs;
+    if (!generate(r->b.folder, r->gen, true, &externs) || !build_engine(&r->b)) return false;
     const char *suffix = r->web ? ".wasm" : LIBRARY_SUFFIX;
     char *game_c = path_join(r->gen, "game.c");
     char *library_c = path_join(r->gen, r->web ? "main.c" : "library.c");
     file_list objects = {0};
     add_file(&objects, path_join(r->dir, "game.o"));
     add_file(&objects, path_join(r->dir, r->web ? "main.o" : "library.o"));
+    c_side c = {0};
     bool ok = compile_c(&r->b, game_c, objects.items[0], r->gen)
-           && compile_c(&r->b, library_c, objects.items[1], r->gen);
+           && compile_c(&r->b, library_c, objects.items[1], r->gen) && compile_game_c(&r->b, &c);
+    if (ok) {
+        find_libraries(&r->b, &c);
+        copy_dynamic(&c, r->dir); // Next to the host, which loads the game's library
+    }
     const uint32_t n = r->builds + 1u;
     char *linked = build_path(r, n, ".tmp");
     char *pdb = build_path(r, n, ".pdb");
     char *library = build_path(r, n, suffix);
-    ok = ok && link_objects(&r->b, &objects, linked, !r->web, r->b.opts->release || r->web ? NULL : pdb);
+    ok = ok && link_objects(&r->b, &objects, &c, linked, !r->web, r->b.opts->release || r->web ? NULL : pdb);
+    ok = ok && (!r->web || check_web_externs(linked, &externs));
+    free_game_c(&c);
     if (ok && !sys_rename(linked, library)) {
         fprintf(stderr, "purr: can't write %s\n", library);
         ok = false;
@@ -721,7 +1003,7 @@ static bool build_host(run *r, const char *program)
     file_list objects = {0};
     add_file(&objects, path_join(r->dir, "host.o"));
     const bool ok = sys_write_text(host_c, text) && compile_c(&r->b, host_c, objects.items[0], NULL)
-                 && link_objects(&r->b, &objects, program, false, NULL);
+                 && link_objects(&r->b, &objects, NULL, program, false, NULL);
     free(host_c);
     free_files(&objects);
     return ok;
@@ -768,13 +1050,17 @@ static void stamp_file(void *user, const char *path)
     *h = (*h ^ sys_file_stamp(path)) * 0x100000001B3ull;
 }
 
-// Changes whenever one of the game's .purr files does, or one comes or goes.
+// Changes whenever one of the game's .purr files does, or its C, headers and
+// libraries, or one comes or goes.
 static uint64_t game_stamp(const char *folder)
 {
     uint64_t h = 0xCBF29CE484222325ull;
     char *dir = path_join(folder, "");
     folder_find(dir, ".purr", stamp_file, &h);
     free(dir);
+    file_list others = own_files_of(folder, c_side_extensions);
+    for (int i = 0; i < others.count; i++) stamp_file(&h, others.items[i]);
+    free_files(&others);
     return h;
 }
 
@@ -830,7 +1116,7 @@ int purr_run_reloading(const char *root, const build_options *opts, const char *
         fprintf(stderr, "purr: couldn't start %s\n", program);
         return 1;
     }
-    printf("purr: saving a .purr file reloads the game; type r and press Enter to start it over\n");
+    printf("purr: saving a .purr or C file reloads the game; type r and press Enter to start it over\n");
     fflush(stdout);
     sys_read_lines();
 
@@ -968,7 +1254,7 @@ int purr_run_web(const char *root, const build_options *opts, const bool open_pa
     char url[64];
     snprintf(url, sizeof url, "http://127.0.0.1:%u/", (unsigned)port);
     printf("purr: the game is at %s\n", url); // The VS Code extension reads the address from this line
-    printf("purr: saving a .purr file reloads it; type r and press Enter to start it over, and Ctrl+C to stop\n");
+    printf("purr: saving a .purr or C file reloads it; type r and press Enter to start it over, and Ctrl+C to stop\n");
     fflush(stdout);
     if (open_page && !sys_open_in_browser(url)) fprintf(stderr, "purr: couldn't open a browser; open %s in one\n", url);
     sys_read_lines();
@@ -1000,7 +1286,7 @@ bool purr_schedule(const char *folder_arg)
         fprintf(stderr, "purr: there are no .purr files in %s\n", folder);
         return false;
     }
-    const codegen_options codegen = {game_name(folder), NULL, true, false};
+    const codegen_options codegen = {game_name(folder), NULL, true, false, NULL};
     sb text = {0};
     if (!compile_program((const char **)files.items, files.count, &codegen, &text)) return false;
     fputs(text.data, stdout);

@@ -1,0 +1,4 @@
+// expect: only extern functions take 'in' parameters
+scene Main { }
+struct Stats { float health; }
+float Health(in Stats stats) { return stats.health; }

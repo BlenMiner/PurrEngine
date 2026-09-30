@@ -70,6 +70,7 @@ export default defineConfig({
                     { text: 'Local state', link: '/language/local-state' },
                     { text: 'Multiplayer', link: '/language/multiplayer' },
                     { text: 'Namespaces and files', link: '/language/namespaces' },
+                    { text: 'Calling C', link: '/language/c-functions' },
                 ],
             },
             {

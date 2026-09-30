@@ -1,0 +1,4 @@
+// expect: 'perlin noise' isn't a C function's name
+scene Main { }
+[NativeName("perlin noise")]
+extern float Noise(float x);

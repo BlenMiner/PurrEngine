@@ -1,0 +1,3 @@
+// expect: C can't change text, so a string it takes can't be 'mut'
+scene Main { }
+extern void Fill(mut string text);

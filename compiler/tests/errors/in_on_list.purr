@@ -1,0 +1,3 @@
+// expect: a list already goes to C by address, as a pointer to its elements; drop 'in'
+scene Main { }
+extern float Sum(in List<float> values, int count);

@@ -5,10 +5,11 @@ A game needs no C: `purr` runs it in a window. This page is for working inside P
 ## purr_add_game
 
 ```cmake
-purr_add_game(<target> [SOURCES <file.purr>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS])
+purr_add_game(<target> [SOURCES <file.purr|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS])
 ```
 
 - The game is every `.purr` file in the current source folder and its subfolders. `SOURCES` lists the files instead.
+- The game's C, which defines its `extern` functions (see [Calling C](../language/c-functions.md)), is every `.c` file there but the `HOST` ones, or the `.c` files listed in `SOURCES`. Unlike `purr`, CMake doesn't pick up prebuilt libraries: link them to the target yourself.
 - Without `HOST`, the game is the whole program: a generated `main` runs it in a window. On the web, it's `<target>.html`.
 - With `HOST`, those C files are the program. They include `<name>.h`, the generated header, where `NAME` defaults to `<target>`.
 - `<target>_schedule` is a build target that prints the game's [schedule](./schedule.md).
