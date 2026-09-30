@@ -955,6 +955,15 @@ PURR_TEST(lsp_sessions)
     open_document(game);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
+    // The name itself, where a statement starts in local code, even inside a
+    // container's block and a branch.
+    const char *name = complete("local scene Main { }\nview Menu()\n{\n    GUILayout.Area(Anchor.MiddleCenter)\n    {\n"
+                                "        if (GUILayout.Button(\"Host\"))\n        {\n            Sess$\n        }\n    }\n}\n");
+    PURR_CHECK(offers(name, "Session"));
+    PURR_CHECK(offers(complete("local scene Main { }\nlocal event(Disconnected gone) Lost()\n{\n    $\n}\n"), "Session"));
+    PURR_CHECK(!offers(complete("scene Main { }\nsystem Move()\n{\n    $\n}\n"), "Session"));
+    PURR_CHECK(!offers(complete("local scene Main { }\nview Menu()\n{\n    var x = $\n}\n"), "Session"));
+
     const char *calls = complete("local scene Main { }\nview Menu()\n{\n    Session.$\n}\n");
     PURR_CHECK(offers(calls, "Play"));
     PURR_CHECK(offers(calls, "Join"));

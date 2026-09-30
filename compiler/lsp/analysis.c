@@ -2203,6 +2203,13 @@ static void list_members(completion *c, const type t, const bool edges, const sc
     }
 }
 
+// Whether code here can call Session.Play and the like: views and local
+// handlers, as the checker allows.
+static bool decides_session(const scope *sc)
+{
+    return sc->decl && sc->decl->kind == DECL_SYSTEM && (sc->decl->is_view || sc->decl->is_local) && !sc->in_input;
+}
+
 // After `a.b.`: resolves the chain of names before the dot.
 static bool complete_in_namespace(completion *c, str ns, bool systems);
 static const char *name_for(const decl *d);
@@ -2225,8 +2232,7 @@ static void complete_members(completion *c, const int dot, const loc at, const b
     if (t.kind == TY_ERROR && str_eq_c(base, "Devices")) t = (type){TY_RECORD, A.prog->devices}; // This machine's
     if (t.kind == TY_ERROR) {
         // Session.: its calls, where local code runs
-        const bool local_code = sc.decl && sc.decl->kind == DECL_SYSTEM && (sc.decl->is_view || sc.decl->is_local);
-        if (n == 1 && str_eq_c(base, "Session") && local_code && !sc.in_input) {
+        if (n == 1 && str_eq_c(base, "Session") && decides_session(&sc)) {
             for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
                 sb snippet = {0};
                 sb_printf(&snippet, "%s($1)", session_calls[i].name);
@@ -2487,6 +2493,10 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         complete_components_of(c, local);
         complete_events_of(c, local);
         item(c, "Scene", CK_MODULE, "Loads and unloads scenes", NULL, NULL);
+    }
+    // Session.Play and the like are statements of their own.
+    if (statement && decides_session(&sc)) {
+        item(c, "Session", CK_MODULE, "Starts, joins and leaves matches", NULL, NULL);
     }
     complete_value_types(c, true);
     complete_structs(c);
