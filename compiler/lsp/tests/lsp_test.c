@@ -1403,6 +1403,54 @@ PURR_TEST(lsp_rename)
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 }
 
+// Main renames like anything else the game declares, though the program then
+// has no entry point.
+PURR_TEST(lsp_rename_main)
+{
+    start();
+    open_document("scene Ma$in { }\nevent(Spawned) Setup(with Main) { }\n");
+    PURR_CHECK(has(request("textDocument/prepareRename"), "\"result\":{\"start\""));
+    request_with("textDocument/rename", "\"newName\":\"Menu\"");
+    PURR_CHECK(strcmp(apply_reply("scene Main { }\nevent(Spawned) Setup(with Main) { }\n", "file:///test.purr"),
+                      "scene Menu { }\nevent(Spawned) Setup(with Menu) { }\n") == 0);
+}
+
+#define NAMESPACED                                                                                            \
+    "component Health { int value; }\n"                                                                       \
+    "scene Main { }\n"                                                                                        \
+    "system Hurt(mut Game.Combat.Health health) { health.value -= 1; }\n"                                     \
+    "event(Spawned) Setup(with Main) { Spawn(Game.Combat.Health { value = 3 }); Spawn(Game.Combat.Health); }\n"
+
+// A namespace renames one part at a time, wherever its path is written.
+PURR_TEST(lsp_rename_namespace)
+{
+    start();
+    open_document("namespace Game.Com$bat;\n" NAMESPACED);
+    PURR_CHECK(has(request("textDocument/prepareRename"), "\"result\":{\"start\""));
+    request_with("textDocument/rename", "\"newName\":\"Fight\"");
+    const char *renamed = apply_reply("namespace Game.Combat;\n" NAMESPACED, "file:///test.purr");
+    PURR_CHECK(strcmp(renamed, "namespace Game.Fight;\n"
+                               "component Health { int value; }\n"
+                               "scene Main { }\n"
+                               "system Hurt(mut Game.Fight.Health health) { health.value -= 1; }\n"
+                               "event(Spawned) Setup(with Main) { Spawn(Game.Fight.Health { value = 3 }); "
+                               "Spawn(Game.Fight.Health); }\n") == 0);
+    char copy[8192];
+    snprintf(copy, sizeof copy, "%s", renamed);
+    open_document(copy);
+    PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    // The outer part, from code.
+    open_document("namespace Game.Combat;\n"
+                  "component Health { int value; }\n"
+                  "scene Main { }\n"
+                  "system Hurt(mut Game.Combat.Health health) { health.value -= 1; }\n"
+                  "event(Spawned) Setup(with Main) { Spawn(Game.Combat.Health { value = 3 }); Spawn(Ga$me.Combat.Health); }\n");
+    request_with("textDocument/rename", "\"newName\":\"Play\"");
+    renamed = apply_reply("namespace Game.Combat;\n" NAMESPACED, "file:///test.purr");
+    PURR_CHECK(count(renamed, "Play.Combat") == 4 && !has(renamed, "Game"));
+}
+
 PURR_TEST(lsp_rename_refusals)
 {
     start();
@@ -1728,6 +1776,12 @@ PURR_TEST(lsp_game_of_several_files)
     const char *rename = request_at(uri_b, "textDocument/rename", 2, 17, "\"newName\":\"Fall\"");
     PURR_CHECK(has(rename, uri_a) && has(rename, uri_b));
     PURR_CHECK(count(rename, "\"newText\":\"Fall\"") == 2);
+
+    // So does renaming Physics: its `namespace` line, the `using` and the attribute.
+    rename = request_at(uri_b, "textDocument/rename", 0, 8, "\"newName\":\"World\"");
+    PURR_CHECK(has(rename, uri_a) && has(rename, uri_b));
+    PURR_CHECK(count(rename, "\"newText\":\"World\"") == 3);
+    PURR_CHECK(has(request_at(uri_b, "textDocument/rename", 0, 8, "\"newName\":\"Main\""), "'Main' is already declared"));
 
     // Completion after `Physics.` lists what's inside it.
     open_uri(uri_b, "using Physics;\nevent(Spawned) Setup(with Main) { Spawn(Physics.); }\nscene Main { }\n");
