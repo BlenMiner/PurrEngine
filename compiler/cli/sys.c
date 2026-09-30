@@ -144,6 +144,20 @@ uint64_t sys_file_stamp(const char *path)
     return (time ^ size * 0x9E3779B97F4A7C15ull) | 1u;
 }
 
+int64_t sys_file_size(const char *path)
+{
+#ifdef _WIN32
+    // The file's own record, which is current while it's written, unlike
+    // what a directory listing sees.
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return -1;
+    return (int64_t)((uint64_t)info.nFileSizeHigh << 32 | info.nFileSizeLow);
+#else
+    struct stat info;
+    return stat(path, &info) == 0 ? (int64_t)info.st_size : -1;
+#endif
+}
+
 static bool make_dir(const char *path)
 {
 #ifdef _WIN32
@@ -292,6 +306,27 @@ const char *sys_env(const char *name)
 int64_t sys_now(void)
 {
     return (int64_t)time(NULL);
+}
+
+int64_t sys_now_ms(void)
+{
+#ifdef _WIN32
+    return (int64_t)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+#endif
+}
+
+bool sys_is_terminal(void)
+{
+#ifdef _WIN32
+    DWORD mode;
+    return GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode) != 0;
+#else
+    return isatty(STDOUT_FILENO) != 0;
+#endif
 }
 
 // ---------------------------------------------------------------------------

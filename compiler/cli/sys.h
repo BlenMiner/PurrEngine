@@ -17,6 +17,7 @@ int64_t sys_mtime(const char *path); // 0 if it doesn't exist
 // Changes whenever the file does: its modification time, finer than seconds,
 // and its size. 0 if it doesn't exist.
 uint64_t sys_file_stamp(const char *path);
+int64_t sys_file_size(const char *path); // -1 if it doesn't exist; current even while another program writes it
 bool sys_mkdirs(const char *path);   // Creates every missing folder on the way
 void sys_hide(const char *path);     // Hides a file or folder on Windows; elsewhere a leading dot does
 bool sys_rename(const char *from, const char *to);
@@ -56,6 +57,8 @@ char *sys_which(const char *name);
 
 const char *sys_env(const char *name); // NULL if unset or empty
 int64_t sys_now(void);                 // Seconds since 1970
+int64_t sys_now_ms(void);              // Milliseconds from a fixed point, never going back
+bool sys_is_terminal(void);            // Whether stdout is a terminal, not a file or a pipe
 
 // "a" + "/" + "b".
 char *path_join(const char *a, const char *b);

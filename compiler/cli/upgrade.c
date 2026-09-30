@@ -132,14 +132,86 @@ static const json *exactly(const char *work, const json *releases, const char *v
     return purr_release_is(release, version) ? release : NULL;
 }
 
-static const char *asset_url(const json *release, const char *name)
+static const json *find_asset(const json *release, const char *name)
 {
     const json *assets = json_get(release, "assets");
     for (int i = 0; assets && i < assets->count; i++) {
         const char *asset = json_str(json_get(assets->items[i], "name"));
-        if (asset && strcmp(asset, name) == 0) return json_str(json_get(assets->items[i], "browser_download_url"));
+        if (asset && strcmp(asset, name) == 0) return assets->items[i];
     }
     return NULL;
+}
+
+static const char *asset_url(const json *release, const char *name)
+{
+    return json_str(json_get(find_asset(release, name), "browser_download_url"));
+}
+
+// The asset's size in bytes, as GitHub gives it; 0 if it doesn't.
+static int64_t asset_size(const json *release, const char *name)
+{
+    const json *size = json_get(find_asset(release, name), "size");
+    return size && size->kind == JSON_NUMBER && size->number > 0 ? (int64_t)size->number : 0;
+}
+
+// Draws the download's progress over the last one drawn: a bar when the
+// package's size is known, a spinner when it isn't.
+static void draw_progress(int64_t got, const int64_t size, const int64_t ms, const int frame, const bool done)
+{
+    const double mb = 1024.0 * 1024.0;
+    const double seconds = (double)ms / 1000.0;
+    if (got < 0) got = 0;
+    if (size > 0 && got > size) got = size;
+    char line[128];
+    int n;
+    if (size > 0) {
+        enum { WIDTH = 30 };
+        const int filled = (int)(got * WIDTH / size);
+        char bar[WIDTH + 1];
+        for (int i = 0; i < WIDTH; i++) bar[i] = i < filled ? '=' : i == filled ? '>' : ' ';
+        bar[WIDTH] = '\0';
+        n = snprintf(line, sizeof line, "  [%s] %3d%%  %.1f / %.1f MB", bar, (int)(got * 100 / size), got / mb, size / mb);
+    } else if (done) {
+        n = snprintf(line, sizeof line, "  %.1f MB", got / mb);
+    } else {
+        n = snprintf(line, sizeof line, "  %c %.1f MB", "|/-\\"[frame % 4], got / mb);
+    }
+    if (done) snprintf(line + n, sizeof line - (size_t)n, "  in %.1fs", seconds);
+    else if (seconds >= 1) snprintf(line + n, sizeof line - (size_t)n, "  %.1f MB/s", got / mb / seconds);
+    printf("\r%-72s", line);
+    fflush(stdout);
+}
+
+// Downloads the package to `path`, with a progress bar in a terminal. curl
+// runs in the background, and the bar follows the file as it grows; curl's
+// errors wait in a log, to be shown once the bar is done with the line.
+static bool download_package(const char *url, const char *path, const char *work, const int64_t size)
+{
+    if (!sys_is_terminal()) return download(url, path, false);
+    char *log = path_join(work, "curl.log");
+    const char *const argv[] = {system_tool("curl"), "-fsSL", "--retry", "2", "-m", "600",
+                                "--stderr", log, "-o", path, url, NULL};
+    sys_process *curl = sys_start(argv, NULL);
+    if (!curl) {
+        free(log);
+        return false;
+    }
+    const int64_t start = sys_now_ms();
+    int code = 0;
+    for (int frame = 0;; frame++) {
+        const bool ended = sys_wait(curl, 100, &code);
+        if (!ended || code == 0) draw_progress(sys_file_size(path), size, sys_now_ms() - start, frame, ended);
+        if (ended) break;
+    }
+    printf("\n");
+    fflush(stdout);
+    if (code != 0) {
+        char *errors = sys_read_file(log, NULL);
+        if (errors) fputs(errors, stderr);
+        free(errors);
+    }
+    free(log);
+    return code == 0;
 }
 
 // The hash SHA256SUMS lists for `file` ("<hash>  <file>" lines).
@@ -285,7 +357,8 @@ int purr_upgrade(const char *root, const char *channel, const char *version)
     fflush(stdout);
     char *package = path_join(work, PACKAGE);
     char *sums_path = path_join(work, "SHA256SUMS");
-    if (!download(package_url, package, false) || !download(sums_url, sums_path, false)) {
+    if (!download_package(package_url, package, work, asset_size(release, PACKAGE)) ||
+        !download(sums_url, sums_path, false)) {
         fprintf(stderr, "purr: the download failed\n");
         return 1;
     }
