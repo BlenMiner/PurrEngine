@@ -20,7 +20,8 @@ typedef struct purr_textref purr_textref;
 //
 // Positions and sizes are in the window's pixels, from the top left with y
 // down, as in Unity's GUI. Widgets keep their size when the window changes
-// size, as a web page's do.
+// size, as a web page's do, until there isn't room for them: then laid out
+// widgets shrink, as far as each can, to fit the width they have.
 //
 // A frame of a host:
 //
@@ -91,7 +92,10 @@ typedef struct purr_gui_group {
     purr_float2 origin;       // Where its content starts
     purr_float2 cursor;       // Where the next widget goes
     purr_float2 size;         // Its content's size so far
-    float natural;            // Its widest widget before stretching
+    float natural;            // Its content's width with room: its widest widget, or a row's widgets and spacing
+    float least;              // ...and squeezed as far as it goes
+    float room;               // The width its content has
+    float squeeze;            // A row: how far its widgets shrink from natural to least (0 to 1), from last frame
     float stretch;            // In a vertical group: the width widgets stretch to, from last frame
     purr_float2 guess;        // An anchored area: its top left, from last frame's size
     int32_t anchor;           // An area: its purr_anchor, or -1 when it's at a rect
@@ -107,6 +111,7 @@ typedef struct purr_gui_size {
     uint32_t frame;
     purr_float2 size;
     float natural;
+    float least;
 } purr_gui_size;
 
 // How many widgets came from one call site this frame, which tells apart the

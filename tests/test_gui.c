@@ -1,6 +1,7 @@
 #include <string.h>
 
 #include "purr/gui.h"
+#include "purr/text.h"
 #include "purr_test.h"
 
 // The GUI runtime driven by made-up devices, on a 1920 x 1080 window. The
@@ -57,12 +58,12 @@ static int two_buttons(void)
 PURR_TEST(gui_button_clicks_on_release)
 {
     start();
-    // Play is at the top left, 48 tall; Quit below it after 8 of spacing.
-    mouse(20.0f, 70.0f, false);
+    // Play is at the top left, 28 tall; Quit below it after 5 of spacing.
+    mouse(20.0f, 47.0f, false);
     PURR_CHECK(two_buttons() == 0);
-    mouse(20.0f, 70.0f, true);
+    mouse(20.0f, 47.0f, true);
     PURR_CHECK(two_buttons() == 0); // Pressed, not released yet
-    mouse(20.0f, 70.0f, false);
+    mouse(20.0f, 47.0f, false);
     PURR_CHECK(two_buttons() == 2);
     PURR_CHECK(two_buttons() == 0);
 
@@ -86,7 +87,7 @@ PURR_TEST(gui_draws_over_the_world)
     PURR_CHECK(draw.commands[0].kind == PURR_DRAW_GUI);
     PURR_CHECK(draw.commands[1].kind == PURR_DRAW_TEXT && strcmp(draw.text + draw.commands[1].text, "Hello") == 0);
     PURR_CHECK(draw.commands[2].kind == PURR_DRAW_RECT); // The button, below the label
-    PURR_CHECK(draw.commands[2].a.y == 34.0f + 6.0f + 17.0f);
+    PURR_CHECK(draw.commands[2].a.y == 28.0f + 5.0f + 14.0f);
 
     begin(); // A frame without a GUI adds nothing
     end();
@@ -99,7 +100,7 @@ PURR_TEST(gui_toggle_and_slider_change_values)
     bool on = false;
     float volume = 0.5f;
     for (int frame = 0; frame < 3; frame++) {
-        mouse(10.0f, 17.0f, frame == 1);
+        mouse(10.0f, 14.0f, frame == 1);
         begin();
         const bool toggled = purr_gui_layout_toggle(&gui, 1, "Fullscreen", &on);
         purr_gui_layout_slider(&gui, 2, "", &volume, 0.0f, 1.0f);
@@ -108,11 +109,11 @@ PURR_TEST(gui_toggle_and_slider_change_values)
     }
     PURR_CHECK(on);
 
-    // The slider is below the toggle: its track goes from x 6 to 6 + 230 + 70 - 70 - 12.
+    // The slider is below the toggle: its track goes from x 6 to 6 + 180 + 56 - 56 - 12.
     const float left = 6.0f;
-    const float width = 230.0f - 12.0f;
+    const float width = 180.0f - 12.0f;
     for (int frame = 0; frame < 3; frame++) {
-        mouse(frame == 0 ? left + 10.0f : left + width * 0.25f, 34.0f + 6.0f + 17.0f, frame < 2);
+        mouse(frame == 0 ? left + 10.0f : left + width * 0.25f, 28.0f + 5.0f + 14.0f, frame < 2);
         begin();
         purr_gui_layout_toggle(&gui, 1, "Fullscreen", &on);
         purr_gui_layout_slider(&gui, 2, "", &volume, 0.0f, 1.0f);
@@ -219,12 +220,12 @@ PURR_TEST(gui_typing_into_a_field)
 {
     start();
     int32_t players = 4;
-    mouse(260.0f, 24.0f, false); // Past the 240 label column
+    mouse(170.0f, 14.0f, false); // Past the 130 label column
     int_field(&players);
-    mouse(260.0f, 24.0f, true);
+    mouse(170.0f, 14.0f, true);
     int_field(&players);
     PURR_CHECK(gui.editing == 5);
-    mouse(260.0f, 24.0f, false);
+    mouse(170.0f, 14.0f, false);
     type("1x2"); // The x isn't part of a number
     PURR_CHECK(!int_field(&players));
     PURR_CHECK(players == 4); // Not until it's kept
@@ -265,7 +266,53 @@ PURR_TEST(gui_anchored_area_centers_its_content)
     PURR_REQUIRE(draw.count >= 3);
     PURR_CHECK(draw.commands[1].a.x == 960.0f && draw.commands[1].a.y == 540.0f);
     PURR_CHECK(draw.commands[2].a.x == 960.0f && draw.commands[2].a.y == 540.0f);
-    PURR_CHECK(draw.commands[1].b.y == 34.0f + 2.0f * 14.0f);
+    PURR_CHECK(draw.commands[1].b.y == 28.0f + 2.0f * 12.0f);
+}
+
+// The draw list's rects, in the GUI's order: each one's left and right edges.
+static void rect_edges(const int index, float *left, float *right)
+{
+    int seen = 0;
+    for (uint32_t i = 0; i < draw.count; i++) {
+        const purr_draw_command *c = &draw.commands[i];
+        if (c->kind != PURR_DRAW_RECT || seen++ != index) continue;
+        *left = c->a.x - c->b.x * 0.5f;
+        *right = c->a.x + c->b.x * 0.5f;
+        return;
+    }
+    *left = *right = -1.0f;
+}
+
+PURR_TEST(gui_rows_shrink_to_fit_the_screen)
+{
+    start();
+    // On a screen 400 wide, the row wants 402 and its area has 352: the text
+    // field and the button shrink, the label's column first.
+    purr_str local = PURR_STR_EMPTY;
+    const purr_textref ip = {.local = &local};
+    for (int frame = 0; frame < 3; frame++) {
+        purr_gui_begin(&gui, &devices, purr_f2(400.0f, 600.0f), NULL);
+        const int area = purr_gui_begin_area_at(&gui, 99, PURR_ANCHOR_MIDDLE_CENTER);
+        purr_gui_layout_button(&gui, 1, "Start Host");
+        const int row = purr_gui_begin_horizontal(&gui, 2);
+        purr_gui_layout_text_field(&gui, 3, "IP", ip);
+        purr_gui_layout_button(&gui, 4, "Connect");
+        purr_gui_close(&gui, row);
+        purr_gui_close(&gui, area);
+        end();
+    }
+    float left, right;
+    rect_edges(0, &left, &right); // The panel, 12 from both edges
+    PURR_CHECK(left > 11.99f && left < 12.01f);
+    PURR_CHECK(right > 387.99f && right < 388.01f);
+    rect_edges(1, &left, &right); // Start Host, as wide as the area's room
+    PURR_CHECK(left > 23.99f && right < 376.01f && right > 375.99f);
+    rect_edges(2, &left, &right); // The text field's box: the column shrank, not the box
+    PURR_CHECK(right - left > 179.99f && right - left < 180.01f);
+    PURR_CHECK(left > 24.0f + 19.2f + 10.0f);
+    rect_edges(3, &left, &right); // Connect, shrunk a little
+    PURR_CHECK(right - left < 87.2f && right - left > 77.2f);
+    PURR_CHECK(right > 375.99f && right < 376.01f);
 }
 
 PURR_TEST(gui_horizontal_groups_sit_side_by_side)
@@ -284,7 +331,7 @@ PURR_TEST(gui_horizontal_groups_sit_side_by_side)
     const purr_draw_command *b = &draw.commands[3];
     const purr_draw_command *c = &draw.commands[5];
     PURR_CHECK(a->a.y == b->a.y && b->a.x > a->a.x);
-    PURR_CHECK(c->a.y == a->a.y + 34.0f + 6.0f);
+    PURR_CHECK(c->a.y == a->a.y + 28.0f + 5.0f);
 }
 
 PURR_TEST(gui_close_ends_what_was_left_open)

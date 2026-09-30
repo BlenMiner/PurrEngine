@@ -11,20 +11,25 @@
 // numbers) and to depend on the window's size.
 
 // Sizes, in GUI units (pixels)
-#define FONT 20.0f         // Text height
-#define LINE 34.0f         // A widget's height
-#define PAD 12.0f          // Text inside a button, from its sides
-#define SPACING 6.0f       // Between widgets
-#define AREA_PADDING 14.0f // Inside an area, around its content
-#define AREA_MARGIN 16.0f  // Between an anchored area and the screen's edges
-#define LABEL_WIDTH 170.0f // A labelled widget's label, at least
-#define SLIDER_WIDTH 230.0f
-#define VALUE_WIDTH 70.0f  // A slider's value, on its right
-#define FIELD_WIDTH 115.0f
-#define PART_WIDTH 85.0f   // Each number of a vector field
-#define COLOR_PART_WIDTH 65.0f
-#define BOX 20.0f          // A toggle's box
+#define FONT 16.0f         // Text height
+#define LINE 28.0f         // A widget's height
+#define PAD 10.0f          // Text inside a button, from its sides
+#define SPACING 5.0f       // Between widgets
+#define AREA_PADDING 12.0f // Inside an area, around its content
+#define AREA_MARGIN 12.0f  // Between an anchored area and the screen's edges
+#define LABEL_WIDTH 130.0f // A labelled widget's label, at least
+#define SLIDER_WIDTH 180.0f
+#define VALUE_WIDTH 56.0f  // A slider's value, on its right
+#define FIELD_WIDTH 90.0f
+#define PART_WIDTH 68.0f   // Each number of a vector field
+#define COLOR_PART_WIDTH 52.0f
+#define BOX 16.0f          // A toggle's box
 #define BORDER 2.0f        // The focus's outline
+
+// Squeezed, when there isn't room: as narrow as these go
+#define LEAST_FIELD 48.0f  // A number field, or half a text field
+#define LEAST_TRACK 40.0f  // A slider's track
+#define LEAST_PART 36.0f   // Each number of a vector or color field
 
 static const purr_color TEXT = {0.93f, 0.93f, 0.95f, 1.0f};
 static const purr_color PANEL = {0.07f, 0.07f, 0.1f, 0.9f};
@@ -184,9 +189,9 @@ static const purr_gui_size *remembered(const purr_gui *g, const uint32_t id)
     return s->frame != 0 && s->id == id ? s : NULL;
 }
 
-static void remember(purr_gui *g, const uint32_t id, const purr_float2 size, const float natural)
+static void remember(purr_gui *g, const uint32_t id, const purr_float2 size, const float natural, const float least)
 {
-    g->sizes[id & (PURR_GUI_MAX_SIZES - 1)] = (purr_gui_size){id, g->frame, size, natural};
+    g->sizes[id & (PURR_GUI_MAX_SIZES - 1)] = (purr_gui_size){id, g->frame, size, natural, least};
 }
 
 // ---------------------------------------------------------------------------
@@ -322,14 +327,15 @@ void purr_gui_begin(purr_gui *g, const purr_devices *devices, const purr_float2 
     g->depth = 0;
     g->in_modal = 0;
     const purr_gui_size *root = remembered(g, ROOT_ID);
-    g->groups[0] = (purr_gui_group){.id = ROOT_ID, .kind = VERTICAL, .stretch = root ? root->natural : 0.0f, .anchor = -1};
+    g->groups[0] = (purr_gui_group){
+        .id = ROOT_ID, .kind = VERTICAL, .room = screen.x, .stretch = root ? root->natural : 0.0f, .anchor = -1};
     purr_draw_reset(&g->list);
 }
 
 void purr_gui_end(purr_gui *g, purr_draw_list *draw)
 {
     purr_gui_close(g, 0);
-    remember(g, ROOT_ID, g->groups[0].size, g->groups[0].natural);
+    remember(g, ROOT_ID, g->groups[0].size, g->groups[0].natural, g->groups[0].least);
 
     // What wasn't drawn this frame lets go.
     if (!g->focus_seen) g->focus = 0;
@@ -426,41 +432,79 @@ static purr_gui_group *top(purr_gui *g)
     return &g->groups[g->depth];
 }
 
-// Takes the next place in the current container. In a vertical one, widgets
-// that `stretch` are as wide as its widest one was last frame.
-static purr_rect reserve(purr_gui *g, float width, const float height, const float natural, const bool stretch)
+// How far a row's widgets shrink, from their natural widths (0) to their
+// least (1), for the row to fit its room.
+static float squeeze(const float natural, const float least, const float room)
+{
+    if (natural <= room) return 0.0f;
+    if (natural <= least) return 1.0f;
+    return min_f((natural - room) / (natural - least), 1.0f);
+}
+
+// How wide a widget wants to be: `natural`, or in a vertical container, as
+// wide as its widest widget was last frame if it `stretch`es.
+static float wanted(const purr_gui_group *grp, const float natural, const bool stretch)
+{
+    return stretch && grp->kind != HORIZONTAL && grp->stretch > natural ? grp->stretch : natural;
+}
+
+// How wide it gets: what it wants if there's room, and down to `least` if
+// there isn't. A row shrinks each widget by as much as it can give.
+static float fit(const purr_gui_group *grp, const float want, const float least)
+{
+    const float floor = min_f(least, want);
+    if (grp->kind == HORIZONTAL) return want - (want - floor) * grp->squeeze;
+    return max_f(min_f(want, grp->room), floor);
+}
+
+// Puts something `width` wide at the next place in the current container.
+// `natural` and `least` are the widths it would take with room and squeezed.
+static purr_rect take(purr_gui *g, const float width, const float height, const float natural, const float least)
 {
     purr_gui_group *grp = top(g);
+    const purr_rect r = {grp->cursor.x, grp->cursor.y, width, height};
     if (grp->kind == HORIZONTAL) {
-        const purr_rect r = {grp->cursor.x, grp->cursor.y, width, height};
         grp->cursor.x += width + SPACING;
         grp->size = purr_f2(r.x + width - grp->origin.x, max_f(grp->size.y, r.y + height - grp->origin.y));
-        grp->natural = grp->size.x;
+        grp->natural += natural + SPACING; // The last one's spacing comes off when it closes
+        grp->least += least + SPACING;
         return r;
     }
-    if (stretch && grp->stretch > width) width = grp->stretch;
-    const purr_rect r = {grp->cursor.x, grp->cursor.y, width, height};
     grp->cursor.y += height + SPACING;
     grp->size = purr_f2(max_f(grp->size.x, r.x + width - grp->origin.x), r.y + height - grp->origin.y);
     grp->natural = max_f(grp->natural, natural);
+    grp->least = max_f(grp->least, least);
     return r;
 }
 
-static purr_rect reserve_widget(purr_gui *g, const float width, const bool stretch)
+// Takes the next place in the current container for a widget `natural` wide,
+// which can shrink to `least`. In a vertical one, widgets that `stretch` are
+// as wide as its widest one was last frame.
+static purr_rect reserve(purr_gui *g, const float natural, const float least, const bool stretch)
 {
-    return reserve(g, width, LINE, width, stretch);
+    const purr_gui_group *grp = top(g);
+    return take(g, fit(grp, wanted(grp, natural, stretch), least), LINE, natural, min_f(least, natural));
 }
 
 static int open_group(purr_gui *g, const uint32_t id, const uint32_t kind, const purr_float2 origin)
 {
     const int before = g->depth;
     if (g->depth == PURR_GUI_MAX_DEPTH) return before; // Too deep: its content goes in the container around it
+    const purr_gui_group *around = top(g);
+    const purr_gui_size *last = remembered(g, id);
+    // Its room: in a row, its share of the row's, from last frame's size; in a
+    // vertical container, all of it.
+    float room = around->room;
+    if (around->kind == HORIZONTAL) {
+        room = last ? fit(around, last->natural, last->least)
+                    : max_f(around->room - (around->cursor.x - around->origin.x), 0.0f);
+    }
     g->depth++;
     purr_gui_group *grp = top(g);
-    *grp = (purr_gui_group){.id = id, .kind = kind, .origin = origin, .cursor = origin, .anchor = -1, .panel = UINT32_MAX,
-                            .in_modal_before = g->in_modal};
-    const purr_gui_size *last = remembered(g, id);
+    *grp = (purr_gui_group){.id = id, .kind = kind, .origin = origin, .cursor = origin, .room = room, .anchor = -1,
+                            .panel = UINT32_MAX, .in_modal_before = g->in_modal};
     if (last && kind != HORIZONTAL) grp->stretch = last->natural;
+    if (last && kind == HORIZONTAL) grp->squeeze = squeeze(last->natural, last->least, room);
     return before;
 }
 
@@ -474,7 +518,8 @@ int purr_gui_begin_horizontal(purr_gui *g, const uint32_t id)
     return open_group(g, id, HORIZONTAL, top(g)->cursor);
 }
 
-// Where an anchored area of `size` goes on the screen.
+// Where an anchored area of `size` goes on the screen. One too big for it
+// starts at the top left margin, so what doesn't fit is what comes last.
 static purr_float2 place(const purr_gui *g, int32_t anchor, const purr_float2 size)
 {
     if (anchor < 0 || anchor > PURR_ANCHOR_LOWER_RIGHT) anchor = PURR_ANCHOR_UPPER_LEFT;
@@ -482,7 +527,7 @@ static purr_float2 place(const purr_gui *g, int32_t anchor, const purr_float2 si
     const int row = anchor / 3;
     const float x = column == 0 ? AREA_MARGIN : column == 1 ? (g->width - size.x) * 0.5f : g->width - AREA_MARGIN - size.x;
     const float y = row == 0 ? AREA_MARGIN : row == 1 ? (g->height - size.y) * 0.5f : g->height - AREA_MARGIN - size.y;
-    return purr_f2(x, y);
+    return purr_f2(max_f(x, AREA_MARGIN), max_f(y, AREA_MARGIN));
 }
 
 // An area's background, sized when it closes.
@@ -498,6 +543,7 @@ int purr_gui_begin_area(purr_gui *g, const uint32_t id, const purr_rect rect)
     const uint32_t background = panel(g, rect);
     const int before = open_group(g, id, AREA, purr_f2(rect.x + AREA_PADDING, rect.y + AREA_PADDING));
     if (g->depth == before) return before;
+    top(g)->room = max_f(rect.width - 2.0f * AREA_PADDING, 0.0f);
     top(g)->rect = rect;
     top(g)->panel = background;
     top(g)->hot_before = g->hot_next;
@@ -514,6 +560,7 @@ int purr_gui_begin_area_at(purr_gui *g, const uint32_t id, const int32_t anchor)
     const uint32_t background = panel(g, (purr_rect){at.x, at.y, size.x, size.y});
     const int before = open_group(g, id, AREA, purr_f2(at.x + AREA_PADDING, at.y + AREA_PADDING));
     if (g->depth == before) return before;
+    top(g)->room = max_f(g->width - 2.0f * (AREA_MARGIN + AREA_PADDING), 0.0f);
     top(g)->guess = at;
     top(g)->anchor = anchor;
     top(g)->panel = background;
@@ -561,7 +608,7 @@ static void close_area(purr_gui *g, const purr_gui_group *grp)
         c->a = purr_f2(r.x + r.width * 0.5f, r.y + r.height * 0.5f);
         c->b = purr_f2(r.width, r.height);
     }
-    remember(g, grp->id, size, grp->natural);
+    remember(g, grp->id, size, grp->natural, grp->least);
     if (!contains(r, g->mouse)) return;
     g->over_next = true;
     // Under the mouse, but none of its widgets is: the panel hides what's below it.
@@ -581,8 +628,14 @@ void purr_gui_close(purr_gui *g, const int depth)
             close_area(g, &grp); // Areas are on the screen, not in the container around them
             continue;
         }
-        remember(g, grp.id, grp.size, grp.natural);
-        reserve(g, grp.size.x, grp.size.y, grp.natural, false);
+        float natural = grp.natural;
+        float least = grp.least;
+        if (grp.kind == HORIZONTAL) { // Less the spacing after its last widget
+            natural = max_f(natural - SPACING, 0.0f);
+            least = max_f(least - SPACING, 0.0f);
+        }
+        remember(g, grp.id, grp.size, natural, least);
+        take(g, grp.size.x, grp.size.y, natural, least);
     }
 }
 
@@ -592,17 +645,42 @@ void purr_gui_layout_space(purr_gui *g, const float size)
     if (grp->kind == HORIZONTAL) {
         grp->cursor.x += size;
         grp->size.x = max_f(grp->size.x, grp->cursor.x - SPACING - grp->origin.x);
+        grp->natural += size;
+        grp->least += size;
     } else {
         grp->cursor.y += size;
         grp->size.y = max_f(grp->size.y, grp->cursor.y - SPACING - grp->origin.y);
     }
 }
 
-// A labelled widget's label column: wide enough for the label, and at least
-// LABEL_WIDTH so a column of them lines up.
+// A labelled widget's label column, as narrow as it goes: the label and a gap.
+static float label_least(const purr_gui *g, const char *label)
+{
+    return label[0] ? text_width(g, label) + 2.0f * SPACING : 0.0f;
+}
+
+// The label column with room: at least LABEL_WIDTH, so a column of them lines up.
 static float label_width(const purr_gui *g, const char *label)
 {
-    return label[0] ? max_f(LABEL_WIDTH, text_width(g, label) + 2.0f * SPACING) : 0.0f;
+    return label[0] ? max_f(LABEL_WIDTH, label_least(g, label)) : 0.0f;
+}
+
+// Takes the next place for a labelled widget whose control is `natural` wide
+// and can shrink to `least`. Draws the label and returns the control's rect.
+// Squeezed, the label's column gives up its room first, down to the label: by
+// what the widget lost from the width it wanted, so the labelled widgets of a
+// vertical container, which want the same width, keep their columns lined up.
+static purr_rect labelled(purr_gui *g, const char *label, const float natural, const float least)
+{
+    const purr_gui_group *grp = top(g);
+    const float column = label_width(g, label);
+    const float tight = label_least(g, label);
+    const float want = wanted(grp, column + natural, true);
+    const float width = fit(grp, want, tight + least);
+    const purr_rect r = take(g, width, LINE, column + natural, tight + least);
+    const float w = min_f(max_f(column - (want - width), tight), r.width);
+    text_at(g, label, r.x, r.y + r.height * 0.5f, TEXT);
+    return (purr_rect){r.x + w, r.y, r.width - w, r.height};
 }
 
 // Draws the label in its column and returns the rest of the rect.
@@ -624,7 +702,8 @@ void purr_gui_label(purr_gui *g, const purr_rect rect, const char *text)
 
 void purr_gui_layout_label(purr_gui *g, const char *text)
 {
-    purr_gui_label(g, reserve_widget(g, text_width(g, text), false), text);
+    const float width = text_width(g, text);
+    purr_gui_label(g, reserve(g, width, width, false), text);
 }
 
 bool purr_gui_button(purr_gui *g, const uint32_t id, const purr_rect rect, const char *text)
@@ -639,7 +718,8 @@ bool purr_gui_button(purr_gui *g, const uint32_t id, const purr_rect rect, const
 
 bool purr_gui_layout_button(purr_gui *g, const uint32_t id, const char *text)
 {
-    return purr_gui_button(g, id, reserve_widget(g, text_width(g, text) + 2.0f * PAD, true), text);
+    const float width = text_width(g, text);
+    return purr_gui_button(g, id, reserve(g, width + 2.0f * PAD, width + PAD, true), text);
 }
 
 bool purr_gui_toggle(purr_gui *g, const uint32_t id, const purr_rect rect, const char *text, bool *value)
@@ -657,7 +737,8 @@ bool purr_gui_toggle(purr_gui *g, const uint32_t id, const purr_rect rect, const
 
 bool purr_gui_layout_toggle(purr_gui *g, const uint32_t id, const char *text, bool *value)
 {
-    return purr_gui_toggle(g, id, reserve_widget(g, BOX + 8.0f + text_width(g, text), true), text, value);
+    const float width = BOX + 8.0f + text_width(g, text);
+    return purr_gui_toggle(g, id, reserve(g, width, width, true), text, value);
 }
 
 // A slider's track and thumb. `t` is where the value is, 0 to 1; returns
@@ -715,8 +796,8 @@ bool purr_gui_slider(purr_gui *g, const uint32_t id, const purr_rect rect, const
 bool purr_gui_layout_slider(purr_gui *g, const uint32_t id, const char *label, float *value, const float min,
                             const float max)
 {
-    const float width = label_width(g, label) + SLIDER_WIDTH + VALUE_WIDTH;
-    return purr_gui_slider(g, id, reserve_widget(g, width, true), label, value, min, max);
+    const purr_rect r = labelled(g, label, SLIDER_WIDTH + VALUE_WIDTH, LEAST_TRACK + VALUE_WIDTH);
+    return purr_gui_slider(g, id, r, "", value, min, max);
 }
 
 bool purr_gui_int_slider(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, int32_t *value,
@@ -739,8 +820,8 @@ bool purr_gui_int_slider(purr_gui *g, const uint32_t id, const purr_rect rect, c
 bool purr_gui_layout_int_slider(purr_gui *g, const uint32_t id, const char *label, int32_t *value, const int32_t min,
                                 const int32_t max)
 {
-    const float width = label_width(g, label) + SLIDER_WIDTH + VALUE_WIDTH;
-    return purr_gui_int_slider(g, id, reserve_widget(g, width, true), label, value, min, max);
+    const purr_rect r = labelled(g, label, SLIDER_WIDTH + VALUE_WIDTH, LEAST_TRACK + VALUE_WIDTH);
+    return purr_gui_int_slider(g, id, r, "", value, min, max);
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,18 +1127,17 @@ bool purr_gui_text_field(purr_gui *g, const uint32_t id, const purr_rect rect, c
 
 bool purr_gui_layout_text_field(purr_gui *g, const uint32_t id, const char *label, const purr_textref value)
 {
-    const float width = label_width(g, label) + 2.0f * FIELD_WIDTH;
-    return purr_gui_text_field(g, id, reserve_widget(g, width, true), label, value);
+    return purr_gui_text_field(g, id, labelled(g, label, 2.0f * FIELD_WIDTH, 2.0f * LEAST_FIELD), "", value);
 }
 
 bool purr_gui_layout_int_field(purr_gui *g, const uint32_t id, const char *label, int32_t *value)
 {
-    return purr_gui_int_field(g, id, reserve_widget(g, label_width(g, label) + FIELD_WIDTH, true), label, value);
+    return purr_gui_int_field(g, id, labelled(g, label, FIELD_WIDTH, LEAST_FIELD), "", value);
 }
 
 bool purr_gui_layout_float_field(purr_gui *g, const uint32_t id, const char *label, float *value)
 {
-    return purr_gui_float_field(g, id, reserve_widget(g, label_width(g, label) + FIELD_WIDTH, true), label, value);
+    return purr_gui_float_field(g, id, labelled(g, label, FIELD_WIDTH, LEAST_FIELD), "", value);
 }
 
 static float parts_width(const int n, const float each)
@@ -1067,24 +1147,26 @@ static float parts_width(const int n, const float each)
 
 bool purr_gui_layout_float2_field(purr_gui *g, const uint32_t id, const char *label, purr_float2 *value)
 {
-    const float width = label_width(g, label) + parts_width(2, PART_WIDTH);
-    return purr_gui_float2_field(g, id, reserve_widget(g, width, true), label, value);
+    const purr_rect r = labelled(g, label, parts_width(2, PART_WIDTH), parts_width(2, LEAST_PART));
+    return purr_gui_float2_field(g, id, r, "", value);
 }
 
 bool purr_gui_layout_float3_field(purr_gui *g, const uint32_t id, const char *label, purr_float3 *value)
 {
-    const float width = label_width(g, label) + parts_width(3, PART_WIDTH);
-    return purr_gui_float3_field(g, id, reserve_widget(g, width, true), label, value);
+    const purr_rect r = labelled(g, label, parts_width(3, PART_WIDTH), parts_width(3, LEAST_PART));
+    return purr_gui_float3_field(g, id, r, "", value);
 }
 
 bool purr_gui_layout_float4_field(purr_gui *g, const uint32_t id, const char *label, purr_float4 *value)
 {
-    const float width = label_width(g, label) + parts_width(4, PART_WIDTH);
-    return purr_gui_float4_field(g, id, reserve_widget(g, width, true), label, value);
+    const purr_rect r = labelled(g, label, parts_width(4, PART_WIDTH), parts_width(4, LEAST_PART));
+    return purr_gui_float4_field(g, id, r, "", value);
 }
 
 bool purr_gui_layout_color_field(purr_gui *g, const uint32_t id, const char *label, purr_color *value)
 {
-    const float width = label_width(g, label) + LINE + SPACING + parts_width(4, COLOR_PART_WIDTH);
-    return purr_gui_color_field(g, id, reserve_widget(g, width, true), label, value);
+    const float swatch = LINE + SPACING;
+    const purr_rect r =
+        labelled(g, label, swatch + parts_width(4, COLOR_PART_WIDTH), swatch + parts_width(4, LEAST_PART));
+    return purr_gui_color_field(g, id, r, "", value);
 }

@@ -75,6 +75,8 @@ view Hud(mut Look look)
 }
 ```
 
+When the screen is too narrow for them, laid out widgets shrink to fit: fields, sliders and buttons get narrower, and a label's column gives up its spare room first. Labels and toggles keep their size.
+
 The engine builds nothing a game couldn't build itself: containers are functions with a `Block`, and you can write your own the same way.
 
 ## Screen units
