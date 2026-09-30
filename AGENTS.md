@@ -234,6 +234,7 @@ The language is called PurrLang (working name). Its syntax and semantics are spe
 - Game code can tell verified state from predicted state. For example, a player death visual can wait until the death is verified.
 - Secrets such as RNG seeds are ordinary state behind visibility, for example an entity the client can't see. They need no special mechanism.
 - Clients don't have to simulate the whole world. LOD borders and culling are resolved through state sync.
+- Hosting (not built yet): PurrEngine will host games for people, and hosted matches will run as WebAssembly in a sandbox (a runtime like wasmtime), with a time budget per tick. Owning the language doesn't make hosted code safe by itself: games can call C, and even pure PurrLang can loop forever. In the sandbox, C only reaches the game's own memory and what the host gives it, so `extern` stays allowed. A hosted game's match code, and the C it calls, has to build for the web; a server build can leave out views and local code.
 
 ## Determinism
 
