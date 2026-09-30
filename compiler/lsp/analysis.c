@@ -460,6 +460,7 @@ static void walk_stmt(const stmt *s)
         walk_stmt(s->else_stmt);
         break;
     case S_RETURN:
+        walk_expr(s->value);
         break;
     case S_VAR:
         type_ref(s->type_qual_at.line ? s->type_qual_at : s->type_at, s->type_at, s->type_name, s->type);

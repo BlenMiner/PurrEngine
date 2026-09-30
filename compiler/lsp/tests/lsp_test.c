@@ -1261,6 +1261,10 @@ PURR_TEST(lsp_references)
     const char *highlights = request("textDocument/documentHighlight");
     PURR_CHECK(count(highlights, "\"range\"") == 3);
     PURR_CHECK(count(highlights, "\"kind\":3") == 1); // The declaration
+
+    // Uses in what a method returns.
+    open_document("struct Range\n{\n    float l$o;\n    float hi;\n    float Width() { return hi - lo; }\n}\n");
+    PURR_CHECK(count(request_with("textDocument/references", "\"context\":{\"includeDeclaration\":false}"), "\"uri\"") == 1);
 }
 
 PURR_TEST(lsp_rename)
