@@ -35,6 +35,7 @@ typedef enum occ_kind {
     OCC_NAMESPACE, // Combat in `namespace Combat;` or Combat.Health
     OCC_ATTRIBUTE, // Before, After, Clamp, Min, Max
     OCC_ENUM_MEMBER, // Title in Page.Title, and in `enum Page { Title }` (with `decl`, the enum)
+    OCC_THIS,     // `this`, with `decl` the system, view, handler or method it's in
 } occ_kind;
 
 typedef struct occurrence {
@@ -236,6 +237,9 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
 // Sample and Sanitize, a type in its methods.
 static const decl *walk_fields_of;
 
+// The system, view, handler, method or function being walked: whose `this` it is.
+static const decl *walk_code;
+
 // A game's method, function or operator, which calls and declarations point at.
 static bool is_routine(const decl *d)
 {
@@ -272,6 +276,13 @@ static void walk_expr(const expr *e)
     case E_FLOAT:
     case E_BOOL:
     case E_STRING:
+        break;
+
+    case E_THIS:
+        if (walk_code) {
+            add_occ((occurrence){.at = e->at, .len = 4, .kind = OCC_THIS, .decl = walk_code, .name = str_from("this"),
+                                 .type = e->type});
+        }
         break;
 
     case E_NAME: {
@@ -532,7 +543,9 @@ static void walk_routine(const decl *m)
         type_ref(m->return_type_qual_at, m->return_type_at, m->return_type_name, m->return_type);
     }
     walk_params(m);
+    walk_code = m;
     walk_stmt(m->body);
+    walk_code = NULL;
 }
 
 static int occ_order(const void *a, const void *b)
@@ -575,7 +588,9 @@ static void index_program(void)
             add_occ((occurrence){.at = d->at, .len = d->name.len, .kind = OCC_SYSTEM, .declaration = true, .decl = d,
                                  .name = d->name});
             walk_params(d);
+            walk_code = d;
             walk_stmt(d->body);
+            walk_code = NULL;
             continue;
         }
         if (d->kind == DECL_FUNCTION) {
@@ -973,6 +988,24 @@ static void describe(const occurrence *o, sb *out)
         code_block(out, code.data);
         sb_put(out, o->local->is_mut ? "\n\nLocal variable." : "\n\nLocal variable, read-only.");
         break;
+    case OCC_THIS: {
+        const decl *d = o->decl;
+        if (o->type.kind == TY_ERROR) {
+            code_block(out, "this");
+            sb_put(out, "\n\nThe entity the code runs for.");
+            break;
+        }
+        sb_printf(&code, "%s this", type_name(o->type));
+        code_block(out, code.data);
+        if (d->kind == DECL_METHOD) {
+            sb_printf(out, "\n\nThe entity whose `" STR_FMT "` this is.", STR_ARG(d->owner->name));
+        } else if (d->is_handler && d->event) {
+            sb_printf(out, "\n\nThe entity the `" STR_FMT "` was sent to.", STR_ARG(d->event->name));
+        } else {
+            sb_printf(out, "\n\nThe entity `" STR_FMT "` runs for.", STR_ARG(d->name));
+        }
+        break;
+    }
     case OCC_OWNER:
         code_block(out, str_to_cstr(o->name));
         sb_put(out, str_eq_c(o->name, "Draw")        ? "\n\nImmediate-mode drawing, in views and the functions they call."
@@ -1357,6 +1390,46 @@ static void argument_name(const expr *arg, sb *out)
     }
 }
 
+static loc token_end(const token *t)
+{
+    return (loc){t->at.line, t->at.col + token_len(t), t->at.file};
+}
+
+// An Entity or LocalEntity parameter: removes it, with the comma between it
+// and its neighbor, and writes `this` where the code uses it.
+static void use_this_action(const param *p, jbuf *out, int *written)
+{
+    const int first = token_at(p->at);
+    const int name = token_at(p->name_at);
+    if (first < 0 || name < 0) return;
+    const token *toks = DOC->toks;
+    loc start = p->at;
+    loc end = token_end(&toks[name]);
+    if (toks[name + 1].kind == T_COMMA) {
+        end = toks[name + 2].at; // Up to the next parameter
+    } else if (first > 1 && toks[first - 1].kind == T_COMMA) {
+        start = token_end(&toks[first - 2]); // From the end of the one before
+    }
+    if ((*written)++) jb_put(out, ",");
+    sb title = {0};
+    sb_printf(&title, "Use 'this' instead of '" STR_FMT "'", STR_ARG(p->name));
+    jb_put(out, "{\"title\":");
+    jb_string(out, title.data);
+    jb_put(out, ",\"kind\":\"quickfix\",\"isPreferred\":true,\"edit\":{\"changes\":{");
+    jb_string(out, A.files[A.doc].uri);
+    jb_put(out, ":[{\"range\":");
+    write_edit_range(out, start, end);
+    jb_put(out, ",\"newText\":\"\"}");
+    for (int i = 0; i < A.occs.count; i++) {
+        const occurrence *o = &A.occs.items[i];
+        if (o->kind != OCC_PARAM || o->param != p || o->declaration || o->at.file != A.doc) continue;
+        jb_put(out, ",{\"range\":");
+        write_range(out, o->at, o->len);
+        jb_put(out, ",\"newText\":\"this\"}");
+    }
+    jb_put(out, "]}}}");
+}
+
 void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
 {
     jb_put(out, "[");
@@ -1364,6 +1437,10 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
     for (int i = 0; i < A.prog->fixes.count; i++) {
         const fix *f = &A.prog->fixes.items[i];
         if (f->at.file != A.doc || f->at.line - 1 < start_line || f->at.line - 1 > end_line) continue;
+        if (f->kind == FIX_USE_THIS) {
+            use_this_action(f->param, out, &written);
+            continue;
+        }
         const param *p = f->param;
         sb title = {0};
         sb text = {0};
@@ -1430,6 +1507,7 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
             preferred = false;
             break;
         }
+        case FIX_USE_THIS: continue; // use_this_action
         }
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"title\":");
@@ -1526,7 +1604,8 @@ void analysis_definition(const char *uri, const int line, const int character, j
         if (o->kind == OCC_FIELD && o->decl && !o->decl->builtin) {
             target = o->field->at;
             len = o->field->name.len;
-        } else if ((o->kind == OCC_TYPE || o->kind == OCC_SYSTEM || is_routine(o->decl)) && o->decl && !o->decl->builtin) {
+        } else if ((o->kind == OCC_TYPE || o->kind == OCC_SYSTEM || (is_routine(o->decl) && o->kind != OCC_THIS)) && o->decl
+                   && !o->decl->builtin) {
             target = o->decl->at;
             len = o->decl->name.len;
         } else if (o->kind == OCC_PARAM) {
@@ -1889,6 +1968,7 @@ static void classify(const occurrence *o, int *type, int *mods)
     case OCC_MEMBER: *type = ST_PROPERTY; *mods |= SM_DEFAULT_LIBRARY; break;
     case OCC_NAMESPACE: *type = ST_NAMESPACE; break;
     case OCC_ENUM_MEMBER: *type = ST_ENUM_MEMBER; *mods |= SM_READONLY; break;
+    case OCC_THIS: *type = ST_KEYWORD; *mods = 0; break;
     }
 }
 
@@ -2035,6 +2115,19 @@ static scope scope_at(const loc at)
         collect_locals(sanitize ? d->sanitize : d->body, at, &sc);
     }
     return sc;
+}
+
+// The type of `this` in scope: the entity the code runs for, or a component
+// method's. TY_ERROR where there's none.
+static type this_type(const scope *sc)
+{
+    const decl *d = sc->decl;
+    if (!d || sc->in_input) return (type){TY_ERROR, NULL};
+    if (d->kind == DECL_METHOD && !d->is_operator && !d->is_interpolate && d->owner && d->owner->kind == DECL_COMPONENT) {
+        return (type){d->owner->is_local ? TY_LOCAL_ENTITY : TY_ENTITY, NULL};
+    }
+    if (d->kind == DECL_SYSTEM && d->per_entity) return (type){d->entity_local ? TY_LOCAL_ENTITY : TY_ENTITY, NULL};
+    return (type){TY_ERROR, NULL};
 }
 
 // The type of a name in scope, or TY_ERROR.
@@ -2217,6 +2310,12 @@ static const char *name_for(const decl *d);
 
 static void complete_members(completion *c, const int dot, const loc at, const bool systems)
 {
+    if (dot >= 1 && DOC->toks[dot - 1].kind == T_THIS) { // this.: the entity's methods
+        const scope sc = scope_at(at);
+        const type t = this_type(&sc);
+        if (t.kind != TY_ERROR) list_members(c, t, false, &sc);
+        return;
+    }
     int ids[16];
     int n = 0;
     for (int i = dot - 1; i >= 0 && DOC->toks[i].kind == T_IDENT && n < 16;) {
@@ -2452,6 +2551,12 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     }
     item(c, "true", CK_KEYWORD, NULL, NULL, NULL);
     item(c, "false", CK_KEYWORD, NULL, NULL, NULL);
+    // this: the entity the code runs for, or whose component a method is called on
+    const type entity = this_type(&sc);
+    if (entity.kind != TY_ERROR) {
+        item(c, "this", CK_KEYWORD, type_name(entity),
+             sc.decl->kind == DECL_METHOD ? "The entity whose component this is." : "The entity the code runs for.", NULL);
+    }
 
     for (int i = sc.locals.count - 1; i >= 0; i--) {
         const stmt *s = sc.locals.items[i];
@@ -2753,8 +2858,6 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 item(&c, "mut", CK_KEYWORD, "Write access", NULL, NULL);
                 item(&c, "with", CK_KEYWORD, "Entities must have this component", NULL, NULL);
                 item(&c, "without", CK_KEYWORD, "Entities must not have this component", NULL, NULL);
-                item(&c, "Entity", CK_STRUCT, "The entity being processed", NULL, NULL);
-                item(&c, "LocalEntity", CK_STRUCT, "The local entity being processed", NULL, NULL);
                 item(&c, "Devices", CK_CLASS, "The devices of the entity's owner, or the server's", NULL, NULL);
             }
             complete_types(&c, true, true, pk != T_MUT);
@@ -2865,6 +2968,7 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_NAMESPACE:
     case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
     case OCC_ENUM_MEMBER: return a->decl == b->decl && str_eq(a->name, b->name);
+    case OCC_THIS: return a->decl == b->decl;
     }
     return false;
 }
@@ -2936,6 +3040,8 @@ static const char *rename_target(const int line, const int character, const occu
         if (is_operator_decl(o->decl)) return "Operators are named by their symbol, so they can't be renamed.";
         if (is_routine(o->decl)) return NULL;
         return "Built-in names can't be renamed.";
+    case OCC_THIS:
+        return "'this' is a keyword, so it can't be renamed.";
     default:
         return "Built-in names can't be renamed.";
     }
@@ -3348,7 +3454,7 @@ static const char *token_start(const token *t)
 static bool ends_operand(const tok_kind k)
 {
     return k == T_IDENT || k == T_INT || k == T_FLOAT || k == T_STRING || k == T_RPAREN || k == T_RBRACKET
-        || k == T_TRUE || k == T_FALSE || k == T_INTERP || k == T_INTERP_PART;
+        || k == T_TRUE || k == T_FALSE || k == T_THIS || k == T_INTERP || k == T_INTERP_PART;
 }
 
 // Whether the ':' at token `i` ends a switch's label, like `case Page.Title:`,

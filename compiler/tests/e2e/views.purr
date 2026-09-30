@@ -39,7 +39,7 @@ view Background(Palette palette, Time time)
 }
 
 // Once per matching entity, skipping hidden ones.
-view Bodies(Entity e, Body body, Tint tint, without Hidden)
+view Bodies(Body body, Tint tint, without Hidden)
 {
     Draw.Circle(body.position, body.radius, tint.color);
     mut var solid = tint.color;

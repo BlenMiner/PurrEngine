@@ -53,11 +53,6 @@ system CountTicks(mut Counter counter, Settings settings)
     counter.ticks += 1;
 }
 
-// Only an Entity: runs for every entity.
-system VisitAll(Entity e)
-{
-}
-
 // Only filters.
 system TaggedOnly(with Tag, without Doomed)
 {
@@ -82,8 +77,8 @@ system Keywords(mut Everything everything)
 }
 
 // Destroy with no Add or Remove anywhere in the program.
-system Cleanup(Entity e, mut Counter counter, with Doomed)
+system Cleanup(mut Counter counter, with Doomed)
 {
-    e.Destroy();
+    this.Destroy();
     counter.destroyed += 1;
 }

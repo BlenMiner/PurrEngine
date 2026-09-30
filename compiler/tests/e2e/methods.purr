@@ -52,6 +52,32 @@ component Unit
     mut void Kill() { kills += 1; }
 }
 
+// A component's methods have this: the entity whose component they're called on.
+component Tracker
+{
+    Entity me;
+    Entity other;
+    bool isMe;
+    bool otherIsMe;
+    int calls;
+
+    bool IsMe(Entity e) { return e == this; }
+
+    mut void Remember()
+    {
+        me = this;
+        calls += 1;
+    }
+
+    // Uses this through Remember and IsMe.
+    mut void Track()
+    {
+        Remember();
+        isMe = IsMe(me);
+        otherIsMe = IsMe(other);
+    }
+}
+
 singleton Log
 {
     float width;
@@ -101,6 +127,19 @@ event(Spawned) Setup(with Main)
 {
     Spawn(Unit);
     Spawn(Unit { stats = Stats { health = 1, damage = Range { hi = 5 } } });
+    var first = Spawn(Tracker);
+    Spawn(Tracker { other = first });
+}
+
+// In a handler, this is the entity the event was sent to.
+event(Spawned) Greet(mut Tracker tracker)
+{
+    tracker.Remember();
+}
+
+system Watch(mut Tracker tracker)
+{
+    tracker.Track();
 }
 
 system Fight(mut Unit unit)

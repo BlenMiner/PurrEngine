@@ -41,6 +41,20 @@ PURR_TEST(functions_change_their_mut_arguments)
     PURR_CHECK(world.Log.bumps == 2); // Bump(log.bumps) for each unit
 }
 
+PURR_TEST(component_methods_see_their_entity)
+{
+    one_tick();
+    const purr_entity a = {3, 1};
+    const purr_entity b = {4, 1};
+    const Tracker *ta = purr_get_Tracker(&world, a);
+    const Tracker *tb = purr_get_Tracker(&world, b);
+    PURR_REQUIRE(ta != NULL && tb != NULL);
+    PURR_CHECK(purr_entity_equal(ta->me, a) && purr_entity_equal(tb->me, b));
+    PURR_CHECK(ta->calls == 2 && tb->calls == 2); // Greet as it's spawned, then Watch
+    PURR_CHECK(ta->isMe && tb->isMe);
+    PURR_CHECK(!ta->otherIsMe && !tb->otherIsMe); // a's other is null, b's is a
+}
+
 PURR_TEST(functions_run_in_sample)
 {
     purr_world_init(&world, 1.0f);

@@ -1,0 +1,7 @@
+// expect: 'this' is the entity the code runs for, so it can't change
+component Link { Entity next; }
+scene Main { }
+system Follow(Link link)
+{
+    this = link.next;
+}

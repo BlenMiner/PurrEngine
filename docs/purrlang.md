@@ -109,6 +109,7 @@ system Hurt(mut Unit unit)
 - A method only reads the fields, unless it's `mut`. Calling a `mut` method changes what it's called on, so it needs write access, like an assignment: `unit.stats.Hurt(5)` needs `mut Unit unit`, and the system's signature still says what it writes. A read-only method can't call a `mut` one.
 - A method returns a value with `return value;`, on every path, unless it returns `void`.
 - A method sees its fields, its parameters and `Math`. It can't spawn, change entities or draw: systems do.
+- A component's method has `this`: the entity whose component it's called on. A method that uses it, itself or through another of its methods, can only be called on a component the code runs for, a parameter of a system, view or handler: a copy belongs to no entity. A struct's methods and `Interpolate` have no `this`.
 - Methods can't share a name, even with different parameters, and a method can't share one with a field.
 - Singletons and inputs have no methods (an input has `Sample` and `Sanitize`): keep the data and its methods in a struct, and the struct in them.
 - Parameters work as in functions.
@@ -227,7 +228,9 @@ system ClampPlayer(mut Transform trs, with Player)
 }
 ```
 
-- An `Entity` parameter gives the handle of the entity being processed: `system Die(Entity e, Health health)`.
+- `this` is the entity the code runs for: `if (health.value <= 0) this.Destroy();`. It's an `Entity`, or a `LocalEntity` in code that runs for local entities. `this` is a keyword everywhere, and it can't be assigned.
+- Only code that runs once per entity has `this`: a system, view or handler that takes a component or filters by one (`with Player`). Elsewhere it's an error that says why.
+- The entity isn't a parameter: an `Entity` or `LocalEntity` parameter is an error that points to `this`.
 
 ### Entities
 
@@ -284,7 +287,7 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Systems
 
-- A system with no component or `Entity` parameters runs once per tick. Otherwise it runs once per matching entity.
+- A system with no component parameters runs once per tick. Otherwise it runs once per matching entity.
 - A parameter that's never used, or declared `mut` and never written, is a warning: it makes other systems wait for nothing. A component that's only there to filter entities belongs in `with`.
 - `return;` ends the system for the current entity.
 - Locals can't reuse the name of another local or parameter in scope.
@@ -415,9 +418,9 @@ float2 flat = trs.position.xz;
 - `event(Hit hit) TakeHit(...)` declares a handler: code that runs when a `Hit` is sent. The same keyword declares both, and `event(` starts a handler. The first parentheses hold the trigger, exactly one event. The second list takes the same parameters as a system.
 - An event with no fields needs no name in the trigger: `event(Spawned) Arm(...)`.
 - `entity.Send(Hit { ... })` sends an event to an entity. `Send(RoundOver { ... })` sends it to the whole world.
-- A handler's components and `Entity` come from the entity the event was sent to, as a system's come from the entity it runs for. If that entity doesn't match the handler's parameters, the handler doesn't run for it.
-- A handler that takes components or an `Entity` needs that entity, so every `Send` of its event must name one. The compiler checks every `Send`: `Send(Hit { ... })` is an error when a `Hit` handler needs an entity, and says to write `entity.Send(...)`.
-- A handler that takes no components and no `Entity` runs once per event, whether it was sent to an entity or not.
+- A handler's components and `this` come from the entity the event was sent to, as a system's come from the entity it runs for. If that entity doesn't match the handler's parameters, the handler doesn't run for it.
+- A handler that takes components needs that entity, so every `Send` of its event must name one. The compiler checks every `Send`: `Send(Hit { ... })` is an error when a `Hit` handler needs an entity, and says to write `entity.Send(...)`.
+- A handler that takes no components runs once per event, whether it was sent to an entity or not, and has no `this`.
 - The sender isn't recorded. When handlers need it, it goes in a field: the entity that sends is often not the one that matters, like a bomb sending a `Hit` for whoever threw it.
 - Events are handled at the end of the tick, with structural changes, in the order they were all recorded. A `Send` before a `Destroy` of the same entity is handled while the entity still exists. An event sent to an entity that's gone by its turn is dropped, as `Add` on a destroyed entity does nothing.
 - Handlers can send events and change entities in turn. Those are handled next, until nothing is left, so everything settles within the tick. Systems later in the same tick don't see an event's effects yet, as with `Spawn`.
@@ -435,18 +438,18 @@ event Hit
     int damage;
 }
 
-system Explode(Entity self, Bomb bomb)
+system Explode(Bomb bomb)
 {
     if (bomb.timer > 0) return;
     bomb.target.Send(Hit { attacker = bomb.owner, damage = 50 });
-    self.Destroy();
+    this.Destroy();
 }
 
-// Health and target come from the entity the Hit was sent to.
-event(Hit hit) TakeHit(Entity target, mut Health health)
+// Health and this come from the entity the Hit was sent to.
+event(Hit hit) TakeHit(mut Health health)
 {
     health.value -= hit.damage;
-    if (health.value <= 0) target.Destroy();
+    if (health.value <= 0) this.Destroy();
 }
 
 // Takes nothing from the entity, so it runs once per Hit.
@@ -456,9 +459,9 @@ event(Hit hit) CountHits(mut Stats stats)
 }
 
 // Spawned has no fields, so it needs no name.
-event(Spawned) Arm(Entity player, with Player)
+event(Spawned) Arm(with Player)
 {
-    Spawn(Weapon { owner = player });
+    Spawn(Weapon { owner = this });
 }
 ```
 
@@ -731,10 +734,10 @@ component Body
     Angle heading;   // Blended the short way round
 }
 
-event(Died dead) Respawn(Entity self, mut Body body, Arena arena)
+event(Died dead) Respawn(mut Body body, Arena arena)
 {
     body.position = arena.start;
-    self.Snap(); // No sliding from where it died
+    this.Snap(); // No sliding from where it died
 }
 ```
 
@@ -878,11 +881,11 @@ view Trail(Body body, with Ball)
     Spawn(Spark { position = body.position });
 }
 
-view DrawSparks(Entity self, mut Spark spark)
+view DrawSparks(mut Spark spark)
 {
     Draw.Circle(spark.position, 0.1, Color.yellow);
     spark.framesLeft -= 1;
-    if (spark.framesLeft <= 0) self.Destroy();
+    if (spark.framesLeft <= 0) this.Destroy();
 }
 
 // Error: match code can't read local state.
@@ -892,7 +895,7 @@ system Count(Spark spark) { }
 ### Provisional
 
 - `local` is only a keyword at the start of a declaration. It goes before components, singletons, events and event handlers; before anything else it's an error that says why (structs and functions belong to neither side, views are always local, systems run the match).
-- **`LocalEntity`** is an entity of the local world. `Spawn` in local code returns one, and a view of local components takes `LocalEntity`, where a view of match components takes `Entity`. Local code can hold and read an `Entity` (the unit a player selected, say) but never change one. The match's declarations can't hold a `LocalEntity`, and neither can structs, which both sides share.
+- **`LocalEntity`** is an entity of the local world. `Spawn` in local code returns one, and `this` is one in a view of local components, where in a view of match components it's an `Entity`. Local code can hold and read an `Entity` (the unit a player selected, say) but never change one. The match's declarations can't hold a `LocalEntity`, and neither can structs, which both sides share.
 - A view runs for the entities of one world: its components are all local or all the match's.
 - Local handlers handle local events, and `Spawned` and `Destroyed` of local entities. They only take local state for now.
 - The host keeps the local state and calls `purr_local_init(local)` once, then `purr_frame(w, local, draw)` every frame. `purr_frame` runs the views, then applies their local changes and events. Outside a match, `w` is NULL, and views that read the match don't run.
@@ -945,9 +948,9 @@ event(PlayerJoined joined) DealIn()
     Scene.AddPlayer(hand, joined.player);
 }
 
-system Collapse(Entity self, Arena arena)
+system Collapse(Arena arena)
 {
-    if (arena.size <= 0) Scene.Unload(self);
+    if (arena.size <= 0) Scene.Unload(this);
 }
 ```
 
@@ -966,7 +969,7 @@ system Collapse(Entity self, Arena arena)
 ### Open
 
 - The server's own code: creating worlds from scenes, and moving players between them.
-- Entity references that say what they point to, so the compiler can check `Scene.Unload` on an entity read from a field. It can already check one that comes from a system taking the scene's component, as in `Collapse`.
+- Entity references that say what they point to, so the compiler can check `Scene.Unload` on an entity read from a field. It can already check `this` in a system taking the scene's component, as in `Collapse`.
 - The details of private scenes: what players outside one see of it, and how an added player catches up.
 
 ## Sessions

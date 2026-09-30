@@ -32,7 +32,7 @@ string Greet(string who)
     return "hi " + who;
 }
 
-system Check(Entity self, mut Results r)
+system Check(mut Results r)
 {
     Expect(r, $"score {42}" == "score 42");
     Expect(r, $"{1.5:F2}" == "1.50");
@@ -56,7 +56,7 @@ system Check(Entity self, mut Results r)
     Expect(r, "cat".Contains("at") && "cat".StartsWith("c") && "cat".EndsWith("t"));
     Expect(r, "x" != "y");
     Expect(r, $"{(r.checks > 0 ? 1 : 2)}" == "1");
-    Expect(r, $"{self}" == "Entity(1:1)");
+    Expect(r, $"{this}" == "Entity(1:1)");
     Expect(r, Greet("cat") == "hi cat");
     Expect(r, "".Length == 0);
 

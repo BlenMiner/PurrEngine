@@ -87,10 +87,10 @@ system Bounce(Arena arena, mut Body body)
     if (body.position.y < -limit.y) { body.position.y = -limit.y; body.velocity.y = Math.Abs(body.velocity.y); }
 }
 
-system Expire(Entity entity, mut Lifetime life)
+system Expire(mut Lifetime life)
 {
     life.ticks -= 1;
-    if (life.ticks <= 0) entity.Destroy();
+    if (life.ticks <= 0) this.Destroy();
 }
 
 // Views run once per frame and draw the world. They can only read it; how it

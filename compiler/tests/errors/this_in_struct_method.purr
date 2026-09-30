@@ -1,0 +1,9 @@
+// expect: 'Stats' is a struct, which belongs to no entity, so its methods have no 'this'
+struct Stats
+{
+    Entity owner;
+
+    bool IsMine() { return owner == this; }
+}
+component Unit { Stats stats; }
+scene Main { }

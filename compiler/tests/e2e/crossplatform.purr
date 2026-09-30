@@ -54,8 +54,8 @@ system Simulate(Time time, mut Body body)
     body.counter = (body.counter * 7 + (body.counter >> 3)) % 100000;
 }
 
-system Retire(Entity e, Body body)
+system Retire(Body body)
 {
     if (body.counter % 997 == 0)
-        e.Destroy();
+        this.Destroy();
 }

@@ -45,7 +45,7 @@ void Promote(mut Tag tag)
     tag.level += 1;
 }
 
-system Grow(Entity self, mut Named n, mut Log log)
+system Grow(mut Named n, mut Log log)
 {
     var before = n.name; // A copy: it keeps the old text
     if (n.name.Length < 12) n.name += "s";
@@ -56,7 +56,7 @@ system Grow(Entity self, mut Named n, mut Log log)
     copy.label = "changed";
     if (n.tag.label != "changed") log.kept += 1;
     Send(Said { text = $"{n.name} said hi" });
-    if (n.name == "nobodyss") self.Destroy();
+    if (n.name == "nobodyss") this.Destroy();
 }
 
 system Status(Time time, mut Log log)

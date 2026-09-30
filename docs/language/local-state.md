@@ -33,15 +33,15 @@ view Trail(Body body, with Ball)
     Spawn(Spark { position = body.position });
 }
 
-view DrawSparks(LocalEntity self, mut Spark spark)
+view DrawSparks(mut Spark spark)
 {
     Draw.Circle(spark.position, 0.1, Color.yellow);
     spark.framesLeft -= 1;
-    if (spark.framesLeft <= 0) self.Destroy();
+    if (spark.framesLeft <= 0) this.Destroy();
 }
 ```
 
-`LocalEntity` is an entity of the local world: local `Spawn` returns one, and a view of local components takes one. Local code can hold and read an `Entity` of the match, like the unit a player selected, but never change it.
+`LocalEntity` is an entity of the local world: local `Spawn` returns one, and in a view of local components, `this` is one. Local code can hold and read an `Entity` of the match, like the unit a player selected, but never change it.
 
 Local structural changes and local events apply at the end of the frame, as the match's do at the end of the tick.
 

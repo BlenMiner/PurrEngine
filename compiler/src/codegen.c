@@ -1146,6 +1146,12 @@ static void gen_routine_call(gen *g, sb *o, const expr *e)
         if (m->is_mut_method) sb_put(o, ")");
         args++;
     }
+    // The entity its component belongs to: the one the caller runs for, as
+    // the checker only allows it on the caller's own components.
+    if (m->uses_this) {
+        sb_put(o, ", purr_this");
+        args++;
+    }
     // A read-only list argument is passed as it is, unless a mut argument could
     // change it during the call: then it's a copy.
     bool mut_list = false;
@@ -1258,6 +1264,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         sb_printf(o, "}, %d, sizeof(%s))", e->args.count, elem_ctype(element));
         break;
     }
+    case E_THIS: // The entity the system runs for, or a component method's: its caller's
+        sb_put(o, "purr_this");
+        break;
     case E_NAME:
         if (is_text_ref(e)) {
             sb_printf(o, "purr_textref_get(%s)", local_cname(g, e->name));
@@ -3219,7 +3228,6 @@ static bool reads_match(const decl *sys)
     for (int i = 0; i < sys->params.count; i++) {
         const type t = sys->params.items[i].type;
         if ((t.kind == TY_COMPONENT || t.kind == TY_SINGLETON) && !t.decl->is_local) return true;
-        if (t.kind == TY_ENTITY) return true;
     }
     return false;
 }
@@ -3227,8 +3235,8 @@ static bool reads_match(const decl *sys)
 // Systems and handlers get the world they record structural changes into:
 // the match's, or a local handler's the local world. Views get the match
 // read-only (NULL outside a match), the local world, and the draw list their
-// Draw calls record into. A handler's event comes first, before its other
-// parameters.
+// Draw calls record into. A handler's event comes first, then the entity it
+// runs for (`this`), then its other parameters.
 static void gen_system_body(gen *g, const decl *sys)
 {
     sb *o = &g->c;
@@ -3245,15 +3253,11 @@ static void gen_system_body(gen *g, const decl *sys)
     } else {
         sb_printf(o, "PURR_HELPER void purr_system_%s(purr_world *purr_w", name);
     }
+    if (sys->per_entity) sb_put(o, ", purr_entity purr_this");
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
         if (p->mode == PARAM_WITH || p->mode == PARAM_WITHOUT || p->mode == PARAM_EVENT) continue;
-        const char *param_name = local_cname(g, p->name);
-        if (p->type.kind == TY_ENTITY || p->type.kind == TY_LOCAL_ENTITY) {
-            sb_printf(o, ", purr_entity %s", param_name);
-        } else {
-            sb_printf(o, ", %s%s *restrict %s", p->mode == PARAM_MUT ? "" : "const ", c_type(p->type), param_name);
-        }
+        sb_printf(o, ", %s%s *restrict %s", p->mode == PARAM_MUT ? "" : "const ", c_type(p->type), local_cname(g, p->name));
         if (p->type.kind == TY_INPUT) {
             sb_printf(o, ", const %s *restrict %s", c_type(p->type), prev_input_name(g, p->name));
         }
@@ -3268,6 +3272,7 @@ static void gen_system_body(gen *g, const decl *sys)
     g->call_temps = 0;
     g->routine = NULL;
     if (g->has_scene) line(g, o, "(void)purr_scene;");
+    if (sys->per_entity) line(g, o, "(void)purr_this;");
     if (sys->is_view || !sys->is_local) line(g, o, "(void)purr_w;");
     if (sys->is_view || sys->is_local) line(g, o, "(void)purr_l;");
     if (sys->is_view) line(g, o, "(void)purr_draw; (void)purr_ui; (void)purr_seed;");
@@ -3317,18 +3322,16 @@ static bool param_blends(const param *p)
         && decl_blends(p->type.decl);
 }
 
-// Arguments that bind one entity's data to the system's parameters. `mask` is
-// the archetype's components; arch_var is NULL for a system that runs once.
+// Arguments that bind one entity to the system: the entity itself, `this`, and
+// its data for the parameters. `mask` is the archetype's components; arch_var
+// is NULL for a system that runs once.
 static void gen_system_args(gen *g, const decl *sys, const char *arch_var, const uint64_t mask)
 {
     sb *o = &g->c;
+    if (arch_var) sb_printf(o, ", %s->entity[purr_i]", arch_var);
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
         switch (p->type.kind) {
-        case TY_ENTITY:
-        case TY_LOCAL_ENTITY:
-            sb_printf(o, ", %s->entity[purr_i]", arch_var);
-            break;
         case TY_SINGLETON:
             if (g->blending == sys && param_blends(p)) sb_printf(o, ", &purr_v%d", i);
             else sb_printf(o, ", &%s->%s", p->type.decl->is_local ? "purr_l" : "purr_w", type_cname(p->type.decl));
@@ -3427,6 +3430,10 @@ static void gen_routine_signature(gen *g, sb *o, const decl *m)
         sb_printf(o, m->is_mut_method ? "%s *purr_self" : "const %s purr_self", type_cname(m->owner));
         n++;
     }
+    if (m->uses_this) {
+        sb_put(o, ", purr_entity purr_this");
+        n++;
+    }
     for (int i = 0; i < m->params.count; i++) {
         const param *p = &m->params.items[i];
         if (p->mode == PARAM_MUT && p->type.kind == TY_STRING) sb_printf(o, "%spurr_textref %s", n++ ? ", " : "", local_cname(g, p->name));
@@ -3450,6 +3457,7 @@ static void gen_routine(gen *g, const decl *m)
     g->spawn_temps = 0;
     g->call_temps = 0;
     if (m->owner && !m->is_operator && !m->is_interpolate) line(g, o, "(void)purr_self;");
+    if (m->uses_this) line(g, o, "(void)purr_this;");
     if (m->draws) line(g, o, "(void)purr_draw; (void)purr_ui; (void)purr_seed;");
     for (int i = 0; i < m->params.count; i++) line(g, o, "(void)%s;", local_cname(g, m->params.items[i].name));
     for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);

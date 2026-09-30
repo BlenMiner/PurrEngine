@@ -1,4 +1,4 @@
 // expect: 'Arena' is a scene, so Remove can't take it
 scene Arena { int size; }
 scene Main { }
-system Close(Entity self, with Arena) { self.Remove(Arena); }
+system Close(with Arena) { this.Remove(Arena); }

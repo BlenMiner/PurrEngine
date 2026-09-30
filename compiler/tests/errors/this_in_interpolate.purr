@@ -1,0 +1,14 @@
+// expect: Interpolate blends values between ticks, which belong to no entity, so it has no 'this'
+component Body
+{
+    float2 position;
+    Entity owner;
+
+    Body Interpolate(Body from, Body to, float t)
+    {
+        mut var body = to;
+        body.owner = this;
+        return body;
+    }
+}
+scene Main { }

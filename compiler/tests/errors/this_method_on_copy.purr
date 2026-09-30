@@ -1,0 +1,14 @@
+// expect: 'IsMine' uses 'this', the entity its Health belongs to, and this one belongs to none
+component Health
+{
+    int value;
+
+    bool IsMine(Entity e) { return e == this; }
+}
+singleton Stats { int mine; }
+scene Main { }
+system Count(Health health, mut Stats stats)
+{
+    var copy = health;
+    if (copy.IsMine(this)) stats.mine += 1;
+}

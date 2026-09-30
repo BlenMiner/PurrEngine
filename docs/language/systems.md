@@ -28,12 +28,13 @@ Keeping what a system touches (its access) apart from which entities it picks (i
 Other parameters:
 
 - **Singletons**, read or `mut`, like components: `system Score(mut Stats stats, Rules rules)`.
-- **`Entity`**: the handle of the entity the system is running for.
 - **The input**, or **`Devices`**: what the player who owns the entity does (see [Input](./input.md)).
+
+The entity itself isn't a parameter: it's `this` (see [Entity handles](./entities.md#entity-handles)).
 
 ## Once per entity, or once per tick
 
-A system with component or `Entity` parameters runs once for every matching entity. One without them runs once per tick:
+A system with component parameters runs once for every matching entity, and `this` is the entity it's running for. One without them runs once per tick, for no entity, so it has no `this`:
 
 ```csharp
 system CountDown(mut Round round, Time time)

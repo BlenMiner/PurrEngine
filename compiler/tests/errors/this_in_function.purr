@@ -1,0 +1,11 @@
+// expect: functions don't run for an entity, so they have no 'this'
+component Health { int value; }
+scene Main { }
+bool IsDead(Health health)
+{
+    return health.value <= 0 && this != this;
+}
+system Die(Health health)
+{
+    if (IsDead(health)) this.Destroy();
+}

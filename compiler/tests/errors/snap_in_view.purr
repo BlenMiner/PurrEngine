@@ -1,7 +1,7 @@
 // expect: a view can't change the match, and this entity belongs to it
 component Body { float2 position; }
 scene Main { }
-view Show(Entity self, Body body)
+view Show(Body body)
 {
-    self.Snap();
+    this.Snap();
 }

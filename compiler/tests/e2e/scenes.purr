@@ -57,10 +57,10 @@ event(Spawned) SetupArena(Arena arena, mut Stats stats)
 }
 
 // Runs once per loaded arena, and unloads it on its third round.
-system Rounds(Entity self, mut Arena arena)
+system Rounds(mut Arena arena)
 {
     arena.round += 1;
-    if (arena.round == 3) Scene.Unload(self);
+    if (arena.round == 3) Scene.Unload(this);
 }
 
 // A spawn joins the scene of the entity the code runs for: this loot, the arena.

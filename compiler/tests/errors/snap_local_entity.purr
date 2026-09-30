@@ -1,7 +1,7 @@
 // expect: local state is never blended: views see it as it is
 local component Spark { float2 position; }
 scene Main { }
-view Sparks(LocalEntity self, mut Spark spark)
+view Sparks(mut Spark spark)
 {
-    self.Snap();
+    this.Snap();
 }

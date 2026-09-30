@@ -27,6 +27,7 @@ static const struct {
     {"for", T_FOR},
     {"foreach", T_FOREACH},
     {"continue", T_CONTINUE},
+    {"this", T_THIS},
 };
 
 typedef struct lexer {
@@ -481,6 +482,7 @@ const char *tok_kind_name(const tok_kind kind)
     case T_FOR: return "'for'";
     case T_FOREACH: return "'foreach'";
     case T_CONTINUE: return "'continue'";
+    case T_THIS: return "'this'";
     case T_PLUS_PLUS: return "'++'";
     case T_INTERP: return "text";
     case T_INTERP_PART: return "'}' after a value in text";

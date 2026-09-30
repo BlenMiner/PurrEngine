@@ -62,10 +62,10 @@ component Body
 Something that jumps, like a respawn, a portal or a camera cut, says so from match code: `entity.Snap()` or `singleton.Snap()`. For the tick it happens in, views draw it as it is, instead of sliding from where it was.
 
 ```csharp
-event(Died dead) Respawn(Entity self, mut Body body, Arena arena)
+event(Died dead) Respawn(mut Body body, Arena arena)
 {
     body.position = arena.start;
-    self.Snap(); // No sliding from where it died
+    this.Snap(); // No sliding from where it died
 }
 ```
 

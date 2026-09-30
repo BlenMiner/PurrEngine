@@ -1,0 +1,8 @@
+// expect: the entity a system runs for is 'this', not a parameter
+component Lifetime { int ticks; }
+scene Main { }
+system Expire(Entity self, mut Lifetime life)
+{
+    life.ticks -= 1;
+    if (life.ticks <= 0) self.Destroy();
+}

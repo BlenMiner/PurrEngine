@@ -1,0 +1,15 @@
+// expect: 'Report' uses 'this', the entity its Health belongs to, and this one belongs to none
+component Health
+{
+    int value;
+
+    bool IsMine(Entity e) { return e == this; }
+
+    // Uses this through IsMine.
+    bool Report(Entity e) { return IsMine(e) && value > 0; }
+}
+scene Main { }
+bool Check(Health health, Entity e)
+{
+    return health.Report(e);
+}

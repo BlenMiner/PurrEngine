@@ -90,18 +90,18 @@ event(Spawned) Setup(with Main)
 }
 
 // The Hit comes before the bomb's own Destroy, so it's handled first.
-system Explode(Entity self, Bomb bomb)
+system Explode(Bomb bomb)
 {
-    bomb.target.Send(Hit { attacker = self, damage = bomb.damage });
-    self.Destroy();
+    bomb.target.Send(Hit { attacker = this, damage = bomb.damage });
+    this.Destroy();
 }
 
 // The Hit comes after the Destroy, so it's dropped.
-system Vanish(Entity self, Vanisher vanisher)
+system Vanish(Vanisher vanisher)
 {
     vanisher.target.Destroy();
     vanisher.target.Send(Hit { damage = 100 });
-    self.Destroy();
+    this.Destroy();
 }
 
 system EndRound(Time time)
@@ -109,11 +109,11 @@ system EndRound(Time time)
     if (time.tick == 2) Send(RoundOver { round = 1 });
 }
 
-// Health and self come from the entity the Hit was sent to.
-event(Hit hit) TakeHit(Entity self, mut Health health)
+// Health and this come from the entity the Hit was sent to.
+event(Hit hit) TakeHit(mut Health health)
 {
     health.value -= hit.damage;
-    if (health.value <= 0) self.Destroy();
+    if (health.value <= 0) this.Destroy();
 }
 
 // Takes nothing from the entity, so it runs once per Hit, whatever it hit.
@@ -160,9 +160,9 @@ event(Spawned) CountSpawns(mut Stats stats)
 }
 
 // A player gets a weapon as it's spawned, within the same tick.
-event(Spawned) Arm(Entity self, with Player)
+event(Spawned) Arm(with Player)
 {
-    Spawn(Weapon { owner = self });
+    Spawn(Weapon { owner = this });
 }
 
 // Runs while the entity's components can still be read.

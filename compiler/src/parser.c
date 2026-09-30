@@ -210,6 +210,9 @@ static expr *parse_primary(parser *p)
         e->text = t->text;
         return e;
     }
+    case T_THIS:
+        advance(p);
+        return new_expr(E_THIS, t->at);
     case T_INTERP: {
         // $"a {x} b {y:F2} c": the tokens are `$"a {`, x, `} b {`, y, `:F2`, `} c"`.
         advance(p);

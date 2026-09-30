@@ -44,9 +44,9 @@ event(Spawned) SetupArena(Arena arena)
     Spawn(Floor { size = arena.size });
 }
 
-system Collapse(Entity self, Arena arena)
+system Collapse(Arena arena)
 {
-    if (arena.size <= 0) Scene.Unload(self);
+    if (arena.size <= 0) Scene.Unload(this);
 }
 ```
 

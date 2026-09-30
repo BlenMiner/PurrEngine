@@ -1,4 +1,4 @@
-// expect: an entity jumps as a whole: take its Entity and snap that, like 'self.Snap()'
+// expect: an entity jumps as a whole: snap it, like 'this.Snap()'
 component Body { float2 position; }
 scene Main { }
 system Teleport(mut Body body)

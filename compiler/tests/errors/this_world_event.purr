@@ -1,0 +1,8 @@
+// expect: 'PlayerJoined' is sent to the world, not to an entity, so 'Welcome' has no 'this'
+component Body { float2 position; }
+scene Main { }
+event(PlayerJoined joined) Welcome()
+{
+    Spawn(Body { position = float2(0, 0) });
+    this.Destroy();
+}

@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1368,7 +1369,14 @@ static type check_scene_call(checker *c, expr *e)
         } else if (scene.kind == TY_LOCAL_ENTITY && !local) {
             diag_error(e->args.items[0]->at, "a LocalEntity is local, and the match can't use local state");
         } else {
-            diag_error(e->args.items[0]->at, "Scene." STR_FMT " takes the scene's entity, not %s", STR_ARG(e->name), type_name(scene));
+            const expr *arg = e->args.items[0];
+            diag_error(arg->at, "Scene." STR_FMT " takes the scene's entity, not %s", STR_ARG(e->name), type_name(scene));
+            // The scene's data, which the code runs for: its entity is `this`.
+            if (scene.kind == TY_COMPONENT && scene.decl->is_scene && arg->kind == E_NAME && arg->bind == BIND_PARAM
+                && !arg->param->function_param) {
+                diag_note("'" STR_FMT "' is the scene's data, and its entity is 'this': 'Scene." STR_FMT "(this%s)'",
+                          STR_ARG(arg->name), STR_ARG(e->name), unload ? "" : ", player");
+            }
         }
         return T_ERR;
     }
@@ -1485,7 +1493,7 @@ static type check_method(checker *c, expr *e)
             for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
             diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
             if (obj.kind == TY_COMPONENT && str_eq_c(e->name, "Snap")) {
-                diag_note("an entity jumps as a whole: take its Entity and snap that, like 'self.Snap()'");
+                diag_note("an entity jumps as a whole: snap it, like 'this.Snap()'");
                 return T_ERR;
             }
             suggestion s = suggest_start(e->name);
@@ -2123,6 +2131,61 @@ static type check_name(checker *c, expr *e)
     return T_ERR;
 }
 
+// `this`: the entity the code runs for. Systems, views and handlers that run
+// once per entity have one, and so do a component's methods: the entity whose
+// component they're called on (see check_this_calls).
+static type check_this(const checker *c, const expr *e)
+{
+    decl *m = c->method;
+    if (m && m->kind == DECL_FUNCTION) {
+        diag_error(e->at, "functions don't run for an entity, so they have no 'this'");
+        diag_note("pass it the entity as a parameter, like 'Entity entity'");
+        return T_ERR;
+    }
+    if (m && m->owner->kind != DECL_COMPONENT) {
+        diag_error(e->at, "'" STR_FMT "' is %s, which belongs to no entity, so its methods have no 'this'",
+                   STR_ARG(m->owner->name), decl_what(m->owner));
+        diag_note("a component's methods have one: the entity whose component they're called on");
+        return T_ERR;
+    }
+    if (m && m->is_interpolate) {
+        diag_error(e->at, "Interpolate blends values between ticks, which belong to no entity, so it has no 'this'");
+        return T_ERR;
+    }
+    if (m) {
+        if (!m->uses_this) m->this_at = e->at;
+        m->uses_this = true;
+        return m->owner->is_local ? (type){TY_LOCAL_ENTITY, NULL} : T_ENTITY_;
+    }
+    if (c->in_input) {
+        diag_error(e->at, "%s works on a player's input, not on an entity, so it has no 'this'", input_code(c));
+        return T_ERR;
+    }
+    const decl *sys = c->system;
+    if (!sys) {
+        diag_error(e->at, "'this' is the entity code runs for, and a default value runs for none");
+        return T_ERR;
+    }
+    if (sys->per_entity) return sys->entity_local ? (type){TY_LOCAL_ENTITY, NULL} : T_ENTITY_;
+    if (sys->is_handler && sys->event && sys->event->world_event) {
+        diag_error(e->at, "'" STR_FMT "' is sent to the world, not to an entity, so '" STR_FMT "' has no 'this'",
+                   STR_ARG(sys->event->name), STR_ARG(sys->name));
+    } else if (sys->is_handler && sys->event) {
+        diag_error(e->at, "'" STR_FMT "' takes nothing from the entity '" STR_FMT "' is sent to, so it runs once per "
+                   "event and has no 'this'", STR_ARG(sys->name), STR_ARG(sys->event->name));
+        diag_note("take a component of that entity, or only require one: 'event(" STR_FMT " ...) " STR_FMT "(with Name)'",
+                  STR_ARG(sys->event->name), STR_ARG(sys->name));
+    } else if (sys->is_handler) {
+        diag_error(e->at, "'" STR_FMT "' runs once per event, not for an entity, so it has no 'this'", STR_ARG(sys->name));
+    } else {
+        diag_error(e->at, "'" STR_FMT "' takes no components, so it runs once per %s, not for an entity, and has no 'this'",
+                   STR_ARG(sys->name), sys->is_view ? "frame" : "tick");
+        diag_note("take a component, or only require one: '%s " STR_FMT "(with Name)'", sys->is_view ? "view" : "system",
+                  STR_ARG(sys->name));
+    }
+    return T_ERR;
+}
+
 // A side of cond ? a : b that has to be a value.
 static bool check_side(const expr *side, const type t)
 {
@@ -2270,6 +2333,7 @@ static type check_expr(checker *c, expr *e)
     case E_BOOL: t = T_BOOL_; break;
     case E_STRING: t = (type){TY_STRING, NULL}; break;
     case E_NAME: t = check_name(c, e); break;
+    case E_THIS: t = check_this(c, e); break;
     case E_MEMBER: t = check_member(c, e); break;
     case E_CALL: t = check_call(c, e); break;
     case E_METHOD: t = check_method(c, e); break;
@@ -2343,6 +2407,11 @@ static expr *assign_root(expr *target)
 // `called` on it, or passed to `called`'s mut parameter `arg_of`. Reports why not.
 static bool check_writable(checker *c, expr *target, const decl *called, const param *arg_of)
 {
+    if (target->kind == E_THIS) {
+        diag_error(target->at, "'this' is the entity the code runs for, so it can't change");
+        if (called) diag_note("store it in a 'mut var' first");
+        return false;
+    }
     expr *root = assign_root(target);
     // Into a component or singleton: a write to the world's own memory.
     const bool world_place = root && root->bind == BIND_PARAM && !root->param->function_param
@@ -3528,14 +3597,15 @@ static void check_params(const checker *c, decl *sys)
             continue;
         }
 
+        // The entity the code runs for is `this`. The parameter still names it,
+        // so its uses don't report errors of their own.
         if (is_entity || is_local_entity) {
-            if (p->mode != PARAM_READ) {
-                diag_error(p->at, "%s parameters can't be 'mut', 'with' or 'without'", is_entity ? "Entity" : "LocalEntity");
-            }
-            if (entity) diag_error(p->at, "a %s can only have one Entity or LocalEntity parameter", sys->is_view ? "view" : "system");
-            if (is_local_entity && !is_local_code(sys)) {
-                diag_error(p->type_at.line ? p->type_at : p->at, "a LocalEntity is local, and the match can't use local state");
-                diag_note("match code runs for the match's entities: 'Entity'");
+            diag_error(p->type_at.line ? p->type_at : p->at, "the entity %s runs for is 'this', not a parameter",
+                       sys->is_view ? "a view" : sys->is_handler ? "an event handler" : "a system");
+            if (p->name.len > 0) {
+                diag_note("remove the parameter, and write 'this' where the code uses '" STR_FMT "'", STR_ARG(p->name));
+                const fix f = {.kind = FIX_USE_THIS, .at = p->type_at.line ? p->type_at : p->at, .param = p};
+                vec_push(c->prog->fixes, f);
             }
             entity = p;
             p->type = is_entity ? T_ENTITY_ : (type){TY_LOCAL_ENTITY, NULL};
@@ -3565,8 +3635,6 @@ static void check_params(const checker *c, decl *sys)
                        STR_ARG(p->type_name));
             suggestion s = suggest_start(p->type_name);
             suggest_decls(&s, prog, true, p->mode != PARAM_WITH && p->mode != PARAM_WITHOUT, true);
-            suggest_consider_c(&s, "Entity");
-            if (is_local_code(sys)) suggest_consider_c(&s, "LocalEntity");
             suggest_note(&s);
             const fix create = {.kind = FIX_CREATE_COMPONENT, .at = p->type_at.line ? p->type_at : p->at, .name = p->type_name};
             vec_push(c->prog->fixes, create);
@@ -3668,24 +3736,12 @@ static void check_params(const checker *c, decl *sys)
     sys->per_entity = entity || seen != 0;
     sys->entity_local = side_of ? side_of->is_local : entity && entity->type.kind == TY_LOCAL_ENTITY;
 
-    // The entity parameter names the world its components are in.
-    if (entity && side_of && side_of->is_local != (entity->type.kind == TY_LOCAL_ENTITY)) {
-        const loc at = entity->type_at.line ? entity->type_at : entity->at;
-        if (side_of->is_local) {
-            diag_error(at, "'" STR_FMT "' is local, so its entities are local too: 'LocalEntity " STR_FMT "'",
-                       STR_ARG(side_of->name), STR_ARG(entity->name));
-        } else {
-            diag_error(at, "'" STR_FMT "' belongs to the match, so its entities are the match's: 'Entity " STR_FMT "'",
-                       STR_ARG(side_of->name), STR_ARG(entity->name));
-        }
-    }
-
-    // A handler that takes components or an Entity reads the entity its event
-    // is sent to, so every Send of that event must name one (see check_sends).
+    // A handler that takes components reads the entity its event is sent to,
+    // so every Send of that event must name one (see check_sends).
     if (sys->is_handler && sys->event && sys->per_entity) {
         if (sys->event->world_event) {
             diag_error(sys->at, "'" STR_FMT "' is sent to the world, not to an entity, so '" STR_FMT "' can't take "
-                       "components or an Entity", STR_ARG(sys->event->name), STR_ARG(sys->name));
+                       "components", STR_ARG(sys->event->name), STR_ARG(sys->name));
             diag_note("read what the event carries instead, like its 'player'");
         } else if (!sys->event->needs_target) {
             sys->event->needs_target = sys;
@@ -4480,6 +4536,41 @@ static void check_drawing_calls(checker *c)
     }
 }
 
+// A component's method that uses `this` is given the entity its component
+// belongs to, and so is one that calls it on the same value. The entity is only
+// known for the components code runs for, its parameters: a copy belongs to no
+// entity.
+static void check_this_calls(const checker *c)
+{
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int i = 0; i < c->calls.count; i++) {
+            const call_site *site = &c->calls.items[i];
+            if (site->call->kind != E_CALL || site->from->kind != DECL_METHOD || !site->to->uses_this) continue;
+            if (site->from->uses_this) continue;
+            site->from->uses_this = true;
+            site->from->this_at = site->call->at;
+            changed = true;
+        }
+    }
+    for (int i = 0; i < c->calls.count; i++) {
+        const call_site *site = &c->calls.items[i];
+        const expr *call = site->call;
+        if (!site->to->uses_this || call->kind != E_METHOD) continue;
+        const expr *object = call->object;
+        if (object->kind == E_NAME && object->bind == BIND_PARAM && !object->param->function_param) continue;
+        const decl *m = site->to;
+        char *name = str_to_cstr(m->owner->name);
+        name[0] = (char)tolower((unsigned char)name[0]);
+        diag_error(call->at, "'" STR_FMT "' uses 'this', the entity its " STR_FMT " belongs to, and this one belongs to none",
+                   STR_ARG(m->name), STR_ARG(m->owner->name));
+        diag_note("a component belongs to an entity where code takes it as a parameter, like 'system Name(" STR_FMT
+                  " %s)'; a copy doesn't",
+                  STR_ARG(m->owner->name), name);
+        diag_note("'" STR_FMT "' uses 'this' on line %d", STR_ARG(m->name), m->this_at.line);
+    }
+}
+
 // Match code that takes Devices reads the devices of the player who owns the
 // entity: the input sends what it reads of them, through the functions and
 // methods it calls too. A game without an input declaration gets one that
@@ -4662,6 +4753,7 @@ bool check(program *prog)
         if (diag_error_count() == errors) warn_unused_params(&c, d); // Errors hide uses
     }
     check_sends(&c);
+    check_this_calls(&c);
     check_drawing_calls(&c);
     collect_device_uses(&c);
     // A singleton something snaps counts its snaps: views blend it between ticks with the same count.

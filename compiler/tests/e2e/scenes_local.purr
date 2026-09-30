@@ -33,7 +33,7 @@ view Count(mut Frames frames)
     frames.count += 1;
 }
 
-view Close(LocalEntity menu, with Menu, Frames frames)
+view Close(with Menu, Frames frames)
 {
-    if (frames.count == 2) Scene.Unload(menu);
+    if (frames.count == 2) Scene.Unload(this);
 }

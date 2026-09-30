@@ -201,6 +201,8 @@ typedef struct decl {
     bool is_mut_method;       // `mut void Damage(...)`: it may change the fields
     bool is_operator;         // `Money operator +(Money a, Money b)`: in a struct, with no value of its own
     bool is_interpolate;      // `Angle Interpolate(Angle from, Angle to, float t)`: how views blend its type, no value of its own
+    bool uses_this;           // A component's method that reads `this`, itself or through its other methods: it's given the entity
+    loc this_at;              // ...where it first does
     struct decl *interpolate; // Structs and components: their Interpolate, if they have one
     bool snapped;             // Singletons: something calls .Snap() on it, so it counts its snaps
     tok_kind op;              // An operator's: T_PLUS, T_EQ, ...; T_MINUS is negation with one parameter
@@ -259,6 +261,7 @@ typedef enum expr_kind {
     E_INTERP,  // $"score {score}": `parts` around the values in `args`, each with its format
     E_INDEX,   // object[lhs]: a list's element
     E_LIST,    // [a, b, c]: a list of `args`, whose type comes from where it goes
+    E_THIS,    // this: the entity the code runs for
 } expr_kind;
 
 typedef enum builtin_call {
@@ -516,6 +519,7 @@ typedef enum fix_kind {
     FIX_CREATE_FUNCTION,  // A call of an unknown function: declare it, taking the arguments' types
     FIX_CREATE_STRUCT,    // An unknown type where a struct fits: declare one
     FIX_CREATE_COMPONENT, // An unknown type where a component fits: declare one
+    FIX_USE_THIS,   // An Entity or LocalEntity parameter: remove it, and name the entity `this`
 } fix_kind;
 
 typedef struct fix {

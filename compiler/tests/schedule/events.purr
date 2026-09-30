@@ -23,9 +23,9 @@ event(Spawned) Setup(with Main)
     Spawn(Health);
 }
 
-system Strike(Entity self, with Health)
+system Strike(with Health)
 {
-    self.Send(Hit);
+    this.Send(Hit);
 }
 
 event(Hit hit) TakeHit(mut Health health)

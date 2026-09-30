@@ -88,15 +88,30 @@ component Weapon
 }
 ```
 
-A system or event handler that takes an `Entity` parameter gets the entity it's running for:
+In a system, view or event handler that runs for an entity, `this` is that entity:
 
 ```csharp
-system Expire(Entity self, mut Lifetime life)
+system Expire(mut Lifetime life)
 {
     life.ticks -= 1;
-    if (life.ticks <= 0) self.Destroy();
+    if (life.ticks <= 0) this.Destroy();
 }
 ```
+
+In local code that runs for a local entity, like a view of local components, `this` is a `LocalEntity`. Code that runs once per tick, frame or event runs for no entity, so it has no `this`, and neither do functions.
+
+A component's methods have `this` too: the entity whose component they're called on.
+
+```csharp
+component Health
+{
+    int value;
+
+    bool IsMine(Entity attacker) { return attacker == this; }
+}
+```
+
+So a method that uses `this` can only be called on a component the code runs for, like a system's `Health health`. A copy of one, in a local variable or a function's parameter, belongs to no entity.
 
 ## Archetypes
 

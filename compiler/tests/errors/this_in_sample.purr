@@ -1,0 +1,11 @@
+// expect: Sample works on a player's input, not on an entity, so it has no 'this'
+input Controls
+{
+    Entity target;
+
+    Sample()
+    {
+        target = this;
+    }
+}
+scene Main { }

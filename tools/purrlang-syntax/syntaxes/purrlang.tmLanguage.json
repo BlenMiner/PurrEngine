@@ -184,6 +184,11 @@
           "match": "\\b(mut|with|without)\\b"
         },
         {
+          "comment": "The entity the code runs for",
+          "name": "variable.language.this.purrlang",
+          "match": "\\bthis\\b"
+        },
+        {
           "name": "storage.type.var.purrlang",
           "match": "\\bvar\\b"
         }

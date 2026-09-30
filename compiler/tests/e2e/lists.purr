@@ -58,7 +58,7 @@ List<int> Doubled(List<int> values)
     return doubled;
 }
 
-system Use(Entity self, mut Inventory inv, mut Results t, mut Seen seen)
+system Use(mut Inventory inv, mut Results t, mut Seen seen)
 {
     if (t.checks > 0) return; // Once
 
@@ -119,15 +119,15 @@ system Use(Entity self, mut Inventory inv, mut Results t, mut Seen seen)
     Expect(t, odd == 4);
 
     // Entities, and a whole list assigned
-    seen.entities.Add(self);
-    Expect(t, seen.entities.Contains(self) && seen.entities.Count == 1);
+    seen.entities.Add(this);
+    Expect(t, seen.entities.Contains(this) && seen.entities.Count == 1);
     mut List<int> fresh = [7, 8];
     inv.scores = fresh;
     fresh.Add(9); // The field has its own copy
     Expect(t, inv.scores.Count == 2 && inv.scores[1] == 8 && fresh.Count == 3);
 
     // Events carry lists
-    self.Send(Found { codes = inv.scores });
+    this.Send(Found { codes = inv.scores });
     inv.scores.Clear();
     Expect(t, inv.scores.Count == 0);
 }

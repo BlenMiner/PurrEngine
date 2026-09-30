@@ -1,4 +1,0 @@
-// expect: 'Spark' is local, so its entities are local too: 'LocalEntity self'
-local component Spark { float life; }
-scene Main { }
-view Fade(Entity self, mut Spark spark) { spark.life -= 1; }

@@ -33,6 +33,9 @@ local component Spark
     float2 position;
     int framesLeft = 2;
     bool lit;
+
+    // A local component's this is a LocalEntity.
+    bool Is(LocalEntity e) { return e == this; }
 }
 
 local event Blink
@@ -48,17 +51,17 @@ view Count(mut Frames frames)
 }
 
 // Reads the match, so it only runs in one: a spark behind every ball.
-view Trail(Entity ball, Ball body, mut Frames frames)
+view Trail(Ball body, mut Frames frames)
 {
-    frames.selected = ball;
+    frames.selected = this;
     frames.newest = Spawn(Spark { position = body.position });
 }
 
 // Each spark fades, and destroys itself when it's done.
-view Fade(LocalEntity self, mut Spark spark)
+view Fade(mut Spark spark)
 {
     spark.framesLeft -= 1;
-    if (spark.framesLeft <= 0) self.Destroy();
+    if (spark.framesLeft <= 0) this.Destroy();
 }
 
 local event(Blink blink) CountBlinks(mut Frames frames)
@@ -68,6 +71,6 @@ local event(Blink blink) CountBlinks(mut Frames frames)
 
 local event(Spawned) Light(mut Spark spark, mut Frames frames)
 {
-    spark.lit = true;
+    spark.lit = spark.Is(this);
     frames.lit += 1;
 }

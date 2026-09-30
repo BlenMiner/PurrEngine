@@ -1,0 +1,9 @@
+// expect: 'CountHits' takes nothing from the entity 'Hit' is sent to, so it runs once per event and has no 'this'
+event Hit { int damage; }
+singleton Stats { int hits; }
+scene Main { }
+event(Hit hit) CountHits(mut Stats stats)
+{
+    stats.hits += 1;
+    this.Destroy();
+}

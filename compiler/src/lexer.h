@@ -38,6 +38,7 @@ typedef enum tok_kind {
     T_FOR,
     T_FOREACH,
     T_CONTINUE,
+    T_THIS, // The entity the code runs for
 
     // Punctuation
     T_LBRACE,

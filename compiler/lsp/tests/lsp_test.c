@@ -321,6 +321,7 @@ PURR_TEST(lsp_sanitize)
 
 static const char *format_reply(const char *text);
 static const char *request_at(const char *uri, const char *method, int line, int character, const char *extra);
+static const char *actions_at(int line);
 
 // [Clamp], [Min] and [Max] on input fields: completion, and formatting.
 PURR_TEST(lsp_field_attributes)
@@ -580,9 +581,9 @@ PURR_TEST(lsp_semantic_tokens)
     "    int damage = 1;\n"                                                    \
     "}\n"                                                                      \
     "\n"                                                                       \
-    "system Strike(Entity self, with Body)\n"                                  \
+    "system Strike(with Body)\n"                                              \
     "{\n"                                                                      \
-    "    self.Send(Hit { damage = 2 });\n"                                     \
+    "    this.Send(Hit { damage = 2 });\n"                                     \
     "}\n"                                                                      \
     "\n"                                                                       \
     "event(Hit hit) TakeHit(mut Body body)\n"                                  \
@@ -602,7 +603,7 @@ PURR_TEST(lsp_events)
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
     // The handler: its trigger, and when it runs.
-    open_document(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e, with Body) { e.Send(Hit); }\n"
+    open_document(GAME_TYPES "event Hit { int damage; }\nsystem S(with Body) { this.Send(Hit); }\n"
                   "event(Hit hit) Take$Hit(mut Body body) { body.radius -= hit.damage; }\n");
     const char *handler = request("textDocument/hover");
     PURR_CHECK(has(handler, "event(Hit hit) TakeHit(mut Body body)"));
@@ -611,7 +612,7 @@ PURR_TEST(lsp_events)
     open_document(GAME_TYPES "event(Spawn$ed) Grow(mut Body body) { body.radius += 1; }\n");
     PURR_CHECK(has(request("textDocument/hover"), "Sent to each entity as it's spawned"));
 
-    open_document(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e, with Body) { e.Send(Hit); }\n"
+    open_document(GAME_TYPES "event Hit { int damage; }\nsystem S(with Body) { this.Send(Hit); }\n"
                   "event(Hit hit) TakeHit(mut Body body) { body.radius -= h$it.damage; }\n");
     PURR_CHECK(has(request("textDocument/hover"), "The event being handled"));
 
@@ -629,9 +630,9 @@ PURR_TEST(lsp_events)
     const char *fields = complete(GAME_TYPES "event Hit { int damage; }\nevent(Hit hit) TakeHit(mut Body body)\n{\n"
                                   "    body.radius -= hit.$\n}\n");
     PURR_CHECK(offers(fields, "damage"));
-    const char *send = complete(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e)\n{\n    e.$\n}\n");
+    const char *send = complete(GAME_TYPES "event Hit { int damage; }\nsystem S(with Body)\n{\n    this.$\n}\n");
     PURR_CHECK(offers(send, "Send"));
-    const char *literal = complete(GAME_TYPES "event Hit { int damage; }\nsystem S(Entity e)\n{\n    e.Send(Hit { $ });\n}\n");
+    const char *literal = complete(GAME_TYPES "event Hit { int damage; }\nsystem S(with Body)\n{\n    this.Send(Hit { $ });\n}\n");
     PURR_CHECK(offers(literal, "damage"));
 
     // The outline: events are events (24), and handlers say what they are.
@@ -648,7 +649,7 @@ PURR_TEST(lsp_local_state)
         "local component Spark { int framesLeft = 2; }\n"
         "local singleton Menu { bool open; }\n"
         "view Trail(with Body, mut Menu menu) { Spawn(Spark); menu.open = true; }\n"
-        "view Fade(LocalEntity self, mut Spark spark) { spark.framesLeft -= 1; }\n";
+        "view Fade(mut Spark spark) { spark.framesLeft -= 1; if (spark.framesLeft < 0) this.Destroy(); }\n";
     open_document(game);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
@@ -663,7 +664,7 @@ PURR_TEST(lsp_local_state)
     PURR_CHECK(offers(spawn, "Spark"));
     PURR_CHECK(!offers(spawn, "Body"));
     const char *entity = complete(GAME_TYPES "local component Spark { int framesLeft = 2; }\n"
-                                  "view Fade(LocalEntity self, Spark spark)\n{\n    self.$\n}\n");
+                                  "view Fade(Spark spark)\n{\n    this.$\n}\n");
     PURR_CHECK(offers(entity, "Destroy"));
     PURR_CHECK(offers(complete(GAME_TYPES "\n$"), "local component"));
 
@@ -898,7 +899,7 @@ PURR_TEST(lsp_scenes)
     start();
     static const char game[] = "scene Arena { int size = 20; }\nscene Main { }\n"
                                "event(Spawned) Setup(with Main) { Scene.Load(Arena { size = 30 }); }\n"
-                               "system Close(Entity self, Arena arena) { if (arena.size > 40) Scene.Unload(self); }\n";
+                               "system Close(Arena arena) { if (arena.size > 40) Scene.Unload(this); }\n";
     open_document(game);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
@@ -929,7 +930,7 @@ PURR_TEST(lsp_snap)
 {
     start();
     const char *entity = complete("component Body { float2 p; }\nscene Main { }\n"
-                                  "system Respawn(Entity self, mut Body body)\n{\n    self.$\n}\n");
+                                  "system Respawn(mut Body body)\n{\n    this.$\n}\n");
     PURR_CHECK(offers(entity, "Snap"));
     PURR_CHECK(offers(entity, "Destroy"));
     const char *singleton = complete("singleton Camera { float2 center; }\nscene Main { }\n"
@@ -941,6 +942,47 @@ PURR_TEST(lsp_snap)
                                    "system S(Body body)\n{\n    var r = body.heading.$\n}\n");
     PURR_CHECK(offers(methods, "Radians"));
     PURR_CHECK(!offers(methods, "Interpolate"));
+}
+
+#define THIS_GAME                                                              \
+    "component Health\n"                                                       \
+    "{\n"                                                                      \
+    "    int value;\n"                                                         \
+    "    bool IsMine(Entity e) { return e == th$is; }\n"                       \
+    "}\n"                                                                      \
+    "local component Spark { int left; }\n"                                    \
+    "scene Main { }\n"                                                         \
+    "system Die(Health health) { if (health.IsMine(th$is)) this.Destroy(); }\n" \
+    "view Fade(mut Spark spark) { spark.left -= 1; if (spark.left <= 0) th$is.Destroy(); }\n"
+
+// this: the entity the code runs for, and whose component a method is called on.
+PURR_TEST(lsp_this)
+{
+    start();
+    open_document(THIS_GAME);
+    PURR_CHECK(!has(last_sent(), "\"severity\":1")); // No errors
+
+    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/hover", 3, 41, ""), "The entity whose `Health` this is."));
+    const char *system = request_at("file:///test.purr", "textDocument/hover", 7, 48, "");
+    PURR_CHECK(has(system, "Entity this") && has(system, "The entity `Die` runs for."));
+    const char *view = request_at("file:///test.purr", "textDocument/hover", 8, 68, "");
+    PURR_CHECK(has(view, "LocalEntity this"));
+    PURR_CHECK(has(request_at("file:///test.purr", "textDocument/prepareRename", 7, 48, ""), "'this' is a keyword"));
+
+    // Offered where the code runs for an entity, and its methods after the dot.
+    PURR_CHECK(offers(complete("component Body { int x; }\nscene Main { }\nsystem S(Body body)\n{\n    $\n}\n"), "this"));
+    PURR_CHECK(!offers(complete("component Body { int x; }\nscene Main { }\nsystem S(Time time)\n{\n    $\n}\n"), "this"));
+    PURR_CHECK(offers(complete("component Body { int x; }\nscene Main { }\nsystem S(with Body)\n{\n    this.$\n}\n"),
+                      "Destroy"));
+
+    // The entity isn't a parameter: the quick fix removes it and writes `this`.
+    open_document("component Lifetime { int ticks; }\nscene Main { }\n"
+                  "system Expire(Entity self, mut Lifetime life)\n{\n    life.ticks -= 1;\n    if (life.ticks <= 0) self.Destroy();\n}\n");
+    PURR_CHECK(has(last_sent(), "the entity a system runs for is 'this', not a parameter"));
+    const char *fix = actions_at(2);
+    PURR_CHECK(has(fix, "Use 'this' instead of 'self'"));
+    PURR_CHECK(has(fix, "{\"range\":{\"start\":{\"line\":2,\"character\":14},\"end\":{\"line\":2,\"character\":27}},\"newText\":\"\"}"));
+    PURR_CHECK(has(fix, "{\"range\":{\"start\":{\"line\":5,\"character\":25},\"end\":{\"line\":5,\"character\":29}},\"newText\":\"this\"}"));
 }
 
 // Session: its calls from local code, and its singleton and events.

@@ -3,7 +3,7 @@ component Body { float2 position; }
 scene Main { }
 
 event(Spawned) Setup(with Main) { Spawn(Body); }
-view Cull(Entity e, Body body)
+view Cull(Body body)
 {
-    if (body.position.x > 100) e.Destroy();
+    if (body.position.x > 100) this.Destroy();
 }

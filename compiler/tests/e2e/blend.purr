@@ -66,12 +66,12 @@ system Move(Time time, mut Body body, mut Camera camera, without Jumper)
     if (time.tick == 1) Spawn(Body { position = float2(100, 0), radius = 5 });
 }
 
-system Jump(Time time, Entity self, mut Body body, with Jumper)
+system Jump(Time time, mut Body body, with Jumper)
 {
     body.position += float2(4, 0);
     if (time.tick != 1) return;
     body.position = float2(1000, 50);
-    self.Snap();
+    this.Snap();
 }
 
 system Cut(Time time, mut Shot shot)

@@ -1,4 +1,4 @@
-// expect: 'PlayerJoined' is sent to the world, not to an entity, so 'Greet' can't take components or an Entity
+// expect: 'PlayerJoined' is sent to the world, not to an entity, so 'Greet' can't take components
 component Health { int value; }
 scene Main { }
 event(PlayerJoined joined) Greet(Health health) { }

@@ -15,11 +15,11 @@ event Hit
 `entity.Send(...)` sends an event to an entity, and `Send(...)` sends it to the whole world:
 
 ```csharp
-system Explode(Entity self, Bomb bomb)
+system Explode(Bomb bomb)
 {
     if (bomb.timer > 0) return;
     bomb.target.Send(Hit { attacker = bomb.owner, damage = 50 });
-    self.Destroy();
+    this.Destroy();
 }
 
 system EndRound(Round round)
@@ -35,11 +35,11 @@ The sender isn't recorded. When handlers need it, put it in a field: the entity 
 A handler is code that runs when an event is sent. It's declared with `event` too: the first parentheses hold the event that triggers it, and the second hold the same parameters as a system's.
 
 ```csharp
-// Health and target come from the entity the Hit was sent to.
-event(Hit hit) TakeHit(Entity target, mut Health health)
+// Health and this come from the entity the Hit was sent to.
+event(Hit hit) TakeHit(mut Health health)
 {
     health.value -= hit.damage;
-    if (health.value <= 0) target.Destroy();
+    if (health.value <= 0) this.Destroy();
 }
 
 // Takes nothing from the entity, so it runs once per Hit.
@@ -49,8 +49,8 @@ event(Hit hit) CountHits(mut Stats stats)
 }
 ```
 
-- A handler's components and `Entity` come from the entity the event was sent to. If that entity doesn't match its parameters, the handler doesn't run for it.
-- A handler that takes no components and no `Entity` runs once per event, whether it was sent to an entity or not.
+- A handler's components and `this` come from the entity the event was sent to. If that entity doesn't match its parameters, the handler doesn't run for it.
+- A handler that takes no components runs once per event, whether it was sent to an entity or not, and has no `this`.
 - A handler that needs an entity needs every `Send` of its event to name one. The compiler checks: `Send(Hit { ... })` is an error when a `Hit` handler takes components, and says to write `entity.Send(...)`.
 - A handler that doesn't read the event can leave its name out: `event(Spawned) Arm(...)`.
 
@@ -77,9 +77,9 @@ The engine sends these. They cost nothing where no handler takes them.
 
 ```csharp
 // Spawned has no fields, so it needs no name.
-event(Spawned) Arm(Entity player, with Player)
+event(Spawned) Arm(with Player)
 {
-    Spawn(Weapon { owner = player });
+    Spawn(Weapon { owner = this });
 }
 
 event(PlayerJoined joined) GiveBody()
