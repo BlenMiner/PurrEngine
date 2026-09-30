@@ -1,0 +1,4 @@
+// expect: 'default' can't be used with operator '+'
+scene Main { }
+component T { int n; }
+system S(mut T t) { t.n = default + 1; }

@@ -1,0 +1,4 @@
+// expect: 'var' takes its type from the value, and 'default' takes its type from the variable
+scene Main { }
+component T { int n; }
+system S(mut T t) { var x = default; t.n = x; }

@@ -567,13 +567,19 @@ static void gen_float_literal(sb *o, str text)
     sb_put(o, has_point ? "f" : ".0f");
 }
 
+// A field's declared default, or NULL for none: `= default` is none too.
+static expr *declared_default(const field *f)
+{
+    return f->default_value && f->default_value->kind != E_DEFAULT ? f->default_value : NULL;
+}
+
 // Whether a value of `d` isn't all zeros by default: a field has a default, or
 // holds a struct that has one.
 static bool has_defaults(const decl *d)
 {
     for (int i = 0; i < d->fields.count; i++) {
         const field *f = &d->fields.items[i];
-        if (f->default_value || (f->type.kind == TY_STRUCT && has_defaults(f->type.decl))) return true;
+        if (declared_default(f) || (f->type.kind == TY_STRUCT && has_defaults(f->type.decl))) return true;
     }
     return false;
 }
@@ -587,7 +593,7 @@ static void gen_value(gen *g, sb *o, const decl *d, const field_init *inits, con
     int written = 0;
     for (int i = 0; i < d->fields.count; i++) {
         const field *f = &d->fields.items[i];
-        expr *value = f->default_value;
+        expr *value = declared_default(f);
         for (int j = 0; j < init_count; j++) {
             if (inits[j].field == f) value = inits[j].value;
         }
@@ -613,6 +619,25 @@ static void gen_value(gen *g, sb *o, const decl *d, const field_init *inits, con
 static void gen_literal(gen *g, sb *o, const expr *e)
 {
     gen_value(g, o, e->type_decl, e->inits.items, e->inits.count);
+}
+
+// `default`: its type's declared defaults, or zero, false, empty or null.
+static void gen_default(gen *g, sb *o, const type t)
+{
+    switch (t.kind) {
+    case TY_BOOL: sb_put(o, "false"); return;
+    case TY_INT: sb_put(o, "0"); return;
+    case TY_FLOAT: sb_put(o, "0.0f"); return;
+    case TY_ENUM: sb_printf(o, "((%s)0)", c_type(t)); return;
+    case TY_STRING: sb_put(o, "PURR_STR_EMPTY"); return;
+    case TY_LIST: sb_put(o, "((purr_list){0})"); return;
+    case TY_COMPONENT:
+    case TY_SINGLETON:
+    case TY_INPUT:
+    case TY_STRUCT:
+    case TY_EVENT: gen_value(g, o, t.decl, NULL, 0); return;
+    default: sb_printf(o, "((%s){0})", c_type(t)); return; // Vectors, matrices, quaternion, Color, Rect, Entity, PlayerID
+    }
 }
 
 static void gen_load(gen *g, sb *o, const expr *e);
@@ -715,7 +740,7 @@ static bool is_text_ref(const expr *e)
 // copied as it's taken, so no two variables share a list.
 static bool is_fresh(const expr *e)
 {
-    return e->kind == E_CALL || e->kind == E_METHOD || e->kind == E_LIST || e->kind == E_LITERAL;
+    return e->kind == E_CALL || e->kind == E_METHOD || e->kind == E_LIST || e->kind == E_LITERAL || e->kind == E_DEFAULT;
 }
 
 // `e` as a value going somewhere else: converted to `want`, and its lists
@@ -1054,6 +1079,10 @@ static void gen_c_text(gen *g, sb *o, const expr *e)
         gen_c_literal(o, e->text, false);
         return;
     }
+    if (e->kind == E_DEFAULT) {
+        sb_put(o, "\"\"");
+        return;
+    }
     sb_put(o, "purr_str_c(");
     gen_expr(g, o, e);
     sb_put(o, ")");
@@ -1293,6 +1322,9 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         break;
     case E_STRING:
         gen_text_literal(o, e->text, false);
+        break;
+    case E_DEFAULT:
+        gen_default(g, o, e->type);
         break;
     case E_INTERP:
         gen_interp(g, o, e);
