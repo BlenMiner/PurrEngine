@@ -1029,7 +1029,6 @@ static void describe(const occurrence *o, sb *out)
             }
         } else {
             sb_put(out, o->decl->is_view ? "\n\nRuns once per frame. It reads the match and changes local state, never the match."
-                                         : o->decl->is_main ? "\n\nThe entry point: runs once when the world is created."
                                          : o->decl->per_entity ? "\n\nRuns once per tick for every matching entity."
                                          : "\n\nRuns once per tick.");
         }
@@ -1234,7 +1233,6 @@ static const char *ordinal(const int n)
 // Where a system or view runs, and what it runs after: the schedule, visible.
 static void describe_order(const decl *d, sb *out)
 {
-    if (d->is_main) return;
     if (d->is_handler) {
         if (!d->event || d->event->handlers.count < 2) return;
         int index = 0;
@@ -2547,7 +2545,7 @@ static void complete_systems(completion *c, const bool views)
 {
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (d->kind == DECL_SYSTEM && d->is_view == views && !d->is_main) {
+        if (d->kind == DECL_SYSTEM && d->is_view == views) {
             item(c, name_for(d), CK_FUNCTION, views ? "view" : "system", NULL, NULL);
         }
     }
@@ -2586,7 +2584,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
     }
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (!d->unit || !str_eq(d->unit->ns, ns) || d->is_main) continue;
+        if (!d->unit || !str_eq(d->unit->ns, ns)) continue;
         if (systems != (d->kind == DECL_SYSTEM)) continue;
         const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
                        : d->kind == DECL_EVENT ? CK_EVENT : d->kind == DECL_ENUM ? CK_ENUM
