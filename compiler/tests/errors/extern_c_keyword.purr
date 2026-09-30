@@ -1,0 +1,3 @@
+// expect: 'register' is a keyword in C, so no C function has that name
+scene Main { }
+extern int register(int x);

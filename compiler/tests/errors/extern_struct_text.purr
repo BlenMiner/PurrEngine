@@ -1,0 +1,4 @@
+// expect: C functions can't return text or lists yet
+scene Main { }
+struct Named { string name; }
+extern Named Make(int id);

@@ -83,6 +83,7 @@
               },
               "patterns": [
                 { "include": "#comments" },
+                { "include": "#literals" },
                 {
                   "name": "entity.name.function.purrlang",
                   "match": "[A-Za-z_][A-Za-z0-9_]*"
@@ -155,8 +156,17 @@
           }
         },
         {
+          "comment": "extern float Noise(: a function written in C",
+          "match": "^\\s*(extern)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "storage.modifier.purrlang" },
+            "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
+            "3": { "name": "entity.name.function.purrlang" }
+          }
+        },
+        {
           "comment": "Methods and functions: [mut] Type Name(, at the start of a line",
-          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|in|continue|namespace|using)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|in|continue|namespace|using|extern)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.modifier.purrlang" },
             "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },

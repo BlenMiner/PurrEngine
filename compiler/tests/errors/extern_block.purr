@@ -1,0 +1,3 @@
+// expect: C functions can't take a Block yet
+scene Main { }
+extern void Each(int n, Block content);

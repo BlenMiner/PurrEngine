@@ -50,6 +50,7 @@ purr_e2e_test(blend)
 purr_e2e_test(crlf) # Windows line endings, kept by .gitattributes
 purr_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.purr e2e/multi_file/b_main.purr
     e2e/multi_file/c_combat.purr e2e/multi_file/d_items.purr)
+purr_e2e_test(extern SOURCES e2e/extern.purr e2e/extern_noise.purr e2e/extern_c.c) # C functions, from the game's C file
 
 # Error tests: each errors/<name>.purr must fail to compile, and purrc's output
 # must contain the text on the file's first line, written as `// expect: <text>`.

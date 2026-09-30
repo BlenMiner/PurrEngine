@@ -113,6 +113,11 @@ const char *purr_str_c(const purr_str s)
     return s.ptr[s.bytes] == '\0' ? s.ptr : copy(s.ptr, s.bytes).ptr;
 }
 
+purr_str purr_str_copy_cstr(const char *s)
+{
+    return s ? copy(s, (int32_t)strlen(s)) : PURR_STR_EMPTY;
+}
+
 purr_str purr_str_add(const purr_str a, const purr_str b)
 {
     return append(a, b.ptr, b.bytes, b.chars);

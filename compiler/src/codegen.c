@@ -1121,11 +1121,67 @@ static void gen_record_address(gen *g, sb *o, const expr *arg)
     sb_put(o, place ? ")" : "}");
 }
 
+// Whether `e` is a variable, or a field of one, in C: something with an
+// address, which an `in` parameter can point at without a copy.
+static bool addressable(const expr *e)
+{
+    if (e->kind == E_NAME) return e->bind == BIND_LOCAL || e->bind == BIND_PARAM || e->bind == BIND_FIELD;
+    if (e->kind != E_MEMBER || !e->field || e->swizzle_len > 0 || e->edge != EDGE_NONE || e->enum_member
+        || e->c_constant) {
+        return false;
+    }
+    return addressable(e->object);
+}
+
+// A call of an extern function, as C takes its arguments: plain values as
+// they are, `mut` ones by address, `in` ones by address too (a copy's, for a
+// value that's no variable's), text as C text, and lists as pointers to their
+// elements, NULL when empty. Text C returns is copied, since C may reuse it.
+static void gen_extern_call(gen *g, sb *o, const expr *e)
+{
+    const decl *m = e->method;
+    const bool text = m->return_type.kind == TY_STRING;
+    sb_printf(o, "%s%s(", text ? "purr_str_copy_cstr(" : "", m->c_name);
+    for (int i = 0; i < e->args.count; i++) {
+        const param *p = &m->params.items[i];
+        expr *arg = e->args.items[i];
+        if (i) sb_put(o, ", ");
+        if (p->type.kind == TY_STRING) {
+            sb_put(o, "purr_str_c(");
+            gen_as(g, o, arg, p->type);
+            sb_put(o, ")");
+        } else if (p->type.kind == TY_LIST) {
+            const char *element = c_type(list_elem(p->type.decl));
+            sb_printf(o, "(%s%s *)purr_list_at(", p->mode == PARAM_MUT ? "" : "const ", element);
+            if (p->mode == PARAM_MUT) gen_expr(g, o, arg); // The caller's list itself, whose elements C changes
+            else gen_as(g, o, arg, p->type);
+            sb_printf(o, ", 0, (uint32_t)sizeof(%s))", element);
+        } else if (p->mode == PARAM_MUT
+                   || (p->mode == PARAM_IN && arg->type.kind == p->type.kind && arg->type.decl == p->type.decl
+                       && addressable(arg))) {
+            sb_put(o, "&(");
+            gen_expr(g, o, arg);
+            sb_put(o, ")");
+        } else if (p->mode == PARAM_IN) {
+            sb_printf(o, "(const %s[1]){", c_type(p->type));
+            gen_as(g, o, arg, p->type);
+            sb_put(o, "}");
+        } else {
+            gen_as(g, o, arg, e->arg_want.items[i]);
+        }
+    }
+    sb_put(o, text ? "))" : ")");
+}
+
 static void gen_routine_call(gen *g, sb *o, const expr *e)
 {
     const decl *m = e->method;
     if (e->hoisted) {
         sb_put(o, e->hoisted); // Already ran, before the statement
+        return;
+    }
+    if (m->is_extern) {
+        gen_extern_call(g, o, e);
         return;
     }
     sb_printf(o, "%s(", routine_cname(m));
@@ -1218,6 +1274,10 @@ static const char *prev_input_access(gen *g, const expr *field_access)
 
 static void gen_expr(gen *g, sb *o, const expr *e)
 {
+    if (e->hoisted && (e->kind == E_BINARY || e->kind == E_UNARY || e->kind == E_CONDITIONAL)) {
+        sb_put(o, e->hoisted); // Already ran, before the statement: a unit, or an operator that calls C
+        return;
+    }
     switch (e->kind) {
     case E_INT:
         // Hex and binary literals can be negative (0xFFFFFFFF is -1).
@@ -1500,141 +1560,198 @@ static void gen_send(gen *g, const expr *e)
 // Statements
 
 // PurrLang evaluates left to right, like C#, but C leaves the order of a call's
-// arguments and an initializer's fields unspecified. Spawn is the only
-// expression with a side effect (it allocates an entity ID), so each statement's
-// spawns run first, into temporaries, in source order: children before the
-// expression that uses them, siblings left to right.
+// arguments, an operator's operands and an initializer's fields unspecified.
+// What has side effects keeps its order: spawns (which allocate entity IDs),
+// calls that draw or use the GUI (widgets appear in the order they're called),
+// and calls to C (which may keep state), with the functions, methods and
+// operators that make them. A statement runs them first, into temporaries, in
+// source order: children before the expression that uses them, siblings left
+// to right.
+//
+// The right of && and ||, and the sides of ?:, only run sometimes. The checker
+// keeps spawns and widgets out of them; when they call C, the whole && or ?:
+// is a unit, which runs as if statements with its own parts in order inside.
 typedef VEC(expr *) expr_list;
 
-static void collect_spawns(expr *e, expr_list *out);
-
-static void collect_spawn_list(expr **items, const int count, expr_list *out)
+static bool is_spawn(const expr *e)
 {
-    for (int i = 0; i < count; i++) collect_spawns(items[i], out);
+    return (e->kind == E_CALL && e->call == CALL_SPAWN) || (e->kind == E_METHOD && e->call == CALL_LOAD);
 }
 
-static void collect_spawns(expr *e, expr_list *out)
+static bool is_unit(const expr *e)
+{
+    return e->kind == E_CONDITIONAL || (e->kind == E_BINARY && (e->op == T_AND || e->op == T_OR));
+}
+
+static bool holds_ordered(expr *e);
+
+static void collect_ordered(expr *e, expr_list *out)
 {
     if (!e) return;
     switch (e->kind) {
     case E_MEMBER:
-        collect_spawns(e->object, out);
-        break;
-    case E_METHOD:
-        collect_spawns(e->object, out);
-        collect_spawn_list(e->args.items, e->args.count, out);
-        if (e->call == CALL_LOAD) vec_push(*out, e);
-        break;
-    case E_CALL:
-        collect_spawn_list(e->args.items, e->args.count, out);
-        if (e->call == CALL_SPAWN) vec_push(*out, e);
-        break;
-    case E_LITERAL:
-        for (int i = 0; i < e->inits.count; i++) collect_spawns(e->inits.items[i].value, out);
-        break;
-    case E_BINARY:
-        collect_spawns(e->lhs, out);
-        collect_spawns(e->rhs, out);
-        break;
-    case E_UNARY:
-        collect_spawns(e->lhs, out);
-        break;
-    case E_CONDITIONAL:
-        collect_spawns(e->cond, out); // The checker keeps spawns out of the sides, which may not run
-        break;
-    case E_INTERP:
-    case E_LIST:
-        collect_spawn_list(e->args.items, e->args.count, out);
-        break;
-    case E_INDEX:
-        collect_spawns(e->object, out);
-        collect_spawns(e->lhs, out);
-        break;
-    default:
-        break;
-    }
-}
-
-// Calls that draw or use the GUI, whose order matters too: widgets appear in
-// the order they're called. Not on the right of && or ||, or in a side of ?:,
-// which only run sometimes (the checker keeps widgets out of those).
-static void collect_frame_calls(expr *e, expr_list *out)
-{
-    if (!e) return;
-    switch (e->kind) {
-    case E_MEMBER:
-        collect_frame_calls(e->object, out);
+        collect_ordered(e->object, out);
         break;
     case E_METHOD:
     case E_CALL:
-        if (e->kind == E_METHOD) collect_frame_calls(e->object, out);
-        for (int i = 0; i < e->args.count; i++) collect_frame_calls(e->args.items[i], out);
-        if (e->type.kind != TY_VOID
-            && (e->call == CALL_GUI || ((e->call == CALL_FUNCTION || e->call == CALL_METHOD) && e->method->draws))) {
+        if (e->kind == E_METHOD) collect_ordered(e->object, out);
+        for (int i = 0; i < e->args.count; i++) collect_ordered(e->args.items[i], out);
+        if (is_spawn(e)
+            || (e->type.kind != TY_VOID
+                && (e->call == CALL_GUI
+                    || ((e->call == CALL_FUNCTION || e->call == CALL_METHOD)
+                        && (e->method->draws || e->method->is_extern || e->method->calls_c))))) {
             vec_push(*out, e);
         }
         break;
     case E_LITERAL:
-        for (int i = 0; i < e->inits.count; i++) collect_frame_calls(e->inits.items[i].value, out);
+        for (int i = 0; i < e->inits.count; i++) collect_ordered(e->inits.items[i].value, out);
         break;
     case E_BINARY:
-        collect_frame_calls(e->lhs, out);
-        if (e->op != T_AND && e->op != T_OR) collect_frame_calls(e->rhs, out);
+        collect_ordered(e->lhs, out);
+        if (e->op != T_AND && e->op != T_OR) {
+            collect_ordered(e->rhs, out);
+            if (e->method && e->method->calls_c) vec_push(*out, e); // A struct's operator that calls C
+        } else if (holds_ordered(e->rhs)) {
+            vec_push(*out, e);
+        }
         break;
     case E_UNARY:
-        collect_frame_calls(e->lhs, out);
+        collect_ordered(e->lhs, out);
+        if (e->method && e->method->calls_c) vec_push(*out, e);
         break;
     case E_CONDITIONAL:
-        collect_frame_calls(e->cond, out);
+        collect_ordered(e->cond, out);
+        if (holds_ordered(e->lhs) || holds_ordered(e->rhs)) vec_push(*out, e);
         break;
     case E_INTERP:
     case E_LIST:
-        for (int i = 0; i < e->args.count; i++) collect_frame_calls(e->args.items[i], out);
+        for (int i = 0; i < e->args.count; i++) collect_ordered(e->args.items[i], out);
         break;
     case E_INDEX:
-        collect_frame_calls(e->object, out);
-        collect_frame_calls(e->lhs, out);
+        collect_ordered(e->object, out);
+        collect_ordered(e->lhs, out);
         break;
     default:
         break;
     }
 }
 
-// Emits the spawns of a statement's expressions (in the order given) before
-// it, so they run left to right whatever order C picks. Calls that draw run
-// before it too when there's more than one, or a spawn.
+static bool holds_ordered(expr *e)
+{
+    expr_list found = {0};
+    collect_ordered(e, &found);
+    return found.count > 0;
+}
+
+static bool must_hoist(const expr_list *ordered);
+
+// Whether a part that runs only sometimes needs its own calls put in order.
+static bool part_must_hoist(expr *e)
+{
+    expr_list ordered = {0};
+    collect_ordered(e, &ordered);
+    return must_hoist(&ordered);
+}
+
+// Whether a statement's spawns and calls go before it, in order: it spawns, C
+// would pick the order of two of them, or a unit's parts would.
+static bool must_hoist(const expr_list *ordered)
+{
+    if (ordered->count > 1) return true;
+    for (int i = 0; i < ordered->count; i++) {
+        expr *e = ordered->items[i];
+        if (is_spawn(e)) return true;
+        if (!is_unit(e)) continue;
+        if (e->kind == E_BINARY ? part_must_hoist(e->rhs) : part_must_hoist(e->lhs) || part_must_hoist(e->rhs)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether hoist_spawns runs anything of `e` before its statement.
+static bool needs_hoisting(expr *e)
+{
+    expr_list ordered = {0};
+    collect_ordered(e, &ordered);
+    return must_hoist(&ordered);
+}
+
+static void hoist_unit(gen *g, expr *e, const char *name);
+static bool wrapped_in_parens(const char *text);
+
+// Runs what keeps its order in a statement's expressions (in the order given)
+// before it, into temporaries the statement then reads.
 static void hoist_spawns(gen *g, expr *a, expr *b)
 {
-    expr_list spawns = {0};
-    collect_spawns(a, &spawns);
-    collect_spawns(b, &spawns);
-    expr_list calls = {0};
-    collect_frame_calls(a, &calls);
-    collect_frame_calls(b, &calls);
+    expr_list ordered = {0};
+    collect_ordered(a, &ordered);
+    collect_ordered(b, &ordered);
     // Code copied into several calls is generated again each time.
-    for (int i = 0; i < spawns.count; i++) spawns.items[i]->hoisted = NULL;
-    for (int i = 0; i < calls.count; i++) calls.items[i]->hoisted = NULL;
-    for (int i = 0; i < spawns.count; i++) {
-        expr *spawn = spawns.items[i];
+    for (int i = 0; i < ordered.count; i++) ordered.items[i]->hoisted = NULL;
+    if (!must_hoist(&ordered)) return;
+    for (int i = 0; i < ordered.count; i++) {
+        expr *e = ordered.items[i];
         sb name = {0};
-        sb_printf(&name, "purr_spawned%d", g->spawn_temps++);
-        indent(g, &g->c);
-        sb_printf(&g->c, "const purr_entity %s = ", name.data);
-        gen_spawn(g, &g->c, spawn);
-        sb_put(&g->c, ";\n");
-        line(g, &g->c, "(void)%s;", name.data);
-        spawn->hoisted = name.data;
+        if (is_spawn(e)) {
+            sb_printf(&name, "purr_spawned%d", g->spawn_temps++);
+            indent(g, &g->c);
+            sb_printf(&g->c, "const purr_entity %s = ", name.data);
+            gen_spawn(g, &g->c, e);
+            sb_put(&g->c, ";\n");
+            line(g, &g->c, "(void)%s;", name.data);
+        } else if (is_unit(e)) {
+            sb_printf(&name, "purr_called%d", g->call_temps++);
+            hoist_unit(g, e, name.data);
+        } else {
+            sb_printf(&name, "purr_called%d", g->call_temps++);
+            indent(g, &g->c);
+            sb_printf(&g->c, "%s = ", const_decl(e->type, name.data));
+            gen_expr(g, &g->c, e);
+            sb_put(&g->c, ";\n");
+        }
+        e->hoisted = name.data;
     }
-    if (spawns.count == 0 && calls.count < 2) return;
-    for (int i = 0; i < calls.count; i++) {
-        expr *call = calls.items[i];
-        sb name = {0};
-        sb_printf(&name, "purr_called%d", g->call_temps++);
-        indent(g, &g->c);
-        sb_printf(&g->c, "%s = ", const_decl(call->type, name.data));
-        gen_expr(g, &g->c, call);
-        sb_put(&g->c, ";\n");
-        call->hoisted = name.data;
+}
+
+// A unit, before its statement: && and || as an if that runs the right side
+// only when it decides, and ?: as an if/else, with each part's own calls in
+// order inside. Its value goes in `name`.
+static void hoist_unit(gen *g, expr *e, const char *name)
+{
+    sb *o = &g->c;
+    if (e->kind == E_BINARY) {
+        indent(g, o);
+        sb_printf(o, "bool %s = ", name);
+        gen_expr(g, o, e->lhs);
+        sb_put(o, ";\n");
+        line(g, o, "if (%s%s) {", e->op == T_AND ? "" : "!", name);
+        g->indent++;
+        hoist_spawns(g, e->rhs, NULL);
+        indent(g, o);
+        sb_printf(o, "%s = ", name);
+        gen_expr(g, o, e->rhs);
+        sb_put(o, ";\n");
+        g->indent--;
+        line(g, o, "}");
+        return;
+    }
+    line(g, o, "%s %s;", c_type(e->type), name);
+    const char *cond = expr_text(g, e->cond);
+    indent(g, o);
+    if (wrapped_in_parens(cond)) sb_printf(o, "if %s {\n", cond);
+    else sb_printf(o, "if (%s) {\n", cond);
+    for (int side = 0; side < 2; side++) {
+        expr *value = side == 0 ? e->lhs : e->rhs;
+        g->indent++;
+        hoist_spawns(g, value, NULL);
+        indent(g, o);
+        sb_printf(o, "%s = ", name);
+        gen_as(g, o, value, e->type);
+        sb_put(o, ";\n");
+        g->indent--;
+        line(g, o, "%s", side == 0 ? "} else {" : "}");
     }
 }
 
@@ -1818,6 +1935,8 @@ static void gen_stmt(gen *g, const stmt *s)
     case S_ASSIGN: hoist_spawns(g, s->target, s->value); break;
     case S_IF:
     case S_SWITCH: hoist_spawns(g, s->cond, NULL); break;
+    case S_RETURN:
+    case S_FOREACH: hoist_spawns(g, s->value, NULL); break; // A foreach's list is made once, before it
     default: break;
     }
 
@@ -1891,11 +2010,19 @@ static void gen_stmt(gen *g, const stmt *s)
             g->indent++;
             if (s->init) gen_stmt(g, s->init);
         }
-        const char *cond = s->cond ? expr_text(g, s->cond) : "true";
-        indent(g, o);
-        if (wrapped_in_parens(cond)) sb_printf(o, "while %s {\n", cond);
-        else sb_printf(o, "while (%s) {\n", cond);
-        g->indent++;
+        if (s->cond && needs_hoisting(s->cond)) {
+            // What runs in order goes before the condition, each round.
+            line(g, o, "while (true) {");
+            g->indent++;
+            hoist_spawns(g, s->cond, NULL);
+            line(g, o, "if (!(%s)) break;", expr_text(g, s->cond));
+        } else {
+            const char *cond = s->cond ? expr_text(g, s->cond) : "true";
+            indent(g, o);
+            if (wrapped_in_parens(cond)) sb_printf(o, "while %s {\n", cond);
+            else sb_printf(o, "while (%s) {\n", cond);
+            g->indent++;
+        }
         const gen_target loop = {g->frame, g->containers.count, true, s->kind == S_WHILE, made_up(g, "loop_end"), false,
                                  made_up(g, "next"), false};
         vec_push(g->targets, loop);
@@ -3418,8 +3545,36 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
 // and the body assigns them from the devices.
 // A method's or function's C signature: its value first for a method (by
 // address if it's mut), then the parameters, mut ones by address.
+// An extern function's parameter as C declares it: plain values as they are,
+// `mut` and `in` ones by address, text as C text, and lists as pointers to
+// their elements.
+static const char *extern_param(gen *g, const param *p)
+{
+    sb b = {0};
+    const char *name = local_cname(g, p->name);
+    if (p->type.kind == TY_STRING) {
+        sb_printf(&b, "const char *%s", name);
+    } else if (p->type.kind == TY_LIST) {
+        sb_printf(&b, "%s%s *%s", p->mode == PARAM_MUT ? "" : "const ", c_type(list_elem(p->type.decl)), name);
+    } else if (p->mode == PARAM_MUT || p->mode == PARAM_IN) {
+        sb_printf(&b, "%s%s *%s", p->mode == PARAM_IN ? "const " : "", c_type(p->type), name);
+    } else {
+        sb_put(&b, const_decl(p->type, name));
+    }
+    return b.data;
+}
+
 static void gen_routine_signature(gen *g, sb *o, const decl *m)
 {
+    if (m->is_extern) {
+        const char *ret = m->return_type.kind == TY_VOID     ? "void"
+                        : m->return_type.kind == TY_STRING ? "const char *"
+                                                            : c_type(m->return_type);
+        sb_printf(o, "%s%s%s(", ret, ret[strlen(ret) - 1] == '*' ? "" : " ", m->c_name);
+        for (int i = 0; i < m->params.count; i++) sb_printf(o, "%s%s", i ? ", " : "", extern_param(g, &m->params.items[i]));
+        sb_put(o, m->params.count == 0 ? "void)" : ")");
+        return;
+    }
     sb_printf(o, "PURR_HELPER %s %s(", m->return_type.kind == TY_VOID ? "void" : c_type(m->return_type), routine_cname(m));
     int n = 0;
     if (m->draws) {
@@ -3469,16 +3624,30 @@ static void gen_routine(gen *g, const decl *m)
 }
 
 // Every method and function, declared first so they can call each other.
+// Extern functions are only declared: their code is in C, which the game's C
+// files or libraries define. The declaration comes from the extern alone, so
+// the C library's header, with names that could clash with the game's, stays
+// out of generated code.
 static void gen_routines(gen *g)
 {
+    sb *o = &g->c;
+    bool externs = false;
+    for (int i = 0; i < g->prog->decls.count; i++) {
+        const decl *d = g->prog->decls.items[i];
+        if (!d->is_extern) continue;
+        if (!externs) sb_put(o, "// C functions (extern)\n\n");
+        externs = true;
+        gen_routine_signature(g, o, d);
+        sb_printf(o, "; // " STR_FMT "\n", STR_ARG(d->qualified));
+    }
+    if (externs) sb_put(o, "\n");
     VEC(const decl *) all = {0};
     for (int i = 0; i < g->prog->decls.count; i++) {
         const decl *d = g->prog->decls.items[i];
-        if (d->kind == DECL_FUNCTION && !d->takes_block) vec_push(all, d); // Those are copied into each call
+        if (d->kind == DECL_FUNCTION && !d->takes_block && !d->is_extern) vec_push(all, d); // Those are copied into each call
         for (int k = 0; k < d->methods.count; k++) vec_push(all, d->methods.items[k]);
     }
     if (all.count == 0) return;
-    sb *o = &g->c;
     sb_put(o, "// Methods and functions\n\n");
     for (int i = 0; i < all.count; i++) {
         gen_routine_signature(g, o, all.items[i]);
@@ -4616,6 +4785,9 @@ bool codegen(program *prog, const codegen_options *opts)
     sb path = {0};
     sb_printf(&path, "%s/%s.c", opts->out_dir, opts->name);
     g.c_path = forward_slashes(path.data);
+    for (int i = 0; opts->externs && i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->is_extern) sb_printf(opts->externs, "%s\n", prog->decls.items[i]->c_name);
+    }
 
     gen_header(&g);
     // The game's hash: its header, but for the first line, which names files.

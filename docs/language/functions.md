@@ -82,6 +82,8 @@ system Regenerate(mut Unit unit)
 
 Functions see their parameters and `Math`, and methods their fields too, but nothing else. Neither can spawn or change entities: systems do. A function can draw and use the GUI, and then only views, and other functions like it, can call it.
 
+A function can also be written in C, declared with `extern` and no body: see [Calling C](c-functions.md).
+
 ## Blocks
 
 A function's last parameter can be a `Block`: code the caller writes in braces after the call. The function runs it by calling it, as many times as it likes, including none.

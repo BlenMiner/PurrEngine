@@ -1,0 +1,4 @@
+// expect: NativeName names the C function of an extern function, and 'Move' isn't one
+scene Main { }
+[NativeName("move")]
+system Move() { }

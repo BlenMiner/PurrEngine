@@ -11,7 +11,7 @@ PurrLang is a working name and may change.
 - Source files use the `.purr` extension.
 - The compiler (transpiler) is `purrc`.
 - A game is one or more `.purr` files: by default, every `.purr` file in the game's folder and its subfolders. Every declaration is visible from every file of the game; there are no imports between files.
-- A game needs no C: the engine runs it. A custom C host is optional, for tests or special hosts.
+- A game needs no C: the engine runs it. A custom C host is optional, for tests or special hosts. A game can call C of its own, from `.c` files and libraries in its folder (see C functions).
 
 ### Namespaces
 
@@ -43,6 +43,7 @@ PurrLang is a working name and may change.
 - `scene` declares a scene (see Scenes).
 - `local` in front of a declaration makes it belong to the machine instead of the match (see Local state).
 - A function, `ReturnType Name(parameters) { ... }` with no keyword, declares code that other code calls (see Functions).
+- `extern` declares a function written in C (see C functions).
 
 ### Field defaults
 
@@ -263,7 +264,7 @@ event(Spawned) Setup(with Main)
 
 ### Evaluation order
 
-- Expressions evaluate left to right, like C#: operands, arguments and field initializers run in source order. `Spawn` is the only expression with a side effect today, so this is what makes entity IDs come out the same on every platform. `Spawn(Pair { a = Spawn(Thing), b = Spawn(Thing) })` spawns `a`'s Thing, then `b`'s, then the Pair.
+- Expressions evaluate left to right, like C#: operands, arguments and field initializers run in source order. `Spawn` and calls to C are the only expressions with side effects today, so this is what makes entity IDs, and what C keeps, come out the same on every platform. `Spawn(Pair { a = Spawn(Thing), b = Spawn(Thing) })` spawns `a`'s Thing, then `b`'s, then the Pair.
 - `cond ? a : b` runs the condition first, then only the side it picks, as in C#.
 
 ### Archetypes
@@ -1032,6 +1033,59 @@ Implemented, awaiting approval:
 - Browsers joining matches, over WebSocket, WebTransport or WebRTC.
 - Lobbies, finding matches, and reaching machines behind routers.
 - Telling predicted state from verified state in game code (see AGENTS.md, Networking).
+
+## C functions
+
+### Decided
+
+- Games can call C libraries. `extern` declares a function written in C, with no body: `extern float Noise(float x);`. Calls cost what a call between C functions does.
+- Any code that can call a function can call an extern one, match code and local code alike. The language doesn't mark or check what C does: its determinism, the state it keeps and its thread safety are the game's to get right, and the compiler takes a C call as touching nothing it tracks, so C never makes systems wait for each other.
+- The C function's name is the extern's own name as written, or the one `[NativeName("...")]` gives, so the PurrLang name can follow PurrLang's style: `[NativeName("stb_perlin_noise3")] extern float Noise(...);`. A namespace doesn't change the C name.
+- A game's C is in its folder, with nothing to set up: every `.c` file there compiles with the game, with the engine's determinism flags, and every prebuilt library there (`.a`, `.lib`, `.so`, `.dll`, `.dylib`) links with it when it was built for the platform being built for. purr tells which platform a library is for from its contents, not its name or folder, so one folder holds every platform's libraries. C for one platform only uses `#ifdef`, as any C does.
+- Writing `external` gets an error that points to `extern`.
+- C takes pointers without PurrLang having pointer arithmetic: the parameter says how a value is passed, and the call takes its address. `mut T` is `T *`, `in T` is `const T *`, a `List<T>` is a pointer to its elements (`T *` with `mut`), with the count passed separately, and a `string` is a zero-terminated UTF-8 copy. Each is only valid during the call. A `const char *` that C returns is copied into text.
+- C calls keep the order of evaluation: calls to C, and to functions that call it, run left to right like the rest of PurrLang, whatever order C would pick.
+
+```csharp
+[NativeName("stb_perlin_noise3")]
+extern float Noise(float x, float y, float z, int xWrap, int yWrap, int zWrap);
+
+component Ground
+{
+    float2 position;
+    float height;
+}
+
+system Shape(mut Ground ground)
+{
+    ground.height = Noise(ground.position.x, ground.position.y, 0, 0, 0, 0);
+}
+```
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- Extern functions take and return numbers, `bool`, vectors, matrices, quaternions, `Color`, `Rect`, `Entity`, `PlayerID`, enums (`int32_t` in C), and structs and components of those, by value. A struct is a C struct with the same fields in the same order: PurrLang's types have no padding the compiler adds, so the layouts match. The vector types are `purr/math.h`'s (`purr_float3` and the like), which C files can include.
+- A `mut` parameter is a pointer to the caller's variable (`float *`, `Stats *`), which C can change, as `mut` works for PurrLang functions.
+- An `in` parameter points at the caller's variable or field when it's one of the parameter's type, and otherwise at a copy made for the call, like a computed value or one that converts (`int3` to `in float3`). `in` is only for extern functions: PurrLang functions' parameters are read-only already. It doesn't go on text or lists, which go by address anyway.
+- A list's elements are plain data (no text or lists in them). C gets NULL for an empty list. With `mut`, C can change the elements, but not how many there are. C can't return a list.
+- C gets text as it is when a zero follows it, and a copy in the scratch area otherwise. Text C returns is copied into the scratch area, as C may reuse its memory; NULL is empty text. A `mut string` can't go to C.
+- A `Block` and the devices can't be passed to C, nor structs that hold text or lists.
+- Calls are put in order the way spawns and GUI calls are: what has to go first runs before its statement, and before a loop's condition each round. An `&&` or `||` whose right side calls C, or a `?:` whose sides do, runs as `if` statements then, so each part still only runs when it would, with its own calls in order. So do struct operators that call C.
+- `extern` declarations go at the top level of a file, not in structs. `local` doesn't apply to them.
+- The C name must be a C identifier, not a C keyword. `[NativeName]` can't name the engine's functions (`purr_...`), and two externs can't name the same C function.
+- purrc declares each extern function itself in the generated C, from its PurrLang signature, rather than including the library's header, whose names could clash with the game's. If the signature doesn't match C's, the game is wrong the way C would be.
+- Libraries: static libraries and Windows import libraries link in; `.so` and `.dylib` files link and are copied next to the game, which finds them there; a `.dll` is copied next to the game, and links through its import library (`.lib`). Windows games build for MinGW, so a static library built with Microsoft's compiler may need its C runtime and fail to link; rebuild it with clang or MinGW. A library purr can't read (LLVM bitcode, text) is left out, saying so.
+- On the web, only C files and WebAssembly libraries define functions. A web build fails when an extern function has no definition there, rather than when the page calls it.
+- `purr run` builds again when a C file, header or library changes. C code is part of the game's library, which each build replaces, so the state C keeps starts over at each reload.
+- purr's own CMake (`purr_add_game`) compiles the `.c` files in the game's folder but the host's, or those listed after `SOURCES`. It doesn't pick up libraries.
+
+### Open
+
+- Objects C owns (`ma_engine *`): a handle type only local state can hold, since pointers differ between machines.
+- Keeping the state of C libraries across hot reloads, by building them apart from the game's library.
+- Reading declarations from C headers, with purr's built-in clang.
 
 ## Open
 

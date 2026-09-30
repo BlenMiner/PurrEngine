@@ -1,0 +1,7 @@
+// expect: extern functions go at the top of a file, outside 'Noise'
+scene Main { }
+struct Noise
+{
+    float seed;
+    extern float Sample2(float x);
+}

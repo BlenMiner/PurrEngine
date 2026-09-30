@@ -1,0 +1,3 @@
+// expect: functions belong to neither side, so they can't be local
+scene Main { }
+local extern float Noise(float x);

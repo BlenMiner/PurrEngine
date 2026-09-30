@@ -1,0 +1,4 @@
+// expect: NativeName takes the C function's name, in quotes
+scene Main { }
+[NativeName(stb_perlin_noise3)]
+extern float Noise(float x);

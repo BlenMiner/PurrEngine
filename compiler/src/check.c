@@ -339,6 +339,16 @@ static decl *reading_code(const checker *c)
     return c->method ? c->method : c->system;
 }
 
+// Code that uses a struct's operator calls it, so what the operator's code
+// does (calling C) counts for the code that uses it too.
+static void note_operator_call(checker *c, decl *op, const expr *e)
+{
+    decl *from = reading_code(c);
+    if (!op || !from) return;
+    const call_site site = {from, op, e};
+    vec_push(c->calls, site);
+}
+
 // Match code reads device leaf `leaf` (an index in program.device_leaves):
 // the input sends it. Reads of this machine's `Devices` don't count.
 static void note_device_leaf(const checker *c, const expr *e, const int leaf)
@@ -2345,6 +2355,7 @@ static type check_expr(checker *c, expr *e)
         const type r = check_expr(c, e->rhs);
         if (short_circuit) c->short_circuit_depth--;
         t = binary_result(e->op, l, r, e->at, &e->method);
+        note_operator_call(c, e->method, e);
         break;
     }
     case E_CONDITIONAL: t = check_conditional(c, e); break;
@@ -2372,6 +2383,7 @@ static type check_expr(checker *c, expr *e)
         if (operand.kind == TY_ERROR) break;
         if (operand.kind == TY_STRUCT) {
             e->method = find_operator(e->op, operand, T_ERR, true, e->at);
+            note_operator_call(c, e->method, e);
             if (e->method) {
                 t = e->method->return_type;
             } else {
@@ -2548,6 +2560,7 @@ static void check_assign(checker *c, const stmt *s)
     type result = value;
     if (s->op != T_ASSIGN) {
         result = binary_result(compound_op(s->op), target, value, s->at, &((stmt *)s)->operator_decl);
+        note_operator_call(c, s->operator_decl, s->value);
         if (result.kind == TY_ERROR) return;
     }
     if (!type_assignable(target, result)) {
@@ -3335,6 +3348,11 @@ static void check_signature(const checker *c, decl *m)
             }
         }
         p->type = method_type(c, p->type_name, p->type_qual_at, false);
+        if (p->mode == PARAM_IN && !m->is_extern) {
+            diag_error(p->at, "only extern functions take 'in' parameters: C gets a read-only pointer to the value");
+            diag_note("a PurrLang %s's parameters are read-only already; drop 'in'", m->owner ? "method" : "function");
+            p->mode = PARAM_READ;
+        }
         if (p->type.kind == TY_RECORD && p->mode == PARAM_MUT) {
             diag_error(p->at, "devices can only be read, so '" STR_FMT "' can't be 'mut'", STR_ARG(p->name));
         }
@@ -3488,6 +3506,149 @@ static void check_method_decls(const checker *c, decl *d)
     if (diag_error_count() == 0) check_operator_pairs(d);
 }
 
+static void c_name_of(const decl *d, sb *out);
+
+// C's keywords, which can't name a C function.
+static const char *const c_keywords[] = {
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern",
+    "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return", "short", "signed",
+    "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "alignas",
+    "alignof", "bool", "constexpr", "false", "nullptr", "static_assert", "thread_local", "true", "typeof",
+    "typeof_unqual", "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex", "_Generic", "_Imaginary", "_Noreturn",
+    "_Static_assert", "_Thread_local",
+};
+
+// Why C can't take a value of type `t`, or NULL if it can: plain data, with
+// nothing in the world's heap.
+static const char *c_refuses(const type t)
+{
+    switch (t.kind) {
+    case TY_STRING: return "text";
+    case TY_LIST: return "lists";
+    case TY_BLOCK: return "a Block";
+    case TY_RECORD: return "the devices";
+    case TY_STRUCT:
+    case TY_COMPONENT: return decl_holds_text(t.decl) ? "text or lists" : NULL;
+    default: return NULL;
+    }
+}
+
+// The C function an extern names: [NativeName("f")], or its own name.
+static const char *extern_c_name(const decl *fn)
+{
+    const attribute *native = NULL;
+    for (int i = 0; i < fn->attributes.count; i++) {
+        const attribute *a = &fn->attributes.items[i];
+        if (!str_eq_c(a->name, "NativeName")) continue;
+        if (native) {
+            diag_error(a->at, "'" STR_FMT "' already has a NativeName", STR_ARG(fn->name));
+            continue;
+        }
+        native = a;
+        if (a->values.count != 1 || a->args.count != 0 || a->values.items[0]->kind != E_STRING) {
+            diag_error(a->at, "NativeName takes the C function's name, in quotes: [NativeName(\"stb_perlin_noise3\")]");
+            return NULL;
+        }
+    }
+    const str name = native ? native->values.items[0]->text : fn->name;
+    const loc at = native ? native->values.items[0]->at : fn->at;
+    bool identifier = name.len > 0 && !(name.ptr[0] >= '0' && name.ptr[0] <= '9');
+    for (int i = 0; i < name.len; i++) {
+        const char ch = name.ptr[i];
+        identifier &= (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+    }
+    if (!identifier) {
+        diag_error(at, "'" STR_FMT "' isn't a C function's name", STR_ARG(name));
+        diag_note("C names are letters, digits and '_', and don't start with a digit");
+        return NULL;
+    }
+    for (size_t i = 0; i < sizeof c_keywords / sizeof c_keywords[0]; i++) {
+        if (!str_eq_c(name, c_keywords[i])) continue;
+        diag_error(at, "'" STR_FMT "' is a keyword in C, so no C function has that name", STR_ARG(name));
+        if (!native) diag_note("give the C function's name with [NativeName(\"...\")]");
+        return NULL;
+    }
+    if (native && str_starts_with_c(name, "purr_")) {
+        diag_error(at, "names starting with 'purr_' belong to the engine");
+        return NULL;
+    }
+    return str_to_cstr(name);
+}
+
+// An extern function's parameter: plain data, by value, or by address when
+// it's `mut` or `in`; text as C text; or a list as a pointer to its elements,
+// which are plain data.
+static void check_extern_param(const checker *c, decl *fn, const param *p)
+{
+    if (p->type.kind == TY_STRING) {
+        c->prog->uses_text = true; // C text that isn't already can be a copy
+        if (p->mode == PARAM_MUT) {
+            diag_error(p->at, "C can't change text, so a string it takes can't be 'mut'");
+            diag_note("return the new text instead, as C's 'const char *': 'extern string Name(...);'");
+        } else if (p->mode == PARAM_IN) {
+            diag_error(p->at, "text already goes to C by address, as a 'const char *'; drop 'in'");
+        }
+        return;
+    }
+    if (p->type.kind == TY_LIST) {
+        const type element = list_element(p->type);
+        const char *refused = element.kind == TY_STRING ? "text" : c_refuses(element);
+        if (refused) {
+            diag_error(p->type_at, "C functions can't take lists of %s yet", refused);
+            diag_note("a list goes to C as a pointer to its elements: numbers, vectors, enums, and structs of them");
+        } else if (p->mode == PARAM_IN) {
+            diag_error(p->at, "a list already goes to C by address, as a pointer to its elements; drop 'in'");
+        }
+        return;
+    }
+    const char *refused = c_refuses(p->type);
+    if (!refused) return;
+    diag_error(p->type_at, "C functions can't take %s yet", refused);
+    if (p->type.kind == TY_BLOCK) diag_note("a Block is PurrLang code, which only PurrLang functions run");
+    else diag_note("pass numbers, vectors, enums, text, lists, and structs of them");
+    fn->takes_block = false; // It's no longer inlined
+}
+
+// `extern float Noise(float x);`: a function whose code is in C. It takes and
+// returns plain data, a `mut` or `in` parameter by address, text as C text
+// and lists as pointers to their elements, and its C name must be its own.
+static void check_extern_decl(const checker *c, decl *fn)
+{
+    for (int i = 0; i < fn->params.count; i++) check_extern_param(c, fn, &fn->params.items[i]);
+    if (fn->return_type.kind == TY_STRING) {
+        c->prog->uses_text = true; // Copied into the scratch area
+    } else if (fn->return_type.kind == TY_LIST) {
+        diag_error(fn->return_type_at, "C functions can't return lists");
+        diag_note("C can fill the elements of a list the game passes it as 'mut List<T>'");
+    } else if (c_refuses(fn->return_type)) {
+        diag_error(fn->return_type_at, "C functions can't return %s yet", c_refuses(fn->return_type));
+        diag_note("return numbers, vectors, enums, text, or structs of them");
+    }
+    fn->c_name = extern_c_name(fn);
+    if (!fn->c_name) return;
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        const decl *other = c->prog->decls.items[i];
+        if (other == fn) break;
+        if (other->is_extern && other->c_name && strcmp(other->c_name, fn->c_name) == 0) {
+            diag_error(fn->at, "'" STR_FMT "' and '" STR_FMT "' are the same C function, %s", STR_ARG(fn->qualified),
+                       STR_ARG(other->qualified), fn->c_name);
+            diag_note("declare it once");
+            return;
+        }
+    }
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        const decl *other = c->prog->decls.items[i];
+        if (other->kind == DECL_FUNCTION || other->kind == DECL_SYSTEM || other->builtin) continue;
+        sb theirs = {0};
+        c_name_of(other, &theirs);
+        if (strcmp(theirs.data, fn->c_name) != 0) continue;
+        diag_error(fn->at, "the C function %s has the same name as '" STR_FMT "' in generated C", fn->c_name,
+                   STR_ARG(other->qualified));
+        diag_note("rename '" STR_FMT "'", STR_ARG(other->qualified));
+        return;
+    }
+}
+
 static void check_function_decl(const checker *c, decl *fn)
 {
     if (fn->is_mut_method) {
@@ -3495,6 +3656,7 @@ static void check_function_decl(const checker *c, decl *fn)
         diag_note("a function changes what's passed to its 'mut' parameters, like 'void Heal(mut Stats stats)'");
     }
     check_signature(c, fn);
+    if (fn->is_extern) check_extern_decl(c, fn);
 }
 
 static void check_method_body(checker *c, decl *m)
@@ -4400,14 +4562,29 @@ static void check_attributes(checker *c)
         decl *d = c->prog->decls.items[i];
         for (int a = 0; a < d->attributes.count; a++) {
             attribute *attr = &d->attributes.items[a];
+            if (str_eq_c(attr->name, "NativeName")) { // Checked with the extern's signature
+                if (!d->is_extern) {
+                    diag_error(attr->at, "NativeName names the C function of an extern function, and '" STR_FMT
+                               "' isn't one", STR_ARG(d->name));
+                    diag_note("declare a C function as 'extern float Noise(float x);'");
+                }
+                continue;
+            }
             const bool before = str_eq_c(attr->name, "Before");
             if (!before && !str_eq_c(attr->name, "After")) {
                 diag_error(attr->at, "unknown attribute '" STR_FMT "'", STR_ARG(attr->name));
                 suggestion s = suggest_start(attr->name);
                 suggest_consider_c(&s, "Before");
                 suggest_consider_c(&s, "After");
+                suggest_consider_c(&s, "NativeName");
                 suggest_note(&s);
-                diag_note("the attributes are Before and After, which order systems: [After(Physics.Integrate)]");
+                diag_note("the attributes are Before and After, which order systems: [After(Physics.Integrate)], and "
+                          "NativeName, which names an extern function's C function");
+                continue;
+            }
+            if (attr->values.count > 0) {
+                diag_error(attr->values.items[0]->at, "'" STR_FMT "' takes names, not text: [" STR_FMT "(Movement)]",
+                           STR_ARG(attr->name), STR_ARG(attr->name));
                 continue;
             }
             if (d->kind != DECL_SYSTEM) {
@@ -4483,6 +4660,22 @@ static bool calls(const decl *from, const decl *target, const decl **seen, int *
         }
     }
     return false;
+}
+
+// Code that calls C, itself or through the functions and methods it calls,
+// may change what C keeps: its calls are side effects, which codegen runs in
+// source order like spawns (see hoist_spawns), whatever order C picks.
+static void mark_c_callers(const checker *c)
+{
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int i = 0; i < c->calls.count; i++) {
+            const call_site *site = &c->calls.items[i];
+            if (site->from->calls_c || !(site->to->is_extern || site->to->calls_c)) continue;
+            site->from->calls_c = true;
+            changed = true;
+        }
+    }
 }
 
 // A function that calls one that draws draws too. Only views and functions
@@ -4733,7 +4926,7 @@ bool check(program *prog)
     }
     for (int i = 0; i < prog->decls.count; i++) {
         decl *d = prog->decls.items[i];
-        if (d->kind == DECL_FUNCTION) check_method_body(&c, d);
+        if (d->kind == DECL_FUNCTION && !d->is_extern) check_method_body(&c, d);
         for (int k = 0; k < d->methods.count; k++) check_method_body(&c, d->methods.items[k]);
     }
     if (prog->input) {
@@ -4755,6 +4948,7 @@ bool check(program *prog)
     check_sends(&c);
     check_this_calls(&c);
     check_drawing_calls(&c);
+    mark_c_callers(&c);
     collect_device_uses(&c);
     // A singleton something snaps counts its snaps: views blend it between ticks with the same count.
     for (int i = 0; i < prog->decls.count; i++) {

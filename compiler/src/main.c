@@ -23,7 +23,7 @@ int main(const int argc, char **argv)
 {
     const char **inputs = calloc((size_t)argc, sizeof(char *));
     int input_count = 0;
-    codegen_options opts = {NULL, NULL, true, false};
+    codegen_options opts = {NULL, NULL, true, false, NULL};
     bool schedule = false;
 
     for (int i = 1; i < argc; i++) {

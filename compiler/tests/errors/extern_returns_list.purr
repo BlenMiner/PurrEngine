@@ -1,0 +1,3 @@
+// expect: C functions can't return lists
+scene Main { }
+extern List<int> Primes(int count);
