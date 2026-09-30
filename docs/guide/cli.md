@@ -25,6 +25,7 @@ purr <command> [folder] [options]
 | `--title <title>` | The window's title (default: the folder's name) |
 | `--stats` | Shows the tick, the entity count, the ping and the frame rate |
 | `-o <path>` | `build` only: where the program goes |
+| `--no-open` | `run --web` only: serves the page without opening a browser |
 
 `purr build --release --web` makes one self-contained `.html` file with the game inside. It opens straight from disk, and can be put online as it is.
 
@@ -49,7 +50,7 @@ Carrying the game over works like this:
 
 When the game gets into a state you don't want, type `r` and press Enter in `purr`'s terminal to start it over. With a match on several windows (`--host` in one, `--join` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over.
 
-`purr run --web` reloads too. `purr` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console.
+`purr run --web` reloads too. `purr` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console. VS Code and JetBrains IDEs can play it beside your code instead (see [Editors](editors.md)).
 
 Hot reload is only for `purr run`: `purr build` makes a plain program, or a page with nothing of it.
 

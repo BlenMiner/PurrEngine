@@ -23,10 +23,10 @@ char *purr_build(const char *root, const build_options *opts);
 int purr_run_reloading(const char *root, const build_options *opts, const char *const *args);
 
 // The same on the web (`purr run --web`): purr serves the game's page on this
-// machine, opens it, and builds the game again whenever a .purr file changes,
-// which the page starts in the running build's place (see platform/web/purr.js).
-// Runs until it's stopped.
-int purr_run_web(const char *root, const build_options *opts);
+// machine, opens it in a browser if `open_page`, and builds the game again
+// whenever a .purr file changes, which the page starts in the running build's
+// place (see platform/web/purr.js). Runs until it's stopped.
+int purr_run_web(const char *root, const build_options *opts, bool open_page);
 
 // Prints the schedule of the game in `folder` (see purrc --schedule).
 bool purr_schedule(const char *folder);

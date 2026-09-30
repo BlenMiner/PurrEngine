@@ -949,7 +949,7 @@ static void answer_web(void *user, const char *path, serve_reply *reply)
     }
 }
 
-int purr_run_web(const char *root, const build_options *opts)
+int purr_run_web(const char *root, const build_options *opts, const bool open_page)
 {
     web_run w = {0};
     run *r = &w.r;
@@ -967,10 +967,10 @@ int purr_run_web(const char *root, const build_options *opts)
     }
     char url[64];
     snprintf(url, sizeof url, "http://127.0.0.1:%u/", (unsigned)port);
-    printf("purr: the game is at %s\n", url);
+    printf("purr: the game is at %s\n", url); // The VS Code extension reads the address from this line
     printf("purr: saving a .purr file reloads it; type r and press Enter to start it over, and Ctrl+C to stop\n");
     fflush(stdout);
-    if (!sys_open_in_browser(url)) fprintf(stderr, "purr: couldn't open a browser; open %s in one\n", url);
+    if (open_page && !sys_open_in_browser(url)) fprintf(stderr, "purr: couldn't open a browser; open %s in one\n", url);
     sys_read_lines();
 
     uint64_t stamp = game_stamp(r->b.folder);

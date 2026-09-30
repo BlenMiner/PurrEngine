@@ -39,6 +39,7 @@ static void usage(void)
            "  --title <title>    the window's title (default: the folder's name)\n"
            "  --stats            show the tick, the entity count, the ping and the frame rate\n"
            "  -o <path>          build: where the program goes\n"
+           "  --no-open          run --web: serve the page without opening a browser\n"
            "\n"
            "run, in a match with others (the game's Main must be the match's for --host):\n"
            "  --host [port]      a match others can join (port 7777 by default)\n"
@@ -133,6 +134,7 @@ int main(const int argc, char **argv)
 
     build_options opts = {.folder = "."};
     const char *session[3] = {NULL, NULL, NULL}; // --host [port] or --join <address>, for the game
+    bool open_page = true;                        // run --web opens the page in a browser
     for (int i = 2; i < argc; i++) {
         const char *a = argv[i];
         if (run && strcmp(a, "--host") == 0) {
@@ -141,7 +143,8 @@ int main(const int argc, char **argv)
         } else if (run && strcmp(a, "--join") == 0 && i + 1 < argc) {
             session[0] = a;
             session[1] = argv[++i];
-        } else if (strcmp(a, "--release") == 0) opts.release = true;
+        } else if (run && strcmp(a, "--no-open") == 0) open_page = false;
+        else if (strcmp(a, "--release") == 0) opts.release = true;
         else if (strcmp(a, "--web") == 0) opts.web = true;
         else if (strcmp(a, "--stats") == 0) opts.stats = true;
         else if (strcmp(a, "--title") == 0 && i + 1 < argc) opts.title = argv[++i];
@@ -160,7 +163,7 @@ int main(const int argc, char **argv)
         code = purr_run_reloading(root, &opts, session);
     } else if (run) {
         if (session[0]) fprintf(stderr, "purr: web games can't %s yet; playing it on its own\n", session[0] + 2);
-        code = purr_run_web(root, &opts);
+        code = purr_run_web(root, &opts, open_page);
     } else {
         char *program = purr_build(root, &opts);
         if (!program) code = 1;

@@ -7,6 +7,8 @@
         <p>Highlighting, completion, errors as you type with quick fixes, hover, go to definition, find usages, rename,
         formatting, parameter hints, inlay hints, the structure view, symbols across the game, folding, moving a
         declaration to a file of its own, and each system's schedule above it, for <code>.purr</code> files.</p>
+        <p>Run a game from its <code>.purr</code> files: in a window of its own, or on the web, in the IDE. Saving a
+        file reloads it as it runs.</p>
         <p>It runs <code>purrls</code>, the language server that comes with purr: install purr first
         (see the <a href="https://github.com/BlenMiner/PurrEngine#install">install steps</a>). Then open your game's
         folder, the one you'd run <code>purr run</code> in: every <code>.purr</code> file in it is one game.</p>
@@ -27,5 +29,10 @@
     <extensions defaultExtensionNs="com.intellij">
         <textmate.bundleProvider implementation="io.github.blenminer.purrlang.PurrTextMateBundle"/>
         <notificationGroup id="PurrLang" displayType="BALLOON"/>
+        <configurationType implementation="io.github.blenminer.purrlang.PurrRunConfigurationType"/>
+        <runConfigurationProducer implementation="io.github.blenminer.purrlang.PurrRunProducer$Desktop"/>
+        <runConfigurationProducer implementation="io.github.blenminer.purrlang.PurrRunProducer$Web"/>
+        <toolWindow id="PurrLang Game" anchor="right" icon="AllIcons.General.Web" doNotActivateOnStart="true"
+                    factoryClass="io.github.blenminer.purrlang.PurrGamePage$Window"/>
     </extensions>
 </idea-plugin>

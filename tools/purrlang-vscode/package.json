@@ -48,6 +48,12 @@
           "default": "",
           "scope": "machine-overridable",
           "markdownDescription": "The language server to run. Empty: the open folder's `build/tools/purrls` when it's PurrEngine itself, else `purrls` from `PATH`, or from where purr is installed. `${workspaceFolder}` is the open folder."
+        },
+        "purrlang.purr.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `purr` that **PurrLang: Run** and **PurrLang: Run on the Web** run. Empty: `purr` from `PATH`, or from where purr is installed. `${workspaceFolder}` is the open folder."
         }
       }
     },
@@ -56,8 +62,32 @@
         "command": "purrlang.restartServer",
         "title": "Restart Language Server",
         "category": "PurrLang"
+      },
+      {
+        "command": "purrlang.run",
+        "title": "Run",
+        "category": "PurrLang",
+        "icon": "$(play)"
+      },
+      {
+        "command": "purrlang.runWeb",
+        "title": "Run on the Web",
+        "category": "PurrLang",
+        "icon": "$(globe)"
       }
     ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "purrlang.run",
+          "when": "resourceLangId == purrlang"
+        },
+        {
+          "command": "purrlang.runWeb",
+          "when": "resourceLangId == purrlang"
+        }
+      ]
+    },
     "configurationDefaults": {
       "[purrlang]": {
         "editor.semanticHighlighting.enabled": true

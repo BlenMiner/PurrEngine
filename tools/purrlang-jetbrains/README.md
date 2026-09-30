@@ -9,6 +9,14 @@ The plugin runs, in this order: the project's own `build/tools/purrls` (in
 PurrEngine's repo, the server your build made), `purrls` on `PATH`, or the one
 where purr's installers put it.
 
+## Running the game
+
+PurrLang run configurations run `purr run` on a game's folder, in the Run tool
+window: natively, or on the web, whose page shows in the **PurrLang Game**
+tool window (JCEF; the system's browser in an IDE without it). A `.purr`
+file's context menu offers both, for the game it's in: the project's folder,
+or in PurrEngine's repo, the game `build/tools/games.txt` lists it in.
+
 ## Colors
 
 JetBrains' dark schemes draw type names like plain text, as in Java, so
