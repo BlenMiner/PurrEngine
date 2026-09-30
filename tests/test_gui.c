@@ -3,8 +3,8 @@
 #include "purr/gui.h"
 #include "purr_test.h"
 
-// The GUI runtime driven by made-up devices, on a 1920 x 1080 window: one GUI
-// unit per pixel. The mouse is given from the top left, y down, like the GUI.
+// The GUI runtime driven by made-up devices, on a 1920 x 1080 window. The
+// mouse is given from the top left, y down, like the GUI.
 
 static purr_gui gui;
 static purr_devices devices;
@@ -86,7 +86,7 @@ PURR_TEST(gui_draws_over_the_world)
     PURR_CHECK(draw.commands[0].kind == PURR_DRAW_GUI);
     PURR_CHECK(draw.commands[1].kind == PURR_DRAW_TEXT && strcmp(draw.text + draw.commands[1].text, "Hello") == 0);
     PURR_CHECK(draw.commands[2].kind == PURR_DRAW_RECT); // The button, below the label
-    PURR_CHECK(draw.commands[2].a.y == 48.0f + 8.0f + 24.0f);
+    PURR_CHECK(draw.commands[2].a.y == 34.0f + 6.0f + 17.0f);
 
     begin(); // A frame without a GUI adds nothing
     end();
@@ -99,7 +99,7 @@ PURR_TEST(gui_toggle_and_slider_change_values)
     bool on = false;
     float volume = 0.5f;
     for (int frame = 0; frame < 3; frame++) {
-        mouse(10.0f, 24.0f, frame == 1);
+        mouse(10.0f, 17.0f, frame == 1);
         begin();
         const bool toggled = purr_gui_layout_toggle(&gui, 1, "Fullscreen", &on);
         purr_gui_layout_slider(&gui, 2, "", &volume, 0.0f, 1.0f);
@@ -108,11 +108,11 @@ PURR_TEST(gui_toggle_and_slider_change_values)
     }
     PURR_CHECK(on);
 
-    // The slider is below the toggle: its track goes from x 8 to 8 + 320 + 100 - 100 - 16.
-    const float left = 8.0f;
-    const float width = 320.0f - 16.0f;
+    // The slider is below the toggle: its track goes from x 6 to 6 + 230 + 70 - 70 - 12.
+    const float left = 6.0f;
+    const float width = 230.0f - 12.0f;
     for (int frame = 0; frame < 3; frame++) {
-        mouse(frame == 0 ? left + 10.0f : left + width * 0.25f, 80.0f, frame < 2);
+        mouse(frame == 0 ? left + 10.0f : left + width * 0.25f, 34.0f + 6.0f + 17.0f, frame < 2);
         begin();
         purr_gui_layout_toggle(&gui, 1, "Fullscreen", &on);
         purr_gui_layout_slider(&gui, 2, "", &volume, 0.0f, 1.0f);
@@ -265,7 +265,7 @@ PURR_TEST(gui_anchored_area_centers_its_content)
     PURR_REQUIRE(draw.count >= 3);
     PURR_CHECK(draw.commands[1].a.x == 960.0f && draw.commands[1].a.y == 540.0f);
     PURR_CHECK(draw.commands[2].a.x == 960.0f && draw.commands[2].a.y == 540.0f);
-    PURR_CHECK(draw.commands[1].b.y == 48.0f + 2.0f * 20.0f);
+    PURR_CHECK(draw.commands[1].b.y == 34.0f + 2.0f * 14.0f);
 }
 
 PURR_TEST(gui_horizontal_groups_sit_side_by_side)
@@ -284,7 +284,7 @@ PURR_TEST(gui_horizontal_groups_sit_side_by_side)
     const purr_draw_command *b = &draw.commands[3];
     const purr_draw_command *c = &draw.commands[5];
     PURR_CHECK(a->a.y == b->a.y && b->a.x > a->a.x);
-    PURR_CHECK(c->a.y == a->a.y + 48.0f + 8.0f);
+    PURR_CHECK(c->a.y == a->a.y + 34.0f + 6.0f);
 }
 
 PURR_TEST(gui_close_ends_what_was_left_open)

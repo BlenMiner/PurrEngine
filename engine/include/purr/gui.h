@@ -18,9 +18,9 @@ typedef struct purr_textref purr_textref;
 // Temporary implementation written by Claude; the project owner takes it over
 // later. Generated code calls the purr_gui_* functions below.
 //
-// Positions and sizes are in units of a screen 1080 tall, whose width follows
-// the window's shape, from the top left with y down, as in Unity's GUI. A GUI
-// laid out once fits every window.
+// Positions and sizes are in the window's pixels, from the top left with y
+// down, as in Unity's GUI. Widgets keep their size when the window changes
+// size, as a web page's do.
 //
 // A frame of a host:
 //
@@ -48,8 +48,6 @@ typedef struct purr_textref purr_textref;
 // (see purr_gui_id). Keyboard and gamepad navigation are built in: Tab, the
 // arrows or the d-pad move the focus between widgets, Enter, Space or the south
 // button press, Escape or the east button let go.
-
-#define PURR_GUI_SCREEN_HEIGHT 1080.0f
 
 #ifndef PURR_GUI_MAX_DEPTH
 #define PURR_GUI_MAX_DEPTH 32 // Containers open at once
@@ -120,10 +118,9 @@ typedef struct purr_gui_seen {
 } purr_gui_seen;
 
 typedef struct purr_gui {
-    // The screen this frame, in GUI units (Screen in PurrLang).
+    // The screen this frame (Screen in PurrLang).
     float width;
     float height;
-    float scale; // Pixels per unit
 
     // Input this frame
     purr_measure_fn measure;

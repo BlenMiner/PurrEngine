@@ -16,6 +16,9 @@
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later.
+//
+// Pixels here are the display's logical pixels, as CSS pixels are on the web:
+// on a display scaled to 150%, one is 1.5 of the screen's real pixels wide.
 
 typedef struct purr_window_desc {
     const char *title;

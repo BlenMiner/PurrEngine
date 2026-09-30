@@ -10,21 +10,21 @@
 // the simulation, so it's free to use the C library (formatting and parsing
 // numbers) and to depend on the window's size.
 
-// Sizes, in GUI units
-#define FONT 28.0f         // Text height
-#define LINE 48.0f         // A widget's height
-#define PAD 16.0f          // Text inside a button, from its sides
-#define SPACING 8.0f       // Between widgets
-#define AREA_PADDING 20.0f // Inside an area, around its content
-#define AREA_MARGIN 24.0f  // Between an anchored area and the screen's edges
-#define LABEL_WIDTH 240.0f // A labelled widget's label, at least
-#define SLIDER_WIDTH 320.0f
-#define VALUE_WIDTH 100.0f // A slider's value, on its right
-#define FIELD_WIDTH 160.0f
-#define PART_WIDTH 120.0f  // Each number of a vector field
-#define COLOR_PART_WIDTH 90.0f
-#define BOX 28.0f          // A toggle's box
-#define BORDER 3.0f        // The focus's outline
+// Sizes, in GUI units (pixels)
+#define FONT 20.0f         // Text height
+#define LINE 34.0f         // A widget's height
+#define PAD 12.0f          // Text inside a button, from its sides
+#define SPACING 6.0f       // Between widgets
+#define AREA_PADDING 14.0f // Inside an area, around its content
+#define AREA_MARGIN 16.0f  // Between an anchored area and the screen's edges
+#define LABEL_WIDTH 170.0f // A labelled widget's label, at least
+#define SLIDER_WIDTH 230.0f
+#define VALUE_WIDTH 70.0f  // A slider's value, on its right
+#define FIELD_WIDTH 115.0f
+#define PART_WIDTH 85.0f   // Each number of a vector field
+#define COLOR_PART_WIDTH 65.0f
+#define BOX 20.0f          // A toggle's box
+#define BORDER 2.0f        // The focus's outline
 
 static const purr_color TEXT = {0.93f, 0.93f, 0.95f, 1.0f};
 static const purr_color PANEL = {0.07f, 0.07f, 0.1f, 0.9f};
@@ -287,14 +287,13 @@ void purr_gui_begin(purr_gui *g, const purr_devices *devices, const purr_float2 
 {
     g->frame++;
     if (g->frame == 0) g->frame = 1; // Stamps of 0 mean never
-    g->scale = screen.y > 0.0f ? screen.y / PURR_GUI_SCREEN_HEIGHT : 1.0f;
-    g->width = screen.x / g->scale;
-    g->height = PURR_GUI_SCREEN_HEIGHT;
+    g->width = screen.x;
+    g->height = screen.y;
     g->measure = measure ? measure : guess_width;
 
     // The devices count the mouse from the bottom left, y up; the GUI from the top left, y down.
     const purr_mouse *m = &devices->mouse;
-    g->mouse = purr_f2(m->position.x / g->scale, (screen.y - m->position.y) / g->scale);
+    g->mouse = purr_f2(m->position.x, screen.y - m->position.y);
     g->mouse_held = m->left.held;
     g->mouse_pressed = g->mouse_held && !g->mouse_was_held;
     g->mouse_released = !g->mouse_held && g->mouse_was_held;
@@ -651,14 +650,14 @@ bool purr_gui_toggle(purr_gui *g, const uint32_t id, const purr_rect rect, const
     const purr_rect box = {rect.x, rect.y + (rect.height - BOX) * 0.5f, BOX, BOX};
     if (g->focus == id) fill(g, grow(box, BORDER), ACCENT);
     fill(g, box, hover ? CONTROL_HOT : CONTROL);
-    if (*value) fill(g, grow(box, -6.0f), ACCENT);
-    text_at(g, text, rect.x + BOX + 12.0f, rect.y + rect.height * 0.5f, TEXT);
+    if (*value) fill(g, grow(box, -4.0f), ACCENT);
+    text_at(g, text, rect.x + BOX + 8.0f, rect.y + rect.height * 0.5f, TEXT);
     return changed;
 }
 
 bool purr_gui_layout_toggle(purr_gui *g, const uint32_t id, const char *text, bool *value)
 {
-    return purr_gui_toggle(g, id, reserve_widget(g, BOX + 12.0f + text_width(g, text), true), text, value);
+    return purr_gui_toggle(g, id, reserve_widget(g, BOX + 8.0f + text_width(g, text), true), text, value);
 }
 
 // A slider's track and thumb. `t` is where the value is, 0 to 1; returns
@@ -675,11 +674,11 @@ static float slider(purr_gui *g, const uint32_t id, const purr_rect r, const flo
 
     const float at = moved >= 0.0f ? moved : t;
     const float middle = r.y + r.height * 0.5f;
-    const purr_rect rail = {r.x, middle - 4.0f, r.width, 8.0f};
+    const purr_rect rail = {r.x, middle - 3.0f, r.width, 6.0f};
     if (focused) fill(g, grow(rail, BORDER), ACCENT);
     fill(g, rail, hover || down ? CONTROL_HOT : CONTROL);
     fill(g, (purr_rect){rail.x, rail.y, rail.width * at, rail.height}, ACCENT);
-    fill(g, (purr_rect){r.x + r.width * at - 8.0f, middle - 16.0f, 16.0f, 32.0f}, down ? ACCENT : TEXT);
+    fill(g, (purr_rect){r.x + r.width * at - 6.0f, middle - 12.0f, 12.0f, 24.0f}, down ? ACCENT : TEXT);
     return moved;
 }
 
@@ -697,7 +696,7 @@ static purr_rect track(purr_gui *g, const purr_rect rect, const char *label, con
     const purr_rect r = after_label(g, rect, label);
     const float w = max_f(r.width - VALUE_WIDTH, 0.0f);
     text_at(g, value, r.x + w + 2.0f * SPACING, r.y + r.height * 0.5f, TEXT);
-    return (purr_rect){r.x + 8.0f, r.y, max_f(w - 16.0f, 0.0f), r.height}; // Room for the thumb at both ends
+    return (purr_rect){r.x + 6.0f, r.y, max_f(w - 12.0f, 0.0f), r.height}; // Room for the thumb at both ends
 }
 
 bool purr_gui_slider(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, float *value,
@@ -936,7 +935,7 @@ bool purr_gui_color_field(purr_gui *g, const uint32_t id, const purr_rect rect, 
     const purr_rect r = after_label(g, rect, label);
     const purr_rect swatch = {r.x, r.y, min_f(r.height, r.width), r.height};
     fill(g, swatch, CONTROL);
-    fill(g, grow(swatch, -4.0f), *value);
+    fill(g, grow(swatch, -3.0f), *value);
     float parts[4] = {value->r, value->g, value->b, value->a};
     const float skip = swatch.width + SPACING;
     const purr_rect rest = {r.x + skip, r.y, max_f(r.width - skip, 0.0f), r.height};

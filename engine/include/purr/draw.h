@@ -15,7 +15,7 @@
 // Positions and sizes are in world units, with y up. The camera decides where
 // they land on screen. Commands draw in the order they were recorded, on a
 // frame that starts black. After a PURR_DRAW_GUI command, they're the GUI's
-// instead: in units of a screen 1080 tall, from the top left with y down.
+// instead: in pixels, from the top left with y down.
 
 #ifndef PURR_DRAW_MAX_COMMANDS
 #define PURR_DRAW_MAX_COMMANDS 16384u
@@ -76,8 +76,8 @@ void purr_draw_line(purr_draw_list *d, purr_float2 from, purr_float2 to, purr_co
 // copied into the list.
 void purr_draw_text(purr_draw_list *d, const char *text, purr_float2 position, float size, purr_color color);
 
-// The commands after it are in GUI units: a screen 1080 units tall, whose
-// width follows the window's shape, from the top left with y down.
+// The commands after it are the GUI's: in pixels, from the top left with y
+// down.
 void purr_draw_gui(purr_draw_list *d);
 
 // Adds `from`'s commands to the end of `d`, such as the GUI's over the world.

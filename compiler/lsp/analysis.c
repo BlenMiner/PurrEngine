@@ -978,7 +978,7 @@ static void describe(const occurrence *o, sb *out)
                   : str_eq_c(o->name, "GUI")       ? "\n\nThe GUI's widgets, each at a Rect. In views and the functions they call."
                   : str_eq_c(o->name, "GUILayout") ? "\n\nThe GUI's widgets, laid out one after another, and containers "
                                                      "that arrange them. In views and the functions they call."
-                  : str_eq_c(o->name, "Screen")    ? "\n\nThe window, in GUI units: a screen 1080 tall."
+                  : str_eq_c(o->name, "Screen")    ? "\n\nThe window's size, in pixels."
                   : str_eq_c(o->name, "Devices")   ? "\n\nThis machine's keyboard, mouse and gamepad. Views read them once "
                                                      "per frame, and the input's Sample once per tick. Systems take a "
                                                      "`Devices` parameter instead: the devices of the entity's owner."

@@ -3,8 +3,8 @@
 #include "game.h"
 #include "purr_test.h"
 
-// Frames of gui.purr's views on a 1920 x 1080 window, one GUI unit per pixel,
-// played with made-up devices. Widgets are found by their text in the draw list.
+// Frames of gui.purr's views on a 1920 x 1080 window, played with made-up
+// devices. Widgets are found by their text in the draw list.
 
 static purr_local local;
 static purr_draw_list draw;

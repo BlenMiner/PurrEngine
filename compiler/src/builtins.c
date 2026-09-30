@@ -355,7 +355,6 @@ static const struct {
     {"Color", "clear", TY_COLOR, "PURR_COLOR_CLEAR"},
     {"Screen", "width", TY_FLOAT, "purr_ui->width"},
     {"Screen", "height", TY_FLOAT, "purr_ui->height"},
-    {"Screen", "scale", TY_FLOAT, "purr_ui->scale"},
 };
 
 #define MEMBER_COUNT (sizeof members / sizeof members[0])

@@ -793,7 +793,7 @@ view DrawHud(Arena arena)
 - Gamepad and keyboard navigation are built in: focus moves between widgets, the south button presses, the east button goes back.
 - Whatever the GUI is using, such as a click on a button or typing in a field, is hidden from the input's `Sample`.
 - Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position.
-- `Screen.width`, `Screen.height` and `Screen.scale` describe the window.
+- `Screen.width` and `Screen.height` are the window's size.
 - The widgets: `Label`, `Button`, `Toggle`, `Slider`, `IntSlider`, `TextField`, `IntField`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field`, `ColorField` and `Space`, and the containers `Horizontal`, `Vertical`, `Area` and `Modal`.
 - `GUILayout.Modal(anchor, mut bool open) { ... }` is a panel over the whole screen while `open` is true, like a pause menu. While it's up, it has the focus, the widgets outside it don't work, the game and views get nothing from the devices, and back (Escape or the east button) closes it.
 
@@ -822,10 +822,10 @@ view Options(mut Settings settings)
 
 Implemented, awaiting approval:
 
-- Positions and sizes are in units of a screen 1080 units tall, whose width follows the window's shape, so a GUI laid out once fits every window. `Screen.width` and `Screen.height` are in those units, and `Screen.scale` is pixels per unit.
+- Positions and sizes are in pixels, as on a web page, so widgets keep their size when the window changes size. On a display scaled to 150%, a pixel is the display's logical one, 1.5 real pixels wide, as CSS pixels are.
 - `Rect(x, y, width, height)` is a built-in value type measured from the top left corner, with `y` down, as in Unity's GUI, with `x`, `y`, `width` and `height`. World drawing and the mouse have `y` up. `GUI`'s rects are on the screen, inside an area or not.
-- `GUILayout.Area(anchor)` places a panel sized to its content at one of nine anchors, the built-in enum `Anchor`, named as Unity's `TextAnchor` (`UpperLeft` to `LowerRight`), 24 units from the screen's edges. `GUILayout.Area(rect)` places it at a rect. An anchored area is placed with its size from the frame before, and moves at the end of the frame if the size changed.
-- `GUILayout` widgets outside any area stack from the screen's top left, across every view. In a vertical container, buttons, toggles, sliders and fields stretch to the widest widget's width. Labelled widgets put their label in a column at least 240 wide, so a column of them lines up.
+- `GUILayout.Area(anchor)` places a panel sized to its content at one of nine anchors, the built-in enum `Anchor`, named as Unity's `TextAnchor` (`UpperLeft` to `LowerRight`), 16 pixels from the screen's edges. `GUILayout.Area(rect)` places it at a rect. An anchored area is placed with its size from the frame before, and moves at the end of the frame if the size changed.
+- `GUILayout` widgets outside any area stack from the screen's top left, across every view. In a vertical container, buttons, toggles, sliders and fields stretch to the widest widget's width. Labelled widgets put their label in a column at least 170 wide, so a column of them lines up.
 - The widgets, with `GUI`'s taking a `Rect rect` first (`TextField` too, see Text):
   - `Label(string text)` and `Button(string text) -> bool`, which returns whether it was pressed.
   - `Toggle(string text, mut bool value)`, `Slider(string label, mut float value, float min, float max)`, `IntSlider(string label, mut int value, int min, int max)`, `IntField(string label, mut int value)`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field` and `ColorField` (a swatch, and fields for r, g, b and a, from 0 to 1). Each returns whether it changed its value.

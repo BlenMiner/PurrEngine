@@ -128,6 +128,9 @@ void purr_platform_open(const purr_window_desc *desc)
 #ifndef __wasm__
     // The browser paces web frames itself.
     flags |= desc->hidden ? FLAG_WINDOW_HIDDEN : FLAG_VSYNC_HINT;
+    // Pixels are the display's logical ones, as CSS pixels are on the web
+    // (see platform.h). raylib still renders at the display's full resolution.
+    flags |= FLAG_WINDOW_HIGHDPI;
 #endif
     SetConfigFlags(flags);
     SetTraceLogLevel(LOG_WARNING);
@@ -285,7 +288,7 @@ void purr_platform_poll(purr_devices *devices)
 
 // The camera maps world units (y up) to window pixels (y down). Each frame's
 // list starts at the origin with 1 unit per pixel. After PURR_DRAW_GUI, it
-// maps GUI units instead: from the top left, y down, a screen 1080 tall.
+// maps the GUI's pixels instead: from the top left, y down.
 typedef struct camera {
     purr_float2 center;
     float scale; // Pixels per world unit
@@ -339,7 +342,7 @@ void purr_platform_draw(const purr_draw_list *list)
             world = cam;
             break;
         case PURR_DRAW_GUI:
-            cam.scale = (float)GetScreenHeight() / PURR_GUI_SCREEN_HEIGHT;
+            cam.scale = 1.0f;
             cam.gui = true;
             break;
         case PURR_DRAW_CIRCLE:

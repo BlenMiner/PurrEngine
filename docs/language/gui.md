@@ -79,7 +79,7 @@ The engine builds nothing a game couldn't build itself: containers are functions
 
 ## Screen units
 
-Positions and sizes are in units of a screen 1080 tall, whose width follows the window's shape, so a GUI laid out once fits every window. `Screen.width` and `Screen.height` are in those units, and `Screen.scale` is pixels per unit.
+Positions and sizes are in pixels, as on a web page, so widgets keep their size when the window changes size. `Screen.width` and `Screen.height` are the window's size. On a display scaled to 150%, a pixel is the display's logical one, 1.5 real pixels wide, as CSS pixels are.
 
 `Rect(x, y, width, height)` is measured from the top left corner, with `y` down, as in Unity's GUI. (World drawing and the mouse have `y` up.)
 
