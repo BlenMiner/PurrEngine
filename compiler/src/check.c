@@ -4016,7 +4016,7 @@ static void add_builtins(program *prog)
     // player; int ping; bool server; }, and local events Connected and
     // Disconnected { DisconnectReason reason; }.
     static const char *const states[] = {"Offline", "Connecting", "Connected"};
-    static const char *const reasons[] = {"Left", "TimedOut", "Refused", "ServerLeft", "Failed"};
+    static const char *const reasons[] = {"Left", "TimedOut", "Refused", "ServerLeft", "Failed", "Ended"};
     decl *state = NEW(decl);
     state->kind = DECL_ENUM;
     state->name = str_from("SessionState");

@@ -66,8 +66,9 @@ The built-in local events `Connected` and `Disconnected` say when that changes. 
 | `Left` | This machine called `Leave`, or started another match |
 | `TimedOut` | The server stopped answering, or never did |
 | `Refused` | The server runs another build of the game, or has no room |
-| `ServerLeft` | The server ended the match |
+| `ServerLeft` | The server's machine left, which ended the match |
 | `Failed` | It couldn't start: no network, a port in use, or an address that isn't one |
+| `Ended` | The match's last scene unloaded (see [Scenes](./scenes.md#loading-and-unloading)) |
 
 ```csharp
 local event(Disconnected gone) BackToMenu(mut Menu menu)

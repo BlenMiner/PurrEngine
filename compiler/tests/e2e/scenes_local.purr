@@ -15,10 +15,12 @@ local component Button
 local singleton Frames
 {
     int count;
+    int opened;
 }
 
-local event(Spawned) Open(with Main)
+local event(Spawned) Open(with Main, mut Frames frames)
 {
+    frames.opened += 1;
     Scene.Load(Menu { page = 1 });
 }
 
@@ -36,4 +38,10 @@ view Count(mut Frames frames)
 view Close(with Menu, Frames frames)
 {
     if (frames.count == 2) Scene.Unload(this);
+}
+
+// Main leaves too, and with no scene left, it loads again.
+view Leave(with Main, Frames frames)
+{
+    if (frames.count == 3) Scene.Unload(this);
 }

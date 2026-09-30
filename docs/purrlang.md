@@ -919,6 +919,8 @@ system Count(Spark spark) { }
 - Loading and unloading happen at the end of the tick, like `Spawn` and `Destroy`. `Spawned` handlers set a scene up, and its entities get `Destroyed` when it unloads, both within that tick (see Events).
 - **Ownership:** a spawn joins the scene of the entity the code runs for. In a handler, that's the entity the event was sent to. Code that isn't running for an entity, like a system that runs once per tick, spawns into no scene, and those entities live until they're destroyed.
 - A scene is never owned: it lives until it's unloaded, whoever loaded it.
+- `Main` is the fallback: when the last scene of `Main`'s world unloads, `Main` loads again, set up by its `Spawned` handlers as at the start. A match `Main` comes back in the match, a local one in the local state.
+- When `Main` is local, a match can't load it, so a match whose last scene unloads ends. Every machine in it goes offline, back to its local `Main`, with `Disconnected` and the reason `Ended` (see Sessions).
 - Loaded scenes share their world: the same systems, singletons and `Time`. Scenes that share nothing are separate worlds, which never communicate. Only the server creates worlds, so match code can't (see Open).
 - **Visibility:** scenes are public by default, seen by every player in the world. `Scene.Load(Hand { ... }, SceneVisibility.Private)` loads a private one, which only the server and the players given it see: `Scene.AddPlayer(scene, player)` and `Scene.RemovePlayer(scene, player)`. Membership is match state, so the server decides it, and a player who's added receives the scene's state.
 - A private scene with no players exists only on the server, which is where secrets like RNG seeds go. Code that reads a private scene only predicts correctly on machines that see it, and the server corrects the others.
@@ -966,6 +968,8 @@ system Collapse(Arena arena)
 - In generated C, a scene's component holds its visibility and players too, as `purr_visibility` and `purr_players`, one bit per player. Code can't name them.
 - The engine loads `Main` itself: `purr_world_init` loads a match `Main`, and `purr_local_init` a local one, with `PURR_MAIN_IS_LOCAL` defined. `purr/run.h` starts without a match when `Main` is local.
 - The `Main` scene is the world's first entity.
+- The fallback waits for the end of the tick (the frame, in local state), once every change and handler has applied, so unloading one scene and loading another in the same tick never brings `Main` back. Entities in no scene don't count. `Main` comes back at most once a tick: one that unloads itself as it loads leaves the world without a scene until the next.
+- A match that ends runs no more ticks after the one that left it without a scene. The server tells every player then, and anyone who tries to join. Only the match ends: local state carries on as it was, so whatever local scenes were loaded stay loaded.
 
 ### Open
 
@@ -1004,7 +1008,7 @@ view Menu(Session session)
 
 local event(Disconnected gone) BackToMenu()
 {
-    // gone.reason says why: Left, TimedOut, Refused, ServerLeft or Failed.
+    // gone.reason says why: Left, TimedOut, Refused, ServerLeft, Failed or Ended.
 }
 ```
 
@@ -1013,7 +1017,7 @@ local event(Disconnected gone) BackToMenu()
 Implemented, awaiting approval:
 
 - `Session` has `state` (`SessionState.Offline`, `Connecting` or `Connected`), `player` (this machine's `PlayerID`, once connected), `ping` (the round trip to the server, in milliseconds) and `server` (whether this machine runs it). It's read-only.
-- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, or no room), `ServerLeft` (the server ended the match) or `Failed` (it couldn't start: no network, a port in use, an address that isn't one).
+- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, or no room), `ServerLeft` (the server's machine left, which ended the match), `Failed` (it couldn't start: no network, a port in use, an address that isn't one) or `Ended` (the match's last scene unloaded, and `Main` is local; see Scenes).
 - `Session.Host(scene, port)` takes players on `port`, 7777 without one. `Session.Join(address)` takes `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"`.
 - Session calls are statements, in views and local handlers. Functions can't make them yet, nor can match code, which runs the same on every machine, nor `Sample`.
 - A match can't start in a scene that holds text or lists yet.

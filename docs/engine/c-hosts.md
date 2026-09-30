@@ -40,7 +40,8 @@ The generated header is the API between the game and its host. Namespaced declar
 
 - `purr_world` is the whole match as plain data. Copying it is a snapshot.
 - `purr_world_init(w, dt)` clears it, sets `Time.dt` and the singletons' defaults, and loads `Main` if it's the match's. `purr_world_start(w, dt, start)` starts in another scene.
-- `purr_world_tick(w)` runs every system once, then applies structural changes and events.
+- `purr_world_tick(w)` runs every system once, then applies structural changes and events. If that leaves no scene loaded, it loads `Main` again when it's the match's (`purr_frame` does the same for a local `Main`).
+- `purr_world_ended(w)` says whether the match is over: its last scene unloaded and `Main` is local. A server stops there and tells every player, who go offline with `PURR_DISCONNECT_ENDED`.
 - `purr_get_<Component>(w, entity)` gives an entity's component, or `NULL`.
 - `purr_world_player_joined(w, player)` and `purr_world_player_left(w, player)` send `PlayerJoined` and `PlayerLeft`, handled at the end of the next tick.
 - `purr_world_copy(to, from)` and `purr_world_hash(w)`: snapshots and hashes, covering only what's in use.
