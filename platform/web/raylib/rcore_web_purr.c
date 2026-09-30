@@ -6,6 +6,11 @@
 //
 // Keys and gamepads bypass raylib: the platform layer reads them from the page
 // directly, by physical position (platform/src/platform.c).
+//
+// The screen is the canvas in CSS pixels, which the program draws and reads the
+// mouse in, as desktop builds do in the display's logical pixels. raylib scales
+// its drawing up to the canvas's own pixels, devicePixelRatio times as many, so
+// it's sharp.
 
 #include <time.h>
 
@@ -14,6 +19,22 @@
 extern CoreData CORE;
 
 int InitPlatform(void);
+
+// Takes the canvas's sizes (see purr_web.h), without the viewport, which
+// needs rlgl. Returns whether they changed.
+static bool FitCanvas(void)
+{
+    const Size screen = {(unsigned)purr_web_canvas_width(), (unsigned)purr_web_canvas_height()};
+    const Size render = {(unsigned)purr_web_canvas_pixel_width(), (unsigned)purr_web_canvas_pixel_height()};
+    if (screen.width == CORE.Window.screen.width && screen.height == CORE.Window.screen.height &&
+        render.width == CORE.Window.render.width && render.height == CORE.Window.render.height)
+        return false;
+    CORE.Window.screen = CORE.Window.display = screen;
+    CORE.Window.render = CORE.Window.currentFbo = render;
+    const Vector2 scale = GetWindowScaleDPI();
+    CORE.Window.screenScale = MatrixScale(scale.x, scale.y, 1.0f);
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Window: the canvas, which can't move, close or change mode
@@ -47,7 +68,11 @@ int GetMonitorPhysicalHeight(int monitor) { (void)monitor; return 0; }
 int GetMonitorRefreshRate(int monitor) { (void)monitor; return 60; }
 const char *GetMonitorName(int monitor) { (void)monitor; return "canvas"; }
 Vector2 GetWindowPosition(void) { return (Vector2){0, 0}; }
-Vector2 GetWindowScaleDPI(void) { return (Vector2){1, 1}; }
+Vector2 GetWindowScaleDPI(void)
+{
+    const Size s = CORE.Window.screen, r = CORE.Window.render;
+    return (Vector2){s.width ? (float)r.width / (float)s.width : 1.0f, s.height ? (float)r.height / (float)s.height : 1.0f};
+}
 void SetClipboardText(const char *text) { (void)text; }
 const char *GetClipboardText(void) { return ""; }
 Image GetClipboardImage(void) { return (Image){0}; }
@@ -108,14 +133,10 @@ void PollInputEvents(void)
     CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
     CORE.Input.Mouse.currentPosition = (Vector2){purr_web_mouse_x(), purr_web_mouse_y()};
 
-    // A page-filling canvas follows the browser window.
-    const unsigned width = (unsigned)purr_web_canvas_width();
-    const unsigned height = (unsigned)purr_web_canvas_height();
-    CORE.Window.resizedLastFrame = width != CORE.Window.screen.width || height != CORE.Window.screen.height;
-    if (CORE.Window.resizedLastFrame) {
-        CORE.Window.screen = CORE.Window.render = CORE.Window.currentFbo = CORE.Window.display = (Size){width, height};
-        SetupViewport((int)width, (int)height);
-    }
+    // A page-filling canvas follows the browser window, and every canvas the
+    // page's zoom and screen.
+    CORE.Window.resizedLastFrame = FitCanvas();
+    if (CORE.Window.resizedLastFrame) SetupViewport((int)CORE.Window.render.width, (int)CORE.Window.render.height);
 }
 
 // ---------------------------------------------------------------------------
@@ -127,8 +148,7 @@ int InitPlatform(void)
         TRACELOG(LOG_FATAL, "PLATFORM: this browser has no WebGL 2");
         return -1;
     }
-    const Size size = {(unsigned)purr_web_canvas_width(), (unsigned)purr_web_canvas_height()};
-    CORE.Window.screen = CORE.Window.render = CORE.Window.currentFbo = CORE.Window.display = size;
+    FitCanvas();
     CORE.Window.ready = true;
     InitTimer();
     CORE.Storage.basePath = GetWorkingDirectory();

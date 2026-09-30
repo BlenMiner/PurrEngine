@@ -181,14 +181,36 @@
     addEventListener('keyup', event => onKey(event, 0));
     addEventListener('blur', () => { keysHeld.fill(0); keysTapped.fill(0); }); // Keys released elsewhere never send keyup
 
-    // The mouse over the canvas, in canvas pixels. Buttons in raylib's order:
+    // The canvas's size in CSS pixels, which the program counts in, as desktop
+    // builds count in the display's logical pixels. It renders devicePixelRatio
+    // times as many, so it's as sharp as the page's text. The whole page when
+    // `fill`. Checked every frame, which also catches zooming and moving to a
+    // screen with another ratio.
+    const size = { width: 0, height: 0, fill: false };
+    function fit() {
+        if (size.fill) {
+            size.width = innerWidth;
+            size.height = innerHeight;
+        }
+        const ratio = devicePixelRatio || 1;
+        const width = Math.max(1, Math.round(size.width * ratio));
+        const height = Math.max(1, Math.round(size.height * ratio));
+        // Setting the size clears the canvas, even to the same size.
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
+        const cssWidth = size.width + 'px', cssHeight = size.height + 'px';
+        if (canvas.style.width !== cssWidth) canvas.style.width = cssWidth;
+        if (canvas.style.height !== cssHeight) canvas.style.height = cssHeight;
+    }
+
+    // The mouse over the canvas, in CSS pixels. Buttons in raylib's order:
     // left, right, middle, back, forward (the DOM's is left, middle, right, ...).
     const mouse = { x: 0, y: 0, buttons: 0, tapped: 0, wheelX: 0, wheelY: 0 }; // Taps as for keys
     const buttonBit = [1, 4, 2, 8, 16];
     function onMouseMove(event) {
         const rect = canvas.getBoundingClientRect();
-        mouse.x = (event.clientX - rect.left) * canvas.width / (rect.width || 1);
-        mouse.y = (event.clientY - rect.top) * canvas.height / (rect.height || 1);
+        mouse.x = (event.clientX - rect.left) * size.width / (rect.width || 1);
+        mouse.y = (event.clientY - rect.top) * size.height / (rect.height || 1);
     }
     canvas.addEventListener('mousemove', onMouseMove);
     canvas.addEventListener('mousedown', event => {
@@ -211,6 +233,7 @@
     }
     function frame() {
         if (stopped) return;
+        fit();
         try {
             exports.purr_web_frame();
         } catch (error) {
@@ -221,20 +244,12 @@
         scheduleFrame();
     }
 
-    function fitToPage() {
-        canvas.width = innerWidth;
-        canvas.height = innerHeight;
-    }
-
     const platform = {
         init_canvas(width, height, resizable) {
-            if (resizable) {
-                fitToPage();
-                addEventListener('resize', fitToPage);
-            } else {
-                canvas.width = width;
-                canvas.height = height;
-            }
+            size.width = width;
+            size.height = height;
+            size.fill = !!resizable;
+            fit();
             gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: false });
             if (!gl) return 0;
             // WebGL only turns on extensions it's asked for; rlgl asks through
@@ -242,8 +257,10 @@
             for (const name of gl.getSupportedExtensions() || []) gl.getExtension(name);
             return 1;
         },
-        canvas_width: () => canvas.width,
-        canvas_height: () => canvas.height,
+        canvas_width: () => size.width,
+        canvas_height: () => size.height,
+        canvas_pixel_width: () => canvas.width,
+        canvas_pixel_height: () => canvas.height,
         mouse_x: () => mouse.x,
         mouse_y: () => mouse.y,
         mouse_buttons() { const held = mouse.buttons | mouse.tapped; mouse.tapped = 0; return held; },

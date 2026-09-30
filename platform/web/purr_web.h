@@ -8,13 +8,18 @@
 
 #define PURR_WEB_IMPORT(name) __attribute__((import_module("purr"), import_name(#name)))
 
-// Sizes the canvas and creates its WebGL 2 context: `width` x `height` pixels,
-// or the whole page when `resizable`. False if the browser has no WebGL 2.
+// Sizes the canvas and creates its WebGL 2 context: `width` x `height` CSS
+// pixels, or the whole page when `resizable`. False if the browser has no
+// WebGL 2.
 PURR_WEB_IMPORT(init_canvas) bool purr_web_init_canvas(int width, int height, bool resizable);
+// Its size in CSS pixels, which the program counts in...
 PURR_WEB_IMPORT(canvas_width) int purr_web_canvas_width(void);
 PURR_WEB_IMPORT(canvas_height) int purr_web_canvas_height(void);
+// ...and in the pixels it renders: devicePixelRatio times as many.
+PURR_WEB_IMPORT(canvas_pixel_width) int purr_web_canvas_pixel_width(void);
+PURR_WEB_IMPORT(canvas_pixel_height) int purr_web_canvas_pixel_height(void);
 
-// The mouse over the canvas, in canvas pixels from its top left. Buttons are a
+// The mouse over the canvas, in CSS pixels from its top left. Buttons are a
 // bit mask in raylib's order: left, right, middle, back, forward. A button
 // pressed since the last call reads as held, even if it's already up again.
 PURR_WEB_IMPORT(mouse_x) float purr_web_mouse_x(void);

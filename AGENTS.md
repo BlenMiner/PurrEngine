@@ -156,6 +156,7 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
   - The platform layer reads keys by physical position everywhere. On the web, the page reads the DOM's `code`, never the typed character, which follows the keyboard layout. `platform/tests/web_keys.c` guards this with AZERTY-style events. Hosts and views should read input from `Devices` too, never raylib's key functions.
   - The characters typed, which do follow the layout, are a separate channel (`purr_devices.text`, since the last poll) that only the GUI reads.
   - On the web, a key or mouse button pressed and released between two frames reads as held for one, so taps aren't lost when frames are slow.
+  - Pixels (the window's size, the mouse, what's drawn) are the display's logical pixels, as a browser's CSS pixels are, and rendering is at the display's full resolution: raylib's `FLAG_WINDOW_HIGHDPI` on desktop, and on the web a canvas `devicePixelRatio` times its CSS size.
   - On the web, `purr_platform_run` never returns (the browser drives the frames), so hosts do all their work in the frame function.
 
 ## Language
