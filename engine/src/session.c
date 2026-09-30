@@ -19,7 +19,7 @@
 //            first the server lacks
 //   SERVER   server: times, its tick, how early the player's inputs arrive, the
 //            newest input it has, and pieces of the ticks the player lacks
-//   BYE      either: leaving
+//   BYE      either: leaving; the server's says whether the match ended
 //
 // Nothing is sent reliably as such: each side says what it has, and the other
 // sends what's missing again until it does.
@@ -37,6 +37,7 @@
 enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE };
 enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2 };
 enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
+enum { BYE_LEFT = 0, BYE_ENDED = 1 };
 
 #define SERVER_SLOT PURR_MAX_PLAYERS // The server's input, after the players'
 #define PREDICTION_SECONDS 1.0 // How far a client runs ahead of the last tick it knows, at most
@@ -187,6 +188,7 @@ struct purr_server {
     void *world;
     uint32_t tick;
     bool started;
+    bool ended; // The match ran out of scenes (purr_game.ended): no more ticks
     double clock_start;
     uint32_t clock_base;
     double now;
@@ -269,12 +271,13 @@ static void drop_connection(purr_server *s, connection *c)
     free_connection(c);
 }
 
-static void send_bye(const purr_server *s, const connection *c)
+static void send_bye(const purr_server *s, const uint32_t transport, const purr_address to)
 {
     uint8_t data[8];
     purr_writer w = {data, sizeof data, 0, false};
     header(&w, MSG_BYE);
-    send_packet(&s->desc.transports[c->transport], c->address, &w);
+    purr_write_u8(&w, s->ended ? BYE_ENDED : BYE_LEFT);
+    send_packet(&s->desc.transports[transport], to, &w);
 }
 
 static void refuse(const purr_server *s, const uint32_t transport, const purr_address to, const uint8_t reason)
@@ -433,7 +436,8 @@ static void server_receive(purr_server *s, const uint32_t transport)
         purr_reader r = {data, size, 0, false};
         const uint8_t type = read_header(&r);
         if (type == MSG_HELLO) {
-            on_hello(s, transport, from, &r);
+            if (s->ended) send_bye(s, transport, from); // Too late to join
+            else on_hello(s, transport, from, &r);
             continue;
         }
         connection *c = find_connection(s, transport, from);
@@ -511,6 +515,7 @@ static void server_tick(purr_server *s)
 
     g->tick(s->world);
     s->tick++;
+    s->ended = g->ended && g->ended(s->world);
     patch_u64(s->frame + 4, g->hash_world(s->world));
 
     stored_frame *f = &s->frames[tick % s->w.history];
@@ -664,7 +669,7 @@ void purr_server_destroy(purr_server *s)
     for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (!c->used) continue;
-        send_bye(s, c);
+        send_bye(s, c->transport, c->address);
         free_connection(c);
     }
     for (uint32_t i = 0; i < 2; i++) {
@@ -689,10 +694,10 @@ void purr_server_update(purr_server *s, const double now)
         connection *c = &s->connections[i];
         if (c->used && now - c->last_heard > TIMEOUT) drop_connection(s, c);
     }
-    if (s->started) {
+    if (s->started && !s->ended) {
         const uint64_t due = (uint64_t)s->clock_base + ticks_in(now - s->clock_start, s->desc.tick_rate);
-        for (uint32_t n = 0; s->tick < due && n < MAX_TICKS; n++) server_tick(s);
-        if (s->tick < due) { // Stalled: drop the time instead of catching up
+        for (uint32_t n = 0; s->tick < due && n < MAX_TICKS && !s->ended; n++) server_tick(s);
+        if (s->tick < due && !s->ended) { // Stalled: drop the time instead of catching up
             s->clock_base = s->tick;
             s->clock_start = now;
         }
@@ -700,7 +705,9 @@ void purr_server_update(purr_server *s, const double now)
     for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (!c->used) continue;
-        if (c->sending) {
+        if (s->ended) { // Every update, until they've all gone
+            send_bye(s, c->transport, c->address);
+        } else if (c->sending) {
             send_welcome(s, c);
             send_chunks(s, c);
         } else {
@@ -933,7 +940,11 @@ static void client_receive(purr_client *c)
         case MSG_CHUNK: on_chunk(c, &r); break;
         case MSG_SERVER: on_server(c, &r); break;
         case MSG_REFUSE: go_offline(c, PURR_DISCONNECT_REFUSED); break;
-        case MSG_BYE: go_offline(c, PURR_DISCONNECT_SERVER_LEFT); break;
+        case MSG_BYE: {
+            const bool ended = purr_read_u8(&r) == BYE_ENDED && !r.failed;
+            go_offline(c, ended ? PURR_DISCONNECT_ENDED : PURR_DISCONNECT_SERVER_LEFT);
+            break;
+        }
         default: break;
         }
         if (c->state == PURR_SESSION_OFFLINE) return;

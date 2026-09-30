@@ -30,6 +30,9 @@
 // events; if they'd left, PlayerJoined comes again, with the same PlayerID.
 // Single-player and hosting are the same: a server and its own player on one
 // machine, over a loopback transport (purr_session).
+//
+// A match whose last scene unloads, when Main is local, ends: the server stops
+// ticking and tells every player, who go offline with PURR_DISCONNECT_ENDED.
 
 // What a session needs from a game. purrc generates it as purr_game_api in
 // <game>.h; games without an input have no input functions.
@@ -53,6 +56,9 @@ typedef struct purr_game {
     void (*set_server_input)(void *world, const void *input);
     uint32_t (*write_input)(const void *input, uint8_t *out, uint32_t capacity); // Bytes written, 0 if it didn't fit
     bool (*read_input)(const uint8_t *data, uint32_t size, void *input);
+    // Whether the match is over: its last scene unloaded, and Main is local,
+    // so it can't come back. The server ends it then. NULL: it never is.
+    bool (*ended)(const void *world);
 } purr_game;
 
 typedef enum purr_session_state {
@@ -66,8 +72,9 @@ typedef enum purr_disconnect_reason {
     PURR_DISCONNECT_LEFT,        // This machine left
     PURR_DISCONNECT_TIMED_OUT,   // The server stopped answering, or never did
     PURR_DISCONNECT_REFUSED,     // The server turned it away: another build of the game, or no room
-    PURR_DISCONNECT_SERVER_LEFT, // The server ended the match
+    PURR_DISCONNECT_SERVER_LEFT, // The server's machine left, which ended the match
     PURR_DISCONNECT_FAILED,      // It couldn't start: no network, a port in use, an address that isn't one
+    PURR_DISCONNECT_ENDED,       // The match ended: its last scene unloaded (see purr_game.ended)
 } purr_disconnect_reason;
 
 // This machine's input for `tick`, into `input` (the game's input_size bytes).
