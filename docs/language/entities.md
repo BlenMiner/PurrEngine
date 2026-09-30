@@ -31,7 +31,7 @@ component Turret
 }
 ```
 
-Fields without a default start at zero. `Entity` fields always start as the null entity, and can't have a default.
+Fields without a default start at zero. `Entity` fields always start as the null entity, and can't have another default.
 
 ## Singletons
 
@@ -87,6 +87,8 @@ component Weapon
     Entity owner;
 }
 ```
+
+`default` is the null entity, so `weapon.owner == default` tells whether it points anywhere, and `weapon.owner = default;` clears it.
 
 In a system, view or event handler that runs for an entity, `this` is that entity:
 

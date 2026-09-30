@@ -36,6 +36,7 @@ typedef enum occ_kind {
     OCC_ATTRIBUTE, // Before, After, Clamp, Min, Max
     OCC_ENUM_MEMBER, // Title in Page.Title, and in `enum Page { Title }` (with `decl`, the enum)
     OCC_THIS,     // `this`, with `decl` the system, view, handler or method it's in
+    OCC_DEFAULT,  // `default`, with the type it takes
 } occ_kind;
 
 typedef struct occurrence {
@@ -282,6 +283,12 @@ static void walk_expr(const expr *e)
         if (walk_code) {
             add_occ((occurrence){.at = e->at, .len = 4, .kind = OCC_THIS, .decl = walk_code, .name = str_from("this"),
                                  .type = e->type});
+        }
+        break;
+
+    case E_DEFAULT:
+        if (e->type.kind != TY_ERROR) {
+            add_occ((occurrence){.at = e->at, .len = 7, .kind = OCC_DEFAULT, .name = str_from("default"), .type = e->type});
         }
         break;
 
@@ -920,11 +927,44 @@ static const struct {
     {"Leave", "Session.Leave()", "Leaves the match: `Disconnected` follows, and views stop seeing it."},
 };
 
+// What `default` is for type `t`, in words.
+static void describe_default(const type t, sb *out)
+{
+    switch (t.kind) {
+    case TY_BOOL: sb_put(out, "`false`"); break;
+    case TY_INT: case TY_FLOAT: sb_put(out, "`0`"); break;
+    case TY_ENTITY: case TY_LOCAL_ENTITY: sb_put(out, "The null entity"); break;
+    case TY_PLAYER: sb_put(out, "No player"); break;
+    case TY_STRING: sb_put(out, "Empty text"); break;
+    case TY_LIST: sb_put(out, "An empty list"); break;
+    case TY_ENUM: {
+        const enum_member *zero = NULL;
+        for (int i = 0; i < t.decl->members.count && !zero; i++) {
+            if (t.decl->members.items[i].number == 0) zero = &t.decl->members.items[i];
+        }
+        if (zero) sb_printf(out, "`" STR_FMT "." STR_FMT "`, the member that's 0", STR_ARG(t.decl->name), STR_ARG(zero->name));
+        else sb_put(out, "0, which isn't one of its members");
+        break;
+    }
+    case TY_COMPONENT: case TY_SINGLETON: case TY_INPUT: case TY_STRUCT: case TY_EVENT:
+        sb_printf(out, "`" STR_FMT " { }`: each field's default, and zero where it has none", STR_ARG(t.decl->name));
+        break;
+    default: sb_put(out, "All zeros"); break;
+    }
+    sb_printf(out, ": the default value of `%s`, the type where it goes.", type_name(t));
+}
+
 // Markdown for a hover over `o`.
 static void describe(const occurrence *o, sb *out)
 {
     sb code = {0};
     switch (o->kind) {
+    case OCC_DEFAULT:
+        sb_printf(&code, "default: %s", type_name(o->type));
+        code_block(out, code.data);
+        sb_put(out, "\n\n");
+        describe_default(o->type, out);
+        break;
     case OCC_TYPE:
         if (o->decl) {
             format_data_decl(o->decl, &code);
@@ -1781,7 +1821,7 @@ void analysis_folding_ranges(jbuf *out)
 static bool is_literal(const expr *e)
 {
     if (e->kind == E_UNARY && e->op == T_MINUS) e = e->lhs;
-    return e->kind == E_INT || e->kind == E_FLOAT || e->kind == E_BOOL || e->kind == E_STRING;
+    return e->kind == E_INT || e->kind == E_FLOAT || e->kind == E_BOOL || e->kind == E_STRING || e->kind == E_DEFAULT;
 }
 
 // Where an expression starts: its leftmost token.
@@ -1978,6 +2018,7 @@ static void classify(const occurrence *o, int *type, int *mods)
     case OCC_NAMESPACE: *type = ST_NAMESPACE; break;
     case OCC_ENUM_MEMBER: *type = ST_ENUM_MEMBER; *mods |= SM_READONLY; break;
     case OCC_THIS: *type = ST_KEYWORD; *mods = 0; break;
+    case OCC_DEFAULT: *type = ST_KEYWORD; *mods = 0; break;
     }
 }
 
@@ -2560,6 +2601,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     }
     item(c, "true", CK_KEYWORD, NULL, NULL, NULL);
     item(c, "false", CK_KEYWORD, NULL, NULL, NULL);
+    if (!statement) item(c, "default", CK_KEYWORD, NULL, NULL, NULL); // A statement's list has it, for switches
     // this: the entity the code runs for, or whose component a method is called on
     const type entity = this_type(&sc);
     if (entity.kind != TY_ERROR) {
@@ -3008,6 +3050,7 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
     case OCC_ENUM_MEMBER: return a->decl == b->decl && str_eq(a->name, b->name);
     case OCC_THIS: return a->decl == b->decl;
+    case OCC_DEFAULT: return false; // A keyword, not a symbol
     }
     return false;
 }
@@ -3493,7 +3536,14 @@ static const char *token_start(const token *t)
 static bool ends_operand(const tok_kind k)
 {
     return k == T_IDENT || k == T_INT || k == T_FLOAT || k == T_STRING || k == T_RPAREN || k == T_RBRACKET
-        || k == T_TRUE || k == T_FALSE || k == T_THIS || k == T_INTERP || k == T_INTERP_PART;
+        || k == T_TRUE || k == T_FALSE || k == T_THIS || k == T_DEFAULT || k == T_INTERP || k == T_INTERP_PART;
+}
+
+// Whether the `default` at token `i` is a switch's label rather than a value:
+// `default:`, but not `c ? default : x`.
+static bool is_default_label(const int i)
+{
+    return i + 1 < DOC->tok_count && DOC->toks[i + 1].kind == T_COLON && (i == 0 || DOC->toks[i - 1].kind != T_QUESTION);
 }
 
 // Whether the ':' at token `i` ends a switch's label, like `case Page.Title:`,
@@ -3502,7 +3552,7 @@ static bool is_label_colon(const int i)
 {
     for (int k = i - 1; k >= 0; k--) {
         const tok_kind kind = DOC->toks[k].kind;
-        if (kind == T_CASE || kind == T_DEFAULT) return true;
+        if (kind == T_CASE || (kind == T_DEFAULT && is_default_label(k))) return true;
         if (kind == T_QUESTION || kind == T_SEMI || kind == T_LBRACE || kind == T_RBRACE || kind == T_COLON) return false;
     }
     return false;
@@ -3566,7 +3616,7 @@ static int *case_levels(void)
     int sections = 0; // Open braces whose section is running
     for (int i = 0; i < DOC->tok_count; i++) {
         const tok_kind k = DOC->toks[i].kind;
-        const bool label = (k == T_CASE || k == T_DEFAULT) && depth > 0 && is_switch[depth - 1];
+        const bool label = (k == T_CASE || (k == T_DEFAULT && is_default_label(i))) && depth > 0 && is_switch[depth - 1];
         const bool closing = k == T_RBRACE && depth > 0;
         levels[i] = sections - ((label || closing) && depth > 0 && in_section[depth - 1] ? 1 : 0);
         if (label && !in_section[depth - 1]) {

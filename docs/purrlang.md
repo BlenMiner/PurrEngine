@@ -51,7 +51,7 @@ PurrLang is a working name and may change.
 - A default must be a constant expression: literals, constructors of built-in types, struct values of constants (`Range { hi = 5 }`), `Math` functions, built-in constants like `quaternion.identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
 - Singletons start with their defaults when the world is created, before `Main` runs.
 - Components get their defaults whenever a value is created without setting that field: `Spawn(Health)`, `e.Add(Health)`, and fields left out of `Health { max = 200 }`.
-- Fields without a default start at zero. `Entity` fields always start as the null entity and can't have a default.
+- Fields without a default start at zero. `Entity` fields always start as the null entity and can't have another default.
 
 ```csharp
 singleton Physics
@@ -66,6 +66,12 @@ component Health
     int max = 2 * 2 * 25;
 }
 ```
+
+### Default values
+
+- `default` is the default value of the type where it goes, as in C#: `Draw.Circle(default, 5, Color.yellow)` draws at `float2(0, 0)`.
+- It's the value a field of that type starts at when it declares no default: zero for numbers, vectors, matrices, quaternions, colors and rects, `false`, empty text, an empty list, the null entity, no player, an enum's 0, and for a struct or component, its fields' defaults, as `Stats { }` makes them.
+- Its type comes from where it goes: a typed local (`float2 center = default;`), an assignment, an argument, a `return`, a field in a value (`Range { lo = default }`), a field's default, a list's element, and the other side of `==`, `!=` or `?:` (`target == default`).
 
 ### Structs
 
@@ -285,6 +291,9 @@ purrc v0 needed answers to these to work end to end. They're implemented, but th
 - Integer literals can be decimal (`255`), hex (`0xFF`) or binary (`0b1010`). Decimal goes up to 2147483647. Hex and binary can use all 32 bits and are read as the int's bit pattern: `0xFFFFFFFF` is `-1` and `0x80000000` is the lowest int.
 - `_` separates digits in any number, as in C#: `1_000_000`, `0b1111_0000`, `0x_FF_FF`. It's allowed between digits and right after `0x` or `0b`, but not at the start or end or next to `.`.
 - Local variables need an initial value.
+- `default` of a struct or component is its fields' defaults, not all zeros as in C#, where `default` skips field initializers: a PurrLang value never exists without them.
+- As in C#, `default` is only compared: `default + 1` is an error. So is `var x = default;`, which says no type, and a place where nothing else does, like `if (default)`.
+- In a built-in call, the other arguments pick the version, and `default` takes its parameter's type: `Math.Max(default, 1.5)` is a float. A call whose versions take different types there is an error, like `Math.Mul(q, default)` (a quaternion or a float3), and so is a `Math` function whose arguments are all `default`. Constructors like `float3(...)` don't take it.
 
 ### Systems
 

@@ -500,12 +500,41 @@ static bool equatable(const type t)
 static type check_list_literal(checker *c, expr *e, type want);
 static type check_list_method(checker *c, expr *e, type list);
 
-// An expression where a value of `want` goes: [a, b] takes its type from it.
+// `default` where a value of `want` goes: that type's default value, the one
+// a field of it starts at. Types with fields take their declared defaults, as
+// in `Stats { }`; everything else is zero, false, empty or null.
+static type check_default_value(checker *c, expr *e, const type want)
+{
+    e->type = T_ERR;
+    if (want.kind == TY_ERROR || want.kind == TY_VOID) return T_ERR; // Reported where it goes
+    if (want.kind == TY_RECORD || want.kind == TY_BLOCK) {
+        diag_error(e->at, "'default' can't be %s", type_name(want));
+        if (want.kind == TY_RECORD) diag_note("only this machine's devices make one");
+        return T_ERR;
+    }
+    e->type = want;
+    if (want.kind == TY_STRING || want.kind == TY_LIST) c->prog->uses_text = true;
+    return want;
+}
+
+// An expression where a value of `want` goes: [a, b] and `default` take their
+// type from it.
 static type check_expr_want(checker *c, expr *e, const type want)
 {
     if (e->kind == E_LIST && (want.kind == TY_LIST || want.kind == TY_ERROR)) return check_list_literal(c, e, want);
+    if (e->kind == E_DEFAULT) return check_default_value(c, e, want);
     return check_expr(c, e);
 }
+
+// The `default` arguments of a built-in call, which resolving it left
+// unchecked: they take the types of the version it picked.
+static void check_default_args(checker *c, expr *e)
+{
+    for (int i = 0; i < e->args.count && i < e->arg_want.count; i++) {
+        if (e->args.items[i]->kind == E_DEFAULT) check_default_value(c, e->args.items[i], e->arg_want.items[i]);
+    }
+}
+
 static bool check_component_side(const checker *c, const expr *arg, const decl *d);
 static bool check_writable(checker *c, expr *target, const decl *called, const param *arg_of);
 
@@ -530,7 +559,7 @@ static type check_literal(checker *c, expr *e)
             suggest_events(&s, c->prog);
             suggest_note(&s);
         }
-        for (int i = 0; i < e->inits.count; i++) check_expr(c, e->inits.items[i].value);
+        for (int i = 0; i < e->inits.count; i++) check_expr_want(c, e->inits.items[i].value, T_ERR);
         return T_ERR;
     }
     e->type_decl = d;
@@ -540,7 +569,7 @@ static type check_literal(checker *c, expr *e)
         for (int j = 0; j < d->fields.count; j++) {
             if (str_eq(d->fields.items[j].name, init->name) && !d->fields.items[j].hidden) init->field = &d->fields.items[j];
         }
-        const type value = init->field ? check_expr_want(c, init->value, init->field->type) : check_expr(c, init->value);
+        const type value = check_expr_want(c, init->value, init->field ? init->field->type : T_ERR);
         if (!init->field) {
             diag_error(init->at, "%s '" STR_FMT "' has no field '" STR_FMT "'",
                        d->kind == DECL_STRUCT ? "struct" : d->kind == DECL_EVENT ? "event" : "component", STR_ARG(d->name),
@@ -1454,12 +1483,16 @@ static type check_method(checker *c, expr *e)
     // Math.Dot(a, b), quaternion.AxisAngle(axis, angle), Draw.Circle(center,
     // radius, color), GUILayout.Button(text)
     if (names_builtin_owner(c, e->object)) {
-        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        // `default` takes its type from the version of the function the other arguments pick.
+        for (int i = 0; i < e->args.count; i++) {
+            if (e->args.items[i]->kind != E_DEFAULT) check_expr(c, e->args.items[i]);
+        }
         const str owner = e->object->name;
         const bool gui = str_eq_c(owner, "GUI") || str_eq_c(owner, "GUILayout");
         if ((gui || str_eq_c(owner, "Draw")) && !check_frame_use(c, e->at, gui ? "The GUI" : "Draw")) return T_ERR;
         const type result = resolve_builtin_call(owner, e);
         if (result.kind == TY_ERROR) return result;
+        check_default_args(c, e);
         if (str_eq_c(owner, "Draw")) e->call = CALL_DRAW;
         if (gui) return check_gui_call(c, e, result);
         return result;
@@ -1489,9 +1522,14 @@ static type check_method(checker *c, expr *e)
     if (obj.kind == TY_LIST) return check_list_method(c, e, obj);
     // name.Contains("cat"), name.Substring(0, 3): text's methods
     if (obj.kind == TY_STRING) {
-        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        for (int i = 0; i < e->args.count; i++) {
+            if (e->args.items[i]->kind != E_DEFAULT) check_expr(c, e->args.items[i]);
+        }
         const type result = resolve_builtin_call(str_from("string"), e);
-        if (result.kind != TY_ERROR) e->call = CALL_TEXT;
+        if (result.kind != TY_ERROR) {
+            e->call = CALL_TEXT;
+            check_default_args(c, e);
+        }
         return result;
     }
     // camera.Snap(): a singleton that jumped, like a camera cut.
@@ -2207,7 +2245,7 @@ static bool check_side(const expr *side, const type t)
 }
 
 // cond ? a : b. As in C#, the sides need the same type, or one that converts
-// to the other's (int to float).
+// to the other's (int to float). A side that's `default` takes the other's.
 static type check_conditional(checker *c, expr *e)
 {
     const type cond = check_expr(c, e->cond);
@@ -2216,8 +2254,15 @@ static type check_conditional(checker *c, expr *e)
         if (type_is_numeric(cond) && type_dim(cond) == 1) diag_note("compare it, for example 'x != 0 ? a : b'");
     }
     c->branch_depth++;
-    const type a = check_expr(c, e->lhs);
-    const type b = check_expr(c, e->rhs);
+    type a;
+    type b;
+    if (e->lhs->kind == E_DEFAULT && e->rhs->kind != E_DEFAULT) {
+        b = check_expr(c, e->rhs);
+        a = check_expr_want(c, e->lhs, b);
+    } else {
+        a = check_expr(c, e->lhs);
+        b = e->rhs->kind == E_DEFAULT ? check_expr_want(c, e->rhs, a) : check_expr(c, e->rhs);
+    }
     c->branch_depth--;
     const bool a_ok = check_side(e->lhs, a);
     const bool b_ok = check_side(e->rhs, b);
@@ -2248,13 +2293,13 @@ static type check_index(checker *c, expr *e)
 static type check_list_literal(checker *c, expr *e, const type want)
 {
     if (want.kind != TY_LIST) {
-        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        for (int i = 0; i < e->args.count; i++) check_expr_want(c, e->args.items[i], T_ERR);
         return T_ERR;
     }
     const type element = list_element(want);
     for (int i = 0; i < e->args.count; i++) {
         expr *item = e->args.items[i];
-        const type t = check_expr(c, item);
+        const type t = item->kind == E_DEFAULT ? check_default_value(c, item, element) : check_expr(c, item);
         if (t.kind == TY_VOID) diag_error(item->at, "this doesn't produce a value to put in the list");
         else if (!type_assignable(element, t)) diag_error(item->at, "this list holds %s, not %s", type_name(element), type_name(t));
     }
@@ -2350,10 +2395,19 @@ static type check_expr(checker *c, expr *e)
     case E_LITERAL: t = check_literal(c, e); break;
     case E_BINARY: {
         const bool short_circuit = e->op == T_AND || e->op == T_OR;
-        const type l = check_expr(c, e->lhs);
+        // `x == default`: it takes the other side's type. As in C#, it's only ever compared.
+        expr *const dflt = e->lhs->kind == E_DEFAULT ? e->lhs : e->rhs->kind == E_DEFAULT ? e->rhs : NULL;
+        const bool compared = e->op == T_EQ || e->op == T_NE;
+        if (dflt && !compared) {
+            diag_error(dflt->at, "'default' can't be used with operator %s", op_str(e->op));
+            diag_note("it's only compared, with == and !=; write the value itself here");
+        }
+        type l = e->lhs == dflt ? T_ERR : check_expr(c, e->lhs);
         if (short_circuit) c->short_circuit_depth++;
-        const type r = check_expr(c, e->rhs);
+        type r = e->rhs == dflt ? T_ERR : check_expr(c, e->rhs);
         if (short_circuit) c->short_circuit_depth--;
+        if (dflt == e->lhs && compared) l = check_default_value(c, dflt, r);
+        else if (dflt && compared) r = check_default_value(c, dflt, l);
         t = binary_result(e->op, l, r, e->at, &e->method);
         note_operator_call(c, e->method, e);
         break;
@@ -2376,7 +2430,11 @@ static type check_expr(checker *c, expr *e)
     case E_INDEX: t = check_index(c, e); break;
     case E_LIST:
         diag_error(e->at, "a list's type comes from where it goes: 'List<int> scores = [1, 2];'");
-        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        for (int i = 0; i < e->args.count; i++) check_expr_want(c, e->args.items[i], T_ERR);
+        break;
+    case E_DEFAULT:
+        diag_error(e->at, "'default' takes its type from where it goes, and nothing here says which");
+        diag_note("use it where a value of one type goes, like 'float2 center = default;' or an argument");
         break;
     case E_UNARY: {
         const type operand = check_expr(c, e->lhs);
@@ -2747,12 +2805,17 @@ static bool always_returns(const stmt *s)
     }
 }
 
-static type local_type(checker *c, stmt *s);
-
 static void check_var(checker *c, stmt *s)
 {
-    type value = s->type_name.len > 0 && s->value->kind == E_LIST ? check_list_literal(c, s->value, local_type(c, s))
-                                                                    : check_expr(c, s->value);
+    // `default`, and a list after a type, take the type: they're checked once it's known.
+    const bool typed_value = s->type_name.len > 0 && (s->value->kind == E_DEFAULT || s->value->kind == E_LIST);
+    type value = T_ERR;
+    if (s->value->kind == E_DEFAULT && s->type_name.len == 0) {
+        diag_error(s->value->at, "'var' takes its type from the value, and 'default' takes its type from the variable");
+        diag_note("write the type instead, like 'float2 " STR_FMT " = default;'", STR_ARG(s->name));
+    } else if (!typed_value) {
+        value = check_expr(c, s->value);
+    }
     if (s->value->kind == E_NAME && s->value->bind == BIND_TYPE) value = T_ERR;
 
     if (s->type_name.len == 0) {
@@ -2783,6 +2846,19 @@ static void check_var(checker *c, stmt *s)
             vec_push(c->prog->fixes, create);
             s->type = T_ERR;
         }
+        if (s->value->kind == E_DEFAULT) {
+            value = check_default_value(c, s->value, s->type);
+        } else if (s->value->kind == E_LIST) {
+            if (s->type.kind != TY_LIST && s->type.kind != TY_ERROR) {
+                diag_error(s->value->at, "can't initialize %s with a list", type_name(s->type));
+                const type_kind k = s->type.kind;
+                const bool holdable = k != TY_COMPONENT && k != TY_SINGLETON && k != TY_INPUT && k != TY_RECORD
+                                   && k != TY_EVENT && !holds_list(s->type);
+                if (holdable) diag_note("declare a list of them as 'List<%s> " STR_FMT " = [...];'", type_name(s->type), STR_ARG(s->name));
+                else diag_note("a list's type is 'List<T>', like 'List<int> " STR_FMT " = [1, 2];'", STR_ARG(s->name));
+            }
+            value = check_list_literal(c, s->value, s->type);
+        }
         if (!type_assignable(s->type, value)) {
             diag_error(s->value->at, "can't initialize %s with %s", type_name(s->type), type_name(value));
         }
@@ -2795,7 +2871,7 @@ static void check_var(checker *c, stmt *s)
     vec_push(c->locals, s);
 }
 
-// The type a local declares, for its value to be checked against.
+// The type a foreach's variable declares, for the list's elements to be checked against.
 static type local_type(checker *c, stmt *s)
 {
     type t;
@@ -2803,7 +2879,7 @@ static type local_type(checker *c, stmt *s)
     const loc at = s->type_qual_at.line ? s->type_qual_at : s->at;
     const int errors = diag_error_count();
     if (resolve_list_type(c, s->type_name, at, &t)) {
-        if (diag_error_count() > errors) s->type_name = str_from(""); // Reported: check_var takes the value's type
+        if (diag_error_count() > errors) s->type_name = str_from(""); // Reported: it takes the element's type, like var
         return t;
     }
     decl *d = find_type(c, s->type_name, s->type_at);
@@ -2979,6 +3055,7 @@ static bool is_constant(const expr *e)
     case E_FLOAT:
     case E_BOOL:
     case E_STRING:
+    case E_DEFAULT:
         return true;
     case E_UNARY:
         return is_constant(e->lhs);
@@ -3015,7 +3092,7 @@ static bool all_constant(const expr *e)
 static void check_default(checker *c, const field *f)
 {
     expr *value = f->default_value;
-    if (f->type.kind == TY_ENTITY || f->type.kind == TY_LOCAL_ENTITY) {
+    if ((f->type.kind == TY_ENTITY || f->type.kind == TY_LOCAL_ENTITY) && value->kind != E_DEFAULT) {
         diag_error(value->at, "%s fields always start as the null entity; they can't have a default value",
                    type_name(f->type));
         return;

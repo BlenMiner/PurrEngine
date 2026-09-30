@@ -702,6 +702,27 @@ PURR_TEST(lsp_enums_and_switch)
     PURR_CHECK(has(symbols, "\"name\":\"Playing\",\"detail\":\"5\",\"kind\":22"));
 }
 
+PURR_TEST(lsp_default_value)
+{
+    start();
+    open_document("scene Main { }\nview Render(with Main)\n{\n    Draw.Circle(def$ault, 5, Color.yellow);\n}\n");
+    PURR_CHECK(has(sent[0], "\"diagnostics\":[]"));
+    const char *hover = request("textDocument/hover");
+    PURR_CHECK(has(hover, "default: float2"));
+    PURR_CHECK(has(hover, "All zeros: the default value of `float2`"));
+
+    open_document("struct Stats { int armor = 3; }\nsingleton S { Stats stats; }\nscene Main { }\n"
+                  "system Reset(mut S s) { s.stats = defa$ult; }\n");
+    PURR_CHECK(has(request("textDocument/hover"), "`Stats { }`: each field's default"));
+
+    PURR_CHECK(offers(complete("singleton S { int n; }\nscene Main { }\nsystem Reset(mut S s) { s.n = $ }\n"), "default"));
+
+    // `default` in ?: isn't a switch's label.
+    static const char tidy[] = "singleton S { int n; bool on; }\nscene Main { }\n"
+                               "system Pick(mut S s)\n{\n    s.n = s.on ? default : 2;\n    s.n = s.on ? 1 : default;\n}\n";
+    PURR_CHECK(has(format_reply(tidy), "\"result\":[]"));
+}
+
 PURR_TEST(lsp_format_switch)
 {
     start();

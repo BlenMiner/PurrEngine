@@ -48,6 +48,20 @@ mut float scale = 1;             // mutable, explicit type
 
 A local needs a value when it's declared, and can't reuse the name of another local or parameter in scope.
 
+## Default values
+
+`default` is the default value of the type where it goes, so the type doesn't have to be spelled out:
+
+```csharp
+Draw.Circle(default, 5, Color.yellow);  // At float2(0, 0)
+float2 center = default;
+if (target == default) { return; }      // The null entity
+```
+
+It's the value a field of that type starts at: zero for numbers, vectors, matrices and colors, `false`, empty text, an empty list, the null entity, no player, and for a struct or component, its fields' defaults, as `Stats { }` makes them.
+
+Its type comes from where it goes: a typed local, an assignment, an argument, a `return`, a field's value, or the other side of `==`, `!=` or `?:`. `var x = default;` says no type, so it's an error. `default` is only ever compared, never added or multiplied.
+
 ## Operators
 
 Operators and their precedence follow C#, including compound assignments (`+=`, `<<=` and the rest) and `cond ? a : b`. `i++`, `i--`, `++i` and `--i` are statements, the same as `i += 1` and `i -= 1`, not expressions.

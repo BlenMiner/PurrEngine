@@ -265,6 +265,7 @@ typedef enum expr_kind {
     E_INDEX,   // object[lhs]: a list's element
     E_LIST,    // [a, b, c]: a list of `args`, whose type comes from where it goes
     E_THIS,    // this: the entity the code runs for
+    E_DEFAULT, // `default`: the default value of the type where it goes
 } expr_kind;
 
 typedef enum builtin_call {
