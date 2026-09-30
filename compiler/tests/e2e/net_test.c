@@ -443,6 +443,102 @@ PURR_TEST(net_a_session_takes_a_new_build_of_its_game)
     purr_session_destroy(s);
 }
 
+// A build with another data layout, carried over (purr_session_migrate): here
+// the same game under another hash, carried over by copying, so the match
+// must go on exactly as it would have.
+static int migrations;
+
+static bool copy_over(void *user, const void *from, void *to)
+{
+    (void)user;
+    migrations++;
+    purr_world_copy(to, from);
+    return true;
+}
+
+PURR_TEST(net_a_session_carries_its_match_over_to_another_layout)
+{
+    purr_game new_build = purr_game_api;
+    new_build.hash ^= 1u;
+    purr_session *s = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = session_sample});
+    double t = 0.0;
+    purr_session_play(s, NULL, t);
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+    }
+    const purr_session_status before = purr_session_status_of(s);
+    PURR_REQUIRE(before.client.state == PURR_SESSION_CONNECTED);
+
+    migrations = 0;
+    PURR_REQUIRE(purr_session_migrate(s, &new_build, copy_over, NULL));
+    PURR_CHECK(migrations == 1); // The server's world: this machine's player takes it
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+    }
+    const purr_session_status after = purr_session_status_of(s);
+    PURR_CHECK(after.client.state == PURR_SESSION_CONNECTED);
+    PURR_CHECK(after.client.resyncs == 0);
+    PURR_CHECK(after.client.verified_tick >= before.client.verified_tick + 55u);
+    PURR_CHECK(memcmp(purr_session_world(s), purr_session_server_world(s), sizeof(purr_world)) == 0);
+    purr_session_destroy(s);
+}
+
+static void guest_sample(void *user, const uint32_t tick, void *input)
+{
+    (void)user;
+    sample(&who[1], tick, input);
+}
+
+// Two machines' sessions on one network, until `until`.
+static void run_sessions(purr_loopback *network, purr_session *a, purr_session *b, double *t, const double until)
+{
+    while (*t < until) {
+        *t += 1.0 / 60.0;
+        purr_loopback_set_time(network, *t);
+        purr_session_update(a, *t);
+        purr_session_update(b, *t);
+    }
+}
+
+// A server and a player on another machine: the server's machine reloads
+// first, and the other one a moment later.
+PURR_TEST(net_a_client_carries_its_match_over_to_another_layout)
+{
+    purr_game new_build = purr_game_api;
+    new_build.hash ^= 1u;
+    purr_loopback *network = purr_loopback_create(4242);
+    purr_loopback_set_conditions(network, (purr_net_conditions){.latency = 0.03, .jitter = 0.01});
+    purr_session *host = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = session_sample});
+    purr_session *guest = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = guest_sample});
+    double t = 0.0;
+    purr_session_host(host, NULL, purr_loopback_endpoint(network, 1), t);
+    purr_session_join(guest, purr_loopback_endpoint(network, 2), purr_loopback_address(1), t);
+    run_sessions(network, host, guest, &t, 2.0);
+    const purr_session_status before = purr_session_status_of(guest);
+    PURR_REQUIRE(before.client.state == PURR_SESSION_CONNECTED);
+
+    migrations = 0;
+    PURR_REQUIRE(purr_session_migrate(host, &new_build, copy_over, NULL));
+    run_sessions(network, host, guest, &t, 2.3);
+    PURR_REQUIRE(purr_session_migrate(guest, &new_build, copy_over, NULL));
+    PURR_CHECK(migrations == 2); // The server's world, and the other machine's verified one
+    run_sessions(network, host, guest, &t, 4.5);
+
+    const purr_session_status after = purr_session_status_of(guest);
+    PURR_CHECK(after.client.state == PURR_SESSION_CONNECTED);
+    PURR_CHECK(after.client.player.id == before.client.player.id); // Still the same player
+    PURR_CHECK(after.client.resyncs == 0);
+    PURR_CHECK(after.client.verified_tick >= before.client.verified_tick + 120u);
+    PURR_CHECK(purr_session_status_of(host).client.resyncs == 0);
+    const Players *players = players_in(purr_session_server_world(host));
+    PURR_CHECK(players->joined == 2 && players->left == 0); // Nobody left and came back
+    purr_session_destroy(guest);
+    purr_session_destroy(host);
+    purr_loopback_destroy(network);
+}
+
 PURR_TEST(net_input_packs_and_unpacks)
 {
     const Controls in = {.move = {0.25f, -1.0f}, .jump = true};

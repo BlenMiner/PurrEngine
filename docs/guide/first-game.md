@@ -132,7 +132,7 @@ view DrawPlayers(Body body, Owner owner, Session session)
 }
 ```
 
-Save, and steer with `WASD`. The game started over when it reloaded, since it has new data now (the input and the players' bodies), and your player joined it.
+Save, then type `r` and press Enter in `purr`'s terminal, and steer with `WASD`. The game carried over to the new code when you saved, but your player had joined before `AddPlayer` existed, so they had no body yet. Starting over makes them join again.
 
 ## Play together
 

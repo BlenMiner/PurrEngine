@@ -1,5 +1,5 @@
 # purr_add_game(<target> [SOURCES <file.purr>...] [HOST <file.c>...] [NAME <name>]
-#               [TITLE <title>] [STATS])
+#               [TITLE <title>] [STATS] [LAYOUT])
 #
 # Builds a PurrLang game as the program <target>. The game is every .purr file
 # in the current source folder and its subfolders (new ones are picked up by
@@ -11,7 +11,9 @@
 #
 # With HOST, those C files are the program instead, for tests and custom hosts.
 # They include the game's generated header, <name>.h (NAME defaults to
-# <target>), and drive the game through its API (see AGENTS.md).
+# <target>), and drive the game through its API (see AGENTS.md). LAYOUT also
+# describes the game's data layout, as purr run does for hot reloading
+# (purr_game_layout, see engine/include/purr/layout.h).
 #
 # The generated files land in the build tree and are regenerated whenever a
 # .purr file or purrc changes. Every game is also listed in
@@ -20,7 +22,7 @@
 set(PURR_GAMES_MANIFEST "${PROJECT_SOURCE_DIR}/build/tools/games.txt")
 
 function(purr_add_game target)
-    cmake_parse_arguments(ARG "STATS" "NAME;TITLE" "SOURCES;HOST" ${ARGN})
+    cmake_parse_arguments(ARG "STATS;LAYOUT" "NAME;TITLE" "SOURCES;HOST" ${ARGN})
     if("SOURCES" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "purr_add_game(${target}): list the game's .purr files after SOURCES, or leave "
                             "SOURCES out to use every .purr file in ${CMAKE_CURRENT_SOURCE_DIR} and its subfolders")
@@ -52,13 +54,18 @@ function(purr_add_game target)
         set(manifest_paths "${CMAKE_CURRENT_SOURCE_DIR}/")
     endif()
 
+    set(layout "")
+    if(ARG_LAYOUT)
+        set(layout --layout)
+    endif()
+
     set(out_dir "${CMAKE_CURRENT_BINARY_DIR}/purr/${target}")
     set(out_c "${out_dir}/${name}.c")
     set(out_h "${out_dir}/${name}.h")
     add_custom_command(
         OUTPUT "${out_c}" "${out_h}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out_dir}"
-        COMMAND ${PURRC_COMMAND} ${sources} -o "${out_dir}" --name "${name}"
+        COMMAND ${PURRC_COMMAND} ${sources} -o "${out_dir}" --name "${name}" ${layout}
         DEPENDS ${PURRC_DEPENDS} ${sources}
         COMMENT "purrc ${target}"
         VERBATIM)

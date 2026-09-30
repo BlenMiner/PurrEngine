@@ -1571,3 +1571,159 @@ void purr_session_set_game(purr_session *s, const purr_game *game)
         s->client->game = game;
     }
 }
+
+// What a new layout needs, made before anything changes, so running out of
+// memory or a world that can't be carried over leaves the session as it was.
+typedef struct server_migration {
+    void *world;
+    uint8_t *frame;
+    uint8_t *input;
+    uint8_t *packed;
+    uint8_t *server_last;
+    uint8_t *inputs[PURR_MAX_PLAYERS];
+} server_migration;
+
+typedef struct client_migration {
+    void **worlds;
+    uint8_t *input;
+    uint8_t *inputs;
+} client_migration;
+
+static void discard_server_migration(server_migration *m)
+{
+    free(m->world);
+    free(m->frame);
+    free(m->input);
+    free(m->packed);
+    free(m->server_last);
+    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) free(m->inputs[i]);
+}
+
+static void discard_client_migration(const purr_client *c, client_migration *m)
+{
+    for (uint32_t i = 0; m->worlds && i < c->ring; i++) free(m->worlds[i]);
+    free(m->worlds);
+    free(m->input);
+    free(m->inputs);
+}
+
+static bool prepare_server(const purr_server *s, const purr_game *g, const purr_migrate_fn migrate, void *user,
+                           server_migration *m)
+{
+    const uint32_t bytes = g->max_input_bytes ? g->max_input_bytes : 1u;
+    m->world = calloc(1, g->world_size);
+    m->frame = malloc(frame_capacity(g));
+    m->input = calloc(1, (size_t)g->input_size + g->max_input_bytes + 1u);
+    m->packed = malloc((size_t)g->max_input_bytes + 1u);
+    m->server_last = malloc((size_t)g->max_input_bytes + 1u);
+    bool ok = m->world && m->frame && m->input && m->packed && m->server_last;
+    for (uint32_t i = 0; ok && i < PURR_MAX_PLAYERS; i++) {
+        if (!s->connections[i].used) continue;
+        m->inputs[i] = malloc((size_t)(s->w.inputs + 1u) * bytes);
+        ok = m->inputs[i] != NULL;
+    }
+    return ok && migrate(user, s->world, m->world);
+}
+
+// Inputs sent for ticks to come were packed for the old layout: the players'
+// last ones stand for them until new ones arrive.
+static void commit_server(purr_server *s, const purr_game *g, server_migration *m)
+{
+    free(s->world);
+    free(s->frame);
+    free(s->input);
+    free(s->packed);
+    free(s->server_last);
+    s->world = m->world;
+    s->frame = m->frame;
+    s->input = m->input;
+    s->packed = m->packed;
+    s->server_last = m->server_last;
+    s->server_last_size = 0;
+    s->game = g;
+    s->desc.game = g;
+    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+        connection *c = &s->connections[i];
+        if (!c->used) continue;
+        free(c->inputs);
+        c->inputs = m->inputs[i];
+        for (uint32_t k = 0; k < s->w.inputs; k++) c->input_tick[k] = UINT32_MAX;
+        c->last_size = 0;
+        c->newest_input = s->tick;
+        if (c->sending) start_snapshot(s, c); // The world being sent was the old one
+    }
+}
+
+static bool prepare_client(const purr_client *c, const purr_game *g, const purr_migrate_fn migrate, void *user,
+                           client_migration *m)
+{
+    const uint32_t bytes = g->max_input_bytes ? g->max_input_bytes : 1u;
+    m->worlds = calloc(c->ring, sizeof *m->worlds);
+    bool ok = m->worlds != NULL;
+    for (uint32_t i = 0; ok && i < c->ring; i++) {
+        m->worlds[i] = calloc(1, g->world_size);
+        ok = m->worlds[i] != NULL;
+    }
+    m->input = calloc(1, (size_t)g->input_size + 1u);
+    ok = ok && m->input;
+    if (ok && c->frames) {
+        m->inputs = malloc((size_t)c->w.inputs * bytes);
+        ok = m->inputs != NULL;
+    }
+    return ok && (!c->loaded || !migrate || migrate(user, world_at(c, c->verified), m->worlds[c->verified % c->ring]));
+}
+
+// It goes on from the verified world: the ticks it predicted, and its inputs
+// for them, were the old build's.
+static void commit_client(purr_client *c, const purr_game *g, client_migration *m)
+{
+    for (uint32_t i = 0; i < c->ring; i++) free(c->worlds[i]);
+    free(c->worlds);
+    c->worlds = m->worlds;
+    free(c->input);
+    c->input = m->input;
+    if (c->frames) {
+        free(c->inputs);
+        c->inputs = m->inputs;
+        for (uint32_t i = 0; i < c->w.inputs; i++) c->input_tick[i] = UINT32_MAX;
+    }
+    stop_receiving(c); // A world it was receiving is the old build's: the server sends it again
+    c->game = g;
+    c->desc.game = g;
+    if (c->loaded) {
+        c->ahead = c->verified;
+        c->first_tick = c->verified; // Views don't blend from the old build's world
+    }
+}
+
+// This machine's own player takes its server's world as it is now, which is
+// what it would come to.
+static void take_server_world(purr_client *c, const purr_server *s)
+{
+    c->game->copy_world(world_at(c, s->tick), s->world);
+    c->verified = s->tick;
+    c->ahead = s->tick;
+    c->first_tick = s->tick;
+    c->loaded_tick = s->tick;
+}
+
+bool purr_session_migrate(purr_session *s, const purr_game *game, const purr_migrate_fn migrate, void *user)
+{
+    const bool own = s->server && s->client; // This machine's player, on its own server
+    server_migration sm = {0};
+    client_migration cm = {0};
+    if (s->server && !prepare_server(s->server, game, migrate, user, &sm)) {
+        discard_server_migration(&sm);
+        return false;
+    }
+    if (s->client && !prepare_client(s->client, game, own ? NULL : migrate, user, &cm)) {
+        discard_server_migration(&sm);
+        discard_client_migration(s->client, &cm);
+        return false;
+    }
+    if (s->server) commit_server(s->server, game, &sm);
+    if (s->client) commit_client(s->client, game, &cm);
+    if (own && s->client->loaded) take_server_world(s->client, s->server);
+    s->desc.game = game;
+    return true;
+}

@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "purr/layout.h"
 #include "purr/platform.h"
 #include "purr/session.h"
 
@@ -49,6 +50,9 @@ typedef struct purr_host_game {
     // Frees what the game's code keeps for itself (the scratch area), before
     // its library is unloaded.
     void (*unload)(void);
+    // Its data layout, when purrc described it (purr run's builds), to carry
+    // the game over to a build whose layout changed; NULL otherwise.
+    const purr_layout *layout;
 } purr_host_game;
 
 // A game's library exports this function, which returns its table.
@@ -63,7 +67,8 @@ typedef struct purr_host_game {
 // .so or .dylib), then each newer one that appears there, swapped in between
 // two frames. A build with the same data layout as the one running (the same
 // purr_game hash) takes over the match and the local state where they are;
-// one with another starts the game over. A file named `restart` in `dir`
+// with another, they're carried over to it by name (purr/migrate.h), or when
+// that can't be done, the game starts over. A file named `restart` in `dir`
 // starts it over too. Native builds only (platform/src/reload.c).
 _Noreturn void purr_host_run_library(const purr_run_desc *desc, const char *dir);
 

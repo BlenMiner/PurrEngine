@@ -9,6 +9,7 @@
 #endif
 
 #include "purr/host.h"
+#include "purr/migrate.h"
 
 #if defined(__wasm__)
 
@@ -144,19 +145,89 @@ static const purr_host_game *load(const uint32_t build, void **library)
     return game();
 }
 
+// The match's worlds, carried over for purr_session_migrate. The first one is
+// the server's, or the client's when another machine runs it: what's said of
+// the carrying over is about that one.
+typedef struct match_carry {
+    const purr_layout *from;
+    const purr_layout *to;
+    purr_migration first;
+    purr_migration failed;
+    int worlds;
+} match_carry;
+
+static bool carry_match(void *user, const void *from, void *to)
+{
+    match_carry *m = user;
+    purr_migration done;
+    const bool ok = purr_migrate_world(m->from, &m->from->match, from, m->to, &m->to->match, to, &done);
+    if (m->worlds++ == 0) m->first = done;
+    if (!ok) m->failed = done;
+    return ok;
+}
+
+static const char *plural(const uint32_t n)
+{
+    return n == 1 ? "" : "s";
+}
+
+// The match and the local state, carried over to `next`'s data layout by
+// name. False, having said why and changed nothing, if they can't be.
+static bool carry_over(const purr_host_game *next)
+{
+    const purr_host_game *old = purr_run_game;
+    if (!old->layout || !next->layout) {
+        printf("purr: reloaded, and started over: a build doesn't describe its data layout\n");
+        return false;
+    }
+    void *local = calloc(1, next->local_size);
+    void *start = calloc(1, next->game->start_size);
+    purr_migration local_done = {0};
+    match_carry match = {old->layout, next->layout, {0}, {0}, 0};
+    bool ok = local && start;
+    if (ok) {
+        ok = purr_migrate_world(old->layout, &old->layout->local, purr_run_local, next->layout, &next->layout->local,
+                                local, &local_done);
+    }
+    if (ok) ok = purr_session_migrate(purr_run_session, next->game, carry_match, &match);
+    if (!ok) {
+        const char *why = local_done.failed[0] ? local_done.failed : match.failed.failed;
+        printf("purr: reloaded, and started over: %s\n", why[0] ? why : "there wasn't enough memory");
+        free(local);
+        free(start);
+        return false;
+    }
+    free(purr_run_local);
+    free(purr_run_start);
+    purr_run_local = local;
+    purr_run_start = start;
+    const uint32_t reset = purr_layout_fields_reset(old->layout, next->layout);
+    const uint32_t dropped = local_done.entities_dropped + match.first.entities_dropped;
+    printf("purr: reloaded, and carried the game over to its new data layout");
+    if (reset) printf("; %u field%s reset", (unsigned)reset, plural(reset));
+    if (dropped) printf("; %u entit%s dropped", (unsigned)dropped, dropped == 1 ? "y" : "ies");
+    printf("\n");
+    return true;
+}
+
 // Runs `next` from now on. With the same data layout, it takes over the match
-// and the local state where they are; with another, the game starts over.
+// and the local state where they are; with another, they're carried over to
+// it, and when they can't be, the game starts over.
 static void swap(const purr_host_game *next, void *library)
 {
     const purr_host_game *old = purr_run_game;
     if (next->game->hash == old->game->hash && next->local_size == old->local_size) {
         purr_session_set_game(purr_run_session, next->game);
         purr_run_game = next;
+        printf("purr: reloaded\n");
+    } else if (carry_over(next)) {
+        purr_run_game = next;
     } else {
         purr_run_end();
         purr_run_game = next;
         purr_run_begin();
     }
+    fflush(stdout);
     old->unload();
     library_close(reload.library);
     reload.library = library;

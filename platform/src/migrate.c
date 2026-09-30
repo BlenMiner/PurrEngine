@@ -1,0 +1,281 @@
+#include "purr/migrate.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "purr/entity.h"
+#include "purr/heap.h"
+
+// See purr/migrate.h.
+
+typedef struct carry {
+    const purr_layout *from;
+    const purr_layout *to;
+    int32_t *types; // For each of `to`'s types, `from`'s of the same name, or -1
+} carry;
+
+static int32_t find_type(const purr_layout *l, const char *name)
+{
+    for (uint32_t i = 0; i < l->type_count; i++) {
+        if (strcmp(l->types[i].name, name) == 0) return (int32_t)i;
+    }
+    return -1;
+}
+
+static const purr_layout_field *find_field(const purr_layout_type *t, const char *name)
+{
+    for (uint32_t i = 0; i < t->field_count; i++) {
+        if (strcmp(t->fields[i].name, name) == 0) return &t->fields[i];
+    }
+    return NULL;
+}
+
+static uint32_t read_u32(const uint8_t *at)
+{
+    uint32_t v;
+    memcpy(&v, at, sizeof v);
+    return v;
+}
+
+static void write_u32(uint8_t *at, const uint32_t v)
+{
+    memcpy(at, &v, sizeof v);
+}
+
+// Whether a field's value carries over to a field of the same name.
+static bool carries(const purr_layout_field *to, const purr_layout_field *from)
+{
+    if (strcmp(to->type, from->type) == 0) return to->kind != PURR_LAYOUT_PLAIN || to->size == from->size;
+    return from->kind == PURR_LAYOUT_INT && to->kind == PURR_LAYOUT_FLOAT && from->dim == to->dim;
+}
+
+static void carry_fields(const carry *c, int32_t to_type, int32_t from_type, uint8_t *to, const uint8_t *from);
+
+// An enum's member, by its name: the new build's number for it, or false when
+// it has none.
+static bool carry_member(const carry *c, const purr_layout_field *tf, uint8_t *to, const purr_layout_field *ff,
+                         const uint8_t *from)
+{
+    if (tf->decl < 0 || ff->decl < 0) return false;
+    const purr_layout_enum *te = &c->to->enums[tf->decl];
+    const purr_layout_enum *fe = &c->from->enums[ff->decl];
+    int32_t value;
+    memcpy(&value, from, sizeof value);
+    for (uint32_t i = 0; i < fe->member_count; i++) {
+        if (fe->members[i].value != value) continue;
+        for (uint32_t k = 0; k < te->member_count; k++) {
+            if (strcmp(te->members[k].name, fe->members[i].name) != 0) continue;
+            memcpy(to, &te->members[k].value, sizeof value);
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// One field, into one that has its default already: false leaves it so.
+static void carry_field(const carry *c, const purr_layout_field *tf, uint8_t *to, const purr_layout_field *ff,
+                        const uint8_t *from)
+{
+    if (!carries(tf, ff)) return;
+    if (strcmp(tf->type, ff->type) != 0) { // Ints to floats
+        for (uint32_t i = 0; i < tf->dim; i++) {
+            int32_t n;
+            memcpy(&n, from + 4u * i, sizeof n);
+            const float f = (float)n;
+            memcpy(to + 4u * i, &f, sizeof f);
+        }
+        return;
+    }
+    switch (tf->kind) {
+    case PURR_LAYOUT_STRUCT:
+        carry_fields(c, tf->decl, ff->decl, to, from);
+        break;
+    case PURR_LAYOUT_ENUM:
+        carry_member(c, tf, to, ff, from);
+        break;
+    default:
+        memcpy(to, from, tf->size);
+        break;
+    }
+}
+
+// The fields of a value of `from_type` into one of `to_type` that has its
+// defaults already.
+static void carry_fields(const carry *c, const int32_t to_type, const int32_t from_type, uint8_t *to,
+                         const uint8_t *from)
+{
+    if (to_type < 0 || from_type < 0) return;
+    const purr_layout_type *tt = &c->to->types[to_type];
+    const purr_layout_type *ft = &c->from->types[from_type];
+    for (uint32_t i = 0; i < tt->field_count; i++) {
+        const purr_layout_field *ff = find_field(ft, tt->fields[i].name);
+        if (ff) carry_field(c, &tt->fields[i], to + tt->fields[i].offset, ff, from + ff->offset);
+    }
+}
+
+// A whole value: the new type's defaults, then what carries over. `from` may
+// be NULL, for a value that's new.
+static void carry_value(const carry *c, const int32_t to_type, const int32_t from_type, uint8_t *to,
+                        const uint8_t *from)
+{
+    c->to->types[to_type].defaults(to);
+    if (from) carry_fields(c, to_type, from_type, to, from);
+}
+
+// The component of `from`'s archetype `a` that carries over to `to_type`, or
+// NULL.
+static const purr_layout_place *old_component(const carry *c, const purr_layout_archetype *a, const int32_t to_type)
+{
+    const int32_t from_type = c->types[to_type];
+    for (uint32_t i = 0; from_type >= 0 && i < a->component_count; i++) {
+        if (a->components[i].type == from_type) return &a->components[i];
+    }
+    return NULL;
+}
+
+// Where the entities of `from`'s archetype `a` go: the new archetype with the
+// components of theirs the new build has, or -1.
+static int32_t new_archetype(const carry *c, const purr_layout_world *tw, const purr_layout_archetype *a)
+{
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < a->component_count; i++) {
+        kept += find_type(c->to, c->from->types[a->components[i].type].name) >= 0;
+    }
+    for (uint32_t k = 0; k < tw->archetype_count; k++) {
+        const purr_layout_archetype *b = &tw->archetypes[k];
+        if (b->component_count != kept) continue;
+        bool all = true;
+        for (uint32_t i = 0; all && i < b->component_count; i++) all = old_component(c, a, b->components[i].type) != NULL;
+        if (all) return (int32_t)k;
+    }
+    return -1;
+}
+
+// The scene component of `a`'s entities, when the new build has no scene of
+// that name or nowhere to keep them: the scene is gone.
+static const char *lost_scene(const carry *c, const purr_layout_world *tw, const purr_layout_archetype *a)
+{
+    for (uint32_t i = 0; i < a->component_count; i++) {
+        const purr_layout_type *t = &c->from->types[a->components[i].type];
+        if (!t->scene) continue;
+        const int32_t now = find_type(c->to, t->name);
+        if (now < 0 || !c->to->types[now].scene || new_archetype(c, tw, a) < 0) return t->name;
+    }
+    return NULL;
+}
+
+bool purr_migrate_world(const purr_layout *from_layout, const purr_layout_world *fw, const void *from_world,
+                        const purr_layout *to_layout, const purr_layout_world *tw, void *to_world, purr_migration *m)
+{
+    const uint8_t *from = from_world;
+    uint8_t *to = to_world;
+    *m = (purr_migration){0};
+    if (read_u32(from + fw->commands) != 0) {
+        snprintf(m->failed, sizeof m->failed, "it had changes waiting to be applied");
+        return false;
+    }
+    carry c = {from_layout, to_layout, calloc(to_layout->type_count ? to_layout->type_count : 1u, sizeof(int32_t))};
+    uint32_t *counts = calloc(tw->archetype_count ? tw->archetype_count : 1u, sizeof *counts);
+    if (!c.types || !counts) {
+        free(c.types);
+        free(counts);
+        snprintf(m->failed, sizeof m->failed, "there wasn't enough memory");
+        return false;
+    }
+    for (uint32_t i = 0; i < to_layout->type_count; i++) c.types[i] = find_type(from_layout, to_layout->types[i].name);
+
+    // A scene that's gone takes the match with it
+    for (uint32_t a = 0; a < fw->archetype_count; a++) {
+        const purr_layout_archetype *fa = &fw->archetypes[a];
+        const char *scene = read_u32(from + fa->offset + fa->count) ? lost_scene(&c, tw, fa) : NULL;
+        if (scene) {
+            snprintf(m->failed, sizeof m->failed, "the scene %s is gone", scene);
+            free(c.types);
+            free(counts);
+            return false;
+        }
+    }
+
+    for (uint32_t i = 0; i < tw->singleton_count; i++) {
+        const purr_layout_place *ts = &tw->singletons[i];
+        const purr_layout_place *fs = NULL;
+        for (uint32_t k = 0; k < fw->singleton_count && c.types[ts->type] >= 0; k++) {
+            if (fw->singletons[k].type == c.types[ts->type]) fs = &fw->singletons[k];
+        }
+        carry_value(&c, ts->type, fs ? fs->type : -1, to + ts->offset, fs ? from + fs->offset : NULL);
+    }
+
+    // The input, whatever its name
+    if (tw->input >= 0) {
+        const uint32_t size = to_layout->types[tw->input].size;
+        const uint32_t old_size = fw->input >= 0 ? from_layout->types[fw->input].size : 0u;
+        for (uint32_t i = 0; i < tw->input_count; i++) {
+            const bool had = fw->input >= 0 && i < fw->input_count;
+            carry_value(&c, tw->input, fw->input, to + tw->inputs + i * size, had ? from + fw->inputs + i * old_size : NULL);
+            carry_value(&c, tw->input, fw->input, to + tw->previous + i * size,
+                        had ? from + fw->previous + i * old_size : NULL);
+        }
+    }
+
+    if (tw->heap != UINT32_MAX && fw->heap != UINT32_MAX) {
+        purr_heap_copy((purr_heap *)(to + tw->heap), (const purr_heap *)(from + fw->heap));
+    }
+
+    // Entities keep their IDs, and move to the storage for their components
+    purr_entities *entities = (purr_entities *)(to + tw->entities);
+    purr_entities_copy(entities, (const purr_entities *)(from + fw->entities));
+    for (uint32_t a = 0; a < fw->archetype_count; a++) {
+        const purr_layout_archetype *fa = &fw->archetypes[a];
+        const uint32_t rows = read_u32(from + fa->offset + fa->count);
+        if (rows == 0) continue;
+        const int32_t k = new_archetype(&c, tw, fa);
+        const purr_layout_archetype *ta = k >= 0 ? &tw->archetypes[k] : NULL;
+        for (uint32_t r = 0; r < rows; r++) {
+            purr_entity e;
+            memcpy(&e, from + fa->offset + fa->entities + r * sizeof e, sizeof e);
+            if (!ta || counts[k] >= tw->capacity) {
+                purr_entity_destroy(entities, e);
+                m->entities_dropped++;
+                continue;
+            }
+            const uint32_t row = counts[k]++;
+            memcpy(to + ta->offset + ta->entities + row * sizeof e, &e, sizeof e);
+            if (ta->scenes != UINT32_MAX && fa->scenes != UINT32_MAX) {
+                memcpy(to + ta->offset + ta->scenes + row * sizeof e, from + fa->offset + fa->scenes + r * sizeof e,
+                       sizeof e);
+            }
+            for (uint32_t i = 0; i < ta->component_count; i++) {
+                const purr_layout_place *tc = &ta->components[i];
+                const purr_layout_place *fc = old_component(&c, fa, tc->type);
+                const uint32_t size = to_layout->types[tc->type].size;
+                const uint32_t old_size = from_layout->types[fc->type].size;
+                carry_value(&c, tc->type, fc->type, to + ta->offset + tc->offset + row * size,
+                            from + fa->offset + fc->offset + r * old_size);
+            }
+            purr_entity_set_location(entities, e, (purr_location){(uint32_t)k, row});
+        }
+    }
+    for (uint32_t k = 0; k < tw->archetype_count; k++) {
+        write_u32(to + tw->archetypes[k].offset + tw->archetypes[k].count, counts[k]);
+    }
+    free(c.types);
+    free(counts);
+    return true;
+}
+
+uint32_t purr_layout_fields_reset(const purr_layout *from, const purr_layout *to)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < to->type_count; i++) {
+        const int32_t old = find_type(from, to->types[i].name);
+        if (old < 0) continue;
+        const purr_layout_type *tt = &to->types[i];
+        for (uint32_t k = 0; k < tt->field_count; k++) {
+            const purr_layout_field *ff = find_field(&from->types[old], tt->fields[k].name);
+            n += ff && !carries(&tt->fields[k], ff);
+        }
+    }
+    return n;
+}

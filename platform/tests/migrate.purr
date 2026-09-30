@@ -1,0 +1,44 @@
+// A game whose data layout purrc describes (purr run's builds do), for
+// platform/tests/migrate.c.
+
+enum Mode { Idle, Run = 5, Jump }
+
+struct Stats
+{
+    int level = 2;
+    float speed = 1.5;
+}
+
+component Unit
+{
+    float2 position;
+    Mode mode = Mode.Run;
+    Stats stats;
+    string name = "unit";
+    Entity target;
+}
+
+component Marker { }
+
+singleton Score
+{
+    int points = 10;
+}
+
+input Controls
+{
+    float2 move;
+}
+
+scene Main { }
+
+scene Arena
+{
+    int size = 4;
+}
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Unit { position = float2(1, 2), name = "first" });
+    Spawn(Unit { stats = Stats { level = 7 } }, Marker { });
+}

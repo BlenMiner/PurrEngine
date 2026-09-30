@@ -454,10 +454,12 @@ static bool link_objects(const build *b, const file_list *objects, const char *o
                 pdb_flag = format("-Wl,--pdb=%s", pdb, NULL);
                 arg(&a, pdb_flag);
             }
-        } else {
-            // A release game opens its window without a console next to it; a
-            // debug game gets its debug info in a .pdb.
-            arg(&a, opts->release ? "-Wl,--subsystem,windows" : "-Wl,--pdb=");
+        } else if (!opts->release) {
+            arg(&a, "-Wl,--pdb="); // A debug game gets its debug info in a .pdb
+        } else if (!b->library) {
+            // A release game opens its window without a console next to it. purr
+            // run's host keeps purr's, to say what each reload did.
+            arg(&a, "-Wl,--subsystem,windows");
         }
 #else
         (void)pdb;
@@ -534,7 +536,9 @@ static bool make_page(const char *root, const char *program, const char *page)
 
 // ---------------------------------------------------------------------------
 
-static bool generate(const char *folder, const char *gen)
+// With `layout`, the generated code describes the data layout too, for hot
+// reloading.
+static bool generate(const char *folder, const char *gen, const bool layout)
 {
     file_list files = game_files(folder);
     if (files.count == 0) {
@@ -543,7 +547,7 @@ static bool generate(const char *folder, const char *gen)
         return false;
     }
     arena_reset(); // What an earlier build compiled, when a run rebuilds the game
-    const codegen_options codegen = {"game", gen, true};
+    const codegen_options codegen = {"game", gen, true, layout};
     const bool ok = compile_program((const char **)files.items, files.count, &codegen, NULL);
     free_files(&files);
     return ok;
@@ -556,7 +560,7 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
     char *gen = path_join(b.cache, "gen");
     sys_mkdirs(gen);
 
-    if (!generate(b.folder, gen)) return NULL;
+    if (!generate(b.folder, gen, false)) return NULL;
     char *main_c = path_join(gen, "main.c");
     write_main(main_c, opts->title ? opts->title : b.name, opts->stats);
     if (!build_engine(&b)) return NULL;
@@ -605,17 +609,7 @@ typedef struct run {
     char *dir;       // This run's folder
     char *gen;       // ...and its generated files
     uint32_t builds; // Libraries made so far, game-1 to game-<builds>
-    char *layout;    // The last one's generated header (see same_layout)
 } run;
-
-// Whether two generated headers have the same data layout, as the host
-// compares them (purr_game's hash): all but the first line, which names files.
-static bool same_layout(const char *a, const char *b)
-{
-    const char *rest_a = a ? strchr(a, '\n') : NULL;
-    const char *rest_b = b ? strchr(b, '\n') : NULL;
-    return rest_a && rest_b && strcmp(rest_a, rest_b) == 0;
-}
 
 static char *build_path(const run *r, const uint32_t n, const char *suffix)
 {
@@ -625,16 +619,11 @@ static char *build_path(const run *r, const uint32_t n, const char *suffix)
 }
 
 // Builds the game's next library, game-<builds + 1>, linked to another name
-// and renamed once it's whole: the host takes it as soon as it's there.
-// `kept` says whether it has the last one's layout. False after saying what's
-// wrong.
-static bool build_library(run *r, bool *kept)
+// and renamed once it's whole: the host takes it as soon as it's there, and
+// says what it did with it. False after saying what's wrong.
+static bool build_library(run *r)
 {
-    if (!generate(r->b.folder, r->gen) || !build_engine(&r->b)) return false;
-    char *header_path = path_join(r->gen, "game.h");
-    char *header = sys_read_file(header_path, NULL);
-    free(header_path);
-
+    if (!generate(r->b.folder, r->gen, true) || !build_engine(&r->b)) return false;
     char *game_c = path_join(r->gen, "game.c");
     char *library_c = path_join(r->gen, "library.c");
     file_list objects = {0};
@@ -653,10 +642,6 @@ static bool build_library(run *r, bool *kept)
     }
     if (ok) {
         r->builds = n;
-        *kept = same_layout(r->layout, header);
-        free(r->layout);
-        r->layout = header;
-        header = NULL;
         // The one before the last is done with; if the host still has it, it
         // stays until the run ends.
         if (n > 2) {
@@ -668,7 +653,6 @@ static bool build_library(run *r, bool *kept)
             free(old_pdb);
         }
     }
-    free(header);
     free(game_c);
     free(library_c);
     free_files(&objects);
@@ -706,7 +690,8 @@ static bool build_host(run *r, const char *program)
     return ok;
 }
 
-// What the host loads from each library (see purr/host.h).
+// What the host loads from each library (see purr/host.h): the game, with its
+// data layout.
 static bool write_library(const run *r)
 {
     char *path = path_join(r->gen, "library.c");
@@ -714,9 +699,14 @@ static bool write_library(const run *r)
                                          "#include \"game.h\"\n"
                                          "#include \"purr/run.h\"\n"
                                          "\n"
+                                         "extern const purr_layout purr_game_layout;\n"
+                                         "\n"
                                          "PURR_HOST_EXPORT const purr_host_game *purr_host_library(void)\n"
                                          "{\n"
-                                         "    return &purr_host_game_api;\n"
+                                         "    static purr_host_game game;\n"
+                                         "    game = purr_host_game_api;\n"
+                                         "    game.layout = &purr_game_layout;\n"
+                                         "    return &game;\n"
                                          "}\n");
     free(path);
     return ok;
@@ -765,11 +755,10 @@ int purr_run_reloading(const char *root, const build_options *opts, const char *
     sys_remove_tree(r.dir); // A run that ended with the same process ID
     sys_mkdirs(r.gen);
 
-    bool kept = false;
     char file[512];
     snprintf(file, sizeof file, "%s%s", r.b.name, EXE_SUFFIX);
     char *program = path_join(r.dir, file);
-    if (!write_library(&r) || !build_library(&r, &kept) || !build_host(&r, program)) return 1;
+    if (!write_library(&r) || !build_library(&r) || !build_host(&r, program)) return 1;
 
     args a = {0};
     arg(&a, program);
@@ -810,12 +799,7 @@ int purr_run_reloading(const char *root, const build_options *opts, const char *
         }
         if (!changed) continue;
         changed = false;
-        if (build_library(&r, &kept)) {
-            printf(kept ? "purr: reloaded\n" : "purr: reloaded, and started over: the game's data layout changed\n");
-        } else {
-            fprintf(stderr, "purr: the game keeps running its last build\n");
-        }
-        fflush(stdout);
+        if (!build_library(&r)) fprintf(stderr, "purr: the game keeps running its last build\n");
     }
     sys_remove_tree(r.dir);
     return code;
@@ -829,7 +813,7 @@ bool purr_schedule(const char *folder_arg)
         fprintf(stderr, "purr: there are no .purr files in %s\n", folder);
         return false;
     }
-    const codegen_options codegen = {game_name(folder), NULL, true};
+    const codegen_options codegen = {game_name(folder), NULL, true, false};
     sb text = {0};
     if (!compile_program((const char **)files.items, files.count, &codegen, &text)) return false;
     fputs(text.data, stdout);

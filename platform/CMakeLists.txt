@@ -85,6 +85,14 @@ if(PURR_PACKAGE_LIBS)
     install(FILES $<TARGET_FILE:purr_platform> $<TARGET_FILE:raylib> DESTINATION ${PURR_PACKAGE_LIBS} COMPONENT purr)
 endif()
 
+# Carrying a world over to a build whose data layout changed, for hot
+# reloading: on layouts written by hand, and on a game's, as purrc describes it.
+purr_add_game(purr_platform_migrate SOURCES tests/migrate.purr NAME game LAYOUT
+    HOST tests/migrate.c "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+target_include_directories(purr_platform_migrate PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+target_link_libraries(purr_platform_migrate PRIVATE purr_platform)
+add_test(NAME purr_platform_migrate COMMAND purr_platform_migrate)
+
 if(NOT PURR_WEB)
     # Sessions over real UDP, on this machine.
     add_executable(purr_platform_udp tests/udp.c "${PROJECT_SOURCE_DIR}/tests/test_main.c")

@@ -4396,6 +4396,201 @@ static void gen_game_api(gen *g)
     sb_put(o, "};\n");
 }
 
+// ---------------------------------------------------------------------------
+// Source: the data layout, for hot reloading (purr/layout.h)
+
+typedef VEC(const decl *) layout_decls;
+
+// The types it describes: the structs, components, singletons and the input.
+static layout_decls layout_types(const program *prog)
+{
+    layout_decls out = {0};
+    for (int i = 0; i < prog->structs.count; i++) vec_push(out, prog->structs.items[i]);
+    for (int i = 0; i < prog->components.count; i++) vec_push(out, prog->components.items[i]);
+    for (int i = 0; i < prog->singletons.count; i++) vec_push(out, prog->singletons.items[i]);
+    if (prog->input) vec_push(out, prog->input);
+    return out;
+}
+
+static layout_decls layout_enums(const program *prog)
+{
+    layout_decls out = {0};
+    for (int i = 0; i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->kind == DECL_ENUM) vec_push(out, prog->decls.items[i]);
+    }
+    return out;
+}
+
+static int layout_index(const layout_decls *list, const decl *d)
+{
+    for (int i = 0; i < list->count; i++) {
+        if (list->items[i] == d) return i;
+    }
+    return -1;
+}
+
+// A name as the layout has it, which builds compare: with its namespace.
+static const char *layout_name(const type t)
+{
+    const char *name = type_name(t);
+    char *out = arena_alloc(strlen(name) + 1);
+    memcpy(out, name, strlen(name));
+    return out;
+}
+
+static const char *layout_kind(const type t)
+{
+    if (t.kind == TY_STRUCT) return "PURR_LAYOUT_STRUCT";
+    if (t.kind == TY_ENUM) return "PURR_LAYOUT_ENUM";
+    if (type_dim(t) > 0) return type_is_float_based(t) ? "PURR_LAYOUT_FLOAT" : "PURR_LAYOUT_INT";
+    return "PURR_LAYOUT_PLAIN";
+}
+
+static void gen_layout_world(gen *g, const layout_decls *types, const bool local)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    const char *world = world_type(local);
+    const char *side = local ? "local" : "match";
+
+    int singletons = 0;
+    for (int i = 0; i < prog->singletons.count; i++) singletons += prog->singletons.items[i]->is_local == local;
+    if (singletons) {
+        sb_printf(o, "static const purr_layout_place purr_layout_%s_singletons[] = {\n", side);
+        for (int i = 0; i < prog->singletons.count; i++) {
+            const decl *d = prog->singletons.items[i];
+            if (d->is_local != local) continue;
+            sb_printf(o, "    {%d, offsetof(%s, %s)},\n", layout_index(types, d), world, type_cname(d));
+        }
+        sb_put(o, "};\n\n");
+    }
+
+    int archetypes = 0;
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (arch_local(g, a) != local) continue;
+        archetypes++;
+        if (prog->archetypes.items[a] == 0) continue;
+        sb_printf(o, "static const purr_layout_place purr_layout_arch%d[] = {\n", a);
+        for (int i = 0; i < prog->components.count; i++) {
+            if (!has_component(prog->archetypes.items[a], i)) continue;
+            const decl *d = prog->components.items[i];
+            sb_printf(o, "    {%d, offsetof(purr_%s, %s)},\n", layout_index(types, d), arch_name(g, a), type_cname(d));
+        }
+        sb_put(o, "};\n\n");
+    }
+    if (archetypes) {
+        sb_printf(o, "static const purr_layout_archetype purr_layout_%s_archetypes[] = {\n", side);
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            if (arch_local(g, a) != local) continue;
+            const char *name = arch_name(g, a);
+            int count = 0;
+            for (int i = 0; i < prog->components.count; i++) count += has_component(prog->archetypes.items[a], i);
+            sb_printf(o, "    {offsetof(%s, %s), offsetof(purr_%s, count), offsetof(purr_%s, entity), ", world, name, name,
+                      name);
+            if (has_scenes(prog, local)) sb_printf(o, "offsetof(purr_%s, scene), ", name);
+            else sb_put(o, "UINT32_MAX, ");
+            if (count) sb_printf(o, "%d, purr_layout_arch%d},\n", count, a);
+            else sb_put(o, "0, NULL},\n");
+        }
+        sb_put(o, "};\n\n");
+    }
+
+    sb_printf(o, "#define PURR_LAYOUT_%s {sizeof(%s), %d, ", local ? "LOCAL" : "MATCH", world, singletons);
+    if (singletons) sb_printf(o, "purr_layout_%s_singletons, ", side);
+    else sb_put(o, "NULL, ");
+    sb_printf(o, "offsetof(%s, entities), %d, ", world, archetypes);
+    if (archetypes) sb_printf(o, "purr_layout_%s_archetypes, ", side);
+    else sb_put(o, "NULL, ");
+    sb_printf(o, "PURR_ARCHETYPE_CAPACITY, \\\n    offsetof(%s, command_count), ", world);
+    if (!local && prog->input) {
+        sb_printf(o, "%d, offsetof(purr_world, inputs), offsetof(purr_world, previous_inputs), PURR_MAX_PLAYERS + 1, ",
+                  layout_index(types, prog->input));
+    } else {
+        sb_put(o, "-1, 0, 0, 0, ");
+    }
+    if (prog->uses_heap) sb_printf(o, "offsetof(%s, heap)}\n\n", world);
+    else sb_put(o, "UINT32_MAX}\n\n");
+}
+
+static void gen_layout(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    const layout_decls types = layout_types(prog);
+    const layout_decls enums = layout_enums(prog);
+    sb_put(o, "// The data layout, for hot reloading (purr/layout.h)\n\n#include \"purr/layout.h\"\n\n");
+
+    for (int i = 0; i < types.count; i++) {
+        const decl *d = types.items[i];
+        const char *name = type_cname(d);
+        // Text and lists start empty: their defaults are borrowed, in the
+        // scratch area, not the world's own.
+        path_list paths = {0};
+        text_paths(d, "", &paths);
+        sb_printf(o, "static void purr_layout_defaults%d(void *value)\n{\n", i);
+        if (paths.count) sb_put(o, "    const uint32_t mark = purr_scratch_mark();\n");
+        sb_printf(o, "    *(%s *)value = ", name);
+        gen_value(g, o, d, NULL, 0);
+        sb_put(o, ";\n");
+        for (int k = 0; k < paths.count; k++) {
+            sb_printf(o, "    memset(&((%s *)value)->%s, 0, sizeof ((%s *)value)->%s);\n", name, paths.items[k].path, name,
+                      paths.items[k].path);
+        }
+        if (paths.count) sb_put(o, "    purr_scratch_reset(mark);\n");
+        sb_put(o, "}\n\n");
+        if (d->fields.count == 0) continue;
+        sb_printf(o, "static const purr_layout_field purr_layout_fields%d[] = {\n", i);
+        for (int k = 0; k < d->fields.count; k++) {
+            const field *f = &d->fields.items[k];
+            const type t = f->type;
+            const int ref = t.kind == TY_STRUCT ? layout_index(&types, t.decl)
+                          : t.kind == TY_ENUM   ? layout_index(&enums, t.decl)
+                                                : -1;
+            const int dim = type_dim(t) > 0 ? type_dim(t) : 0;
+            sb_printf(o, "    {\"" STR_FMT "\", \"%s\", %s, %d, %d, offsetof(%s, %s), sizeof(((%s *)0)->%s)},\n",
+                      STR_ARG(f->name), layout_name(t), layout_kind(t), dim, ref, name, field_cname(f), name,
+                      field_cname(f));
+        }
+        sb_put(o, "};\n\n");
+    }
+    sb_put(o, "static const purr_layout_type purr_layout_types[] = {\n");
+    for (int i = 0; i < types.count; i++) {
+        const decl *d = types.items[i];
+        const type t = {d->kind == DECL_COMPONENT ? TY_COMPONENT : TY_STRUCT, (decl *)d};
+        sb_printf(o, "    {\"%s\", sizeof(%s), %s, %d, ", layout_name(t), type_cname(d),
+                  d->kind == DECL_COMPONENT && d->is_scene ? "true" : "false", d->fields.count);
+        if (d->fields.count) sb_printf(o, "purr_layout_fields%d, purr_layout_defaults%d},\n", i, i);
+        else sb_printf(o, "NULL, purr_layout_defaults%d},\n", i);
+    }
+    sb_put(o, "};\n\n");
+
+    for (int i = 0; i < enums.count; i++) {
+        const decl *d = enums.items[i];
+        if (d->members.count == 0) continue;
+        sb_printf(o, "static const purr_layout_member purr_layout_members%d[] = {\n", i);
+        for (int k = 0; k < d->members.count; k++) {
+            sb_printf(o, "    {\"" STR_FMT "\", %s},\n", STR_ARG(d->members.items[k].name),
+                      enum_member_cname(d, &d->members.items[k]));
+        }
+        sb_put(o, "};\n\n");
+    }
+    if (enums.count) {
+        sb_put(o, "static const purr_layout_enum purr_layout_enums[] = {\n");
+        for (int i = 0; i < enums.count; i++) {
+            const decl *d = enums.items[i];
+            const type t = {TY_ENUM, (decl *)d};
+            if (d->members.count) sb_printf(o, "    {\"%s\", %d, purr_layout_members%d},\n", layout_name(t), d->members.count, i);
+            else sb_printf(o, "    {\"%s\", 0, NULL},\n", layout_name(t));
+        }
+        sb_put(o, "};\n\n");
+    }
+
+    gen_layout_world(g, &types, false);
+    gen_layout_world(g, &types, true);
+    sb_printf(o, "const purr_layout purr_game_layout = {%d, purr_layout_types, %d, %s, PURR_LAYOUT_MATCH, PURR_LAYOUT_LOCAL};\n",
+              types.count, enums.count, enums.count ? "purr_layout_enums" : "NULL");
+}
+
 bool codegen(program *prog, const codegen_options *opts)
 {
     gen g = {0};
@@ -4447,6 +4642,7 @@ bool codegen(program *prog, const codegen_options *opts)
     for (int i = 0; i < prog->views.count; i++) gen_system_run(&g, prog->views.items[i]);
     gen_api(&g);
     gen_game_api(&g);
+    if (opts->layout) gen_layout(&g);
 
     sb h_path = {0};
     sb_printf(&h_path, "%s/%s.h", opts->out_dir, opts->name);

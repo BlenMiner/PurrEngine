@@ -203,6 +203,18 @@ bool purr_session_next_event(purr_session *s, purr_session_event *event);
 // data layout (the same hash), for hot reloading. The match goes on.
 void purr_session_set_game(purr_session *s, const purr_game *game);
 
+// Makes `to`, a zeroed world of the new build, from `from`, a world of the old.
+typedef bool (*purr_migrate_fn)(void *user, const void *from, void *to);
+
+// The same, for a build with another data layout: `migrate` carries the
+// match's world over to it, on the machine that runs the server, and the last
+// world the server confirmed on a client of another machine. This machine's
+// own player takes its server's world. Players stay where they are. A client's
+// ticks ahead of the server run again, and a world that came out different
+// from the server's is sent again, as when a client goes wrong. False,
+// changing nothing, if `migrate` fails or there isn't the memory.
+bool purr_session_migrate(purr_session *s, const purr_game *game, purr_migrate_fn migrate, void *user);
+
 // What local code asked for, with Session.Play, Host, Join and Leave.
 typedef enum purr_session_request_kind {
     PURR_REQUEST_NONE,
