@@ -1,6 +1,6 @@
 # purr: the command users run to build, run and upgrade games. It runs purrc's
 # front end in-process and calls clang (see AGENTS.md, Packaging and releases).
-add_executable(purr_cli main.c build.c editors.c release.c sha256.c sys.c toolchain.c upgrade.c
+add_executable(purr_cli main.c build.c editors.c release.c serve.c sha256.c sys.c toolchain.c upgrade.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/folders.c" "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c")
 target_include_directories(purr_cli PRIVATE . ../lsp)
 target_link_libraries(purr_cli PRIVATE purrc_core)
@@ -10,7 +10,9 @@ target_compile_definitions(purr_cli PRIVATE
     "PURR_VERSION=\"${PURR_VERSION}\""
     "PURR_CHANNEL=\"${PURR_CHANNEL}\""
     "PURR_REPOSITORY=\"${PURR_REPOSITORY}\"")
-if(NOT WIN32)
+if(WIN32)
+    target_link_libraries(purr_cli PRIVATE ws2_32) # Serves the page of purr run --web
+else()
     find_package(Threads REQUIRED)
     target_link_libraries(purr_cli PRIVATE Threads::Threads) # Reads the terminal while a game runs
 endif()

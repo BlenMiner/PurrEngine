@@ -130,7 +130,7 @@ Users get PurrEngine as the `purr` command, not this repo: see README.md.
 
 ### Hot reloading
 
-It's for quick iteration, and only under `purr run`: `purr build` output has none of it, native or web.
+It's for quick iteration, and only under `purr run`, native and web: `purr build` output has none of it.
 
 - `purr run` builds the game as a library (`game-<n>.dll`, `.so` or `.dylib`) and a small host that loads it (`purr_host_run_library`, in `platform/src/reload.c`). purr watches the game's `.purr` files and builds again once a change has settled. Each build is linked under another name and renamed into place when it's whole; between two frames, the host swaps in the newest.
 - A build with the same data layout keeps the match and the local state where they are (`purr_session_set_game`). The layout is `purr_game`'s hash: the generated header but for its first line.
@@ -146,7 +146,9 @@ It's for quick iteration, and only under `purr run`: `purr build` output has non
 - Each run has its own folder, `.purr/<configuration>/run/<purr's process ID>`, so a server and a client run from one folder never build over each other. It keeps the last two builds, and it's deleted when the run ends, or by a later run once its purr is gone.
 - A game's library has its own copy of the engine code it uses. So everything the host and the library share is plain data: worlds, local state, devices, the draw list and the GUI. The library frees its scratch area before it's unloaded (`purr_host_game.unload`).
 - On Linux, a library's objects are compiled with `-fPIC`. The engine's are kept apart in `engine-pic`, so running and building don't rebuild each other's.
-- Web pages don't reload yet: `purr run --web` still builds the page and opens it.
+- On the web, each build is a WebAssembly program of its own. `purr run --web` serves the page on 127.0.0.1 (`compiler/cli/serve.c`), opens it, and keeps running until it's stopped. The page asks purr for the newest build 4 times a second (`/build`: the build and restart numbers; `/game-<n>.wasm`).
+- The page starts each new build in the running one's place (`platform/web/purr.js`, between its `purr run` markers): it asks the running one for its state (`purr_reload_save`), deletes its WebGL objects, and starts the new one, which carries that state over (`purr_host_run_web` in `platform/src/reload.c`). The state is the old layout, packed with offsets for pointers (`purr_layout_pack`), the server's world, the local state and the GUI. The new session goes on from the world with this machine's player in it already (`purr_session_play_from`), so there's no second `PlayerJoined`. Web games only play single-player for now, so there's nobody else to carry.
+- Pages made to ship (`purr build --web`, `cmake/web_page.mjs`) leave out the lines between purr.js's `purr run` markers, and web programs only link reload code when purr run's `main.c` calls it.
 
 ## Layout
 

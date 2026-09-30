@@ -468,6 +468,40 @@ PURR_TEST(migrate_a_games_defaults_are_its_declared_ones)
     PURR_CHECK(s.points == 10);
 }
 
+// Where each build is a program of its own (the web), the old one packs its
+// layout for the next: unpacked in another block, it carries a world over the
+// same.
+PURR_TEST(migrate_a_packed_layout_works_where_it_goes)
+{
+    const purr_layout *l = &purr_game_layout;
+    uint32_t size = 0;
+    void *packed = purr_layout_pack(l, &size);
+    PURR_REQUIRE(packed != NULL);
+    void *elsewhere = malloc(size);
+    memcpy(elsewhere, packed, size);
+    memset(packed, 0xAB, size); // Nothing may point back into the first block
+    const purr_layout *unpacked = purr_layout_unpack(elsewhere, size);
+    PURR_REQUIRE(unpacked != NULL);
+    PURR_CHECK(unpacked->type_count == l->type_count && unpacked->enum_count == l->enum_count);
+    PURR_CHECK(strcmp(unpacked->types[0].name, l->types[0].name) == 0);
+    PURR_CHECK(unpacked->types[0].defaults == NULL);
+
+    purr_world *w = calloc(1, sizeof *w);
+    purr_world *copy = calloc(1, sizeof *copy);
+    purr_world_init(w, 1.0f / 60.0f);
+    purr_world_tick(w);
+    purr_migration m;
+    PURR_REQUIRE(purr_migrate_world(unpacked, &unpacked->match, w, l, &l->match, copy, &m));
+    PURR_CHECK(memcmp(w, copy, sizeof *w) == 0);
+    PURR_CHECK(purr_layout_fields_reset(unpacked, l) == 0);
+
+    PURR_CHECK(purr_layout_unpack(elsewhere, 8) == NULL); // Too small to be one
+    free(packed);
+    free(elsewhere);
+    free(w);
+    free(copy);
+}
+
 // A build where Unit's `position` was called `place`: the rest of Unit still
 // carries over, text included.
 PURR_TEST(migrate_a_game_keeps_what_has_the_same_name)

@@ -589,6 +589,18 @@ bool sys_typed_line(char *out, const size_t size)
     return true;
 }
 
+bool sys_open_in_browser(const char *page)
+{
+#if defined(_WIN32)
+    const char *const argv[] = {"cmd.exe", "/c", "start", "", page, NULL};
+#elif defined(__APPLE__)
+    const char *const argv[] = {"open", page, NULL};
+#else
+    const char *const argv[] = {"xdg-open", page, NULL};
+#endif
+    return sys_run(argv, NULL, true) == 0;
+}
+
 char *sys_which(const char *name)
 {
     const char *path = getenv("PATH");

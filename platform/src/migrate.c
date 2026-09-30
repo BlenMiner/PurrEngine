@@ -1,5 +1,6 @@
 #include "purr/migrate.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -278,4 +279,181 @@ uint32_t purr_layout_fields_reset(const purr_layout *from, const purr_layout *to
         }
     }
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// A packed layout: the structures one after another, 8-aligned, with each
+// pointer an offset from the block's start plus one (0 for NULL).
+
+typedef struct packer {
+    uint8_t *data;
+    uint32_t size;
+    uint32_t cap;
+    bool failed;
+} packer;
+
+// Where `n` bytes went, copied from `bytes` (NULL: zeros).
+static uint32_t put(packer *p, const void *bytes, const uint32_t n)
+{
+    const uint32_t at = (p->size + 7u) & ~7u;
+    if (p->failed) return 0;
+    if (at + n > p->cap) {
+        uint32_t cap = p->cap ? p->cap : 4096u;
+        while (cap < at + n) cap *= 2u;
+        uint8_t *grown = realloc(p->data, cap);
+        if (!grown) {
+            p->failed = true;
+            return 0;
+        }
+        memset(grown + p->cap, 0, cap - p->cap);
+        p->data = grown;
+        p->cap = cap;
+    }
+    if (bytes && n) memcpy(p->data + at, bytes, n);
+    p->size = at + n;
+    return at;
+}
+
+// The pointer at `at` becomes one to `target`.
+static void point(packer *p, const uint32_t at, const uint32_t target)
+{
+    const uintptr_t v = (uintptr_t)target + 1u;
+    if (!p->failed) memcpy(p->data + at, &v, sizeof v);
+}
+
+// The pointer at `at` becomes one to an array copied from `items`, or NULL
+// when there are none. Returns where the array went.
+static uint32_t put_array(packer *p, const uint32_t at, const void *items, const uint32_t count, const size_t size)
+{
+    const uintptr_t none = 0;
+    if (!count) {
+        if (!p->failed) memcpy(p->data + at, &none, sizeof none);
+        return 0;
+    }
+    const uint32_t array = put(p, items, count * (uint32_t)size);
+    point(p, at, array);
+    return array;
+}
+
+static void put_string(packer *p, const uint32_t at, const char *s)
+{
+    point(p, at, put(p, s, (uint32_t)strlen(s) + 1u));
+}
+
+static void pack_world(packer *p, const uint32_t at, const purr_layout_world *w)
+{
+    put_array(p, at + offsetof(purr_layout_world, singletons), w->singletons, w->singleton_count,
+              sizeof *w->singletons);
+    const uint32_t archetypes = put_array(p, at + offsetof(purr_layout_world, archetypes), w->archetypes,
+                                          w->archetype_count, sizeof *w->archetypes);
+    for (uint32_t i = 0; i < w->archetype_count; i++) {
+        const uint32_t a = archetypes + i * (uint32_t)sizeof(purr_layout_archetype);
+        put_array(p, a + offsetof(purr_layout_archetype, components), w->archetypes[i].components,
+                  w->archetypes[i].component_count, sizeof *w->archetypes[i].components);
+    }
+}
+
+void *purr_layout_pack(const purr_layout *l, uint32_t *size)
+{
+    packer p = {0};
+    const uint32_t root = put(&p, l, sizeof *l);
+    const uint32_t types = put_array(&p, root + offsetof(purr_layout, types), l->types, l->type_count, sizeof *l->types);
+    for (uint32_t i = 0; i < l->type_count; i++) {
+        const purr_layout_type *type = &l->types[i];
+        const uint32_t t = types + i * (uint32_t)sizeof *type;
+        put_string(&p, t + offsetof(purr_layout_type, name), type->name);
+        const uint32_t fields = put_array(&p, t + offsetof(purr_layout_type, fields), type->fields, type->field_count,
+                                          sizeof *type->fields);
+        if (!p.failed) memset(p.data + t + offsetof(purr_layout_type, defaults), 0, sizeof type->defaults);
+        for (uint32_t k = 0; k < type->field_count; k++) {
+            const uint32_t f = fields + k * (uint32_t)sizeof *type->fields;
+            put_string(&p, f + offsetof(purr_layout_field, name), type->fields[k].name);
+            put_string(&p, f + offsetof(purr_layout_field, type), type->fields[k].type);
+        }
+    }
+    const uint32_t enums = put_array(&p, root + offsetof(purr_layout, enums), l->enums, l->enum_count, sizeof *l->enums);
+    for (uint32_t i = 0; i < l->enum_count; i++) {
+        const purr_layout_enum *e = &l->enums[i];
+        const uint32_t at = enums + i * (uint32_t)sizeof *e;
+        put_string(&p, at + offsetof(purr_layout_enum, name), e->name);
+        const uint32_t members = put_array(&p, at + offsetof(purr_layout_enum, members), e->members, e->member_count,
+                                           sizeof *e->members);
+        for (uint32_t k = 0; k < e->member_count; k++) {
+            put_string(&p, members + k * (uint32_t)sizeof *e->members + offsetof(purr_layout_member, name),
+                       e->members[k].name);
+        }
+    }
+    pack_world(&p, root + offsetof(purr_layout, match), &l->match);
+    pack_world(&p, root + offsetof(purr_layout, local), &l->local);
+    if (p.failed) {
+        free(p.data);
+        return NULL;
+    }
+    *size = p.size;
+    return p.data;
+}
+
+// A packed pointer, at `field`, made a real one to `count` items of `size`
+// bytes in the block. False if they aren't in it.
+static bool unpack_pointer(uint8_t *block, const uint32_t block_size, void *field, const uint32_t count,
+                           const size_t size)
+{
+    uintptr_t v;
+    memcpy(&v, field, sizeof v);
+    if (v == 0) return count == 0;
+    const uintptr_t at = v - 1u;
+    if (at > block_size || (block_size - at) / (size ? size : 1u) < count) return false;
+    void *target = block + at;
+    memcpy(field, &target, sizeof target);
+    return true;
+}
+
+// A packed string: in the block, and ending in it.
+static bool unpack_string(uint8_t *block, const uint32_t block_size, const char **field)
+{
+    if (!unpack_pointer(block, block_size, (void *)field, 1, 1)) return false;
+    return memchr(*field, '\0', block_size - (uint32_t)((const uint8_t *)*field - block)) != NULL;
+}
+
+static bool unpack_world(uint8_t *b, const uint32_t size, purr_layout_world *w)
+{
+    if (!unpack_pointer(b, size, (void *)&w->singletons, w->singleton_count, sizeof *w->singletons)) return false;
+    if (!unpack_pointer(b, size, (void *)&w->archetypes, w->archetype_count, sizeof *w->archetypes)) return false;
+    purr_layout_archetype *archetypes = (purr_layout_archetype *)w->archetypes;
+    for (uint32_t i = 0; i < w->archetype_count; i++) {
+        purr_layout_archetype *a = &archetypes[i];
+        if (!unpack_pointer(b, size, (void *)&a->components, a->component_count, sizeof *a->components)) return false;
+    }
+    return true;
+}
+
+const purr_layout *purr_layout_unpack(void *block, const uint32_t size)
+{
+    uint8_t *b = block;
+    if (size < sizeof(purr_layout)) return NULL;
+    purr_layout *l = block;
+    if (!unpack_pointer(b, size, (void *)&l->types, l->type_count, sizeof *l->types)) return NULL;
+    if (!unpack_pointer(b, size, (void *)&l->enums, l->enum_count, sizeof *l->enums)) return NULL;
+    purr_layout_type *types = (purr_layout_type *)l->types;
+    for (uint32_t i = 0; i < l->type_count; i++) {
+        purr_layout_type *t = &types[i];
+        if (!unpack_string(b, size, &t->name)) return NULL;
+        if (!unpack_pointer(b, size, (void *)&t->fields, t->field_count, sizeof *t->fields)) return NULL;
+        purr_layout_field *fields = (purr_layout_field *)t->fields;
+        for (uint32_t k = 0; k < t->field_count; k++) {
+            if (!unpack_string(b, size, &fields[k].name) || !unpack_string(b, size, &fields[k].type)) return NULL;
+        }
+    }
+    purr_layout_enum *enums = (purr_layout_enum *)l->enums;
+    for (uint32_t i = 0; i < l->enum_count; i++) {
+        purr_layout_enum *e = &enums[i];
+        if (!unpack_string(b, size, &e->name)) return NULL;
+        if (!unpack_pointer(b, size, (void *)&e->members, e->member_count, sizeof *e->members)) return NULL;
+        purr_layout_member *members = (purr_layout_member *)e->members;
+        for (uint32_t k = 0; k < e->member_count; k++) {
+            if (!unpack_string(b, size, &members[k].name)) return NULL;
+        }
+    }
+    if (!unpack_world(b, size, &l->match) || !unpack_world(b, size, &l->local)) return NULL;
+    return l;
 }

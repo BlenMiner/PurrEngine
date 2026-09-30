@@ -15,5 +15,8 @@ if (!template.includes('{{{ SCRIPT }}}')) {
     console.error(`${shell} has no {{{ SCRIPT }}} for the program`);
     process.exit(1);
 }
-const tag = `<script>\nconst PURR_PROGRAM = "${wasm}";\n${await readFile(script, 'utf8')}</script>`;
+// Pages that ship leave out what purr.js has for purr run's hot reloading.
+const runtime = (await readFile(script, 'utf8'))
+    .replace(/^[ \t]*\/\/ <purr run>\r?\n[\s\S]*?^[ \t]*\/\/ <\/purr run>\r?\n/gm, '');
+const tag = `<script>\nconst PURR_PROGRAM = "${wasm}";\n${runtime}</script>`;
 await writeFile(page, template.replace('{{{ SCRIPT }}}', () => tag));

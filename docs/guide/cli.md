@@ -49,7 +49,9 @@ Carrying the game over works like this:
 
 When the game gets into a state you don't want, type `r` and press Enter in `purr`'s terminal to start it over. With a match on several windows (`--host` in one, `--join` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over.
 
-Hot reload is only for `purr run` on this machine: `purr build` makes a plain program, and `purr run --web` doesn't reload yet.
+`purr run --web` reloads too. `purr` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console.
+
+Hot reload is only for `purr run`: `purr build` makes a plain program, or a page with nothing of it.
 
 ## Multiplayer
 

@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "game.h"
@@ -537,6 +538,45 @@ PURR_TEST(net_a_client_carries_its_match_over_to_another_layout)
     purr_session_destroy(guest);
     purr_session_destroy(host);
     purr_loopback_destroy(network);
+}
+
+// Where each build is a program of its own (the web), the next one's session
+// goes on from the world the last one left, with this machine's player in it
+// already.
+PURR_TEST(net_a_session_goes_on_from_a_world)
+{
+    purr_session *s = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = session_sample});
+    double t = 0.0;
+    purr_session_play(s, NULL, t);
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+    }
+    const purr_session_status before = purr_session_status_of(s);
+    PURR_REQUIRE(before.client.state == PURR_SESSION_CONNECTED);
+    purr_world *left = calloc(1, sizeof *left);
+    purr_world_copy(left, purr_session_server_world(s));
+    const int32_t player = purr_player_index(before.client.player);
+    PURR_REQUIRE(player >= 0);
+    PURR_REQUIRE(players_in(left)->joined == 1);
+    purr_session_destroy(s);
+
+    purr_session *next = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = session_sample});
+    t = 0.0;
+    purr_session_play_from(next, left, 1u << player, t);
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(next, t);
+    }
+    const purr_session_status after = purr_session_status_of(next);
+    PURR_CHECK(after.client.state == PURR_SESSION_CONNECTED);
+    PURR_CHECK(after.client.player.id == before.client.player.id);
+    const purr_world *w = purr_session_server_world(next);
+    PURR_CHECK(players_in(w)->joined == 1); // Not twice
+    PURR_CHECK(w->Time.tick >= left->Time.tick + 55); // Went on from it
+    PURR_CHECK(memcmp(purr_session_world(next), w, sizeof(purr_world)) == 0);
+    purr_session_destroy(next);
+    free(left);
 }
 
 PURR_TEST(net_input_packs_and_unpacks)

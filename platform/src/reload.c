@@ -3,6 +3,10 @@
 // into place once it's whole. Between two frames, the host loads the newest
 // and runs it from then on. A file of its own, since it includes the operating
 // system's headers.
+//
+// On the web, each build is a program of its own instead. The page asks the
+// running one for its state (purr_reload_save), then starts the new one in its
+// place (platform/web/purr.js), which carries that state over.
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__wasm__)
 #define _DEFAULT_SOURCE // dlopen under strict C
@@ -11,15 +15,158 @@
 #include "purr/host.h"
 #include "purr/migrate.h"
 
+static const char *plural(const uint32_t n)
+{
+    return n == 1 ? "" : "s";
+}
+
+// What carrying a game over to a new build did, after "purr: reloaded".
+static void say_carried(const purr_layout *from, const purr_layout *to, const uint32_t dropped)
+{
+    const uint32_t reset = purr_layout_fields_reset(from, to);
+    printf("purr: reloaded, and carried the game over to its new data layout");
+    if (reset) printf("; %u field%s reset", (unsigned)reset, plural(reset));
+    if (dropped) printf("; %u entit%s dropped", (unsigned)dropped, dropped == 1 ? "y" : "ies");
+    printf("\n");
+}
+
 #if defined(__wasm__)
 
-// Web pages reload another way, which doesn't exist yet.
+#include "purr_web.h"
+
 _Noreturn void purr_host_run_library(const purr_run_desc *desc, const char *dir)
 {
     (void)desc;
     (void)dir;
-    fprintf(stderr, "purr: web builds can't reload libraries\n");
+    fprintf(stderr, "purr: web builds reload with purr_host_run_web\n");
     exit(1);
+}
+
+// What a program leaves the next one: this, then its layout (packed), its
+// match's world as the server has it, its local state and its GUI, each
+// 8-aligned.
+#define SAVED_MAGIC 0x53525550u // "PURS"
+
+typedef struct saved {
+    uint32_t size; // Of it all, first, for the page
+    uint32_t magic;
+    uint64_t hash;    // Its game's: the same one has the same layout
+    uint32_t players; // In the match, a bit per player
+    uint32_t layout, layout_size;
+    uint32_t world, world_size; // 0 bytes outside a match
+    uint32_t local, local_size;
+    uint32_t gui, gui_size;
+} saved;
+
+static uint32_t align8(const uint32_t n)
+{
+    return (n + 7u) & ~7u;
+}
+
+// For the page, before it starts the next build: where this program's state
+// is, starting with its size, or 0 when there's none to carry over. It stays
+// until the program goes.
+__attribute__((export_name("purr_reload_save"))) uint32_t purr_reload_save(void)
+{
+    const purr_host_game *game = purr_run_game;
+    if (!game || !game->layout || !purr_run_local) return 0;
+    uint32_t layout_size = 0;
+    void *layout = purr_layout_pack(game->layout, &layout_size);
+    if (!layout) return 0;
+    const void *world = purr_session_server_world(purr_run_session);
+    const purr_session_status status = purr_session_status_of(purr_run_session);
+    const int32_t player = purr_player_index(status.client.player);
+    saved h = {0};
+    h.magic = SAVED_MAGIC;
+    h.hash = game->game->hash;
+    h.players = world && player >= 0 ? 1u << player : 0u;
+    h.layout = align8(sizeof h);
+    h.layout_size = layout_size;
+    h.world = align8(h.layout + layout_size);
+    h.world_size = world ? game->game->world_size : 0u;
+    h.local = align8(h.world + h.world_size);
+    h.local_size = game->local_size;
+    h.gui = align8(h.local + h.local_size);
+    h.gui_size = sizeof purr_run_gui;
+    h.size = h.gui + h.gui_size;
+    uint8_t *block = malloc(h.size);
+    if (!block) {
+        free(layout);
+        return 0;
+    }
+    memset(block, 0, h.size);
+    memcpy(block, &h, sizeof h);
+    memcpy(block + h.layout, layout, layout_size);
+    if (world) memcpy(block + h.world, world, h.world_size);
+    memcpy(block + h.local, purr_run_local, h.local_size);
+    memcpy(block + h.gui, &purr_run_gui, h.gui_size);
+    free(layout);
+    return (uint32_t)(uintptr_t)block;
+}
+
+// Goes on from what the last program left, if anything: false to start the
+// game as it would anyway, having said why when something was left.
+static bool resume(void)
+{
+    const purr_host_game *game = purr_run_game;
+    const uint32_t size = purr_web_resume_size();
+    if (size < sizeof(saved) || !game->layout) return false;
+    uint8_t *block = malloc(size);
+    if (!block) return false;
+    purr_web_resume_copy(block);
+    saved h;
+    memcpy(&h, block, sizeof h);
+    const bool whole = h.magic == SAVED_MAGIC && h.size == size && h.layout <= size && h.layout_size <= size - h.layout
+                    && h.world <= size && h.world_size <= size - h.world && h.local <= size
+                    && h.local_size <= size - h.local && h.gui <= size && h.gui_size <= size - h.gui;
+    const purr_layout *old = whole ? purr_layout_unpack(block + h.layout, h.layout_size) : NULL;
+    if (!old) {
+        printf("purr: reloaded, and started over: the last build's state didn't come through\n");
+        free(block);
+        return false;
+    }
+
+    void *local = calloc(1, game->local_size);
+    void *world = h.world_size ? calloc(1, game->game->world_size) : NULL;
+    purr_migration local_done = {0};
+    purr_migration match_done = {0};
+    bool ok = local && (world || !h.world_size);
+    if (ok) {
+        ok = purr_migrate_world(old, &old->local, block + h.local, game->layout, &game->layout->local, local,
+                                &local_done);
+    }
+    if (ok && world) {
+        ok = purr_migrate_world(old, &old->match, block + h.world, game->layout, &game->layout->match, world,
+                                &match_done);
+    }
+    if (!ok) {
+        const char *why = local_done.failed[0] ? local_done.failed : match_done.failed;
+        printf("purr: reloaded, and started over: %s\n", why[0] ? why : "there wasn't enough memory");
+        free(local);
+        free(world);
+        free(block);
+        return false;
+    }
+
+    purr_run_local = local;
+    purr_run_start = calloc(1, game->game->start_size);
+    if (!purr_run_start) abort();
+    purr_run_session = purr_run_new_session();
+    if (world) purr_session_play_from(purr_run_session, world, h.players, purr_run_now);
+    if (h.gui_size == sizeof purr_run_gui) memcpy(&purr_run_gui, block + h.gui, sizeof purr_run_gui);
+    if (h.hash == game->game->hash) printf("purr: reloaded\n");
+    else say_carried(old, game->layout, local_done.entities_dropped + match_done.entities_dropped);
+    free(world);
+    free(block);
+    return true;
+}
+
+_Noreturn void purr_host_run_web(const purr_run_desc *desc, const purr_host_game *game)
+{
+    purr_run_open(desc);
+    purr_run_game = game;
+    if (!resume()) purr_run_begin();
+    purr_platform_run(purr_run_frame, NULL);
 }
 
 #else
@@ -166,11 +313,6 @@ static bool carry_match(void *user, const void *from, void *to)
     return ok;
 }
 
-static const char *plural(const uint32_t n)
-{
-    return n == 1 ? "" : "s";
-}
-
 // The match and the local state, carried over to `next`'s data layout by
 // name. False, having said why and changed nothing, if they can't be.
 static bool carry_over(const purr_host_game *next)
@@ -201,12 +343,7 @@ static bool carry_over(const purr_host_game *next)
     free(purr_run_start);
     purr_run_local = local;
     purr_run_start = start;
-    const uint32_t reset = purr_layout_fields_reset(old->layout, next->layout);
-    const uint32_t dropped = local_done.entities_dropped + match.first.entities_dropped;
-    printf("purr: reloaded, and carried the game over to its new data layout");
-    if (reset) printf("; %u field%s reset", (unsigned)reset, plural(reset));
-    if (dropped) printf("; %u entit%s dropped", (unsigned)dropped, dropped == 1 ? "y" : "ies");
-    printf("\n");
+    say_carried(old->layout, next->layout, local_done.entities_dropped + match.first.entities_dropped);
     return true;
 }
 

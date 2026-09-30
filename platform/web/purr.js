@@ -8,6 +8,9 @@
 // The page defines `var Purr = { canvas, print, printErr, arguments, onExit,
 // onAbort }` (all optional) before this script, and PURR_PROGRAM holds the
 // program as base64 (cmake/web_page.mjs, or the purr command).
+//
+// The lines between the `purr run` markers below are for hot reloading, in the
+// page `purr run --web` serves; the pages made to ship leave them out.
 
 (async () => {
     'use strict';
@@ -227,11 +230,13 @@
     }, { passive: false });
 
     let timerFrames = false;
+    let looping = false; // Frames are scheduled
     function scheduleFrame() {
         if (timerFrames) setTimeout(frame, 0);
         else requestAnimationFrame(frame);
     }
     function frame() {
+        looping = false;
         if (stopped) return;
         fit();
         try {
@@ -241,6 +246,7 @@
             fail(error);
             return;
         }
+        looping = true;
         scheduleFrame();
     }
 
@@ -293,7 +299,10 @@
         },
         run(timers) {
             timerFrames = !!timers;
-            scheduleFrame();
+            if (!looping) {
+                looping = true;
+                scheduleFrame();
+            }
             throw unwind;
         },
         stop() { stopped = true; },
@@ -555,28 +564,115 @@
         if (config.onAbort) config.onAbort(error);
     }
 
-    try {
-        const bytes = Uint8Array.from(atob(PURR_PROGRAM), c => c.charCodeAt(0));
-        const imports = {
-            wasi_snapshot_preview1: lenient('WASI', wasi, () => ENOSYS),
-            purr: platform,
-            env: lenient('env', glFunctions, (module, name) => { throw new Error(`purr.js has no ${name}`); }),
-        };
-        // Compiles on the spot where the browser allows it (Chrome: up to 8 MB
-        // on the main thread). The page has nothing else to do meanwhile, and
-        // headless tests run on virtual time, which keeps running while a
-        // compile happens in the background, so it can run out before main.
-        let instance;
+    const imports = {
+        wasi_snapshot_preview1: lenient('WASI', wasi, () => ENOSYS),
+        purr: platform,
+        env: lenient('env', glFunctions, (module, name) => { throw new Error(`purr.js has no ${name}`); }),
+    };
+
+    // Compiles on the spot where the browser allows it (Chrome: up to 8 MB on
+    // the main thread). The page has nothing else to do meanwhile, and headless
+    // tests run on virtual time, which keeps running while a compile happens in
+    // the background, so it can run out before main.
+    async function instantiate(bytes) {
         try {
-            instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+            return new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
         } catch (error) {
             if (!(error instanceof RangeError)) throw error;
-            ({ instance } = await WebAssembly.instantiate(bytes, imports));
+            return (await WebAssembly.instantiate(bytes, imports)).instance;
         }
+    }
+
+    // Runs an instance's main, which returns only through exit(), or by
+    // starting the frame loop.
+    function begin(instance) {
         exports = instance.exports;
         memory = exports.memory;
-        exports._start(); // main; returns only through exit(), or by starting the frame loop
+        try {
+            exports._start();
+        } catch (error) {
+            if (error !== unwind && !(error instanceof Exit)) fail(error);
+        }
+    }
+
+    // <purr run>
+    // Hot reloading: purr run --web serves the page, and says which build is
+    // the newest. Each new one starts in the running one's place, carrying
+    // over what the running one leaves it (platform/src/reload.c).
+    let resumeWith = null;
+    platform.resume_size = () => resumeWith ? resumeWith.length : 0;
+    platform.resume_copy = ptr => u8().set(resumeWith, ptr);
+
+    // What the running program made in WebGL goes with it.
+    function forgetGL() {
+        const destroy = {
+            buffer: o => gl.deleteBuffer(o), texture: o => gl.deleteTexture(o),
+            framebuffer: o => gl.deleteFramebuffer(o), renderbuffer: o => gl.deleteRenderbuffer(o),
+            vertexArray: o => gl.deleteVertexArray(o), program: o => gl.deleteProgram(o),
+            shader: o => gl.deleteShader(o), uniform: () => {},
+        };
+        for (const kind in tables) {
+            for (const object of tables[kind]) if (object) destroy[kind](object);
+            tables[kind] = [null];
+        }
+        uniformIds.clear();
+        kept.clear(); // Strings in its memory
+    }
+
+    // Starts `bytes` in the running program's place: fresh, or going on from
+    // where it is.
+    async function replace(bytes, fresh) {
+        const instance = await instantiate(bytes);
+        resumeWith = null;
+        if (!fresh && exports && exports.purr_reload_save && !stopped) {
+            try {
+                const at = exports.purr_reload_save();
+                if (at) resumeWith = u8().slice(at, at + view().getUint32(at, true));
+            } catch (error) {
+                printErr('purr: the running build could not hand over its state: ' + error);
+            }
+        }
+        if (gl) forgetGL();
+        stopped = false;
+        begin(instance);
+        resumeWith = null;
+    }
+
+    // Asks purr for the newest build, and whether to start over, 4 times a
+    // second. When purr has stopped, the page stays as it is.
+    if (config.reload) {
+        let build = 0, restarts = 0, bytes = null;
+        const poll = async () => {
+            try {
+                const [newest, restart] = (await (await fetch('build', { cache: 'no-store' })).text())
+                    .trim().split(' ').map(Number);
+                if (newest && newest !== build) {
+                    const response = await fetch(`game-${newest}.wasm`, { cache: 'no-store' });
+                    if (response.ok) {
+                        const next = new Uint8Array(await response.arrayBuffer());
+                        const fresh = !bytes;
+                        build = newest;
+                        restarts = restart;
+                        bytes = next;
+                        await replace(bytes, fresh);
+                    }
+                } else if (bytes && restart !== restarts) {
+                    restarts = restart;
+                    await replace(bytes, true);
+                }
+            } catch (error) {
+                if (!(error instanceof TypeError)) printErr('purr: ' + (error && error.stack || error)); // TypeError: purr isn't there
+            }
+            setTimeout(poll, 250);
+        };
+        poll();
+        return;
+    }
+    // </purr run>
+
+    try {
+        begin(await instantiate(Uint8Array.from(atob(PURR_PROGRAM), c => c.charCodeAt(0))));
     } catch (error) {
-        if (error !== unwind && !(error instanceof Exit)) fail(error);
+        fail(error);
     }
 })();

@@ -60,18 +60,6 @@ static char *install_root(void)
     return root;
 }
 
-static int open_in_browser(const char *page)
-{
-#if defined(_WIN32)
-    const char *const argv[] = {"cmd.exe", "/c", "start", "", page, NULL};
-#elif defined(__APPLE__)
-    const char *const argv[] = {"open", page, NULL};
-#else
-    const char *const argv[] = {"xdg-open", page, NULL};
-#endif
-    return sys_run(argv, NULL, true) == 0 ? 0 : 1;
-}
-
 static int version(const char *root)
 {
     printf("purr %s (%s)\ninstalled in %s\n", PURR_VERSION, purr_channel(root), root);
@@ -170,17 +158,13 @@ int main(const int argc, char **argv)
         code = purr_schedule(opts.folder) ? 0 : 1;
     } else if (run && !opts.web) {
         code = purr_run_reloading(root, &opts, session);
+    } else if (run) {
+        if (session[0]) fprintf(stderr, "purr: web games can't %s yet; playing it on its own\n", session[0] + 2);
+        code = purr_run_web(root, &opts);
     } else {
-        char *program = purr_build(root, &opts, run);
-        if (!program) {
-            code = 1;
-        } else if (build) {
-            printf("Built %s\n", program);
-        } else {
-            if (session[0]) fprintf(stderr, "purr: web games can't %s yet; opening it on its own\n", session[0] + 2);
-            printf("Opening %s\n", program);
-            code = open_in_browser(program);
-        }
+        char *program = purr_build(root, &opts);
+        if (!program) code = 1;
+        else printf("Built %s\n", program);
     }
     purr_check_for_update(root);
     return code;

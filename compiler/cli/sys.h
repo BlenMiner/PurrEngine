@@ -52,6 +52,9 @@ bool sys_process_alive(uint32_t pid); // Whether a process with that ID is runni
 void sys_read_lines(void);
 bool sys_typed_line(char *out, size_t size);
 
+// Opens a page, a file or a URL, in the default browser. False if it couldn't.
+bool sys_open_in_browser(const char *page);
+
 // Finds a program on PATH (with the usual extensions on Windows).
 char *sys_which(const char *name);
 

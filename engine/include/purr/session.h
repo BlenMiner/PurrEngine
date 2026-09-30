@@ -87,6 +87,11 @@ typedef struct purr_server_desc {
     purr_transport transports[2]; // Where players connect from; the ones with no `send` are unused
     bool local_first;            // Players on transports[0] are on this machine: their input is the server's too
     bool wait_for_first;         // Tick once the first player has joined, before anything happens without them
+    // Hot reloading: the match goes on from this world (the game's purr_world)
+    // instead of starting from `start`, with `players` in it already, a bit
+    // per player. A player joining into one of their slots gets no PlayerJoined.
+    const void *world;
+    uint32_t players;
 } purr_server_desc;
 
 purr_server *purr_server_create(const purr_server_desc *desc, double now);
@@ -178,6 +183,11 @@ purr_session *purr_session_create(const purr_session_desc *desc);
 void purr_session_destroy(purr_session *s);
 // A match on this machine alone. Leaves the one it's in first.
 void purr_session_play(purr_session *s, const void *start, double now);
+// The same, going on from `world` (the game's purr_world), for hot reloading
+// where a new build is a new program, as on the web. `players`, a bit per
+// player, are in it already: this machine's player is the first of them, with
+// no PlayerJoined.
+void purr_session_play_from(purr_session *s, const void *world, uint32_t players, double now);
 // A match others can join through `network` (its owner closes it on leaving).
 void purr_session_host(purr_session *s, const void *start, purr_transport network, double now);
 // Joining the server it joined last, it's the same player again, if the server

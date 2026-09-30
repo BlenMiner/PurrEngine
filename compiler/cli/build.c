@@ -8,6 +8,7 @@
 #include "common.h"
 #include "compile.h"
 #include "folders.h"
+#include "serve.h"
 #include "sys.h"
 #include "toolchain.h"
 
@@ -506,6 +507,38 @@ static char *base64(const unsigned char *data, const size_t len)
     return out;
 }
 
+// The first line from `from` that's `marker` alone (indented or not), or NULL.
+// `after` gets the start of the line after it.
+static char *marker_line(char *from, const char *marker, char **after)
+{
+    const size_t n = strlen(marker);
+    for (char *line = from; line && *line;) {
+        char *text = line;
+        while (*text == ' ' || *text == '\t') text++;
+        char *end = text + n;
+        if (strncmp(text, marker, n) == 0 && (*end == '\n' || (*end == '\r' && end[1] == '\n'))) {
+            *after = end + (*end == '\r' ? 2 : 1);
+            return line;
+        }
+        line = strchr(line, '\n');
+        if (line) line++;
+    }
+    return NULL;
+}
+
+// Leaves out the lines purr.js has for purr run's hot reloading, from a
+// `// <purr run>` line to a `// </purr run>` one: pages made to ship don't
+// have them.
+static void strip_reloading(char *script)
+{
+    char *after_start = NULL;
+    char *after_end = NULL;
+    for (char *start; (start = marker_line(script, "// <purr run>", &after_start));) {
+        if (!marker_line(after_start, "// </purr run>", &after_end)) return;
+        memmove(start, after_end, strlen(after_end) + 1);
+    }
+}
+
 static bool make_page(const char *root, const char *program, const char *page)
 {
     char *shell_path = path_join(root, "web/shell.html");
@@ -519,6 +552,7 @@ static bool make_page(const char *root, const char *program, const char *page)
         fprintf(stderr, "purr: the web page's files are missing from %s/web; reinstall purr\n", root);
         return false;
     }
+    strip_reloading(script);
     char *encoded = base64((const unsigned char *)wasm, wasm_len);
     FILE *f = fopen(page, "wb");
     if (!f) {
@@ -553,7 +587,7 @@ static bool generate(const char *folder, const char *gen, const bool layout)
     return ok;
 }
 
-char *purr_build(const char *root, const build_options *opts, const bool for_run)
+char *purr_build(const char *root, const build_options *opts)
 {
     build b = {0};
     if (!build_setup(&b, root, opts, false)) return NULL;
@@ -574,12 +608,12 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
 
     char *output;
     const char *suffix = opts->web ? ".html" : EXE_SUFFIX;
-    if (opts->output && !for_run) {
+    if (opts->output) {
         output = path_absolute(opts->output);
     } else {
         char file[512];
         snprintf(file, sizeof file, "%s%s", b.name, suffix);
-        char *dir = for_run ? path_join(b.cache, "") : path_join(b.folder, "build");
+        char *dir = path_join(b.folder, "build");
         output = path_join(dir, file);
         free(dir);
     }
@@ -606,9 +640,10 @@ char *purr_build(const char *root, const build_options *opts, const bool for_run
 
 typedef struct run {
     build b;
+    bool web;        // Each build is a web program the page starts, not a library
     char *dir;       // This run's folder
     char *gen;       // ...and its generated files
-    uint32_t builds; // Libraries made so far, game-1 to game-<builds>
+    uint32_t builds; // Made so far, game-1 to game-<builds>
 } run;
 
 static char *build_path(const run *r, const uint32_t n, const char *suffix)
@@ -618,24 +653,26 @@ static char *build_path(const run *r, const uint32_t n, const char *suffix)
     return path_join(r->dir, name);
 }
 
-// Builds the game's next library, game-<builds + 1>, linked to another name
-// and renamed once it's whole: the host takes it as soon as it's there, and
-// says what it did with it. False after saying what's wrong.
+// Builds the game's next library (or web program), game-<builds + 1>, linked
+// to another name and renamed once it's whole: the host (or the page) takes
+// it as soon as it's there, and says what it did with it. False after saying
+// what's wrong.
 static bool build_library(run *r)
 {
     if (!generate(r->b.folder, r->gen, true) || !build_engine(&r->b)) return false;
+    const char *suffix = r->web ? ".wasm" : LIBRARY_SUFFIX;
     char *game_c = path_join(r->gen, "game.c");
-    char *library_c = path_join(r->gen, "library.c");
+    char *library_c = path_join(r->gen, r->web ? "main.c" : "library.c");
     file_list objects = {0};
     add_file(&objects, path_join(r->dir, "game.o"));
-    add_file(&objects, path_join(r->dir, "library.o"));
+    add_file(&objects, path_join(r->dir, r->web ? "main.o" : "library.o"));
     bool ok = compile_c(&r->b, game_c, objects.items[0], r->gen)
            && compile_c(&r->b, library_c, objects.items[1], r->gen);
     const uint32_t n = r->builds + 1u;
     char *linked = build_path(r, n, ".tmp");
     char *pdb = build_path(r, n, ".pdb");
-    char *library = build_path(r, n, LIBRARY_SUFFIX);
-    ok = ok && link_objects(&r->b, &objects, linked, true, r->b.opts->release ? NULL : pdb);
+    char *library = build_path(r, n, suffix);
+    ok = ok && link_objects(&r->b, &objects, linked, !r->web, r->b.opts->release || r->web ? NULL : pdb);
     if (ok && !sys_rename(linked, library)) {
         fprintf(stderr, "purr: can't write %s\n", library);
         ok = false;
@@ -645,7 +682,7 @@ static bool build_library(run *r)
         // The one before the last is done with; if the host still has it, it
         // stays until the run ends.
         if (n > 2) {
-            char *old = build_path(r, n - 2u, LIBRARY_SUFFIX);
+            char *old = build_path(r, n - 2u, suffix);
             char *old_pdb = build_path(r, n - 2u, ".pdb");
             sys_remove(old);
             sys_remove(old_pdb);
@@ -741,19 +778,43 @@ static uint64_t game_stamp(const char *folder)
     return h;
 }
 
-int purr_run_reloading(const char *root, const build_options *opts, const char *const *game_args)
+// A change is built once the files have stayed the same this long, as
+// editors can save in steps.
+#define SETTLE_MS 200
+
+// This run's folder, made anew, after removing those of runs that ended.
+static void open_run(run *r)
 {
-    run r = {0};
-    if (!build_setup(&r.b, root, opts, true)) return 1;
-    char *runs = path_join(r.b.cache, "run");
+    char *runs = path_join(r->b.cache, "run");
     sys_mkdirs(runs);
     sys_list(runs, remove_ended_run, (void *)runs);
     char pid[32];
     snprintf(pid, sizeof pid, "%u", (unsigned)sys_pid());
-    r.dir = path_join(runs, pid);
-    r.gen = path_join(r.dir, "gen");
-    sys_remove_tree(r.dir); // A run that ended with the same process ID
-    sys_mkdirs(r.gen);
+    r->dir = path_join(runs, pid);
+    r->gen = path_join(r->dir, "gen");
+    sys_remove_tree(r->dir); // A run that ended with the same process ID
+    sys_mkdirs(r->gen);
+    free(runs);
+}
+
+// Whether a line typed into purr's terminal asks to start the game over,
+// saying so either way.
+static bool typed_restart(void)
+{
+    char line[64];
+    if (!sys_typed_line(line, sizeof line)) return false;
+    const bool restart = strcmp(line, "r") == 0;
+    if (restart) printf("purr: started over\n");
+    else if (line[0]) printf("purr: type r and press Enter to start the game over\n");
+    fflush(stdout);
+    return restart;
+}
+
+int purr_run_reloading(const char *root, const build_options *opts, const char *const *game_args)
+{
+    run r = {0};
+    if (!build_setup(&r.b, root, opts, true)) return 1;
+    open_run(&r);
 
     char file[512];
     snprintf(file, sizeof file, "%s%s", r.b.name, EXE_SUFFIX);
@@ -773,36 +834,162 @@ int purr_run_reloading(const char *root, const build_options *opts, const char *
     fflush(stdout);
     sys_read_lines();
 
-    // A change is built once the files have stayed the same for a moment, as
-    // editors can save in steps.
     uint64_t stamp = game_stamp(r.b.folder);
-    bool changed = false;
+    int64_t changed_at = -1;
     int code = 0;
     while (!sys_wait(game, 250, &code)) {
-        char line[64];
-        if (sys_typed_line(line, sizeof line)) {
-            if (strcmp(line, "r") == 0) {
-                char *restart = path_join(r.dir, "restart");
-                sys_write_text(restart, "");
-                free(restart);
-                printf("purr: started over\n");
-            } else if (line[0]) {
-                printf("purr: type r and press Enter to start the game over\n");
-            }
-            fflush(stdout);
+        if (typed_restart()) {
+            char *restart = path_join(r.dir, "restart");
+            sys_write_text(restart, "");
+            free(restart);
         }
         const uint64_t now = game_stamp(r.b.folder);
         if (now != stamp) {
             stamp = now;
-            changed = true;
+            changed_at = sys_now_ms();
             continue;
         }
-        if (!changed) continue;
-        changed = false;
+        if (changed_at < 0 || sys_now_ms() - changed_at < SETTLE_MS) continue;
+        changed_at = -1;
         if (!build_library(&r)) fprintf(stderr, "purr: the game keeps running its last build\n");
     }
     sys_remove_tree(r.dir);
     return code;
+}
+
+// ---------------------------------------------------------------------------
+// `purr run --web`: purr serves the game's page on this machine, which asks
+// it for the newest build four times a second and starts each new one in the
+// running one's place (platform/web/purr.js).
+
+typedef struct web_run {
+    run r;
+    char *page;
+    uint32_t restarts; // Times `r` was typed: the page starts the game over when it changes
+    char status[32];
+    char *program; // The newest build, read when first asked for
+    size_t program_size;
+    uint32_t program_build;
+} web_run;
+
+// The game's program for the page: purr/host.h's loop, going on from where
+// the last build left it.
+static bool write_web_main(const run *r)
+{
+    char title[512];
+    c_string(title, sizeof title, r->b.opts->title ? r->b.opts->title : r->b.name);
+    char text[2048];
+    snprintf(text, sizeof text,
+             "// Generated by purr. Do not edit.\n"
+             "#include \"game.h\"\n"
+             "#include \"purr/run.h\"\n"
+             "\n"
+             "extern const purr_layout purr_game_layout;\n"
+             "\n"
+             "int main(int argc, char **argv)\n"
+             "{\n"
+             "    static purr_host_game game;\n"
+             "    game = purr_host_game_api;\n"
+             "    game.layout = &purr_game_layout;\n"
+             "    purr_host_run_web(&(purr_run_desc){.title = \"%s\", .stats = %s, .argc = argc, .argv = argv}, &game);\n"
+             "}\n",
+             title, r->b.opts->stats ? "true" : "false");
+    char *path = path_join(r->gen, "main.c");
+    const bool ok = sys_write_text(path, text);
+    free(path);
+    return ok;
+}
+
+// The page: the package's shell, and purr.js as it is, hot reloading and all,
+// which loads the program from purr.
+static char *web_page(const char *root)
+{
+    char *shell_path = path_join(root, "web/shell.html");
+    char *script_path = path_join(root, "web/purr.js");
+    char *shell = sys_read_file(shell_path, NULL);
+    char *script = sys_read_file(script_path, NULL);
+    free(shell_path);
+    free(script_path);
+    const char *slot = shell ? strstr(shell, "{{{ SCRIPT }}}") : NULL;
+    if (!script || !slot) {
+        fprintf(stderr, "purr: the web page's files are missing from %s/web; reinstall purr\n", root);
+        return NULL;
+    }
+    const char *before = "<script>\nPurr.reload = true;\n";
+    const char *after = "</script>";
+    const size_t n = (size_t)(slot - shell) + strlen(before) + strlen(script) + strlen(after)
+                   + strlen(slot + strlen("{{{ SCRIPT }}}")) + 1;
+    char *page = malloc(n);
+    if (!page) abort();
+    snprintf(page, n, "%.*s%s%s%s%s", (int)(slot - shell), shell, before, script, after, slot + strlen("{{{ SCRIPT }}}"));
+    free(shell);
+    free(script);
+    return page;
+}
+
+static void answer_web(void *user, const char *path, serve_reply *reply)
+{
+    web_run *w = user;
+    char newest[64];
+    snprintf(newest, sizeof newest, "/game-%u.wasm", (unsigned)w->r.builds);
+    if (strcmp(path, "/") == 0) {
+        *reply = (serve_reply){200, "text/html; charset=utf-8", w->page, strlen(w->page)};
+    } else if (strcmp(path, "/build") == 0) {
+        snprintf(w->status, sizeof w->status, "%u %u", (unsigned)w->r.builds, (unsigned)w->restarts);
+        *reply = (serve_reply){200, "text/plain; charset=utf-8", w->status, strlen(w->status)};
+    } else if (strcmp(path, newest) == 0) {
+        if (w->program_build != w->r.builds) {
+            char *file = build_path(&w->r, w->r.builds, ".wasm");
+            free(w->program);
+            w->program = sys_read_file(file, &w->program_size);
+            w->program_build = w->program ? w->r.builds : 0;
+            free(file);
+        }
+        if (w->program) *reply = (serve_reply){200, "application/wasm", w->program, w->program_size};
+    }
+}
+
+int purr_run_web(const char *root, const build_options *opts)
+{
+    web_run w = {0};
+    run *r = &w.r;
+    r->web = true;
+    if (!build_setup(&r->b, root, opts, false)) return 1;
+    open_run(r);
+    w.page = web_page(root);
+    if (!w.page || !write_web_main(r) || !build_library(r)) return 1;
+
+    uint16_t port = 0;
+    serve *server = serve_open(&port);
+    if (!server) {
+        fprintf(stderr, "purr: can't serve the game's page on this machine\n");
+        return 1;
+    }
+    char url[64];
+    snprintf(url, sizeof url, "http://127.0.0.1:%u/", (unsigned)port);
+    printf("purr: the game is at %s\n", url);
+    printf("purr: saving a .purr file reloads it; type r and press Enter to start it over, and Ctrl+C to stop\n");
+    fflush(stdout);
+    if (!sys_open_in_browser(url)) fprintf(stderr, "purr: couldn't open a browser; open %s in one\n", url);
+    sys_read_lines();
+
+    uint64_t stamp = game_stamp(r->b.folder);
+    int64_t changed_at = -1;
+    for (;;) {
+        serve_poll(server, 250, answer_web, &w);
+        if (typed_restart()) w.restarts++;
+        const uint64_t now = game_stamp(r->b.folder);
+        if (now != stamp) {
+            stamp = now;
+            changed_at = sys_now_ms();
+            continue;
+        }
+        if (changed_at < 0 || sys_now_ms() - changed_at < SETTLE_MS) continue;
+        changed_at = -1;
+        if (build_library(r)) printf("purr: built it again; the page reloads it\n");
+        else fprintf(stderr, "purr: the page keeps running its last build\n");
+        fflush(stdout);
+    }
 }
 
 bool purr_schedule(const char *folder_arg)

@@ -38,3 +38,14 @@ bool purr_migrate_world(const purr_layout *from_layout, const purr_layout_world 
 // How many fields both layouts have, of the same name in the same type, whose
 // values can't carry over: their type changed to one they don't convert to.
 uint32_t purr_layout_fields_reset(const purr_layout *from, const purr_layout *to);
+
+// A layout in one block of memory with offsets for pointers, which can go to
+// another program: where each new build is a program of its own (the web), the
+// old one packs its layout for the new one to carry its worlds over from. The
+// types have no `defaults` then, which only the new layout's need. NULL if
+// there isn't the memory; free() it.
+void *purr_layout_pack(const purr_layout *layout, uint32_t *size);
+
+// The layout in a block purr_layout_pack made, 8-aligned, which becomes it
+// where it is. NULL if the block isn't one.
+const purr_layout *purr_layout_unpack(void *block, uint32_t size);

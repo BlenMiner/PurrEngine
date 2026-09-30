@@ -72,6 +72,12 @@ typedef struct purr_host_game {
 // starts it over too. Native builds only (platform/src/reload.c).
 _Noreturn void purr_host_run_library(const purr_run_desc *desc, const char *dir);
 
+// The same on the web (purr run --web), where each new build is a program of
+// its own, which the page starts in the running one's place: `game` goes on
+// from what the last one left it, carried over by name, or starts as
+// purr_host_run would. Web builds only (platform/src/reload.c).
+_Noreturn void purr_host_run_web(const purr_run_desc *desc, const purr_host_game *game);
+
 // ---------------------------------------------------------------------------
 // The loop, for purr/run.h and platform/src/reload.c
 
@@ -169,6 +175,16 @@ static inline void purr_run_open(const purr_run_desc *desc)
                                            .height = purr_run_settings.height});
 }
 
+// A session for purr_run_game, in no match yet.
+static inline purr_session *purr_run_new_session(void)
+{
+    return purr_session_create(&(purr_session_desc){
+        .game = purr_run_game->game,
+        .tick_rate = (uint32_t)purr_run_settings.tick_rate,
+        .sample = purr_run_sample,
+    });
+}
+
 // Starts purr_run_game: its local state and a session, then the match the
 // command line asks for, or Main's if it's the match's.
 static inline void purr_run_begin(void)
@@ -178,11 +194,7 @@ static inline void purr_run_begin(void)
     purr_run_start = calloc(1, game->game->start_size);
     if (!purr_run_local || !purr_run_start) abort();
     game->local_init(purr_run_local);
-    purr_run_session = purr_session_create(&(purr_session_desc){
-        .game = game->game,
-        .tick_rate = (uint32_t)purr_run_settings.tick_rate,
-        .sample = purr_run_sample,
-    });
+    purr_run_session = purr_run_new_session();
     purr_session_request request = {0};
     if (purr_run_arguments(&request)) {
         if (game->main_is_local && request.kind == PURR_REQUEST_HOST) {

@@ -156,7 +156,7 @@ Use the host's address instead of `localhost` from another machine, like `purr r
 purr run --web
 ```
 
-This builds the game as a web page, using WebGL 2, and opens it. For a page to put online:
+This builds the game as a web page, using WebGL 2, and opens it in your browser. `purr` serves the page on your machine and keeps running, so saving reloads the game in the page too, until you stop `purr` with Ctrl+C. For a page to put online:
 
 ```sh
 purr build --release --web

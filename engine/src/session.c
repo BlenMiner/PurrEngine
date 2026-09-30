@@ -206,6 +206,7 @@ struct purr_server {
     uint64_t cookies[PURR_MAX_PLAYERS];
     double away_since[PURR_MAX_PLAYERS];
     uint64_t random;
+    uint32_t present; // Players in the world it went on from, who haven't joined it yet (purr_server_desc.players)
 };
 
 static double resend_after(const uint32_t rtt_ms)
@@ -366,7 +367,8 @@ static void on_hello(purr_server *s, const uint32_t transport, const purr_addres
     }
     for (uint32_t i = 0; i < s->w.inputs; i++) c->input_tick[i] = UINT32_MAX;
     c->newest_input = s->tick;
-    add_event(s, EVENT_JOIN, (uint32_t)player);
+    if (!(s->present >> player & 1u)) add_event(s, EVENT_JOIN, (uint32_t)player); // Else it's in the world already
+    s->present &= ~(1u << player);
     start_snapshot(s, c);
     if (!s->started) { // The first player: the match starts with them
         s->started = true;
@@ -646,7 +648,9 @@ purr_server *purr_server_create(const purr_server_desc *desc, const double now)
         return NULL;
     }
     const float dt = desc->dt > 0.0f ? desc->dt : 1.0f / (float)s->desc.tick_rate;
-    g->start(s->world, dt, desc->start);
+    if (desc->world) g->copy_world(s->world, desc->world);
+    else g->start(s->world, dt, desc->start);
+    s->present = desc->world ? desc->players : 0u;
     s->now = now;
     s->started = !desc->wait_for_first;
     s->clock_start = now;
@@ -1425,7 +1429,8 @@ void purr_session_leave(purr_session *s)
 }
 
 // A server with this machine's player on it, over loopback; `network` takes others.
-static void start_server(purr_session *s, const void *start, const purr_transport network, const double now)
+static void start_server(purr_session *s, const void *start, const void *world, const uint32_t players,
+                         const purr_transport network, const double now)
 {
     purr_session_leave(s);
     start_clock(s, now);
@@ -1443,6 +1448,8 @@ static void start_server(purr_session *s, const void *start, const purr_transpor
         .transports = {purr_loopback_endpoint(s->loopback, 1), network},
         .local_first = true,
         .wait_for_first = true,
+        .world = world,
+        .players = players,
     };
     s->server = purr_server_create(&server, now);
     const purr_client_desc client = {
@@ -1464,12 +1471,17 @@ static void start_server(purr_session *s, const void *start, const purr_transpor
 
 void purr_session_play(purr_session *s, const void *start, const double now)
 {
-    start_server(s, start, (purr_transport){0}, now);
+    start_server(s, start, NULL, 0, (purr_transport){0}, now);
+}
+
+void purr_session_play_from(purr_session *s, const void *world, const uint32_t players, const double now)
+{
+    start_server(s, NULL, world, players, (purr_transport){0}, now);
 }
 
 void purr_session_host(purr_session *s, const void *start, const purr_transport network, const double now)
 {
-    start_server(s, start, network, now);
+    start_server(s, start, NULL, 0, network, now);
 }
 
 void purr_session_join(purr_session *s, const purr_transport network, const purr_address server, const double now)

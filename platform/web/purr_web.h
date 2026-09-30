@@ -5,6 +5,7 @@
 // GL functions themselves are imported by their C names (see purr.js).
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define PURR_WEB_IMPORT(name) __attribute__((import_module("purr"), import_name(#name)))
 
@@ -53,3 +54,9 @@ PURR_WEB_IMPORT(stop) void purr_web_stop(void);
 
 // Runs JavaScript, for tests that need to fake browser events.
 PURR_WEB_IMPORT(eval) void purr_web_eval(const char *script);
+
+// Hot reloading, under purr run --web: what the page's last program left this
+// one (purr_reload_save in platform/src/reload.c), 0 bytes if nothing, and a
+// copy of it.
+PURR_WEB_IMPORT(resume_size) uint32_t purr_web_resume_size(void);
+PURR_WEB_IMPORT(resume_copy) void purr_web_resume_copy(void *to);
