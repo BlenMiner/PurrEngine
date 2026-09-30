@@ -2805,17 +2805,15 @@ static bool always_returns(const stmt *s)
     }
 }
 
-static type local_type(checker *c, stmt *s);
-
 static void check_var(checker *c, stmt *s)
 {
-    type value = T_ERR; // `default` is checked once the type is known
+    // `default`, and a list after a type, take the type: they're checked once it's known.
+    const bool typed_value = s->type_name.len > 0 && (s->value->kind == E_DEFAULT || s->value->kind == E_LIST);
+    type value = T_ERR;
     if (s->value->kind == E_DEFAULT && s->type_name.len == 0) {
         diag_error(s->value->at, "'var' takes its type from the value, and 'default' takes its type from the variable");
         diag_note("write the type instead, like 'float2 " STR_FMT " = default;'", STR_ARG(s->name));
-    } else if (s->value->kind == E_LIST && s->type_name.len > 0) {
-        value = check_list_literal(c, s->value, local_type(c, s));
-    } else if (s->value->kind != E_DEFAULT) {
+    } else if (!typed_value) {
         value = check_expr(c, s->value);
     }
     if (s->value->kind == E_NAME && s->value->bind == BIND_TYPE) value = T_ERR;
@@ -2848,7 +2846,19 @@ static void check_var(checker *c, stmt *s)
             vec_push(c->prog->fixes, create);
             s->type = T_ERR;
         }
-        if (s->value->kind == E_DEFAULT) value = check_default_value(c, s->value, s->type);
+        if (s->value->kind == E_DEFAULT) {
+            value = check_default_value(c, s->value, s->type);
+        } else if (s->value->kind == E_LIST) {
+            if (s->type.kind != TY_LIST && s->type.kind != TY_ERROR) {
+                diag_error(s->value->at, "can't initialize %s with a list", type_name(s->type));
+                const type_kind k = s->type.kind;
+                const bool holdable = k != TY_COMPONENT && k != TY_SINGLETON && k != TY_INPUT && k != TY_RECORD
+                                   && k != TY_EVENT && !holds_list(s->type);
+                if (holdable) diag_note("declare a list of them as 'List<%s> " STR_FMT " = [...];'", type_name(s->type), STR_ARG(s->name));
+                else diag_note("a list's type is 'List<T>', like 'List<int> " STR_FMT " = [1, 2];'", STR_ARG(s->name));
+            }
+            value = check_list_literal(c, s->value, s->type);
+        }
         if (!type_assignable(s->type, value)) {
             diag_error(s->value->at, "can't initialize %s with %s", type_name(s->type), type_name(value));
         }
@@ -2861,7 +2871,7 @@ static void check_var(checker *c, stmt *s)
     vec_push(c->locals, s);
 }
 
-// The type a local declares, for its value to be checked against.
+// The type a foreach's variable declares, for the list's elements to be checked against.
 static type local_type(checker *c, stmt *s)
 {
     type t;
@@ -2869,7 +2879,7 @@ static type local_type(checker *c, stmt *s)
     const loc at = s->type_qual_at.line ? s->type_qual_at : s->at;
     const int errors = diag_error_count();
     if (resolve_list_type(c, s->type_name, at, &t)) {
-        if (diag_error_count() > errors) s->type_name = str_from(""); // Reported: check_var takes the value's type
+        if (diag_error_count() > errors) s->type_name = str_from(""); // Reported: it takes the element's type, like var
         return t;
     }
     decl *d = find_type(c, s->type_name, s->type_at);

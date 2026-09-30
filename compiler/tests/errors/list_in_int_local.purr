@@ -1,0 +1,4 @@
+// expect: can't initialize int with a list
+scene Main { }
+component T { int n; }
+system S(mut T t) { int x = [1, 2]; t.n = x; }
