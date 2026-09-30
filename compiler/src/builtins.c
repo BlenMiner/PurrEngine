@@ -368,12 +368,14 @@ bool builtin_owner(const str name)
         || str_eq_c(name, "Screen") || builtin_type_named(name, &ignored);
 }
 
-// Widest type of a component-wise call's arguments, or false if they don't fit together.
+// Widest type of a component-wise call's arguments, or false if they don't fit
+// together. `default` takes whatever type the others give.
 static bool unify(const expr *e, const bool ints_ok, type *out)
 {
     int dim = 1;
     bool is_float = !ints_ok;
     for (int i = 0; i < e->args.count; i++) {
+        if (e->args.items[i]->kind == E_DEFAULT) continue;
         const type t = e->args.items[i]->type;
         if (!type_is_numeric(t)) return false;
         const int d = type_dim(t);
@@ -392,7 +394,8 @@ static void arg_list(const expr *e, char *buf, const size_t size)
     size_t len = 0;
     buf[0] = '\0';
     for (int i = 0; i < e->args.count && len + 1 < size; i++) {
-        const int n = snprintf(buf + len, size - len, "%s%s", i ? ", " : "", type_name(e->args.items[i]->type));
+        const expr *arg = e->args.items[i];
+        const int n = snprintf(buf + len, size - len, "%s%s", i ? ", " : "", arg->kind == E_DEFAULT ? "default" : type_name(arg->type));
         if (n > 0) len += (size_t)n;
     }
 }
@@ -417,10 +420,55 @@ static void format_signature(const signature *s, sb *out)
     if (s->result.kind != TY_VOID) sb_printf(out, " -> %s", type_name(s->result));
 }
 
+// Whether signature `s` takes the call's arguments. `default`, unchecked yet,
+// fits any parameter but a mut one, which changes a variable.
+static bool fits(const signature *s, const expr *e)
+{
+    if (s->argc != e->args.count) return false;
+    for (int a = 0; a < s->argc; a++) {
+        const type want = real_type(s->params[a]);
+        const expr *arg = e->args.items[a];
+        const bool mut = s->mut & (1u << a);
+        if (arg->kind == E_DEFAULT) {
+            if (mut) return false;
+            continue;
+        }
+        // A mut argument is the variable itself, so its type matches exactly.
+        if (mut ? want.kind != arg->type.kind || want.decl != arg->type.decl : !type_assignable(want, arg->type)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Whether a later version of signatures[first]'s function fits the call too,
+// with another type where a `default` is: then nothing says which one it
+// means. Reports it.
+static bool default_ambiguous(const int first, const expr *e)
+{
+    const signature *s = &signatures[first];
+    for (int j = first + 1; j < signature_count; j++) {
+        const signature *other = &signatures[j];
+        if (strcmp(other->owner, s->owner) != 0 || strcmp(other->name, s->name) != 0 || !fits(other, e)) continue;
+        for (int a = 0; a < s->argc; a++) {
+            const type t = real_type(s->params[a]);
+            const type u = real_type(other->params[a]);
+            if (e->args.items[a]->kind != E_DEFAULT || (t.kind == u.kind && t.decl == u.decl)) continue;
+            diag_error(e->args.items[a]->at, "'default' could be %s or %s here: %s.%s has a version for each",
+                       signature_type_name(s->params[a]), signature_type_name(other->params[a]), s->owner, s->name);
+            diag_note("write the value itself instead, so the call says which version it means");
+            return true;
+        }
+    }
+    return false;
+}
+
 type resolve_builtin_call(const str owner, expr *e)
 {
+    int defaults = 0; // `default` arguments take the type of the version the others pick
     for (int i = 0; i < e->args.count; i++) {
-        if (e->args.items[i]->type.kind == TY_ERROR) return (type){TY_ERROR, NULL};
+        if (e->args.items[i]->kind == E_DEFAULT) defaults++;
+        else if (e->args.items[i]->type.kind == TY_ERROR) return (type){TY_ERROR, NULL};
     }
     e->call = CALL_BUILTIN;
     e->arg_want.count = 0;
@@ -431,6 +479,12 @@ type resolve_builtin_call(const str owner, expr *e)
             if (e->args.count != componentwise[i].argc) {
                 diag_error(e->at, "Math.%s takes %d argument%s, not %d", componentwise[i].name, componentwise[i].argc,
                            componentwise[i].argc == 1 ? "" : "s", e->args.count);
+                return (type){TY_ERROR, NULL};
+            }
+            if (defaults == e->args.count) {
+                diag_error(e->args.items[0]->at, "Math.%s takes numbers and vectors of any size, so 'default' could be any of them",
+                           componentwise[i].name);
+                diag_note("write the value itself instead, like '0' or 'float3(0)'");
                 return (type){TY_ERROR, NULL};
             }
             type target;
@@ -453,17 +507,8 @@ type resolve_builtin_call(const str owner, expr *e)
         const signature *s = &signatures[i];
         if (!str_eq_c(owner, s->owner) || !str_eq_c(e->name, s->name)) continue;
         known = true;
-        if (s->argc != e->args.count) continue;
-        bool fits = true;
-        for (int a = 0; a < s->argc; a++) {
-            const type want = real_type(s->params[a]);
-            const type have = e->args.items[a]->type;
-            // A mut argument is the variable itself, so its type matches exactly.
-            if (s->mut & (1u << a) ? want.kind != have.kind || want.decl != have.decl : !type_assignable(want, have)) {
-                fits = false;
-            }
-        }
-        if (!fits) continue;
+        if (!fits(s, e)) continue;
+        if (defaults > 0 && default_ambiguous(i, e)) return (type){TY_ERROR, NULL};
         for (int a = 0; a < s->argc; a++) vec_push(e->arg_want, real_type(s->params[a]));
         e->c_callee = s->c_name;
         e->arg_mut = s->mut;
