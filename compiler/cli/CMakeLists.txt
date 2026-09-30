@@ -10,6 +10,10 @@ target_compile_definitions(purr_cli PRIVATE
     "PURR_VERSION=\"${PURR_VERSION}\""
     "PURR_CHANNEL=\"${PURR_CHANNEL}\""
     "PURR_REPOSITORY=\"${PURR_REPOSITORY}\"")
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(purr_cli PRIVATE Threads::Threads) # Reads the terminal while a game runs
+endif()
 install(TARGETS purr_cli RUNTIME DESTINATION bin COMPONENT purr)
 
 # Versions and picking releases, without the network.

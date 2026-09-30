@@ -14,6 +14,9 @@ char *sys_exe_dir(void);
 bool sys_exists(const char *path);
 bool sys_is_dir(const char *path);
 int64_t sys_mtime(const char *path); // 0 if it doesn't exist
+// Changes whenever the file does: its modification time, finer than seconds,
+// and its size. 0 if it doesn't exist.
+uint64_t sys_file_stamp(const char *path);
 bool sys_mkdirs(const char *path);   // Creates every missing folder on the way
 void sys_hide(const char *path);     // Hides a file or folder on Windows; elsewhere a leading dot does
 bool sys_rename(const char *from, const char *to);
@@ -31,6 +34,22 @@ void sys_list(const char *dir, sys_entry_fn found, void *user);
 // name looked up on PATH. `cwd` may be NULL. Returns the exit code, or -1 if it
 // couldn't start. With `quiet`, its output is discarded.
 int sys_run(const char *const *argv, const char *cwd, bool quiet);
+
+// Starts a program without waiting for it, like sys_run. NULL if it couldn't
+// start.
+typedef struct sys_process sys_process;
+sys_process *sys_start(const char *const *argv, const char *cwd);
+// Waits up to `ms` milliseconds for it to end. True once it has, with its exit
+// code in `code`; the process is freed then.
+bool sys_wait(sys_process *p, int ms, int *code);
+
+uint32_t sys_pid(void);                // This process's
+bool sys_process_alive(uint32_t pid); // Whether a process with that ID is running
+
+// Reads lines typed into the terminal, in the background: sys_typed_line
+// returns the latest one (without its line break) once it's whole.
+void sys_read_lines(void);
+bool sys_typed_line(char *out, size_t size);
 
 // Finds a program on PATH (with the usual extensions on Windows).
 char *sys_which(const char *name);

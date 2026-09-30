@@ -398,6 +398,51 @@ PURR_TEST(net_a_session_survives_a_pause)
     purr_session_destroy(s);
 }
 
+// Hot reloading (purr/host.h): another build of the same game, new code with
+// the same layout, takes over the match where it is.
+static int new_build_ticks;
+
+static void new_build_tick(void *w)
+{
+    new_build_ticks++;
+    purr_game_api.tick(w);
+}
+
+PURR_TEST(net_a_session_takes_a_new_build_of_its_game)
+{
+    purr_game new_build = purr_game_api;
+    new_build.tick = new_build_tick;
+    purr_session *s = purr_session_create(&(purr_session_desc){.game = &purr_game_api, .tick_rate = 60, .sample = session_sample});
+    double t = 0.0;
+    purr_session_play(s, NULL, t);
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+    }
+    const purr_session_status before = purr_session_status_of(s);
+    PURR_REQUIRE(before.client.state == PURR_SESSION_CONNECTED);
+
+    new_build_ticks = 0;
+    purr_session_set_game(s, &new_build);
+    for (int frame = 0; frame < 60; frame++) {
+        t += 1.0 / 60.0;
+        purr_session_update(s, t);
+    }
+    const purr_session_status after = purr_session_status_of(s);
+    PURR_CHECK(after.client.state == PURR_SESSION_CONNECTED);
+    PURR_CHECK(after.client.resyncs == 0);
+    PURR_CHECK(after.client.verified_tick >= before.client.verified_tick + 55u); // It went on from where it was
+    // Both the server and this machine's client run the new build's ticks
+    PURR_CHECK(new_build_ticks >= 2 * (int)(after.client.verified_tick - before.client.verified_tick));
+    PURR_REQUIRE(purr_session_world(s) != NULL);
+    PURR_CHECK(memcmp(purr_session_world(s), purr_session_server_world(s), sizeof(purr_world)) == 0);
+    purr_session_event e;
+    bool disconnected = false;
+    while (purr_session_next_event(s, &e)) disconnected |= e.kind == PURR_SESSION_DISCONNECTED_EVENT;
+    PURR_CHECK(!disconnected);
+    purr_session_destroy(s);
+}
+
 PURR_TEST(net_input_packs_and_unpacks)
 {
     const Controls in = {.move = {0.25f, -1.0f}, .jump = true};

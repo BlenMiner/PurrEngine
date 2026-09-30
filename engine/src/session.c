@@ -1555,3 +1555,16 @@ bool purr_session_next_event(purr_session *s, purr_session_event *event)
     s->event_count--;
     return true;
 }
+
+void purr_session_set_game(purr_session *s, const purr_game *game)
+{
+    s->desc.game = game;
+    if (s->server) {
+        s->server->desc.game = game;
+        s->server->game = game;
+    }
+    if (s->client) {
+        s->client->desc.game = game;
+        s->client->game = game;
+    }
+}

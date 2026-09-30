@@ -45,6 +45,9 @@ typedef struct purr_str {
 // which frees everything made since.
 uint32_t purr_scratch_mark(void);
 void purr_scratch_reset(uint32_t mark);
+// Frees this thread's scratch area; the next text made allocates it again.
+// For hot reloading, before a game's library is unloaded (purr/host.h).
+void purr_scratch_free(void);
 
 // How numbers are written, as in C# format strings: PURR_FORMAT('F', 2) is
 // "F2", two decimals. 0 is the default: the shortest text that reads back as

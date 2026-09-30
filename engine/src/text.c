@@ -28,6 +28,13 @@ void purr_scratch_reset(const uint32_t mark)
     if (mark < scratch_used) scratch_used = mark;
 }
 
+void purr_scratch_free(void)
+{
+    free(scratch);
+    scratch = NULL;
+    scratch_used = 0;
+}
+
 // Room for `bytes` bytes and a NUL, or NULL when the area is full.
 static char *scratch_alloc(const uint32_t bytes)
 {

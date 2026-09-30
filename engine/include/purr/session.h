@@ -199,6 +199,9 @@ const void *purr_session_server_world(const purr_session *s);
 purr_session_status purr_session_status_of(const purr_session *s);
 // The next thing that happened since the last call, oldest first.
 bool purr_session_next_event(purr_session *s, purr_session_event *event);
+// Runs another build of the same game from now on: new code with the same
+// data layout (the same hash), for hot reloading. The match goes on.
+void purr_session_set_game(purr_session *s, const purr_game *game);
 
 // What local code asked for, with Session.Play, Host, Join and Leave.
 typedef enum purr_session_request_kind {

@@ -12,6 +12,8 @@ target_link_libraries(purr_platform PUBLIC purr PRIVATE raylib)
 if(WIN32)
     target_link_libraries(purr_platform PUBLIC ws2_32) # UDP, for sessions
 endif()
+# Hot reloading loads the game's library (src/reload.c).
+target_link_libraries(purr_platform PUBLIC ${CMAKE_DL_LIBS})
 
 if(PURR_WEB)
     # The page's JavaScript (web/purr.js) provides the canvas, input and frames
@@ -68,7 +70,7 @@ elseif(MINGW)
     set(PURR_PACKAGE_LIBS lib/native)
     set(mingw_target "${PURR_MINGW_SYSROOT}/x86_64-w64-mingw32")
     install(DIRECTORY "${mingw_target}/include" DESTINATION mingw/sysroot/x86_64-w64-mingw32 COMPONENT purr)
-    set(mingw_libs crt2.o crtbegin.o crtend.o)
+    set(mingw_libs crt2.o dllcrt2.o crtbegin.o crtend.o)
     foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 opengl32 winmm ws2_32)
         list(APPEND mingw_libs lib${lib}.a)
     endforeach()

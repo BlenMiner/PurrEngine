@@ -168,21 +168,18 @@ int main(const int argc, char **argv)
     int code = 0;
     if (schedule) {
         code = purr_schedule(opts.folder) ? 0 : 1;
+    } else if (run && !opts.web) {
+        code = purr_run_reloading(root, &opts, session);
     } else {
         char *program = purr_build(root, &opts, run);
         if (!program) {
             code = 1;
         } else if (build) {
             printf("Built %s\n", program);
-        } else if (opts.web) {
+        } else {
             if (session[0]) fprintf(stderr, "purr: web games can't %s yet; opening it on its own\n", session[0] + 2);
             printf("Opening %s\n", program);
             code = open_in_browser(program);
-        } else {
-            char *folder = path_absolute(opts.folder);
-            const char *const game[] = {program, session[0], session[1], NULL};
-            code = sys_run(game, folder, false);
-            if (code == -1) fprintf(stderr, "purr: couldn't start %s\n", program);
         }
     }
     purr_check_for_update(root);

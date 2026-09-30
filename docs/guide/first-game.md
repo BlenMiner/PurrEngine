@@ -80,7 +80,7 @@ In the folder:
 purr run
 ```
 
-`purr` compiles the game and opens a window with the ball bouncing. It keeps its work in a hidden `.purr` folder, which you can delete any time. Leave the window open: the next part adds players.
+`purr` compiles the game and opens a window with the ball bouncing. It keeps its work in a hidden `.purr` folder, which you can delete any time. Leave the window open: whenever you save, `purr` rebuilds the game and the window picks up the new code (see [hot reload](./cli.md#hot-reload)). The next part adds players.
 
 ## Players and input
 
@@ -132,7 +132,7 @@ view DrawPlayers(Body body, Owner owner, Session session)
 }
 ```
 
-Run `purr run` again and steer with `WASD`.
+Save, and steer with `WASD`. The game started over when it reloaded, since it has new data now (the input and the players' bodies), and your player joined it.
 
 ## Play together
 

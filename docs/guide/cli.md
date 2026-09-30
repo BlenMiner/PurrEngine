@@ -28,6 +28,18 @@ purr <command> [folder] [options]
 
 `purr build --release --web` makes one self-contained `.html` file with the game inside. It opens straight from disk, and can be put online as it is.
 
+## Hot reload
+
+While `purr run` plays a game, saving a `.purr` file rebuilds it, and the game carries on with the new code in the same window:
+
+- If you changed only code (systems, views, event handlers, methods), the match and everything local, like menus, carry on where they are.
+- If you changed data (a component, a field, a singleton, an event, a scene or the input), the game starts over.
+- If the new code has errors, `purr` prints them and the game keeps running its last build.
+
+When the game gets into a state you don't want, type `r` and press Enter in `purr`'s terminal to start it over. With a match on several windows (`--host` in one, `--join` in another), each window reloads when you save. A window that joined another's match joins it again whenever that one starts over.
+
+Hot reload is only for `purr run` on this machine: `purr build` makes a plain program, and `purr run --web` doesn't reload yet.
+
 ## Multiplayer
 
 `purr run` can start a match others join. The game's `Main` scene must be the match's for this (see [Scenes](../language/scenes.md)); a game that starts in a menu does the same from code (see [Multiplayer](../language/multiplayer.md)).
