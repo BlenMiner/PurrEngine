@@ -24,6 +24,8 @@ A game that starts in a menu has a local `Main`, and its local code decides whic
 | `Session.Open()` | Lets others join the match this machine runs: in a [room](#rooms), and on port 7777 too (not on the web) |
 | `Session.Open(port)` | The same, on another port |
 | `Session.Close()` | Lets no one else join; the players in the match stay |
+| `Session.Kick(player, message)` | Sends a player out of the match this machine runs, telling them why (the message is optional) |
+| `Session.KickAll(message)` | The same for every player on another machine |
 | `Session.Join(code)` | Joins the match in the room with this code, like `"K7QF2M"` |
 | `Session.Connect(address)` | Joins another machine's match by its address: `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"` |
 | `Session.Connect(address, port)` | The same, on another port than 7777 |
@@ -32,6 +34,13 @@ A game that starts in a menu has a local `Main`, and its local code decides whic
 `Start` names the scene the match starts in, with its values as for `Scene.Load`: `Session.Start(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs. Starting or joining a match leaves the one this machine is in first.
 
 There's one kind of match. It starts closed, so single-player is just a match nobody else was let into. `Open` and `Close` change that at any time: a game can start alone and open its match to friends later, then close it once the party's full. Closing turns away anyone who isn't in the match, and opening it again uses the same room and port.
+
+`Kick` and `KickAll` send players out, and they get the message with their `Disconnected` (see below). It's a kick, not a ban: a kicked player can join again, as the same player, while the match is open. To end a party and play on alone, close the match and kick everyone:
+
+```csharp
+Session.Close();
+Session.KickAll("Thanks for playing!");
+```
 
 ```csharp
 local scene Main { }
@@ -102,11 +111,12 @@ The built-in local events `Connected` and `Disconnected` say when that changes. 
 | `ServerLeft` | The server's machine left, which ended the match |
 | `Failed` | It couldn't start: no network, a port in use, an address that isn't one, or a room nobody has |
 | `Ended` | The match's last scene unloaded (see [Scenes](./scenes.md#loading-and-unloading)) |
+| `Kicked` | The server's machine sent it away, saying why in `message` |
 
 ```csharp
 local event(Disconnected gone) BackToMenu(mut Menu menu)
 {
-    menu.message = $"Disconnected: {gone.reason}";
+    menu.message = gone.reason == DisconnectReason.Kicked ? $"Kicked: {gone.message}" : $"Disconnected: {gone.reason}";
 }
 ```
 

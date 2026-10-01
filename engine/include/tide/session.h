@@ -75,7 +75,12 @@ typedef enum tide_disconnect_reason {
     TIDE_DISCONNECT_SERVER_LEFT, // The server's machine left, which ended the match
     TIDE_DISCONNECT_FAILED,      // It couldn't start: no network, a port in use, an address that isn't one, a room nobody has
     TIDE_DISCONNECT_ENDED,       // The match ended: its last scene unloaded (see tide_game.ended)
+    TIDE_DISCONNECT_KICKED,      // The server sent it away (tide_server_kick), with a message
 } tide_disconnect_reason;
+
+// A kick's message, with its NUL: up to 255 bytes of UTF-8, cut where a
+// character starts.
+#define TIDE_MESSAGE_BYTES 256u
 
 // This machine's input for `tick`, into `input` (the game's input_size bytes).
 // Clients call it once for each tick they run ahead, in order.
@@ -109,6 +114,12 @@ void tide_server_update(tide_server *s, double now);
 const void *tide_server_world(const tide_server *s);
 uint32_t tide_server_tick(const tide_server *s); // Ticks run so far
 uint32_t tide_server_player_count(const tide_server *s);
+// Sends `player` away: they go offline with TIDE_DISCONNECT_KICKED and
+// `message` (NULL for none), and PlayerLeft follows at the end of the next
+// tick. It's a kick, not a ban: they can join again while the match takes
+// players. False if they aren't in the match, or they're on its machine
+// (local_first).
+bool tide_server_kick(tide_server *s, tide_player_id player, const char *message);
 
 // ---------------------------------------------------------------------------
 // Client
@@ -134,6 +145,7 @@ typedef struct tide_client_status {
     uint32_t predicted_tick;       // Ticks run, predicted ones included
     uint32_t resyncs;              // Times its world diverged and the server sent it again
     uint64_t cookie;               // What makes this player this player again, on the next connection
+    char message[TIDE_MESSAGE_BYTES]; // With TIDE_DISCONNECT_KICKED: the server's message
 } tide_client_status;
 
 // What views draw: the latest tick's world, the one before it, and how far
@@ -179,7 +191,8 @@ typedef enum tide_session_event_kind {
 
 typedef struct tide_session_event {
     tide_session_event_kind kind;
-    tide_disconnect_reason reason; // Disconnected
+    tide_disconnect_reason reason;    // Disconnected
+    char message[TIDE_MESSAGE_BYTES]; // ...and a kick's message
 } tide_session_event;
 
 typedef struct tide_session_status {
@@ -205,6 +218,11 @@ void tide_session_start_from(tide_session *s, const void *world, uint32_t player
 bool tide_session_open(tide_session *s, tide_transport network);
 // No one else joins the match from now on; the players in it stay.
 void tide_session_close(tide_session *s);
+// Sends a player on another machine out of the match this machine runs (see
+// tide_server_kick). Nothing on a client, or for this machine's own player.
+void tide_session_kick(tide_session *s, tide_player_id player, const char *message);
+// The same for every player on another machine.
+void tide_session_kick_all(tide_session *s, const char *message);
 // Joining the server it joined last, it's the same player again, if the server
 // still has room for them.
 void tide_session_join(tide_session *s, tide_transport network, tide_address server, double now);
@@ -241,8 +259,8 @@ typedef bool (*tide_migrate_fn)(void *user, const void *from, void *to);
 // changing nothing, if `migrate` fails or there isn't the memory.
 bool tide_session_migrate(tide_session *s, const tide_game *game, tide_migrate_fn migrate, void *user);
 
-// What local code asked for, with Session.Start, Join, Connect, Leave, Open
-// and Close.
+// What local code asked for, with Session.Start, Join, Connect, Leave, Open,
+// Close, Kick and KickAll.
 typedef enum tide_session_request_kind {
     TIDE_REQUEST_NONE,
     TIDE_REQUEST_START,
@@ -251,12 +269,16 @@ typedef enum tide_session_request_kind {
     TIDE_REQUEST_LEAVE,
     TIDE_REQUEST_OPEN,    // Other machines can join the match this machine runs
     TIDE_REQUEST_CLOSE,   // ...and no longer
+    TIDE_REQUEST_KICK,    // A player, with a message
+    TIDE_REQUEST_KICK_ALL,
 } tide_session_request_kind;
 
 #define TIDE_DEFAULT_PORT 7777u
 
 typedef struct tide_session_request {
     uint32_t kind;
-    uint32_t port;     // Open: the port to take players on. Connect: the server's, unless `address` has one
-    char address[256]; // Join: the room's code. Connect: the server's address, "host" or "host:port"
+    uint32_t port;          // Open: the port to take players on. Connect: the server's, unless `text` has one
+    tide_player_id player;  // Kick: whom
+    char text[TIDE_MESSAGE_BYTES]; // Join: the room's code. Connect: the server's address, "host" or "host:port".
+                                   // Kick and KickAll: the message
 } tide_session_request;

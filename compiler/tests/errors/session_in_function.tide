@@ -1,4 +1,4 @@
-// expect: can't start, open or leave matches yet; views and local handlers do
+// expect: can't call Session.Start yet; views and local handlers do
 local scene Main { }
 scene Arena { }
 void Menu()

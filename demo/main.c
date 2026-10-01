@@ -58,7 +58,7 @@ static tide_view_worlds update(void)
     tide_session_event event;
     while (tide_session_next_event(session, &event)) {
         if (event.kind == TIDE_SESSION_CONNECTED_EVENT) tide_local_connected(&local);
-        else tide_local_disconnected(&local, event.reason);
+        else tide_local_disconnected(&local, event.reason, event.message);
     }
     const tide_session_status status = tide_session_status_of(session);
     char room[TIDE_ROOM_CODE_LENGTH + 1] = "";

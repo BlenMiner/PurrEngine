@@ -69,9 +69,9 @@ static inline void tide_run_connected(void *local)
     tide_local_connected(local);
 }
 
-static inline void tide_run_disconnected(void *local, const uint32_t reason)
+static inline void tide_run_disconnected(void *local, const uint32_t reason, const char *message)
 {
-    tide_local_disconnected(local, reason);
+    tide_local_disconnected(local, reason, message);
 }
 
 static inline int32_t tide_run_tick(const void *world)

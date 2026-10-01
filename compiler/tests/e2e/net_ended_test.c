@@ -50,7 +50,7 @@ TIDE_TEST(net_ended_a_session_goes_back_to_main)
             }
             TIDE_CHECK(e.reason == TIDE_DISCONNECT_ENDED);
             ended = true;
-            tide_local_disconnected(&local, e.reason);
+            tide_local_disconnected(&local, e.reason, e.message);
         }
     }
     TIDE_CHECK(connected && ended);

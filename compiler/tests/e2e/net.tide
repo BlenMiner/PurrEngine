@@ -72,11 +72,14 @@ local singleton Menu
     bool play;
     bool host;  // Start and Open, in one frame
     bool close;
+    bool kick;
     bool join;
     bool connect;
     bool inRoom; // Session.room, as the view read it
     int roomLength;
     string shown; // Session, as text
+    string gone;  // The last Disconnected, as text
+    string why;   // ...and its message
 }
 
 view Start(mut Menu menu, Session session)
@@ -106,7 +109,19 @@ view Start(mut Menu menu, Session session)
         menu.close = false;
         Session.Close();
     }
+    if (menu.kick)
+    {
+        menu.kick = false;
+        Session.Kick(PlayerID(1), "Be nice");
+        Session.KickAll();
+    }
     if (!menu.play) return;
     menu.play = false;
     Session.Start(Arena { size = 3 });
+}
+
+local event(Disconnected gone) Gone(mut Menu menu)
+{
+    menu.gone = $"{gone}";
+    menu.why = gone.message;
 }

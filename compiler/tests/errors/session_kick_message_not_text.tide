@@ -1,0 +1,6 @@
+// expect: a kick's message is text
+local scene Main { }
+view Menu()
+{
+    if (GUILayout.Button("Kick everyone")) Session.KickAll(3);
+}

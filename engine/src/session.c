@@ -32,12 +32,12 @@
 // which ones were late, so a client knows whether its prediction held.
 
 #define MAGIC 0x5449u // "TI"
-#define PROTOCOL 1u
+#define PROTOCOL 2u
 
 enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE };
 enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2, REFUSE_CLOSED = 3 };
 enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
-enum { BYE_LEFT = 0, BYE_ENDED = 1 };
+enum { BYE_LEFT = 0, BYE_ENDED = 1, BYE_KICKED = 2 }; // KICKED: then the message's length and bytes
 
 #define SERVER_SLOT TIDE_MAX_PLAYERS // The server's input, after the players'
 #define PREDICTION_SECONDS 1.0 // How far a client runs ahead of the last tick it knows, at most
@@ -53,6 +53,7 @@ enum { BYE_LEFT = 0, BYE_ENDED = 1 };
 #define ROOM_TIMEOUT 15.0 // ...or on a room's host before it first answers: WebRTC can take a while to connect
 #define HELLO_EVERY 0.2 // Seconds between HELLOs until the server answers
 #define MAX_TICKS 8u    // Ticks a server runs in one update at most: after a stall it drops the time instead
+#define KICK_SECONDS 2.0 // How long a kicked player is told so, in case a goodbye is lost
 
 // How far each side looks, in ticks at the match's tick rate.
 typedef struct windows {
@@ -183,6 +184,35 @@ static uint64_t next_random(uint64_t *state)
     return z ^ (z >> 31);
 }
 
+// A player the server sent away: where it tells them so, until when, and why.
+typedef struct kicked {
+    bool used;
+    uint32_t transport;
+    tide_address address;
+    uint32_t nonce; // Its HELLOs, if it was still joining; another one is a new try
+    double until;
+    char message[TIDE_MESSAGE_BYTES];
+} kicked;
+
+// A kick's message into `out`: as much as fits, cut where a character starts,
+// and only while it's UTF-8 (it may come from another machine), stopping at a
+// NUL or `size` bytes.
+static void copy_message(char out[TIDE_MESSAGE_BYTES], const char *message, const size_t size)
+{
+    size_t n = 0;
+    while (message && n < size && message[n]) {
+        const unsigned char lead = (unsigned char)message[n];
+        const size_t length = lead < 0x80u ? 1u : lead >= 0xC2u && lead < 0xE0u ? 2u : lead >= 0xE0u && lead < 0xF0u ? 3u
+                            : lead >= 0xF0u && lead < 0xF5u ? 4u : 0u;
+        bool whole = length > 0 && n + length <= size && n + length < TIDE_MESSAGE_BYTES;
+        for (size_t i = 1; whole && i < length; i++) whole = ((unsigned char)message[n + i] & 0xC0u) == 0x80u;
+        if (!whole) break;
+        n += length;
+    }
+    if (n) memcpy(out, message, n);
+    memset(out + n, 0, TIDE_MESSAGE_BYTES - n);
+}
+
 struct tide_server {
     tide_server_desc desc;
     const tide_game *game;
@@ -211,6 +241,7 @@ struct tide_server {
     double away_since[TIDE_MAX_PLAYERS];
     uint64_t random;
     uint32_t present; // Players in the world it went on from, who haven't joined it yet (tide_server_desc.players)
+    kicked kicks[TIDE_MAX_PLAYERS]; // Players sent away, told so every update for a while
 };
 
 static double resend_after(const uint32_t rtt_ms)
@@ -282,6 +313,19 @@ static void send_bye(const tide_server *s, const uint32_t transport, const tide_
     send_packet(&s->desc.transports[transport], to, &w);
 }
 
+// Tells a kicked player they were, and why.
+static void send_kicked(const tide_server *s, const kicked *k)
+{
+    uint8_t data[8u + TIDE_MESSAGE_BYTES];
+    tide_writer w = {data, sizeof data, 0, false};
+    header(&w, MSG_BYE);
+    tide_write_u8(&w, BYE_KICKED);
+    const uint32_t n = (uint32_t)strlen(k->message);
+    tide_write_u8(&w, (uint8_t)n);
+    tide_write_bytes(&w, k->message, n);
+    send_packet(&s->desc.transports[k->transport], k->address, &w);
+}
+
 static void refuse(const tide_server *s, const uint32_t transport, const tide_address to, const uint8_t reason)
 {
     uint8_t data[8];
@@ -307,6 +351,12 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
     const uint32_t their_time = tide_read_u32(r);
     const uint64_t cookie = tide_read_u64(r);
     if (r->failed) return;
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+        kicked *k = &s->kicks[i];
+        if (!k->used || k->transport != transport || !tide_address_equal(k->address, from)) continue;
+        if (k->nonce == nonce) return; // Sent away while it was joining: it's told so every update
+        k->used = false;                // Trying again
+    }
     connection *c = find_connection(s, transport, from);
     if (c && c->nonce == nonce) return; // It's being welcomed already
     if (game != s->game->hash) {
@@ -720,6 +770,11 @@ void tide_server_update(tide_server *s, const double now)
             send_frames(s, c);
         }
     }
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+        kicked *k = &s->kicks[i];
+        if (k->used && now > k->until) k->used = false;
+        if (k->used) send_kicked(s, k);
+    }
 }
 
 const void *tide_server_world(const tide_server *s)
@@ -739,6 +794,21 @@ uint32_t tide_server_player_count(const tide_server *s)
     return n;
 }
 
+bool tide_server_kick(tide_server *s, const tide_player_id player, const char *message)
+{
+    const int32_t index = tide_player_index(player);
+    if (index < 0) return false;
+    connection *c = &s->connections[index];
+    if (!c->used || c->local) return false;
+    kicked *k = &s->kicks[index];
+    *k = (kicked){.used = true, .transport = c->transport, .address = c->address, .nonce = c->nonce,
+                  .until = s->now + KICK_SECONDS};
+    copy_message(k->message, message, TIDE_MESSAGE_BYTES - 1u);
+    send_kicked(s, k);
+    drop_connection(s, c);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 
@@ -755,6 +825,7 @@ struct tide_client {
     const tide_game *game;
     tide_session_state state;
     tide_disconnect_reason reason;
+    char message[TIDE_MESSAGE_BYTES]; // A kick's
     uint32_t nonce;
     double created;
     double last_hello;
@@ -947,8 +1018,15 @@ static void client_receive(tide_client *c)
         case MSG_SERVER: on_server(c, &r); break;
         case MSG_REFUSE: go_offline(c, TIDE_DISCONNECT_REFUSED); break;
         case MSG_BYE: {
-            const bool ended = tide_read_u8(&r) == BYE_ENDED && !r.failed;
-            go_offline(c, ended ? TIDE_DISCONNECT_ENDED : TIDE_DISCONNECT_SERVER_LEFT);
+            const uint8_t why = tide_read_u8(&r);
+            if (why == BYE_KICKED && !r.failed) {
+                const uint8_t n = tide_read_u8(&r);
+                const uint8_t *bytes = tide_read_bytes(&r, n);
+                if (c->state != TIDE_SESSION_OFFLINE) copy_message(c->message, r.failed ? NULL : (const char *)bytes, n);
+                go_offline(c, TIDE_DISCONNECT_KICKED);
+                break;
+            }
+            go_offline(c, why == BYE_ENDED && !r.failed ? TIDE_DISCONNECT_ENDED : TIDE_DISCONNECT_SERVER_LEFT);
             break;
         }
         default: break;
@@ -1340,7 +1418,7 @@ void tide_client_update(tide_client *c, const double now)
 
 tide_client_status tide_client_status_of(const tide_client *c)
 {
-    return (tide_client_status){
+    tide_client_status status = {
         .state = c->state,
         .reason = c->reason,
         .player = c->welcomed ? tide_player_from_index(c->player) : (tide_player_id){0},
@@ -1350,6 +1428,8 @@ tide_client_status tide_client_status_of(const tide_client *c)
         .resyncs = c->resyncs,
         .cookie = c->cookie,
     };
+    memcpy(status.message, c->message, sizeof status.message);
+    return status;
 }
 
 const void *tide_client_world(const tide_client *c)
@@ -1518,6 +1598,18 @@ void tide_session_close(tide_session *s)
     s->open = false;
 }
 
+void tide_session_kick(tide_session *s, const tide_player_id player, const char *message)
+{
+    if (s->server) tide_server_kick(s->server, player, message);
+}
+
+void tide_session_kick_all(tide_session *s, const char *message)
+{
+    for (int32_t i = 0; s->server && i < (int32_t)TIDE_MAX_PLAYERS; i++) {
+        tide_server_kick(s->server, tide_player_from_index(i), message);
+    }
+}
+
 void tide_session_join(tide_session *s, const tide_transport network, const tide_address server, const double now)
 {
     tide_session_leave(s);
@@ -1566,8 +1658,10 @@ void tide_session_update(tide_session *s, const double now)
         push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
     }
     if (status.state == TIDE_SESSION_OFFLINE) {
+        tide_session_event gone = {TIDE_SESSION_DISCONNECTED_EVENT, status.reason};
+        memcpy(gone.message, status.message, sizeof gone.message);
         tear_down(s);
-        push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, status.reason});
+        push_event(s, gone);
         return;
     }
     s->last_state = status.state;

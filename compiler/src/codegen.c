@@ -1088,6 +1088,14 @@ static void gen_c_text(gen *g, sb *o, const expr *e)
     sb_put(o, ")");
 }
 
+// What text shows of a value besides its fields: Session's room and
+// Disconnected's message, which the host keeps beside the local state
+// (tide_local's tide_room and tide_message). NULL for the rest.
+static const char *shown_beside(const program *prog, const decl *d)
+{
+    return d == prog->session ? "room" : d == prog->disconnected ? "message" : NULL;
+}
+
 // The text `so_far` followed by `v`, a value of type `t` in C, written with
 // `format`.
 static void gen_text_add_c(gen *g, sb *o, const char *so_far, const type t, const char *v, const int32_t format)
@@ -1095,10 +1103,12 @@ static void gen_text_add_c(gen *g, sb *o, const char *so_far, const type t, cons
     char f[32] = "0";
     if (format) snprintf(f, sizeof f, "TIDE_FORMAT('%c', %d)", (char)(format >> 8), (int)(format & 0xFF));
     switch (t.kind) {
-    case TY_COMPONENT: case TY_SINGLETON: case TY_INPUT: case TY_STRUCT: case TY_EVENT: // See gen_show_helpers
-        sb_printf(o, "tide_text_%s(%s, %s%s)", type_cname(t.decl), so_far, v,
-                  t.decl == g->prog->session ? ", tide_l->tide_room" : "");
+    case TY_COMPONENT: case TY_SINGLETON: case TY_INPUT: case TY_STRUCT: case TY_EVENT: { // See gen_show_helpers
+        const char *beside = shown_beside(g->prog, t.decl);
+        sb_printf(o, "tide_text_%s(%s, %s%s%s)", type_cname(t.decl), so_far, v, beside ? ", tide_l->tide_" : "",
+                  beside ? beside : "");
         return;
+    }
     case TY_LIST: sb_printf(o, "tide_text_list%d(%s, %s)", t.decl->index, so_far, v); return;
     case TY_STRING: sb_printf(o, "tide_str_add(%s, %s)", so_far, v); return;
     case TY_INT: sb_printf(o, "tide_str_add_int(%s, %s, %s)", so_far, v, f); return;
@@ -1800,13 +1810,26 @@ static void hoist_unit(gen *g, expr *e, const char *name)
 static void gen_stmt(gen *g, const stmt *s);
 static void gen_body_stmt(gen *g, const stmt *s);
 
-// Session.Start(Arena { ... }), Join, Connect and Leave, and Session.Open and
-// Close: recorded in the local state, for the host program to act on after
-// the frame. A Start, Join, Connect or Leave ends the match the Opens and
-// Closes before it were for, so it drops them.
+// Session.Start(Arena { ... }), Join, Connect and Leave, Session.Open and
+// Close, and Session.Kick and KickAll: recorded in the local state, for the
+// host program to act on after the frame. A Start, Join, Connect or Leave ends
+// the match the Opens, Closes and Kicks before it were for, so it drops them.
 static void gen_session_call(gen *g, const expr *e)
 {
     sb *o = &g->c;
+    const bool kick = str_eq_c(e->name, "Kick");
+    if (kick || str_eq_c(e->name, "KickAll")) {
+        indent(g, o);
+        sb_printf(o, "tide_request_kick(tide_l, %s, ", kick ? "TIDE_REQUEST_KICK" : "TIDE_REQUEST_KICK_ALL");
+        if (kick) gen_expr(g, o, e->args.items[0]);
+        else sb_put(o, "(tide_player_id){0}");
+        sb_put(o, ", ");
+        const int message = kick ? 1 : 0;
+        if (e->args.count > message) gen_c_text(g, o, e->args.items[message]);
+        else sb_put(o, "\"\"");
+        sb_put(o, ");\n");
+        return;
+    }
     const bool open = str_eq_c(e->name, "Open");
     if (open || str_eq_c(e->name, "Close")) {
         indent(g, o);
@@ -1824,6 +1847,8 @@ static void gen_session_call(gen *g, const expr *e)
     }
     indent(g, o);
     sb_put(o, "tide_l->tide_request_open = (tide_session_request){0};\n");
+    indent(g, o);
+    sb_put(o, "tide_l->tide_kick_count = 0;\n");
     const bool connect = str_eq_c(e->name, "Connect");
     if (connect || str_eq_c(e->name, "Join")) {
         indent(g, o);
@@ -2546,6 +2571,9 @@ static void gen_header(gen *g)
     sb_put(o, "    tide_session_request tide_request; // What local code asked of the session: Session.Start and the like\n");
     sb_put(o, "    tide_start tide_request_start;\n");
     sb_put(o, "    tide_session_request tide_request_open; // Session.Open or Close, after tide_request\n");
+    sb_put(o, "    tide_session_request tide_kicks[TIDE_MAX_PLAYERS]; // Session.Kick and KickAll, after those\n");
+    sb_put(o, "    uint32_t tide_kick_count;\n");
+    sb_put(o, "    char tide_message[TIDE_MESSAGE_BYTES]; // Disconnected's message: a kick's, or \"\"\n");
     sb_put(o, "    char tide_room[8]; // Session.room: the code of the room the match is in, or \"\"\n");
     sb_put(o, "} tide_local;\n\n");
 
@@ -2594,10 +2622,10 @@ static void gen_header(gen *g)
     sb_put(o, "// tide_session_state, and `room` the code of the room the match is in, \"\" if none.\n");
     sb_put(o, "void tide_local_set_session(tide_local *local, uint32_t state, tide_player_id player, uint32_t ping, bool server,\n"
               "                            bool open, const char *room);\n\n");
-    sb_put(o, "// Send the local events Connected and Disconnected (`reason` is a tide_disconnect_reason),\n");
-    sb_put(o, "// handled at the end of the next tide_frame.\n");
+    sb_put(o, "// Send the local events Connected and Disconnected (`reason` is a tide_disconnect_reason,\n");
+    sb_put(o, "// and `message` a kick's, or NULL), handled at the end of the next tide_frame.\n");
     sb_put(o, "void tide_local_connected(tide_local *local);\n");
-    sb_put(o, "void tide_local_disconnected(tide_local *local, uint32_t reason);\n\n");
+    sb_put(o, "void tide_local_disconnected(tide_local *local, uint32_t reason, const char *message);\n\n");
     sb_put(o, "// The game, as sessions run it (tide/session.h).\n");
     sb_put(o, "extern const tide_game tide_game_api;\n\n");
     sb_put(o, "uint32_t tide_world_entity_count(const tide_world *w);\n");
@@ -2817,7 +2845,8 @@ static void gen_show_part(gen *g, sb *o, const type t, const char *v)
 
 // Text for what text shows by what's in it (decl.shown): values with fields
 // as C# shows records, `Name { a = 1, b = "x" }`, and lists, `[1, 2]`.
-// Session's has its room, which is beside the local state.
+// Session's has its room and Disconnected's its message, which are beside the
+// local state (see shown_beside).
 static void gen_show_helpers(gen *g)
 {
     const program *prog = g->prog;
@@ -2828,8 +2857,9 @@ static void gen_show_helpers(gen *g)
         if (!d->shown) continue;
         any = true;
         const char *name = type_cname(d);
-        sb_printf(o, "TIDE_HELPER tide_str tide_text_%s(tide_str a, %s v%s);\n", name, name,
-                  d == prog->session ? ", const char *room" : "");
+        const char *beside = shown_beside(prog, d);
+        sb_printf(o, "TIDE_HELPER tide_str tide_text_%s(tide_str a, %s v%s%s);\n", name, name,
+                  beside ? ", const char *" : "", beside ? beside : "");
     }
     for (int k = 0; k < prog->lists.count; k++) {
         if (!prog->lists.items[k]->shown) continue;
@@ -2843,9 +2873,9 @@ static void gen_show_helpers(gen *g)
         const decl *d = prog->decls.items[i];
         if (!d->shown) continue;
         const char *name = type_cname(d);
-        const bool session = d == prog->session;
-        sb_printf(o, "TIDE_HELPER tide_str tide_text_%s(tide_str a, const %s v%s)\n{\n", name, name,
-                  session ? ", const char *room" : "");
+        const char *beside = shown_beside(prog, d);
+        sb_printf(o, "TIDE_HELPER tide_str tide_text_%s(tide_str a, const %s v%s%s)\n{\n", name, name,
+                  beside ? ", const char *" : "", beside ? beside : "");
         sb_printf(o, "    a = tide_str_add_cstr(a, \"" STR_FMT " {\");\n", STR_ARG(d->name));
         const char *comma = " ";
         for (int k = 0; k < d->fields.count; k++) {
@@ -2857,9 +2887,11 @@ static void gen_show_helpers(gen *g)
             gen_show_part(g, o, f->type, value.data);
             comma = ", ";
         }
-        if (session) {
-            sb_printf(o, "    a = tide_str_add_cstr(a, \"%sroom = \");\n", comma);
-            gen_show_part(g, o, (type){TY_STRING, NULL}, "tide_str_from_cstr(room)");
+        if (beside) {
+            sb_printf(o, "    a = tide_str_add_cstr(a, \"%s%s = \");\n", comma, beside);
+            sb value = {0};
+            sb_printf(&value, "tide_str_from_cstr(%s)", beside);
+            gen_show_part(g, o, (type){TY_STRING, NULL}, value.data);
         } else if (comma[0] == ' ') {
             sb_put(o, "    (void)v;\n"); // No fields to show
         }
@@ -2993,7 +3025,7 @@ static void gen_blend_helpers(gen *g)
     g->indent = 0;
 }
 
-// What views and local handlers call for Session.Join.
+// What views and local handlers call for Session.Join, Connect, Kick and KickAll.
 static void gen_session_helpers(gen *g)
 {
     sb *o = &g->c;
@@ -3002,8 +3034,18 @@ static void gen_session_helpers(gen *g)
     sb_put(o, "TIDE_HELPER void tide_request_join(tide_local *l, uint32_t kind, const char *address, uint32_t port)\n{\n");
     sb_put(o, "    l->tide_request = (tide_session_request){.kind = kind, .port = port};\n");
     sb_put(o, "    size_t n = strlen(address);\n");
-    sb_put(o, "    if (n >= sizeof l->tide_request.address) n = sizeof l->tide_request.address - 1u;\n");
-    sb_put(o, "    memcpy(l->tide_request.address, address, n);\n}\n\n");
+    sb_put(o, "    if (n >= sizeof l->tide_request.text) n = sizeof l->tide_request.text - 1u;\n");
+    sb_put(o, "    memcpy(l->tide_request.text, address, n);\n}\n\n");
+    sb_put(o, "// Session.Kick(player, message) and Session.KickAll(message), in order, up to a\n");
+    sb_put(o, "// kick per player each frame. The message is cut where a character starts.\n");
+    sb_put(o, "TIDE_HELPER void tide_request_kick(tide_local *l, uint32_t kind, tide_player_id player, const char *message)\n{\n");
+    sb_put(o, "    if (l->tide_kick_count == TIDE_MAX_PLAYERS) return;\n");
+    sb_put(o, "    tide_session_request *r = &l->tide_kicks[l->tide_kick_count++];\n");
+    sb_put(o, "    *r = (tide_session_request){.kind = kind, .player = player};\n");
+    sb_put(o, "    size_t n = strlen(message);\n");
+    sb_put(o, "    if (n >= sizeof r->text) n = sizeof r->text - 1u;\n");
+    sb_put(o, "    while (n > 0 && ((unsigned char)message[n] & 0xC0u) == 0x80u) n--;\n");
+    sb_put(o, "    memcpy(r->text, message, n);\n}\n\n");
 }
 
 static void gen_prelude(gen *g)
@@ -4697,13 +4739,17 @@ static void gen_game_api(gen *g)
     gen_world_copy(g);
 
     sb_put(o, "bool tide_local_take_request(tide_local *local, tide_session_request *request, tide_start *start)\n{\n");
-    sb_put(o, "    if (local->tide_request.kind == TIDE_REQUEST_NONE) {\n");
-    sb_put(o, "        if (local->tide_request_open.kind == TIDE_REQUEST_NONE) return false;\n");
+    sb_put(o, "    if (local->tide_request.kind != TIDE_REQUEST_NONE) {\n");
+    sb_put(o, "        *request = local->tide_request;\n        *start = local->tide_request_start;\n");
+    sb_put(o, "        local->tide_request = (tide_session_request){0};\n");
+    sb_put(o, "        local->tide_request_start = (tide_start){0};\n        return true;\n    }\n");
+    sb_put(o, "    if (local->tide_request_open.kind != TIDE_REQUEST_NONE) {\n");
     sb_put(o, "        *request = local->tide_request_open;\n");
     sb_put(o, "        local->tide_request_open = (tide_session_request){0};\n        return true;\n    }\n");
-    sb_put(o, "    *request = local->tide_request;\n    *start = local->tide_request_start;\n");
-    sb_put(o, "    local->tide_request = (tide_session_request){0};\n");
-    sb_put(o, "    local->tide_request_start = (tide_start){0};\n    return true;\n}\n\n");
+    sb_put(o, "    if (local->tide_kick_count == 0) return false;\n");
+    sb_put(o, "    *request = local->tide_kicks[0];\n    local->tide_kick_count--;\n");
+    sb_put(o, "    memmove(local->tide_kicks, local->tide_kicks + 1, local->tide_kick_count * sizeof local->tide_kicks[0]);\n");
+    sb_put(o, "    memset(&local->tide_kicks[local->tide_kick_count], 0, sizeof local->tide_kicks[0]);\n    return true;\n}\n\n");
 
     const decl *session = prog->session;
     const char *name = type_cname(session);
@@ -4722,9 +4768,13 @@ static void gen_game_api(gen *g)
     const char *disconnected = type_cname(prog->disconnected);
     sb_printf(o, "void tide_local_connected(tide_local *local)\n{\n    tide_cmd_send_%s(local, (tide_entity){0}, (%s){0});\n}\n\n",
               connected, connected);
-    sb_printf(o, "void tide_local_disconnected(tide_local *local, uint32_t reason)\n{\n"
-                 "    tide_cmd_send_%s(local, (tide_entity){0}, (%s){.%s = (int32_t)reason});\n}\n\n",
-              disconnected, disconnected, field_cname(&prog->disconnected->fields.items[0]));
+    sb_put(o, "void tide_local_disconnected(tide_local *local, uint32_t reason, const char *message)\n{\n");
+    sb_put(o, "    size_t n = message ? strlen(message) : 0u;\n");
+    sb_put(o, "    if (n >= sizeof local->tide_message) n = sizeof local->tide_message - 1u;\n");
+    sb_put(o, "    memcpy(local->tide_message, message ? message : \"\", n);\n");
+    sb_put(o, "    memset(local->tide_message + n, 0, sizeof local->tide_message - n);\n");
+    sb_printf(o, "    tide_cmd_send_%s(local, (tide_entity){0}, (%s){.%s = (int32_t)reason});\n}\n\n", disconnected,
+              disconnected, field_cname(&prog->disconnected->fields.items[0]));
 
     sb_put(o, "// The game, as sessions run it\n\n");
     sb_put(o, "static void tide_game_start(void *w, float dt, const void *start)\n{\n    tide_world_start(w, dt, start);\n}\n\n");

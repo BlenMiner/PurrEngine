@@ -1245,9 +1245,10 @@ static bool room_code(const str text)
 }
 
 // Session.Start(Arena), Session.Join(code), Session.Connect(address, port)
-// and Session.Leave(): which match this machine is in; and Session.Open(port)
-// and Session.Close(): whether others can join the one it runs. Only local
-// code decides.
+// and Session.Leave(): which match this machine is in; Session.Open(port)
+// and Session.Close(): whether others can join the one it runs; and
+// Session.Kick(player, message) and Session.KickAll(message): sending players
+// out of it. Only local code decides.
 static type check_session_call(checker *c, expr *e)
 {
     const bool start = str_eq_c(e->name, "Start");
@@ -1256,7 +1257,9 @@ static type check_session_call(checker *c, expr *e)
     const bool leave = str_eq_c(e->name, "Leave");
     const bool open = str_eq_c(e->name, "Open");
     const bool close = str_eq_c(e->name, "Close");
-    if (!start && !join && !connect && !leave && !open && !close) {
+    const bool kick = str_eq_c(e->name, "Kick");
+    const bool kick_all = str_eq_c(e->name, "KickAll");
+    if (!start && !join && !connect && !leave && !open && !close && !kick && !kick_all) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         if (str_eq_c(e->name, "Play") || str_eq_c(e->name, "Host")) {
             diag_error(e->at, "Session." STR_FMT " is Session.Start now", STR_ARG(e->name));
@@ -1264,12 +1267,14 @@ static type check_session_call(checker *c, expr *e)
                                                 : "'Session.Start(Arena); Session.Open();' starts a match others can join");
             return T_ERR;
         }
-        diag_error(e->at, "Session has no '" STR_FMT "'; it has Start, Open, Close, Join, Connect and Leave",
+        diag_error(e->at, "Session has no '" STR_FMT "'; it has Start, Open, Close, Kick, KickAll, Join, Connect and Leave",
                    STR_ARG(e->name));
         suggestion s = suggest_start(e->name);
         suggest_consider_c(&s, "Start");
         suggest_consider_c(&s, "Open");
         suggest_consider_c(&s, "Close");
+        suggest_consider_c(&s, "Kick");
+        suggest_consider_c(&s, "KickAll");
         suggest_consider_c(&s, "Join");
         suggest_consider_c(&s, "Connect");
         suggest_consider_c(&s, "Leave");
@@ -1279,13 +1284,16 @@ static type check_session_call(checker *c, expr *e)
     if (c->method || c->in_input || !local_code(c)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         if (c->method) {
-            diag_error(e->at, "%s can't start, open or leave matches yet; views and local handlers do", routines(c));
+            diag_error(e->at, "%s can't call Session." STR_FMT " yet; views and local handlers do", routines(c),
+                       STR_ARG(e->name));
             diag_note("call it in the view, and pass what the function decides back, like a 'mut bool' or its result");
         } else if (c->in_input) {
-            diag_error(e->at, "%s makes this machine's input, so it can't start, open or leave matches", input_code(c));
+            diag_error(e->at, "%s makes this machine's input, so it can't call Session." STR_FMT, input_code(c),
+                       STR_ARG(e->name));
         } else {
-            diag_error(e->at, "the match runs the same on every machine, so it can't start, open or leave one");
-            diag_note("call Session." STR_FMT " from a view or a local handler, like a menu's button", STR_ARG(e->name));
+            diag_error(e->at, "the match runs the same on every machine, so it can't call Session." STR_FMT,
+                       STR_ARG(e->name));
+            diag_note("call it from a view or a local handler, like a menu's button");
         }
         return T_ERR;
     }
@@ -1293,8 +1301,8 @@ static type check_session_call(checker *c, expr *e)
         diag_error(e->at, "Session." STR_FMT " is a statement of its own", STR_ARG(e->name));
     }
     e->call = CALL_SESSION;
-    const int least = start || join || connect ? 1 : 0;
-    const int most = connect ? 2 : open ? 1 : least;
+    const int least = start || join || connect || kick ? 1 : 0;
+    const int most = connect || kick ? 2 : open || kick_all ? 1 : least;
     if (e->args.count < least || e->args.count > most) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         diag_error(e->at, "%s", start     ? "Session.Start takes the scene the match starts in: 'Session.Start(Arena)'"
@@ -1304,6 +1312,10 @@ static type check_session_call(checker *c, expr *e)
                                : connect ? "Session.Connect takes the server's address, and maybe a port: "
                                            "'Session.Connect(\"192.168.1.5\")' or 'Session.Connect(\"192.168.1.5\", 7777)'"
                                : close   ? "Session.Close takes nothing: 'Session.Close()'"
+                               : kick    ? "Session.Kick takes the player, and maybe a message: "
+                                           "'Session.Kick(player)' or 'Session.Kick(player, \"Be nice\")'"
+                               : kick_all ? "Session.KickAll takes nothing, or a message: "
+                                            "'Session.KickAll()' or 'Session.KickAll(\"The party's over\")'"
                                          : "Session.Leave takes nothing: 'Session.Leave()'");
         if (start && e->args.count == 2) diag_note("a match takes players once it's opened: 'Session.Open(7777)'");
         return T_ERR;
@@ -1331,6 +1343,20 @@ static type check_session_call(checker *c, expr *e)
     if (open && e->args.count == 1) {
         const type t = check_expr(c, e->args.items[0]);
         if (t.kind != TY_ERROR && t.kind != TY_INT) diag_error(e->args.items[0]->at, "a port is an int, like 7777");
+    }
+    if (kick) {
+        const type t = check_expr(c, e->args.items[0]);
+        if (t.kind != TY_ERROR && t.kind != TY_PLAYER) {
+            diag_error(e->args.items[0]->at, "Session.Kick takes the player to send away, a PlayerID, not %s", type_name(t));
+        }
+    }
+    if ((kick && e->args.count == 2) || (kick_all && e->args.count == 1)) {
+        const expr *message = e->args.items[e->args.count - 1];
+        const type t = check_expr(c, e->args.items[e->args.count - 1]);
+        if (t.kind != TY_ERROR && t.kind != TY_STRING) {
+            diag_error(message->at, "a kick's message is text, like \"Be nice\"");
+            diag_note("put a value in text with '$', like '$\"{value}\"'");
+        }
     }
     if (!start) return T_VOID_;
     decl *scene = check_start_scene(c, e->args.items[0], "Session.Start");
@@ -2179,11 +2205,13 @@ static type check_member(checker *c, expr *e)
         }
     }
 
-    // session.room: the code of the room the match is in. The host keeps it
-    // beside the local state (tide_local's tide_room), so it needs no heap.
+    // session.room: the code of the room the match is in, and gone.message: a
+    // kick's message, for Disconnected. The host keeps them beside the local
+    // state (tide_local's tide_room and tide_message), so they need no heap.
     const bool session = has_fields(obj) && obj.decl == c->prog->session;
-    if (session && str_eq_c(e->member, "room")) {
-        e->c_constant = "tide_str_from_cstr(tide_l->tide_room)";
+    const bool disconnected = has_fields(obj) && obj.decl == c->prog->disconnected;
+    if ((session && str_eq_c(e->member, "room")) || (disconnected && str_eq_c(e->member, "message"))) {
+        e->c_constant = session ? "tide_str_from_cstr(tide_l->tide_room)" : "tide_str_from_cstr(tide_l->tide_message)";
         return (type){TY_STRING, NULL};
     }
 
@@ -2204,6 +2232,7 @@ static type check_member(checker *c, expr *e)
         suggestion s = suggest_start(e->member);
         suggest_fields(&s, obj.decl);
         if (session) suggest_consider_c(&s, "room");
+        if (disconnected) suggest_consider_c(&s, "message");
         suggest_note(&s);
         return T_ERR;
     }
@@ -4204,9 +4233,10 @@ static void add_builtins(program *prog)
     // This machine's part in a match (see tide/session.h, whose enums have the
     // same values): local singleton Session { SessionState state; PlayerID
     // player; int ping; bool server; bool open; }, its room (see check_member),
-    // and local events Connected and Disconnected { DisconnectReason reason; }.
+    // and local events Connected and Disconnected { DisconnectReason reason; },
+    // with a kick's message (see check_member).
     static const char *const states[] = {"Offline", "Connecting", "Connected"};
-    static const char *const reasons[] = {"Left", "TimedOut", "Refused", "ServerLeft", "Failed", "Ended"};
+    static const char *const reasons[] = {"Left", "TimedOut", "Refused", "ServerLeft", "Failed", "Ended", "Kicked"};
     decl *state = NEW(decl);
     state->kind = DECL_ENUM;
     state->name = str_from("SessionState");

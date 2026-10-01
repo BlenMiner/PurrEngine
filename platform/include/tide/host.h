@@ -46,7 +46,7 @@ typedef struct tide_host_game {
     void (*set_session)(void *local, uint32_t state, tide_player_id player, uint32_t ping, bool server, bool open,
                         const char *room);
     void (*connected)(void *local);
-    void (*disconnected)(void *local, uint32_t reason);
+    void (*disconnected)(void *local, uint32_t reason, const char *message); // `message`: a kick's, or ""
     int32_t (*tick)(const void *world); // Time.tick
     uint32_t (*entity_count)(const void *world);
     // Frees what the game's code keeps for itself (the scratch area), before
@@ -93,7 +93,7 @@ static tide_run_desc tide_run_settings;
 static tide_session *tide_run_session;
 static double tide_run_now; // Seconds since the program started
 // The server went away or turned this machine away: not because it left,
-// couldn't start, or the match ran out of scenes
+// couldn't start, was kicked, or the match ran out of scenes
 static bool tide_run_dropped;
 
 // This machine's input for one tick.
@@ -134,9 +134,15 @@ static inline void tide_run_request(const tide_session_request *request, const v
     case TIDE_REQUEST_CLOSE:
         tide_session_close(s);
         break;
+    case TIDE_REQUEST_KICK:
+        tide_session_kick(s, request->player, request->text);
+        break;
+    case TIDE_REQUEST_KICK_ALL:
+        tide_session_kick_all(s, request->text);
+        break;
     case TIDE_REQUEST_JOIN:
-        if (!tide_platform_room_join(request->address, &network, &server)) {
-            fprintf(stderr, "tide: can't join room '%s'\n", request->address);
+        if (!tide_platform_room_join(request->text, &network, &server)) {
+            fprintf(stderr, "tide: can't join room '%s'\n", request->text);
             tide_session_leave(s);
             tide_session_fail(s, TIDE_DISCONNECT_FAILED);
             break;
@@ -144,8 +150,8 @@ static inline void tide_run_request(const tide_session_request *request, const v
         tide_session_join(s, network, server, tide_run_now);
         break;
     case TIDE_REQUEST_CONNECT:
-        if (!port || !tide_platform_resolve(request->address, port, &server) || !tide_platform_udp_open(0, &network)) {
-            fprintf(stderr, "tide: can't reach '%s'\n", request->address);
+        if (!port || !tide_platform_resolve(request->text, port, &server) || !tide_platform_udp_open(0, &network)) {
+            fprintf(stderr, "tide: can't reach '%s'\n", request->text);
             tide_session_leave(s);
             tide_session_fail(s, TIDE_DISCONNECT_FAILED);
             break;
@@ -176,7 +182,7 @@ static inline bool tide_run_arguments(tide_session_request *request)
         if ((join || strcmp(arg, "--connect") == 0) && next) {
             *request = (tide_session_request){.kind = join ? TIDE_REQUEST_JOIN : TIDE_REQUEST_CONNECT,
                                               .port = TIDE_DEFAULT_PORT};
-            snprintf(request->address, sizeof request->address, "%s", next);
+            snprintf(request->text, sizeof request->text, "%s", next);
             return true;
         }
     }
@@ -260,9 +266,9 @@ static inline int tide_run_frame(void *user, const float seconds)
     while (tide_session_next_event(s, &event)) {
         const bool connected = event.kind == TIDE_SESSION_CONNECTED_EVENT;
         tide_run_dropped = !connected && event.reason != TIDE_DISCONNECT_LEFT && event.reason != TIDE_DISCONNECT_FAILED &&
-                           event.reason != TIDE_DISCONNECT_ENDED;
+                           event.reason != TIDE_DISCONNECT_ENDED && event.reason != TIDE_DISCONNECT_KICKED;
         if (connected) game->connected(tide_run_local);
-        else game->disconnected(tide_run_local, event.reason);
+        else game->disconnected(tide_run_local, event.reason, event.message);
     }
     const tide_session_status status = tide_session_status_of(s);
     char room[TIDE_ROOM_CODE_LENGTH + 1] = "";

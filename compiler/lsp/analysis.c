@@ -953,6 +953,11 @@ static const struct {
      "Lets others join the match this machine runs: in a room, whose code is `Session.room`, and on `port` too (7777 "
      "unless it says), except on the web."},
     {"Close", "Session.Close()", "No one else joins the match this machine runs from now on; the players in it stay."},
+    {"Kick", "Session.Kick(PlayerID player, string message)",
+     "Sends a player on another machine out of the match this machine runs. They get `Disconnected` with `Kicked` and "
+     "`message`, and `PlayerLeft` follows. They can join again while the match is open."},
+    {"KickAll", "Session.KickAll(string message)",
+     "Sends every player on another machine out of the match this machine runs, with `message`, as `Kick` does."},
     {"Join", "Session.Join(string code)",
      "Joins the match in the room with `code`, like \"K7QF2M\": its host's `Session.room`. It leaves the match it's in first."},
     {"Connect", "Session.Connect(string address, int port)",
@@ -2304,6 +2309,10 @@ static void list_members(completion *c, const type t, const bool edges, const sc
             item(c, "room", CK_FIELD, "string",
                  "The code of the room the match is in, like \"K7QF2M\", or \"\" if it's in none. Others join it with "
                  "`Session.Join(code)`.",
+                 NULL);
+        }
+        if (t.kind == TY_EVENT && t.decl->builtin && str_eq_c(t.decl->name, "Disconnected")) {
+            item(c, "message", CK_FIELD, "string", "With `Kicked`: why, as the server's `Session.Kick` said. \"\" otherwise.",
                  NULL);
         }
         for (int i = 0; i < t.decl->methods.count; i++) {

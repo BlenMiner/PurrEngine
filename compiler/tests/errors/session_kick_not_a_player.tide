@@ -1,0 +1,6 @@
+// expect: Session.Kick takes the player to send away, a PlayerID, not int
+local scene Main { }
+view Menu()
+{
+    if (GUILayout.Button("Kick")) Session.Kick(1, "Be nice");
+}

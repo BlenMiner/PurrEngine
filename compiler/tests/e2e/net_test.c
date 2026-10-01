@@ -401,12 +401,12 @@ TIDE_TEST(net_local_code_joins_rooms_and_connects_to_addresses)
     local.Menu.join = true;
     run_views();
     TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
-    TIDE_CHECK(request.kind == TIDE_REQUEST_JOIN && strcmp(request.address, "k7qf2m") == 0);
+    TIDE_CHECK(request.kind == TIDE_REQUEST_JOIN && strcmp(request.text, "k7qf2m") == 0);
 
     local.Menu.connect = true;
     run_views();
     TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
-    TIDE_CHECK(request.kind == TIDE_REQUEST_CONNECT && strcmp(request.address, "192.168.1.5") == 0);
+    TIDE_CHECK(request.kind == TIDE_REQUEST_CONNECT && strcmp(request.text, "192.168.1.5") == 0);
     TIDE_CHECK(request.port == 7000u);
 
     // Start, then Open, in one frame: the host takes them in that order. The
@@ -424,6 +424,24 @@ TIDE_TEST(net_local_code_joins_rooms_and_connects_to_addresses)
     TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
     TIDE_CHECK(request.kind == TIDE_REQUEST_CLOSE);
     TIDE_CHECK(!tide_local_take_request(&local, &request, &start));
+
+    // Kicks, in order, with their messages.
+    local.Menu.kick = true;
+    run_views();
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_KICK && request.player.id == 2u && strcmp(request.text, "Be nice") == 0);
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_KICK_ALL && request.text[0] == 0);
+    TIDE_CHECK(!tide_local_take_request(&local, &request, &start));
+
+    // Disconnected has a kick's message.
+    tide_local_disconnected(&local, TIDE_DISCONNECT_KICKED, "Be nice");
+    run_views();
+    TIDE_CHECK(shows(local.Menu.gone, "Disconnected { reason = Kicked, message = \"Be nice\" }"));
+    TIDE_CHECK(shows(local.Menu.why, "Be nice"));
+    tide_local_disconnected(&local, TIDE_DISCONNECT_LEFT, NULL);
+    run_views();
+    TIDE_CHECK(shows(local.Menu.gone, "Disconnected { reason = Left, message = \"\" }"));
 }
 
 // This machine stops for a while (a browser tab in the background, a
@@ -622,6 +640,70 @@ TIDE_TEST(net_a_match_takes_players_while_it_is_open)
     TIDE_CHECK(in_match(late, &reason));
     TIDE_CHECK(players_in(tide_session_server_world(host))->joined == 3);
     TIDE_CHECK(!tide_session_open(guest, (tide_transport){0})); // Only the server's machine opens its match
+
+    tide_session_destroy(late);
+    tide_session_destroy(guest);
+    tide_session_destroy(host);
+    tide_loopback_destroy(network);
+}
+
+// Whether `s` is in a match; `gone` gets the last Disconnected it reported.
+static bool still_in(tide_session *s, tide_session_event *gone)
+{
+    tide_session_event e;
+    while (tide_session_next_event(s, &e)) {
+        if (e.kind == TIDE_SESSION_DISCONNECTED_EVENT) *gone = e;
+    }
+    return tide_session_status_of(s).client.state == TIDE_SESSION_CONNECTED;
+}
+
+// The server's machine sends players away, and they hear why even when the
+// network loses packets. A kick isn't a ban: they can join again, as the same
+// player, while the match is open.
+TIDE_TEST(net_a_match_kicks_players)
+{
+    tide_loopback *network = tide_loopback_create(78);
+    tide_loopback_set_conditions(network, (tide_net_conditions){.latency = 0.03, .loss = 0.2});
+    tide_session *host = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
+    tide_session *guest = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = guest_sample});
+    tide_session *late = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = guest_sample});
+    tide_session *const all[3] = {host, guest, late};
+    tide_session_event gone = {0};
+    double t = 0.0;
+    tide_session_start(host, NULL, t);
+    TIDE_REQUIRE(tide_session_open(host, tide_loopback_endpoint(network, 1)));
+    tide_session_join(guest, tide_loopback_endpoint(network, 2), tide_loopback_address(1), t);
+    tide_session_join(late, tide_loopback_endpoint(network, 3), tide_loopback_address(1), t);
+    run_three(network, all, &t, 2.0);
+    TIDE_REQUIRE(still_in(guest, &gone) && still_in(late, &gone));
+    const tide_player_id kicked = tide_session_status_of(guest).client.player;
+
+    // Its own player can't be kicked: it leaves instead.
+    tide_session_kick(host, tide_session_status_of(host).client.player, "No");
+
+    // 200 é's are 400 bytes: the message is cut to 127 of them.
+    char message[401] = {0};
+    for (int i = 0; i < 200; i++) memcpy(message + 2 * i, "\xC3\xA9", 2);
+    tide_session_kick(host, kicked, message);
+    run_three(network, all, &t, 4.0);
+    TIDE_CHECK(!still_in(guest, &gone) && gone.reason == TIDE_DISCONNECT_KICKED);
+    TIDE_CHECK(strlen(gone.message) == 254 && memcmp(gone.message, message, 254) == 0);
+    TIDE_CHECK(still_in(late, &gone) && still_in(host, &gone));
+    const Players *players = players_in(tide_session_server_world(host));
+    TIDE_CHECK(players->joined == 3 && players->left == 1);
+
+    tide_session_join(guest, tide_loopback_endpoint(network, 2), tide_loopback_address(1), t);
+    run_three(network, all, &t, 6.0);
+    TIDE_CHECK(still_in(guest, &gone));
+    TIDE_CHECK(tide_session_status_of(guest).client.player.id == kicked.id); // The same player
+
+    tide_session_kick_all(host, "The party's over");
+    run_three(network, all, &t, 8.0);
+    TIDE_CHECK(!still_in(guest, &gone) && gone.reason == TIDE_DISCONNECT_KICKED);
+    TIDE_CHECK(strcmp(gone.message, "The party's over") == 0);
+    TIDE_CHECK(!still_in(late, &gone) && gone.reason == TIDE_DISCONNECT_KICKED);
+    TIDE_CHECK(still_in(host, &gone)); // Its own player plays on, alone
+    TIDE_CHECK(players_in(tide_session_server_world(host))->left == 3);
 
     tide_session_destroy(late);
     tide_session_destroy(guest);

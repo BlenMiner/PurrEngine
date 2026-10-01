@@ -1,4 +1,4 @@
-// expect: the match runs the same on every machine, so it can't start, open or leave one
+// expect: the match runs the same on every machine, so it can't call Session.Leave
 scene Main { }
 system Quit()
 {
