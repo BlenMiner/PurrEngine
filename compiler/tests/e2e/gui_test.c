@@ -213,3 +213,18 @@ TIDE_TEST(gui_hides_what_it_uses_from_the_game)
     tide_gui_hide(&gui, &sampled);
     TIDE_CHECK(sampled.mouse.left.pressed);
 }
+
+TIDE_TEST(gui_disabled_blocks_gray_out_their_widgets)
+{
+    start();
+    TIDE_REQUIRE(click("Connect", 0));
+    TIDE_CHECK(local.Menu.connects == 1 && local.Menu.waiting);
+    TIDE_REQUIRE(click("Connect", 0)); // Waiting: grayed out, and clicks do nothing
+    TIDE_CHECK(local.Menu.connects == 1);
+    const tide_draw_command *text = find("Connect", 0);
+    TIDE_REQUIRE(text != NULL);
+    TIDE_CHECK(text->color.a == 0.5f);
+    local.Menu.waiting = false;
+    TIDE_REQUIRE(click("Connect", 0));
+    TIDE_CHECK(local.Menu.connects == 2);
+}

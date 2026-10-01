@@ -334,6 +334,140 @@ TIDE_TEST(gui_horizontal_groups_sit_side_by_side)
     TIDE_CHECK(c->a.y == a->a.y + 28.0f + 5.0f);
 }
 
+// A frame with Play, Quit in a Disabled block, then Back; returns which were
+// pressed (bits 0 to 2).
+static int quit_disabled(const bool disabled)
+{
+    begin();
+    const bool a = tide_gui_layout_button(&gui, 10, "Play");
+    const int depth = tide_gui_begin_disabled(&gui, disabled);
+    const bool b = tide_gui_layout_button(&gui, 20, "Quit");
+    tide_gui_close(&gui, depth);
+    const bool c = tide_gui_layout_button(&gui, 30, "Back");
+    end();
+    return (a ? 1 : 0) | (b ? 2 : 0) | (c ? 4 : 0);
+}
+
+TIDE_TEST(gui_disabled_widgets_dont_work)
+{
+    start();
+    // A click on Quit does nothing, but the mouse on it is still the GUI's.
+    mouse(20.0f, 47.0f, false);
+    TIDE_CHECK(quit_disabled(true) == 0);
+    mouse(20.0f, 47.0f, true);
+    TIDE_CHECK(quit_disabled(true) == 0);
+    TIDE_CHECK(gui.active == 0);
+    tide_devices sampled = devices;
+    tide_button_set(&sampled.mouse.left, true);
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(!sampled.mouse.left.pressed);
+    mouse(20.0f, 47.0f, false);
+    TIDE_CHECK(quit_disabled(true) == 0);
+
+    // Drawn faded, and laid out as usual: Back is under Quit.
+    TIDE_REQUIRE(draw.count >= 7);
+    const tide_draw_command *play = &draw.commands[1];
+    const tide_draw_command *quit = &draw.commands[3];
+    const tide_draw_command *back = &draw.commands[5];
+    TIDE_CHECK(quit->color.a == play->color.a * 0.5f && back->color.a == play->color.a);
+    TIDE_CHECK(draw.commands[4].kind == TIDE_DRAW_TEXT && draw.commands[4].color.a == 0.5f);
+    TIDE_CHECK(back->a.y == quit->a.y + 28.0f + 5.0f);
+
+    // Tab goes past it.
+    key(&devices.keyboard.tab, true);
+    quit_disabled(true);
+    TIDE_CHECK(gui.focus == 10);
+    key(&devices.keyboard.tab, false);
+    quit_disabled(true);
+    key(&devices.keyboard.tab, true);
+    quit_disabled(true);
+    TIDE_CHECK(gui.focus == 30);
+    key(&devices.keyboard.tab, false);
+
+    // Enabled, it works again.
+    mouse(20.0f, 47.0f, true);
+    TIDE_CHECK(quit_disabled(false) == 0);
+    TIDE_CHECK(gui.active == 20);
+    mouse(20.0f, 47.0f, false);
+    TIDE_CHECK(quit_disabled(false) == 2);
+
+    // Disabled while it's pressed, it lets go, and the release doesn't press it.
+    mouse(20.0f, 47.0f, true);
+    quit_disabled(false);
+    TIDE_CHECK(gui.active == 20);
+    quit_disabled(true);
+    TIDE_CHECK(gui.active == 0);
+    mouse(20.0f, 47.0f, false);
+    TIDE_CHECK(quit_disabled(false) == 0);
+}
+
+// A frame with an int field, in a Disabled block.
+static bool int_field_disabled(int32_t *value, const bool disabled)
+{
+    begin();
+    const int depth = tide_gui_begin_disabled(&gui, disabled);
+    const bool changed = tide_gui_layout_int_field(&gui, 5, "Players", value);
+    tide_gui_close(&gui, depth);
+    end();
+    return changed;
+}
+
+TIDE_TEST(gui_disabled_fields_stop_typing)
+{
+    start();
+    int32_t players = 4;
+    mouse(170.0f, 14.0f, false);
+    int_field_disabled(&players, false);
+    mouse(170.0f, 14.0f, true);
+    int_field_disabled(&players, false);
+    TIDE_CHECK(gui.editing == 5 && gui.focus == 5);
+    mouse(170.0f, 14.0f, false);
+    type("9");
+    int_field_disabled(&players, false);
+
+    // Disabled while typing: what was typed is dropped, and so is the focus.
+    TIDE_CHECK(!int_field_disabled(&players, true));
+    TIDE_CHECK(players == 4);
+    TIDE_CHECK(gui.editing == 0 && gui.focus == 0);
+    key(&devices.keyboard.enter, true);
+    TIDE_CHECK(!int_field_disabled(&players, false));
+    TIDE_CHECK(gui.editing == 0);
+}
+
+TIDE_TEST(gui_disabled_blocks_nest)
+{
+    start();
+    begin();
+    const int outer = tide_gui_begin_disabled(&gui, true);
+    tide_gui_begin_disabled(&gui, false);
+    TIDE_CHECK(gui.groups[gui.depth].disabled); // Still disabled inside another
+    tide_gui_begin_horizontal(&gui, 1);
+    TIDE_CHECK(gui.groups[gui.depth].disabled); // And so are containers in it
+    tide_gui_close(&gui, outer); // A return skipped the inner closes
+    TIDE_CHECK(gui.depth == 0 && !gui.groups[0].disabled);
+    end();
+
+    // In a row, a Disabled block's widgets go on in the row.
+    begin();
+    const int row = tide_gui_begin_horizontal(&gui, 3);
+    tide_gui_layout_button(&gui, 1, "A");
+    const int off = tide_gui_begin_disabled(&gui, true);
+    tide_gui_layout_button(&gui, 2, "B");
+    tide_gui_close(&gui, off);
+    tide_gui_layout_button(&gui, 4, "C");
+    tide_gui_close(&gui, row);
+    tide_gui_layout_button(&gui, 5, "D");
+    end();
+    TIDE_REQUIRE(draw.count >= 8);
+    const tide_draw_command *a = &draw.commands[1];
+    const tide_draw_command *b = &draw.commands[3];
+    const tide_draw_command *c = &draw.commands[5];
+    const tide_draw_command *d = &draw.commands[7];
+    TIDE_CHECK(a->a.y == b->a.y && b->a.y == c->a.y);
+    TIDE_CHECK(a->a.x < b->a.x && b->a.x < c->a.x);
+    TIDE_CHECK(d->a.y == a->a.y + 28.0f + 5.0f);
+}
+
 TIDE_TEST(gui_close_ends_what_was_left_open)
 {
     start();

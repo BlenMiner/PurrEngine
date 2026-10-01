@@ -60,6 +60,7 @@ Widgets have no IDs to write. They're told apart by where they're called from an
 | `GUILayout.Area(anchor) { ... }` | A panel sized to its content, at one of nine anchors |
 | `GUILayout.Area(rect) { ... }` | A panel at a rect |
 | `GUILayout.Modal(anchor, mut bool open) { ... }` | A panel over the whole screen while `open` is true, like a pause menu |
+| `GUI.Disabled(bool disabled) { ... }` | Grays out its widgets while `disabled` is true (see [Disabled widgets](#disabled-widgets)) |
 
 ```csharp
 view Hud(mut Look look)
@@ -90,6 +91,33 @@ Positions and sizes are in pixels, as on a web page, so widgets keep their size 
 ## Modals
 
 While a modal is up, it has the focus, the widgets outside it don't work, and the game and views get nothing from the devices. Back (Escape or the gamepad's east button) closes it. The modal drawn last is on top.
+
+## Disabled widgets
+
+`GUI.Disabled(disabled) { ... }` keeps its widgets on screen but grays them out while `disabled` is true, as Unity's `GUI.enabled = false` does. They're drawn faded, and can't be clicked, focused or typed into, so a menu can stay up while it waits without anyone pressing Connect twice:
+
+```csharp
+local singleton Lobby
+{
+    string address = "127.0.0.1";
+}
+
+view Menu(Session session, mut Lobby lobby)
+{
+    if (session.state == SessionState.Connected) return;
+    GUILayout.Area(Anchor.MiddleCenter)
+    {
+        GUI.Disabled(session.state == SessionState.Connecting)
+        {
+            GUILayout.TextField("Address", lobby.address);
+            if (GUILayout.Button("Connect")) Session.Connect(lobby.address);
+        }
+        if (session.state == SessionState.Connecting) GUILayout.Label("Connecting...");
+    }
+}
+```
+
+It lays nothing out: its widgets stay where they'd be without it, in the container around it, and it works with `GUI` and `GUILayout` widgets alike. Tab skips disabled widgets. One disabled while it's pressed lets go, and a field disabled while the player types into it keeps its old value. The mouse on a disabled widget is still the GUI's, so a click on it doesn't reach the game. Inside another `GUI.Disabled` that's disabled, a block stays disabled whatever its own `disabled` is.
 
 ## Keyboard and gamepad
 

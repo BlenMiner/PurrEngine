@@ -325,6 +325,9 @@ static void build_signatures(void)
             "A panel over the whole screen while `open` is true, like a pause menu. While it's up, the widgets "
             "outside it don't work, the game and views get no input, and back (Escape or the east button) closes "
             "it.");
+    add_gui("GUI", "Disabled", T_NONE, "tide_gui_begin_disabled", "bool disabled", GUI_CONTAINER,
+            "Grays out the widgets in its block while `disabled` is true: they're drawn faded and can't be "
+            "clicked, focused or typed into. They stay where they are, laid out as usual.");
 }
 
 // ---------------------------------------------------------------------------

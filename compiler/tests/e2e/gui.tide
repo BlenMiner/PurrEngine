@@ -22,6 +22,8 @@ local singleton Menu
     int twice;
     int rows;
     string player = "cat";
+    bool waiting;
+    int connects;
 }
 
 local component Tag
@@ -113,4 +115,17 @@ view Rows(mut Menu menu)
 view Tags(mut Tag tag)
 {
     if (GUILayout.Button("Tag")) tag.clicks += 1;
+}
+
+// Grayed out while it waits, like a menu while it connects.
+view Connect(mut Menu menu)
+{
+    GUI.Disabled(menu.waiting)
+    {
+        if (GUI.Button(Rect(Screen.width - 210, 60, 200, 40), "Connect"))
+        {
+            menu.connects += 1;
+            menu.waiting = true;
+        }
+    }
 }
