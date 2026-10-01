@@ -1,5 +1,10 @@
-# The relay on Fly.io (see relay.mjs), at wss://purrengine-relay.fly.dev,
-# which platform/web/tide.js connects to. Deploy from this folder:
+# The relay on Fly.io (see relay.mjs), at wss://relay.tide-engine.dev,
+# which games connect to (platform/src/rooms.c, platform/web/tide.js). That
+# name is a CNAME to purrengine-relay.fly.dev in tide-engine.dev's DNS on
+# Cloudflare, not proxied, with its certificate from Fly (fly certs). Games
+# only know the name, so the relay can move without them changing.
+#
+# Deploy from this folder:
 #
 #   fly deploy --ha=false
 #

@@ -6,7 +6,7 @@
 //
 //   node web_rooms.mjs <browser> <tide_platform_web_rooms.html> <scratch folder>
 //
-// With TIDE_RELAY set, like wss://purrengine-relay.fly.dev, the players meet
+// With TIDE_RELAY set, like wss://relay.tide-engine.dev, the players meet
 // through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
 // sends their packets through its TURN servers, as for players whose networks
 // can't connect directly.

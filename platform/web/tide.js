@@ -317,7 +317,7 @@
     // room at a time: the one it hosts, or the one it joined. Players in it are
     // numbered: the host is 0 to those who join, and they're 1 and up to it.
 
-    const relayUrl = config.relay || 'wss://purrengine-relay.fly.dev';
+    const relayUrl = config.relay || 'wss://relay.tide-engine.dev';
     const CODE_LETTERS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // No look-alikes: 0 and O, 1 and I
     let room = null;
     let rooms = 0; // Rooms opened so far, which numbers them

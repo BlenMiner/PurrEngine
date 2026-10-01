@@ -12,7 +12,7 @@
 //
 //   node rooms.mjs <Chrome or Edge> <tide_platform_rooms> <scratch folder> [Firefox]
 //
-// With TIDE_RELAY set, like ws://purrengine-relay.fly.dev, everyone meets
+// With TIDE_RELAY set, like wss://relay.tide-engine.dev, everyone meets
 // through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
 // sends every packet through its TURN servers, both the browser's and ours.
 

@@ -67,7 +67,7 @@ static uint32_t backend_receive(const uint32_t number, uint32_t *from, void *dat
 
 #include "rtc/rtc.h"
 
-#define RELAY "wss://purrengine-relay.fly.dev"
+#define RELAY "wss://relay.tide-engine.dev"
 #define PEERS 16
 
 typedef struct room_peer {
