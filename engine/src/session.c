@@ -11,7 +11,8 @@
 // Every datagram starts with a header: "PU", the protocol version and a type.
 //
 //   HELLO    client: the game's hash, a number for this attempt, its time,
-//            and its cookie from before, if any
+//            its cookie from before, if any, and whether it knows the server
+//            kicked it last time
 //   WELCOME  server: the attempt's number, the player, the tick rate, the
 //            world being sent: its tick, size and number of chunks, and the
 //            player's cookie
@@ -39,7 +40,7 @@
 // which ones were late, so a client knows whether its prediction held.
 
 #define MAGIC 0x5449u // "TI"
-#define PROTOCOL 3u
+#define PROTOCOL 4u
 
 enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE, MSG_HANDOVER };
 enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2, REFUSE_CLOSED = 3 };
@@ -47,6 +48,7 @@ enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
 // KICKED: then the message's length and bytes. HANDOVER: the server left, and
 // the match goes on with another machine as its server.
 enum { BYE_LEFT = 0, BYE_ENDED = 1, BYE_KICKED = 2, BYE_HANDOVER = 3 };
+enum { HELLO_KNEW_KICK = 1 }; // It heard it was kicked from this server: the server takes it again
 
 #define SERVER_SLOT TIDE_MAX_PLAYERS // The server's input, after the players'
 #define PREDICTION_SECONDS 1.0 // How far a client runs ahead of the last tick it knows, at most
@@ -62,7 +64,6 @@ enum { BYE_LEFT = 0, BYE_ENDED = 1, BYE_KICKED = 2, BYE_HANDOVER = 3 };
 #define ROOM_TIMEOUT 15.0 // ...or on a room's host before it first answers: WebRTC can take a while to connect
 #define HELLO_EVERY 0.2 // Seconds between HELLOs until the server answers
 #define MAX_TICKS 8u    // Ticks a server runs in one update at most: after a stall it drops the time instead
-#define KICK_SECONDS 2.0 // How long a kicked player is told so, in case a goodbye is lost
 #define PRESENT_SECONDS 20.0  // How long players of a world a server went on from have to come back
 #define HANDOVER_EVERY 1.0    // Seconds between HANDOVERs, once it's been the same that long
 
@@ -215,13 +216,16 @@ static uint64_t next_random(uint64_t *state)
     return z ^ (z >> 31);
 }
 
-// A player the server sent away: where it tells them so, until when, and why.
+// A player the server sent away, and why. A goodbye can be lost, so it tells
+// them again whenever they're in touch: when they send from where they were,
+// and when they join again with their cookie, from anywhere, as they do to
+// take a match over. They're let in again once they come back knowing.
 typedef struct kicked {
     bool used;
-    uint32_t transport;
+    uint64_t cookie;      // The player's, if it had one by then
+    uint32_t transport;   // Where it was last
     tide_address address;
-    uint32_t nonce; // Its HELLOs, if it was still joining; another one is a new try
-    double until;
+    uint32_t nonce;       // Its HELLOs, if it was still joining; another one is a new try
     char message[TIDE_MESSAGE_BYTES];
 } kicked;
 
@@ -407,12 +411,25 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
     const uint32_t nonce = tide_read_u32(r);
     const uint32_t their_time = tide_read_u32(r);
     const uint64_t cookie = tide_read_u64(r);
+    const uint8_t flags = tide_read_u8(r);
     if (r->failed) return;
     for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         kicked *k = &s->kicks[i];
-        if (!k->used || k->transport != transport || !tide_address_equal(k->address, from)) continue;
-        if (k->nonce == nonce) return; // Sent away while it was joining: it's told so every update
-        k->used = false;                // Trying again
+        if (!k->used) continue;
+        const bool here = k->transport == transport && tide_address_equal(k->address, from);
+        const bool same = cookie && k->cookie == cookie;
+        if (same && (flags & HELLO_KNEW_KICK)) {
+            k->used = false; // Back, knowing: a kick isn't a ban
+        } else if (same || (here && k->nonce == nonce)) {
+            // It didn't hear: told again, wherever it is now
+            k->transport = transport;
+            k->address = from;
+            k->nonce = nonce;
+            send_kicked(s, k);
+            return;
+        } else if (here) {
+            k->used = false; // That machine trying again, without a cookie: someone new
+        }
     }
     connection *c = find_connection(s, transport, from);
     if (c && c->nonce == nonce) return; // It's being welcomed already
@@ -461,7 +478,10 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
             if (s->connections[i].used || (s->present >> i & 1u)) continue; // In the match
             if (player < 0 || s->away_since[i] < s->away_since[player]) player = (int32_t)i;
         }
-        if (player >= 0) s->cookies[player] = s->digests[player] = 0; // Given away
+        if (player >= 0) { // Given away
+            s->cookies[player] = s->digests[player] = 0;
+            s->kicks[player].used = false;
+        }
     }
     if (player < 0) {
         refuse(s, transport, from, REFUSE_FULL);
@@ -561,6 +581,12 @@ static void server_receive(tide_server *s, const uint32_t transport)
             continue;
         }
         connection *c = find_connection(s, transport, from);
+        if (!c && type == MSG_CLIENT) { // A player it kicked, who didn't hear: told again
+            for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+                const kicked *k = &s->kicks[i];
+                if (k->used && k->transport == transport && tide_address_equal(k->address, from)) send_kicked(s, k);
+            }
+        }
         if (!c) continue;
         if (type == MSG_CLIENT) on_client(s, c, &r);
         else if (type == MSG_BYE) drop_connection(s, c);
@@ -899,11 +925,6 @@ void tide_server_update(tide_server *s, const double now)
             send_frames(s, c);
         }
     }
-    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
-        kicked *k = &s->kicks[i];
-        if (k->used && now > k->until) k->used = false;
-        if (k->used) send_kicked(s, k);
-    }
     if (!s->ended) send_handover(s);
 }
 
@@ -931,8 +952,8 @@ bool tide_server_kick(tide_server *s, const tide_player_id player, const char *m
     connection *c = &s->connections[index];
     if (!c->used || c->local) return false;
     kicked *k = &s->kicks[index];
-    *k = (kicked){.used = true, .transport = c->transport, .address = c->address, .nonce = c->nonce,
-                  .until = s->now + KICK_SECONDS};
+    *k = (kicked){.used = true, .cookie = s->cookies[index], .transport = c->transport, .address = c->address,
+                  .nonce = c->nonce};
     copy_message(k->message, message, TIDE_MESSAGE_BYTES - 1u);
     send_kicked(s, k);
     drop_connection(s, c);
@@ -1470,6 +1491,7 @@ static void send_hello(tide_client *c)
     tide_write_u32(&w, c->nonce);
     tide_write_u32(&w, millis(c->now));
     tide_write_u64(&w, c->desc.cookie);
+    tide_write_u8(&w, c->desc.knew_kick ? HELLO_KNEW_KICK : 0u);
     send_packet(&c->desc.transport, c->desc.server, &w);
     c->last_hello = c->now;
 }
@@ -1650,6 +1672,7 @@ struct tide_session {
     bool open; // Other machines can join its server (tide_session_open)
     tide_address joined;  // The server it last joined, and the cookie that makes it the same player there
     uint64_t cookie;
+    bool kicked;          // ...which kicked it, as it heard, after it last played there
     tide_session_event events[SESSION_EVENTS];
     uint32_t event_count;
     double last_now; // The host's time at the last update
@@ -1815,7 +1838,10 @@ void tide_session_join(tide_session *s, const tide_transport network, const tide
     if (migrating) s->migrating = false; // Views see the last world until this one arrives
     else tide_session_leave(s);
     start_clock(s, now);
-    if (!migrating && !tide_address_equal(server, s->joined)) s->cookie = 0;
+    if (!migrating && !tide_address_equal(server, s->joined)) {
+        s->cookie = 0;
+        s->kicked = false;
+    }
     s->joined = server;
     const tide_client_desc client = {
         .game = s->desc.game,
@@ -1825,6 +1851,7 @@ void tide_session_join(tide_session *s, const tide_transport network, const tide
         .user = s->desc.user,
         .lead = 2,
         .cookie = s->cookie,
+        .knew_kick = s->kicked && !migrating,
         .jobs = s->desc.jobs,
     };
     s->client = tide_client_create(&client, now);
@@ -1877,6 +1904,8 @@ void tide_session_update(tide_session *s, const double now)
 
     const tide_client_status status = tide_client_status_of(s->client);
     if (!s->server && status.cookie) s->cookie = status.cookie;
+    if (status.state == TIDE_SESSION_CONNECTED) s->kicked = false; // Played there since
+    if (status.state == TIDE_SESSION_OFFLINE && status.reason == TIDE_DISCONNECT_KICKED && !s->server) s->kicked = true;
     if (status.state == TIDE_SESSION_CONNECTED && s->last_state != TIDE_SESSION_CONNECTED) {
         // Back in a match that changed hands, it was never out of it
         if (!s->stale) push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});

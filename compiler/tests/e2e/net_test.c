@@ -727,6 +727,75 @@ TIDE_TEST(net_a_match_kicks_players)
     tide_loopback_destroy(network);
 }
 
+// A player whose network lets it send but hears nothing while `deaf`.
+static tide_transport hearing;
+static bool deaf;
+
+static void deaf_send(void *self, const tide_address to, const void *data, const uint32_t size)
+{
+    (void)self;
+    hearing.send(hearing.self, to, data, size);
+}
+
+static uint32_t deaf_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
+{
+    (void)self;
+    uint32_t n;
+    while ((n = hearing.receive(hearing.self, from, data, capacity)) > 0 && deaf) {
+    }
+    return deaf ? 0u : n;
+}
+
+static void deaf_close(void *self)
+{
+    (void)self;
+    if (hearing.close) hearing.close(hearing.self);
+}
+
+static tide_transport sometimes_deaf(const tide_transport t)
+{
+    hearing = t;
+    return (tide_transport){NULL, deaf_send, deaf_receive, deaf_close, NULL};
+}
+
+// A kicked player who heard nothing of it times out, and hears it the next
+// time it joins, before it's let in. Knowing, it can join again.
+TIDE_TEST(net_a_kicked_player_who_didnt_hear_it_hears_it_coming_back)
+{
+    tide_loopback *network = tide_loopback_create(79);
+    tide_loopback_set_conditions(network, (tide_net_conditions){.latency = 0.02});
+    tide_session *host = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
+    tide_session *guest = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = guest_sample});
+    tide_session_event gone = {0};
+    double t = 0.0;
+    deaf = false;
+    tide_session_start(host, NULL, t);
+    TIDE_REQUIRE(tide_session_open(host, tide_loopback_endpoint(network, 1)));
+    tide_session_join(guest, sometimes_deaf(tide_loopback_endpoint(network, 2)), tide_loopback_address(1), t);
+    run_sessions(network, host, guest, &t, 2.0);
+    TIDE_REQUIRE(still_in(guest, &gone));
+    const tide_player_id kicked = tide_session_status_of(guest).client.player;
+
+    deaf = true;
+    tide_session_kick(host, kicked, "Bye");
+    run_sessions(network, host, guest, &t, 8.0);
+    TIDE_CHECK(!still_in(guest, &gone) && gone.reason == TIDE_DISCONNECT_TIMED_OUT); // It heard nothing
+
+    deaf = false;
+    tide_session_join(guest, sometimes_deaf(tide_loopback_endpoint(network, 2)), tide_loopback_address(1), t);
+    run_sessions(network, host, guest, &t, 9.0);
+    TIDE_CHECK(!still_in(guest, &gone) && gone.reason == TIDE_DISCONNECT_KICKED);
+    TIDE_CHECK(strcmp(gone.message, "Bye") == 0);
+
+    tide_session_join(guest, sometimes_deaf(tide_loopback_endpoint(network, 2)), tide_loopback_address(1), t);
+    run_sessions(network, host, guest, &t, 11.0);
+    TIDE_CHECK(still_in(guest, &gone));
+    TIDE_CHECK(tide_session_status_of(guest).client.player.id == kicked.id); // The same player
+    tide_session_destroy(guest);
+    tide_session_destroy(host);
+    tide_loopback_destroy(network);
+}
+
 // A server and a player on another machine: the server's machine reloads
 // first, and the other one a moment later.
 TIDE_TEST(net_a_client_carries_its_match_over_to_another_layout)

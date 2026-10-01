@@ -149,9 +149,10 @@ uint32_t tide_server_tick(const tide_server *s); // Ticks run so far
 uint32_t tide_server_player_count(const tide_server *s);
 // Sends `player` away: they go offline with TIDE_DISCONNECT_KICKED and
 // `message` (NULL for none), and PlayerLeft follows at the end of the next
-// tick. It's a kick, not a ban: they can join again while the match takes
-// players. False if they aren't in the match, or they're on its machine
-// (local_first).
+// tick. A goodbye can be lost: one who didn't hear it is told again whenever
+// they're in touch, still sending or joining again. It's a kick, not a ban:
+// once they know, they can join again while the match takes players. False
+// if they aren't in the match, or they're on its machine (local_first).
 bool tide_server_kick(tide_server *s, tide_player_id player, const char *message);
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,7 @@ typedef struct tide_client_desc {
     void *user;
     uint32_t lead;         // Ticks its inputs should reach the server early: 0 on the server's machine, 2 or more over a network
     uint64_t cookie;       // From an earlier connection to this server, to be the same player again; 0 for none
+    bool knew_kick;        // ...which kicked it, as it heard: the server lets it in again (see tide_server_kick)
     const tide_jobs *jobs; // Threads to run ticks on (tide/jobs.h), or NULL: this one
 } tide_client_desc;
 

@@ -36,7 +36,7 @@ A game that starts in a menu has a local `Main`, and its local code decides whic
 
 There's one kind of match. It starts closed, so single-player is just a match nobody else was let into. `Open` and `Close` change that at any time: a game can start alone and open its match to friends later, then close it once the party's full. Closing turns away anyone who isn't in the match, and opening it again uses the same room and port.
 
-`Kick` and `KickAll` send players out, and they get the message with their `Disconnected` (see below). It's a kick, not a ban: a kicked player can join again, as the same player, while the match is open. To end a party and play on alone, close the match and kick everyone:
+`Kick` and `KickAll` send players out, and they get the message with their `Disconnected` (see below). A kicked player always hears it: one whose network lost the goodbye is told the next time they're in touch with the server. It's a kick, not a ban: once they know, a kicked player can join again, as the same player, while the match is open. To end a party and play on alone, close the match and kick everyone:
 
 ```csharp
 Session.Close();

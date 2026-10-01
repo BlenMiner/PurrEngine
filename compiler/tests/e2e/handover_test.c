@@ -224,6 +224,61 @@ TIDE_TEST(handover_not_when_the_host_ends_the_match)
     teardown();
 }
 
+// A player whose network lets it send but hears nothing while `deaf`.
+static tide_transport hearing;
+static bool deaf;
+
+static void deaf_send(void *self, const tide_address to, const void *data, const uint32_t size)
+{
+    (void)self;
+    hearing.send(hearing.self, to, data, size);
+}
+
+static uint32_t deaf_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
+{
+    (void)self;
+    uint32_t n;
+    while ((n = hearing.receive(hearing.self, from, data, capacity)) > 0 && deaf) {
+    }
+    return deaf ? 0u : n;
+}
+
+static void deaf_close(void *self)
+{
+    (void)self;
+    if (hearing.close) hearing.close(hearing.self);
+}
+
+// A kicked player who heard nothing of it times out, and goes to the room to
+// take the match over. Its host is there, so the relay sends it back to it,
+// which tells it it was kicked rather than let it in.
+TIDE_TEST(handover_not_for_a_kicked_player_who_didnt_hear_it)
+{
+    setup();
+    deaf = false;
+    hearing = tide_loopback_endpoint(net, 2);
+    tide_session_start(machines[0], NULL, now);
+    tide_session_open(machines[0], tide_loopback_endpoint(net, 1));
+    tide_session_set_room(machines[0], "ABCDEF", "key1");
+    tide_session_join(machines[1], (tide_transport){NULL, deaf_send, deaf_receive, deaf_close, NULL},
+                      tide_loopback_address(1), now);
+    run(2.0);
+    TIDE_REQUIRE(status(1).client.state == TIDE_SESSION_CONNECTED);
+
+    deaf = true;
+    tide_session_kick(machines[0], status(1).client.player, "Bye");
+    run(5.5);
+    char code[TIDE_ROOM_CODE_LENGTH + 1];
+    char key[TIDE_ROOM_KEY_LENGTH + 1];
+    TIDE_REQUIRE(tide_session_migrating(machines[1], code, key)); // It thinks its host is gone
+    deaf = false;
+    tide_session_join(machines[1], tide_loopback_endpoint(net, 3), tide_loopback_address(1), now);
+    run(1.0);
+    TIDE_CHECK(disconnected[1] == 1 && gone[1] == TIDE_DISCONNECT_KICKED);
+    TIDE_CHECK(server_world(0)->Match.left == 1);
+    teardown();
+}
+
 TIDE_TEST(handover_not_without_a_room)
 {
     setup();
