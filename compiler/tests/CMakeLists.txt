@@ -1,24 +1,23 @@
 # End-to-end tests: e2e/<name>.tide (or the SOURCES given) is transpiled and
 # compiled together with e2e/<name>_test.c and the shared test harness, then run.
+# WARNINGS are the ones tidec has to give, as for tide_add_game.
 function(tide_e2e_test name)
-    cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
+    cmake_parse_arguments(ARG "" "" "SOURCES;WARNINGS" ${ARGN})
     set(sources "e2e/${name}.tide")
     if(ARG_SOURCES)
         set(sources ${ARG_SOURCES})
     endif()
     set(target tidec_e2e_${name})
-    tide_add_game(${target} SOURCES ${sources} NAME game
+    tide_add_game(${target} SOURCES ${sources} NAME game WARNINGS ${ARG_WARNINGS}
         HOST "${PROJECT_SOURCE_DIR}/tests/test_main.c" "${CMAKE_CURRENT_SOURCE_DIR}/e2e/${name}_test.c")
     target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/tests")
-    # Generated code must compile without warnings, whatever the program does.
-    target_compile_options(${target} PRIVATE -Werror)
     add_test(NAME ${target} COMMAND ${target})
 endfunction()
 
 tide_e2e_test(move_clamp)
 tide_e2e_test(structural)
-tide_e2e_test(edge_cases)
-tide_e2e_test(empty_world)
+tide_e2e_test(edge_cases WARNINGS "'settings' is never used" "system 'NeverRuns' never runs")
+tide_e2e_test(empty_world WARNINGS "system 'PlayerMovement' never runs")
 tide_e2e_test(defaults)
 tide_e2e_test(default_value)
 tide_e2e_test(math)

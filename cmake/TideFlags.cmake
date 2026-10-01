@@ -6,6 +6,7 @@ target_compile_options(tide_flags INTERFACE
     -Wall
     -Wextra
     -Wpedantic
+    -Werror # Warnings are errors (see AGENTS.md, Building)
 
     # Determinism (see AGENTS.md). Order matters: -fno-fast-math resets
     # contraction to clang's default ("on"), so -ffp-contract=off must follow it.

@@ -1545,14 +1545,14 @@ void tide_session_destroy(tide_session *s)
 void tide_session_fail(tide_session *s, const tide_disconnect_reason reason)
 {
     tear_down(s);
-    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, reason});
+    push_event(s, (tide_session_event){.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = reason});
 }
 
 void tide_session_leave(tide_session *s)
 {
     if (!s->client && !s->server) return;
     tear_down(s);
-    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
+    push_event(s, (tide_session_event){.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = TIDE_DISCONNECT_LEFT});
 }
 
 // A server with this machine's player on it, over loopback, and no one else
@@ -1684,10 +1684,10 @@ void tide_session_update(tide_session *s, const double now)
     const tide_client_status status = tide_client_status_of(s->client);
     if (!s->server && status.cookie) s->cookie = status.cookie;
     if (status.state == TIDE_SESSION_CONNECTED && s->last_state != TIDE_SESSION_CONNECTED) {
-        push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
+        push_event(s, (tide_session_event){.kind = TIDE_SESSION_CONNECTED_EVENT, .reason = TIDE_DISCONNECT_LEFT});
     }
     if (status.state == TIDE_SESSION_OFFLINE) {
-        tide_session_event gone = {TIDE_SESSION_DISCONNECTED_EVENT, status.reason};
+        tide_session_event gone = {.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = status.reason};
         memcpy(gone.message, status.message, sizeof gone.message);
         tear_down(s);
         push_event(s, gone);

@@ -20,6 +20,7 @@
     arguments: (query.get('args') || '').split(',').filter(Boolean),
     relay: query.get('relay'),
     iceTransportPolicy: query.get('policy') || 'all',
+    checkGL: true,
     print: tell,
     printErr: tell,
     onExit: code => tell('exit ' + code),

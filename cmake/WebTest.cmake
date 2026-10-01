@@ -3,8 +3,9 @@
 # Web builds: adds a test that opens <target>'s page in headless Chrome or Edge
 # and passes if the page exits with 0. WebGL runs on the browser's software
 # renderer, so no GPU is needed. The page's shell must write stdout into
-# <pre id="log"> and the exit code into <body data-exit>, as
-# platform/web/test_shell.html does. The test is skipped if no browser is found.
+# <pre id="log"> and the exit code into <body data-exit>, and set
+# Tide.checkGL so GL errors fail it, as platform/web/test_shell.html does. The
+# test is skipped if no browser is found.
 
 # For web builds' tests, and desktop rooms against a browser (platform/tests/rooms.mjs).
 find_program(TIDE_BROWSER

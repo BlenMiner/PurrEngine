@@ -18,6 +18,7 @@
   tell('cross-origin isolated: ' + globalThis.crossOriginIsolated);
   var Tide = {
     canvas: document.getElementById('canvas'),
+    checkGL: true,
     print: tell,
     printErr: tell,
     onExit: code => post('result', String(code)),
