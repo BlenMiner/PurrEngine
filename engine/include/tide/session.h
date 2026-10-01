@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tide/jobs.h"
 #include "tide/net.h"
 #include "tide/player.h"
 
@@ -45,7 +46,8 @@ typedef struct tide_game {
     // Clears the world and starts the match: `start` is a tide_start, the scene
     // it starts in, or NULL for Main.
     void (*start)(void *world, float dt, const void *start);
-    void (*tick)(void *world);
+    // Runs a tick, on `jobs`' threads (tide/jobs.h), or NULL for this one's.
+    void (*tick)(void *world, const tide_jobs *jobs);
     // A snapshot: `to` becomes `from`, sharing its pages until one of them
     // changes. The hash covers what's in use, and only reads what changed since
     // it was last taken.
@@ -113,6 +115,7 @@ typedef struct tide_server_desc {
     // per player. A player joining into one of their slots gets no PlayerJoined.
     const void *world;
     uint32_t players;
+    const tide_jobs *jobs;       // Threads to run ticks on (tide/jobs.h), or NULL: this one
 } tide_server_desc;
 
 tide_server *tide_server_create(const tide_server_desc *desc, double now);
@@ -143,6 +146,7 @@ typedef struct tide_client_desc {
     void *user;
     uint32_t lead;         // Ticks its inputs should reach the server early: 0 on the server's machine, 2 or more over a network
     uint64_t cookie;       // From an earlier connection to this server, to be the same player again; 0 for none
+    const tide_jobs *jobs; // Threads to run ticks on (tide/jobs.h), or NULL: this one
 } tide_client_desc;
 
 typedef struct tide_client_status {
@@ -191,6 +195,7 @@ typedef struct tide_session_desc {
     uint32_t tick_rate;
     tide_sample_fn sample;
     void *user;
+    const tide_jobs *jobs; // Threads to run ticks on (tide/jobs.h), or NULL: this one
 } tide_session_desc;
 
 typedef enum tide_session_event_kind {

@@ -32,8 +32,9 @@ static uint64_t hash(const void *w)
     return tide_hash(w, sizeof(world));
 }
 
-static void tick(void *w)
+static void tick(void *w, const tide_jobs *jobs)
 {
+    (void)jobs;
     world *x = w;
     for (uint32_t i = 0; i <= TIDE_MAX_PLAYERS; i++) x->sum += x->inputs[i];
     x->tick++;

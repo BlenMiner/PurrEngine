@@ -129,6 +129,7 @@ typedef enum conflict_kind {
     CONFLICT_EARLIER_READS,  // The earlier system reads what this one writes
     CONFLICT_EARLIER_WRITES, // The earlier system writes what this one reads
     CONFLICT_TEXT,           // Both write text or lists, which the match keeps in one heap
+    CONFLICT_SPAWN,          // Both spawn: entities get their IDs in order
 } conflict_kind;
 
 typedef struct conflict {
@@ -231,6 +232,7 @@ typedef struct decl {
     bool takes_block;    // A function whose last parameter is a Block: inlined where it's called
     bool calls_c;        // Code that calls an extern function, itself or through others: its calls run in order
     bool writes_text;    // A system that writes text into its world: its heap, which one system changes at a time
+    bool spawns;         // A system that spawns or loads scenes: entity IDs are handed out as it runs, in order
     VEC(struct decl *) callees; // Functions it calls, once each
     VEC(loc) callee_at;         // ...and where it first calls each
     uint64_t device_uses[DEVICE_WORDS]; // Device values it reads through parameters, a bit per device leaf

@@ -40,7 +40,7 @@ The generated header is the API between the game and its host. Namespaced declar
 
 - `tide_world` is the whole match. Its data is in pages it shares with its snapshots, so a world starts zeroed (`{0}`, static or `calloc`), copying the struct isn't a snapshot (`tide_world_copy` is), and `tide_world_free(w)` lets it go.
 - `tide_world_init(w, dt)` clears it (what it had goes), sets `Time.dt` and the singletons' defaults, and loads `Main` if it's the match's. `tide_world_start(w, dt, start)` starts in another scene.
-- `tide_world_tick(w)` runs every system once, then applies structural changes and events. If that leaves no scene loaded, it loads `Main` again when it's the match's (`tide_frame` does the same for a local `Main`).
+- `tide_world_tick(w)` runs every system once, then applies structural changes and events. `tide_world_tick_on(w, jobs)` does the same on threads, with the same results: `tide_platform_jobs()` gives a pool with one per core (NULL on the web), and sessions take it as `jobs` in their desc, as the standard host does. If that leaves no scene loaded, it loads `Main` again when it's the match's (`tide_frame` does the same for a local `Main`).
 - `tide_world_ended(w)` says whether the match is over: its last scene unloaded and `Main` is local. A server stops there and tells every player, who go offline with `TIDE_DISCONNECT_ENDED`.
 - `tide_get_<Component>(w, entity)` gives an entity's component to change, or `NULL`. `tide_read_<Component>(w, entity)` gives it only to read, which leaves the pages the world shares with its snapshots shared.
 - `TIDE_AT(w, arch0_Body, Body, row)` reads a row's component in an archetype's storage, and `TIDE_ENTITY_AT(w, arch0_Body, row)` its entity: for tests and tools that go through every entity.

@@ -19,6 +19,11 @@ if(WIN32)
 elseif(APPLE)
     target_link_libraries(tide_platform PUBLIC "-framework Security") # TLS, for the relay
 endif()
+if(NOT WIN32 AND NOT TIDE_WEB)
+    # Threads for ticks (src/jobs.c)
+    find_package(Threads REQUIRED)
+    target_link_libraries(tide_platform PUBLIC Threads::Threads)
+endif()
 # Hot reloading loads the game's library (src/reload.c).
 target_link_libraries(tide_platform PUBLIC ${CMAKE_DL_LIBS})
 
@@ -100,6 +105,14 @@ tide_add_game(tide_platform_migrate SOURCES tests/migrate.tide NAME game LAYOUT
 target_include_directories(tide_platform_migrate PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 target_link_libraries(tide_platform_migrate PRIVATE tide_platform)
 add_test(NAME tide_platform_migrate COMMAND tide_platform_migrate)
+
+# Ticks on every core, against ticks on one thread
+tide_add_game(tide_platform_jobs SOURCES tests/jobs.tide NAME game
+    HOST tests/jobs.c "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+target_include_directories(tide_platform_jobs PRIVATE "${PROJECT_SOURCE_DIR}/tests")
+target_link_libraries(tide_platform_jobs PRIVATE tide_platform)
+add_test(NAME tide_platform_jobs COMMAND tide_platform_jobs)
+set_tests_properties(tide_platform_jobs PROPERTIES TIMEOUT 120)
 
 if(NOT TIDE_WEB)
     # The WebRTC stack (src/rtc), piece by piece.

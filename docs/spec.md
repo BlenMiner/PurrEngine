@@ -1066,7 +1066,7 @@ Implemented, awaiting approval:
 ### Decided
 
 - Games can call C libraries. `extern` declares a function written in C, with no body: `extern float Noise(float x);`. Calls cost what a call between C functions does.
-- Any code that can call a function can call an extern one, match code and local code alike. The language doesn't mark or check what C does: its determinism, the state it keeps and its thread safety are the game's to get right, and the compiler takes a C call as touching nothing it tracks, so C never makes systems wait for each other.
+- Any code that can call a function can call an extern one, match code and local code alike. The language doesn't mark or check what C does: its determinism, the state it keeps and its thread safety are the game's to get right, and the compiler takes a C call as touching nothing it tracks, so C never makes systems wait for each other, and a system that calls C splits its entities across threads like any other.
 - The C function's name is the extern's own name as written, or the one `[NativeName("...")]` gives, so the Tide name can follow Tide's style: `[NativeName("stb_perlin_noise3")] extern float Noise(...);`. A namespace doesn't change the C name.
 - A game's C is in its folder, with nothing to set up: every `.c` file there compiles with the game, with the engine's determinism flags, and every prebuilt library there (`.a`, `.lib`, `.so`, `.dll`, `.dylib`) links with it when it was built for the platform being built for. tide tells which platform a library is for from its contents, not its name or folder, so one folder holds every platform's libraries. C for one platform only uses `#ifdef`, as any C does.
 - Writing `external` gets an error that points to `extern`.

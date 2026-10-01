@@ -16,6 +16,10 @@
 // the same allocations and releases give the same offsets on every machine.
 // A released block is only reused once the code running now is done (see
 // tide_heap_flush), so text read before the release stays readable until then.
+//
+// One system at a time changes a world's heap, while others may read it on
+// other threads: the heap's page table is read as a whole, and when it grows,
+// the old one stays until tide_heap_settle, once only one thread runs.
 
 #define TIDE_HEAP_CLASSES 24 // Block sizes 16 << class bytes
 
@@ -38,7 +42,8 @@ typedef struct tide_heap {
     uint32_t pages;                   // Pages as far as `used` goes
     uint32_t room;                    // Pages `page` has room for
     // The page each page-sized piece of the heap is in. A page bigger than
-    // that is at each of its places, with a reference for each.
+    // that is at each of its places, with a reference for each. Before the
+    // first, page[-1] holds the table this one replaced, until it's settled.
     tide_page **page;
 } tide_heap;
 
@@ -67,10 +72,16 @@ void tide_heap_release(tide_heap *h, uint32_t block);
 // the code that released them is done.
 void tide_heap_flush(tide_heap *h);
 
-// A block, to read.
+// Frees the page tables the heap grew out of, which code on other threads may
+// still have been reading. Generated code calls it once systems are done.
+void tide_heap_settle(tide_heap *h);
+
+// A block, to read. Its page is read as one, since the system changing the
+// heap may be growing it or copying a page meanwhile.
 static inline tide_block *tide_heap_block(const tide_heap *h, const uint32_t block)
 {
-    const tide_page *p = h->page[block >> TIDE_HEAP_PAGE_SHIFT];
+    tide_page *const *pages = __atomic_load_n(&h->page, __ATOMIC_ACQUIRE);
+    const tide_page *p = __atomic_load_n(&pages[block >> TIDE_HEAP_PAGE_SHIFT], __ATOMIC_ACQUIRE);
     return (tide_block *)(uintptr_t)((const uint8_t *)tide_page_data(p) + (block - (p->first << TIDE_HEAP_PAGE_SHIFT)));
 }
 

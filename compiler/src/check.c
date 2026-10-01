@@ -381,6 +381,13 @@ static void note_text_write(const checker *c, const bool text)
     if (text && c->system && c->system->kind == DECL_SYSTEM && !c->method) c->system->writes_text = true;
 }
 
+// The system being checked spawns: it hands out entity IDs as it runs, so other
+// systems that do wait for it, and its entities aren't split across threads.
+static void note_spawn(const checker *c)
+{
+    if (c->system && c->system->kind == DECL_SYSTEM && !c->method) c->system->spawns = true;
+}
+
 static bool holds_list(type t);
 
 // Text or a list: what a world keeps in its heap.
@@ -1153,6 +1160,7 @@ static type check_call(checker *c, expr *e)
         }
         c->prog->spawned_mask |= e->spawn_mask;
         vec_push(c->spawns, e);
+        note_spawn(c);
         return e->local_world ? (type){TY_LOCAL_ENTITY, NULL} : T_ENTITY_;
     }
 
@@ -1460,6 +1468,7 @@ static type check_scene_call(checker *c, expr *e)
         note_text_write(c, decl_holds_text(scene));
         e->spawn_mask = bit(scene);
         vec_push(c->spawns, e);
+        note_spawn(c);
         return local ? (type){TY_LOCAL_ENTITY, NULL} : T_ENTITY_;
     }
 
@@ -2625,10 +2634,13 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         return false;
     }
     expr *root = assign_root(target);
-    // Into a component or singleton: a write to the world's own memory.
+    // Into a component or singleton: a write to the world's own memory. Text,
+    // a list, or an element of one, is in its heap.
     const bool world_place = root && root->bind == BIND_PARAM && !root->param->function_param
                           && (root->param->type.kind == TY_COMPONENT || root->param->type.kind == TY_SINGLETON);
-    note_text_write(c, world_place && holds_text(target->type));
+    bool in_list = false;
+    for (const expr *e = target; e->kind == E_MEMBER || e->kind == E_INDEX; e = e->object) in_list |= e->kind == E_INDEX;
+    note_text_write(c, world_place && (holds_heap(target->type) || in_list));
     if (!root || root->bind == BIND_NONE || root->bind == BIND_TYPE || root->bind == BIND_NAMESPACE) {
         if (arg_of) {
             diag_error(target->at, "'" STR_FMT "' changes its '" STR_FMT "', so pass it a variable or field",

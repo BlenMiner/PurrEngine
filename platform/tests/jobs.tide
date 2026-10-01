@@ -1,0 +1,114 @@
+// A busy match for running ticks on threads: systems that split their
+// entities across threads and others alongside them, changes and events
+// recorded on many threads, spawns, and text read while other text changes.
+
+component Body
+{
+    float3 position;
+    float3 velocity;
+    int id;
+}
+
+component Rock { }
+
+component Ship { }
+
+component Label
+{
+    string text;
+}
+
+component Size
+{
+    int letters;
+}
+
+component Name
+{
+    string value;
+}
+
+component Fuse
+{
+    int left;
+}
+
+singleton Stats
+{
+    int spawned;
+    int hits;
+}
+
+event Hit
+{
+    int damage;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    for (var i = 0; i < 12000; i++)
+    {
+        Spawn(Body { position = float3(float(i), 0, 0), velocity = float3(1, float(i % 7), 0), id = i }, Rock,
+              Label { text = $"rock {i}" }, Size);
+    }
+    for (var i = 0; i < 6000; i++)
+    {
+        Spawn(Body { id = i }, Ship, Name { value = $"ship {i}" });
+    }
+}
+
+// Split across threads, a chunk of rocks or ships each
+system Move(Time time, mut Body body)
+{
+    body.position += body.velocity * time.dt;
+    if (body.position.y > 50)
+        body.velocity.y = -body.velocity.y;
+}
+
+// Changes recorded on every thread: some rocks get a fuse
+system Light(Time time, Body body, with Rock, without Fuse)
+{
+    if ((body.id + time.tick) % 97 == 0)
+        this.Add(Fuse { left = body.id % 5 });
+}
+
+// ...and fuses that go off, with an event and a Destroy
+system Burn(mut Fuse fuse, Body body)
+{
+    fuse.left -= 1;
+    if (fuse.left < 0)
+    {
+        this.Send(Hit { damage = body.id % 3 + 1 });
+        this.Destroy();
+    }
+}
+
+event(Hit hit) Count(mut Stats stats)
+{
+    stats.hits += hit.damage;
+}
+
+// Spawns: on one thread, in order
+system Launch(Time time, mut Stats stats)
+{
+    if (time.tick % 3 == 0)
+    {
+        Spawn(Body { id = 100000 + stats.spawned, velocity = float3(0, 1, 0) }, Rock, Label { text = "new" }, Size);
+        stats.spawned += 1;
+    }
+}
+
+// Text changing in the ships' names...
+system Rename(mut Name name, Body body)
+{
+    if (body.id % 50 == 0)
+        name.value = $"ship {body.id} at {int(body.position.x)}";
+}
+
+// ...while the rocks' labels are read, on other threads
+system Measure(Label label, mut Size size)
+{
+    size.letters = label.text.Length;
+}

@@ -2,9 +2,7 @@
 
 Every system declares what it reads and writes, so the compiler knows, before the game runs, which systems can run at the same time and which have to wait. That plan is the **schedule**.
 
-::: info
-The tick doesn't run on threads yet: systems run one after the other, in order. The schedule is already worked out, and shown to you, so games are written for it from the start. Running in parallel will never change results.
-:::
+The tick follows it on every core: a system starts as soon as what it waits for is done, and big systems split their entities across threads too. Running in parallel never changes results, so every machine still gets the same match. A small tick, where waking the other threads would cost more than they'd save, runs on one thread, and so does every tick on the web.
 
 ## Reading it
 
@@ -60,10 +58,14 @@ Some things never make systems wait:
 
 - **Filters.** `with` and `without` read nothing.
 - **Entities that can't overlap.** Two systems that write the same component don't conflict if they can never touch the same entity, which the compiler proves from the archetypes: `with Player` against `with Enemy`, when nothing is both.
-- **Structural changes and events.** `Spawn`, `Add`, `Remove`, `Destroy` and `Send` are recorded and applied at the end of the tick, in order. Event handlers run then too, so they aren't part of the tick's schedule.
+- **Structural changes and events.** `Add`, `Remove`, `Destroy` and `Send` are recorded and applied at the end of the tick, in order. Event handlers run then too, so they aren't part of the tick's schedule.
 - **Input and `Time`**, which systems only read.
+- **C.** Calls to C are trusted: they make no system wait, and a system that calls C splits across threads like any other. What C does when it's called from several threads at once is the game's to get right.
 
-Two systems that change the match's text or lists do conflict, since they share its heap.
+Some things are the whole match's, so systems wait for each other over them whatever entities they run for:
+
+- **Text and lists.** Two systems that change the match's text or lists conflict, since they share its heap. Reading text alongside them is fine.
+- **Spawns.** `Spawn` gives the new entity its ID right away, and entities get their IDs in order, so two systems that spawn wait for each other.
 
 ## Keeping it wide
 
@@ -71,7 +73,9 @@ Two systems that change the match's text or lists do conflict, since they share 
 - Don't declare `mut` for what a system only reads. Unused access is a warning, and the editors offer a quick fix for it.
 - Splitting a big component into the parts different systems use lets them run side by side.
 
-The other kind of parallelism, a system splitting its entities across threads, doesn't change results either, and needs nothing from you.
+## Splitting across threads
+
+The other kind of parallelism is a system splitting its entities across threads: each thread takes a chunk of them, up to 1,024. It doesn't change results either, and needs nothing from you, but a system only splits when nothing it does has to happen in order across its entities. One that spawns, changes text or lists, or changes a singleton runs on one thread, alongside the others. Everything a system records (adds, removes, destroys, events) is applied in the order one thread would have recorded it.
 
 ## In CMake builds
 
