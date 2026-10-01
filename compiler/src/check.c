@@ -21,7 +21,8 @@ typedef struct checker {
     decl *method;             // The method or function being checked: a method's type's fields are in scope.
     bool in_input;      // Checking the input's constructor, which runs outside the simulation.
     bool in_sanitize;         // Checking the input's Sanitize; in_input is set too, for the fields.
-    int short_circuit_depth;  // Inside the right side of && or ||, which may not run.
+    int short_circuit_depth;  // Inside the right side of &&, || or ??, which may not run.
+    const char *short_circuit_side; // ...as messages say it: "on the right side of && or ||"
     int switch_depth;         // Inside a switch's sections, where `break` ends one.
     int loop_depth;           // Inside a loop's body, where `break` and `continue` work.
     int loop_header;          // Inside a loop's condition or a for's step, which run again and again.
@@ -329,6 +330,7 @@ static param *find_param(const checker *c, const str name)
 // Expressions
 
 static type check_expr(checker *c, expr *e);
+static type check_expr_any(checker *c, expr *e);
 static type check_snap(checker *c, expr *e, decl *singleton);
 static void c_name_of(const decl *d, sb *out);
 
@@ -427,6 +429,143 @@ static type list_of(program *prog, const type element)
     return (type){TY_LIST, d};
 }
 
+// ---------------------------------------------------------------------------
+// Results: T? and `T fails E`
+
+// One declaration for each combination, so two calls of functions that return
+// the same have the same type. `error` is TY_VOID for T?.
+static type result_of(program *prog, const type value, const type error, const bool optional)
+{
+    const type_kind kind = optional ? TY_OPTIONAL : TY_FAILABLE;
+    for (int i = 0; i < prog->results.count; i++) {
+        decl *d = prog->results.items[i];
+        const type v = d->fields.items[0].type;
+        const type e = d->fields.count > 1 ? d->fields.items[1].type : (type){TY_VOID, NULL};
+        const bool is_optional = d->fields.count == 1;
+        if (is_optional == optional && v.kind == value.kind && v.decl == value.decl && e.kind == error.kind && e.decl == error.decl) {
+            return (type){kind, d};
+        }
+    }
+    decl *d = NEW(decl);
+    d->kind = DECL_RESULT;
+    d->builtin = true;
+    sb name = {0};
+    if (optional) sb_printf(&name, "%s?", type_name(value));
+    else sb_printf(&name, "%s fails %s", value.kind == TY_VOID ? "void" : type_name(value), type_name(error));
+    d->name = (str){name.data, (int)name.len};
+    field f = {0};
+    f.name = str_from("value");
+    f.type = value;
+    vec_push(d->fields, f);
+    if (!optional) {
+        f.name = str_from("error");
+        f.type = error;
+        vec_push(d->fields, f);
+    }
+    d->index = prog->results.count;
+    vec_push(prog->results, d);
+    return (type){kind, d};
+}
+
+// T? or `T fails E`: something to unwrap before its value is used.
+static bool is_wrapped(const type t)
+{
+    return t.kind == TY_OPTIONAL || t.kind == TY_FAILABLE;
+}
+
+// "int?": a T?, whose T goes in `*inner`.
+static bool optional_name(const str name, str *inner)
+{
+    if (name.len < 2 || name.ptr[name.len - 1] != '?') return false;
+    *inner = (str){name.ptr, name.len - 1};
+    return true;
+}
+
+// Whether a T? or a failable call can give a value of type `t`: what a
+// function returns or takes, but the devices.
+static bool result_value_ok(const type t, const loc at, const char *what)
+{
+    if (t.kind == TY_RECORD || t.kind == TY_BLOCK) {
+        diag_error(at, "%s can't be %s", what, type_name(t));
+        return false;
+    }
+    return t.kind != TY_ERROR;
+}
+
+// T? for a declared type `t`.
+static type optional_type(const checker *c, const type t, const loc at)
+{
+    if (t.kind == TY_VOID) {
+        diag_error(at, "'void?' isn't a type: a function that returns nothing has nothing to leave out");
+        return T_ERR;
+    }
+    if (!result_value_ok(t, at, "a T?'s value")) return T_ERR;
+    return result_of(c->prog, t, (type){TY_VOID, NULL}, true);
+}
+
+// A T?'s or a failable call's value, and a failable call's error.
+static type wrapped_value(const type t)
+{
+    return t.decl->fields.items[0].type;
+}
+
+static type wrapped_error(const type t)
+{
+    return t.decl->fields.items[1].type;
+}
+
+// "int score" in the notes: the name `is` would give a value of type `t`.
+static const char *pattern_example(const type t, const bool error)
+{
+    static char buf[2][160];
+    static int next;
+    char *b = buf[next++ % 2];
+    snprintf(b, sizeof buf[0], "%s %s", type_name(t), error ? "why" : "value");
+    return b;
+}
+
+// What an expression that has to be unwrapped is, for messages: "'Parse'"
+// for a call, "'score'" for a variable.
+static const char *wrapped_what(const expr *e)
+{
+    static char buf[160];
+    if ((e->kind == E_CALL || e->kind == E_METHOD) && e->method) {
+        snprintf(buf, sizeof buf, "'" STR_FMT "'", STR_ARG(e->method->name));
+    } else if (e->kind == E_NAME) {
+        snprintf(buf, sizeof buf, "'" STR_FMT "'", STR_ARG(e->name));
+    } else {
+        snprintf(buf, sizeof buf, "this");
+    }
+    return buf;
+}
+
+// A failable call's or T?'s value used without unwrapping it: says how to.
+static void unwrap_error(const expr *e, const type t)
+{
+    const char *what = wrapped_what(e);
+    const bool call = what[0] == '\'' && (e->kind == E_CALL || e->kind == E_METHOD);
+    const type value = wrapped_value(t);
+    if (t.kind == TY_OPTIONAL) {
+        diag_error(e->at, "%s %s %s, a value or nothing, so it needs unwrapping first", what, call ? "returns" : "is",
+                   type_name(t));
+        diag_note("write '?? fallback' for a value when there's none, 'is %s' to use it only when it's there, or "
+                  "'!' for the default when there's none", pattern_example(value, false));
+        return;
+    }
+    const type error = wrapped_error(t);
+    if (value.kind == TY_VOID) {
+        diag_error(e->at, "%s %s and gives no value", what, call ? "can fail" : "holds a call that can fail,");
+        diag_note("handle its error with 'is %s', pass it on with 'try', or carry on without it with '!'",
+                  pattern_example(error, true));
+        return;
+    }
+    diag_error(e->at, "%s %s, so its value needs unwrapping first", what,
+               call ? "can fail" : "holds the result of a call that can fail");
+    diag_note("write '?? fallback' for a value when it fails, 'is %s' to use it only when it succeeds, '!' for "
+              "%s's default when it fails, or 'try' to pass the %s on", pattern_example(value, false), type_name(value),
+              type_name(error));
+}
+
 // What a list can hold: values, never ECS data, Blocks or other lists.
 static bool list_element_ok(const type t, const loc at)
 {
@@ -517,13 +656,48 @@ static type check_default_value(checker *c, expr *e, const type want)
     return want;
 }
 
+// `null` where a value of `want` goes that isn't a T?.
+static void null_error(const expr *e, const type want)
+{
+    if (want.kind == TY_ERROR) return;
+    diag_error(e->at, "'null' is the nothing of a T? value, and this is %s", type_name(want));
+    if (want.kind == TY_ENTITY || want.kind == TY_LOCAL_ENTITY || want.kind == TY_PLAYER) {
+        diag_note("the null %s is 'default'", want.kind == TY_PLAYER ? "player" : "entity");
+    } else if (want.kind != TY_VOID && want.kind != TY_FAILABLE) {
+        diag_note("to hold a value or nothing, make it '%s?'", type_name(want));
+    }
+}
+
+// An expression where a value of `want` goes, which may be a T? or a failable
+// call's value: [a, b], `default` and `null` take their type from it.
+static type check_expr_want_any(checker *c, expr *e, const type want)
+{
+    // As in C#, `default` of a T? is nothing.
+    if (want.kind == TY_OPTIONAL && (e->kind == E_NULL || e->kind == E_DEFAULT)) {
+        e->type = want;
+        return want;
+    }
+    const type inner = want.kind == TY_OPTIONAL ? wrapped_value(want) : want;
+    if (e->kind == E_LIST && (inner.kind == TY_LIST || inner.kind == TY_ERROR)) return check_list_literal(c, e, inner);
+    if (e->kind == E_DEFAULT) return check_default_value(c, e, inner);
+    if (e->kind == E_NULL) {
+        null_error(e, want);
+        return e->type = T_ERR;
+    }
+    return check_expr_any(c, e);
+}
+
 // An expression where a value of `want` goes: [a, b] and `default` take their
-// type from it.
+// type from it. A T? or a failable call's value only goes where its own type
+// does; elsewhere it has to be unwrapped.
 static type check_expr_want(checker *c, expr *e, const type want)
 {
-    if (e->kind == E_LIST && (want.kind == TY_LIST || want.kind == TY_ERROR)) return check_list_literal(c, e, want);
-    if (e->kind == E_DEFAULT) return check_default_value(c, e, want);
-    return check_expr(c, e);
+    const type t = check_expr_want_any(c, e, want);
+    if (is_wrapped(t) && !(t.kind == want.kind && t.decl == want.decl)) {
+        unwrap_error(e, t);
+        return e->type = T_ERR; // Reported: what takes it doesn't again
+    }
+    return t;
 }
 
 // The `default` arguments of a built-in call, which resolving it left
@@ -1073,7 +1247,7 @@ static type check_function_call(checker *c, expr *e, decl *fn)
             vec_push(c->method->callee_at, e->at);
         }
     }
-    return fn->return_type;
+    return fn->result;
 }
 
 // content(): runs the Block the function was given, where it was written.
@@ -1107,7 +1281,7 @@ static type check_self_call(checker *c, expr *e, decl *m)
         vec_push(c->prog->fixes, f);
     }
     check_method_args(c, e, m);
-    return m->return_type;
+    return m->result;
 }
 
 static type check_call(checker *c, expr *e)
@@ -1142,7 +1316,7 @@ static type check_call(checker *c, expr *e)
             diag_error(e->at, "Spawn can't be inside '?:'");
             diag_note("only one side runs; spawn in an if/else instead");
         } else if (c->short_circuit_depth > 0) {
-            diag_error(e->at, "Spawn can't be on the right side of && or ||");
+            diag_error(e->at, "Spawn can't be %s", c->short_circuit_side);
             diag_note("that side only runs sometimes; spawn into a local before the condition");
         }
         e->call = CALL_SPAWN;
@@ -1410,7 +1584,7 @@ static type check_scene_call(checker *c, expr *e)
             diag_error(e->at, "Scene.Load can't be in a loop's condition or a for's step");
             diag_note("load in the loop's body instead");
         } else if (c->branch_depth > 0 || c->short_circuit_depth > 0) {
-            diag_error(e->at, "Scene.Load can't be %s", c->branch_depth > 0 ? "inside '?:'" : "on the right side of && or ||");
+            diag_error(e->at, "Scene.Load can't be %s", c->branch_depth > 0 ? "inside '?:'" : c->short_circuit_side);
             diag_note("that part only runs sometimes; load in an if/else instead");
         }
         expr *arg = e->args.items[0];
@@ -1532,7 +1706,7 @@ static type check_gui_call(checker *c, expr *e, const type result)
         diag_note("call it in the loop's body");
     } else if (result.kind != TY_VOID && (c->branch_depth > 0 || c->short_circuit_depth > 0)) {
         // Widgets draw as they're called, in order, like Spawn.
-        diag_error(e->at, "%s can't be %s", name.data, c->branch_depth > 0 ? "inside '?:'" : "on the right side of && or ||");
+        diag_error(e->at, "%s can't be %s", name.data, c->branch_depth > 0 ? "inside '?:'" : c->short_circuit_side);
         diag_note("that part only runs sometimes, so the widget would come and go; call it in an 'if' of its own");
     }
     return result;
@@ -1633,7 +1807,7 @@ static type check_method(checker *c, expr *e)
             check_writable(c, e->object, m, NULL);
         }
         check_method_args(c, e, m);
-        return m->return_type;
+        return m->result;
     }
     if (obj.kind != TY_ENTITY && obj.kind != TY_LOCAL_ENTITY) {
         diag_error(e->at, "%s has no method '" STR_FMT "'", type_name(obj), STR_ARG(e->name));
@@ -2520,7 +2694,230 @@ static type check_list_method(checker *c, expr *e, const type list)
     return (type){methods[m].result, NULL};
 }
 
+// The code being checked, for messages about where errors go: "a system".
+// NULL in a method or function.
+static const char *code_what(const checker *c)
+{
+    if (c->method) return NULL;
+    if (c->in_input) return c->in_sanitize ? "Sanitize" : "Sample";
+    if (!c->system) return "a default value";
+    return c->system->is_view ? "a view" : c->system->is_handler ? "an event handler" : "a system";
+}
+
+// try call: its value, or its error passed on to the caller, which fails with
+// the same error. Only functions and methods have a caller to take it.
+static type check_try(checker *c, expr *e)
+{
+    const type t = check_expr_any(c, e->lhs);
+    if (t.kind == TY_ERROR) return T_ERR;
+    if (t.kind == TY_OPTIONAL) {
+        diag_error(e->at, "'try' passes an error on, and %s has none: it's a value or nothing", type_name(t));
+        diag_note("write '?? fallback' for a value when there's none, or 'is %s' to use it only when it's there",
+                  pattern_example(wrapped_value(t), false));
+        return T_ERR;
+    }
+    if (t.kind != TY_FAILABLE) {
+        diag_error(e->at, "'try' passes on the error of a call that can fail, and %s can't fail", wrapped_what(e->lhs));
+        return T_ERR;
+    }
+    const type error = wrapped_error(t);
+    const decl *m = c->method;
+    if (!m) {
+        diag_error(e->at, "'try' passes the error to the caller, and %s has none", code_what(c));
+        diag_note("handle it here: '?? fallback', 'is %s', or '!' to carry on with the default",
+                  pattern_example(error, true));
+        return T_ERR;
+    }
+    if (m->fails.kind == TY_VOID && m->fails_name.len > 0) return T_ERR; // Its `fails` is wrong, and said so
+    if (m->fails.kind == TY_VOID) {
+        diag_error(e->at, "'" STR_FMT "' doesn't fail, so 'try' can't pass the error on", STR_ARG(m->name));
+        if (m->takes_block) {
+            diag_note("a function that takes a Block can't fail yet; handle it here with '?\?', 'is' or '!'");
+        } else {
+            diag_note("say it fails after its parameters, '" STR_FMT " " STR_FMT "(...) fails %s', or handle it here "
+                      "with '?\?', 'is' or '!'", STR_ARG(m->return_type_name), STR_ARG(m->name), type_name(error));
+        }
+        return T_ERR;
+    }
+    if (!same_type(m->fails, error)) {
+        diag_error(e->at, "%s fails with %s, and '" STR_FMT "' fails with %s", wrapped_what(e->lhs), type_name(error),
+                   STR_ARG(m->name), type_name(m->fails));
+        diag_note("'try' passes the error on as it is; handle this one here with '?\?', 'is' or '!'");
+        return T_ERR;
+    }
+    return wrapped_value(t);
+}
+
+// value!: its value, or its type's default when it fails or is nothing.
+static type check_defaulted(checker *c, expr *e)
+{
+    const type t = check_expr_any(c, e->lhs);
+    if (t.kind == TY_ERROR) return T_ERR;
+    if (!is_wrapped(t)) {
+        diag_error(e->at, "'!' after a call carries on with the default when it fails, and %s can't fail",
+                   wrapped_what(e->lhs));
+        if (t.kind == TY_BOOL) diag_note("'!' before a bool negates it: '!value'");
+        return T_ERR;
+    }
+    const type value = wrapped_value(t);
+    if (value.kind == TY_STRING || value.kind == TY_LIST) c->prog->uses_text = true;
+    return value;
+}
+
+// a ?? b: a's value, or b when a fails or is nothing. b only runs then.
+static type check_coalesce(checker *c, expr *e)
+{
+    const type l = check_expr_any(c, e->lhs);
+    const type value = is_wrapped(l) ? wrapped_value(l) : T_ERR;
+    const char *outer_side = c->short_circuit_side;
+    c->short_circuit_depth++;
+    c->short_circuit_side = "on the right side of '?\?'";
+    const type r = check_expr_want_any(c, e->rhs, value.kind == TY_VOID ? T_ERR : value);
+    c->short_circuit_depth--;
+    c->short_circuit_side = outer_side;
+    if (l.kind == TY_ERROR || r.kind == TY_ERROR) return T_ERR;
+    if (!is_wrapped(l)) {
+        diag_error(e->at, "'?\?' falls back when a call fails or a T? is nothing, and %s is %s, which always has a value",
+                   wrapped_what(e->lhs), type_name(l));
+        return T_ERR;
+    }
+    if (value.kind == TY_VOID) {
+        diag_error(e->at, "%s gives no value, so '?\?' has nothing to fall back from", wrapped_what(e->lhs));
+        diag_note("carry on without it with '!', or handle its error with 'is %s'", pattern_example(wrapped_error(l), true));
+        return T_ERR;
+    }
+    if (r.kind == TY_VOID) {
+        diag_error(e->rhs->at, "this gives no value to fall back to");
+        return T_ERR;
+    }
+    if (is_wrapped(r)) {
+        if (same_type(wrapped_value(r), value)) return r; // a ?? b, where b can fail or be nothing too
+    } else if (type_assignable(value, r)) {
+        return value;
+    } else if (type_assignable(r, value)) {
+        return r; // int ?? 0.5 is a float
+    }
+    diag_error(e->rhs->at, "%s gives %s, so '?\?' falls back to %s too, not %s", wrapped_what(e->lhs), type_name(value),
+               type_name(value), type_name(r));
+    return T_ERR;
+}
+
+// What's after `is`: a type, or one of an enum's members. Returns the type
+// (the enum's, for a member, which goes in `*member`), or T_ERR.
+static type is_pattern_type(checker *c, const expr *e, const enum_member **member)
+{
+    *member = NULL;
+    type t;
+    const loc at = e->pattern_qual_at.line ? e->pattern_qual_at : e->pattern_at;
+    if (builtin_type_named(e->pattern, &t)) return t;
+    if (str_eq_c(e->pattern, "string")) return (type){TY_STRING, NULL};
+    if (resolve_list_type(c, e->pattern, at, &t)) return t;
+    decl *d = find_type(c, e->pattern, at);
+    if (d) return decl_type(d);
+    str ns;
+    str name;
+    if (split_qualified(e->pattern, &ns, &name)) {
+        decl *const enum_decl = find_type(c, ns, at);
+        for (int i = 0; enum_decl && enum_decl->kind == DECL_ENUM && i < enum_decl->members.count; i++) {
+            if (!str_eq(enum_decl->members.items[i].name, name)) continue;
+            *member = &enum_decl->members.items[i];
+            return decl_type(enum_decl);
+        }
+    }
+    diag_error(e->pattern_at, "unknown type '" STR_FMT "'", STR_ARG(e->pattern));
+    suggestion s = suggest_start(e->pattern);
+    suggest_builtin_types(&s);
+    suggest_structs(&s, c->prog);
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        if (c->prog->decls.items[i]->kind == DECL_ENUM) suggest_consider(&s, c->prog->decls.items[i]->name);
+    }
+    suggest_note(&s);
+    return T_ERR;
+}
+
+// x is int score, x is ParseError why, x is ParseError.Empty: whether a failable
+// call's or T?'s result holds a value (or that error). A name after it is a
+// local, in scope where the test is true: an if's or a loop's condition, joined
+// by &&, holds it, so the code it guards can use it.
+static type check_is(checker *c, expr *e)
+{
+    const type t = check_expr_any(c, e->lhs);
+    const enum_member *member = NULL;
+    const type pattern = is_pattern_type(c, e, &member);
+    if (e->binding) {
+        stmt *b = e->binding;
+        b->type = member ? T_ERR : pattern;
+        if (member) {
+            diag_error(b->name_at, "'" STR_FMT "' is one error, so it takes no name", STR_ARG(e->pattern));
+        } else if (!e->binding_ok) {
+            diag_error(b->name_at, "a name after 'is' only goes in an if's or a loop's condition, joined by '&&', where "
+                                   "the code it guards can use it");
+            diag_note("test without the name, '... is " STR_FMT "', or unwrap the value with '?\?' or '!'", STR_ARG(e->pattern));
+        }
+        check_reserved(b->name, b->name_at);
+        if (find_local(c, b->name) || find_param(c, b->name)) {
+            diag_error(b->name_at, "'" STR_FMT "' is already declared", STR_ARG(b->name));
+        }
+        vec_push(c->locals, b);
+    }
+    if (t.kind == TY_ERROR || pattern.kind == TY_ERROR) return T_ERR;
+    if (!is_wrapped(t)) {
+        diag_error(e->at, "'is' unwraps a call that can fail or a T? value, and %s is %s", wrapped_what(e->lhs),
+                   type_name(t));
+        diag_note("a value's type is known where it's written, so Tide has no type tests");
+        return T_ERR;
+    }
+    const type value = wrapped_value(t);
+    const type error = t.kind == TY_FAILABLE ? wrapped_error(t) : T_VOID_;
+    if (member) {
+        if (t.kind == TY_OPTIONAL) {
+            diag_error(e->pattern_at, "%s is %s or nothing, and has no error to compare", wrapped_what(e->lhs),
+                       type_name(value));
+            return T_ERR;
+        }
+        if (!same_type(pattern, error)) {
+            diag_error(e->pattern_at, "%s fails with %s, not %s", wrapped_what(e->lhs), type_name(error), type_name(pattern));
+            return T_ERR;
+        }
+        e->looks_for = IS_MEMBER;
+        e->enum_member = member;
+        e->type_decl = pattern.decl;
+        return T_BOOL_;
+    }
+    if (value.kind != TY_VOID && same_type(pattern, value)) {
+        e->looks_for = IS_VALUE;
+    } else if (t.kind == TY_FAILABLE && same_type(pattern, error)) {
+        e->looks_for = IS_ERROR;
+    } else if (t.kind == TY_OPTIONAL) {
+        diag_error(e->pattern_at, "%s is %s or nothing, so 'is' takes '%s', not %s", wrapped_what(e->lhs),
+                   type_name(value), type_name(value), type_name(pattern));
+        return T_ERR;
+    } else if (value.kind == TY_VOID) {
+        diag_error(e->pattern_at, "%s gives no value and fails with %s, so 'is' takes '%s', not %s", wrapped_what(e->lhs),
+                   type_name(error), type_name(error), type_name(pattern));
+        return T_ERR;
+    } else {
+        diag_error(e->pattern_at, "%s gives %s or fails with %s, so 'is' takes one of those, not %s", wrapped_what(e->lhs),
+                   type_name(value), type_name(error), type_name(pattern));
+        return T_ERR;
+    }
+    if (pattern.kind == TY_STRING || pattern.kind == TY_LIST) c->prog->uses_text = true;
+    return T_BOOL_;
+}
+
+// An expression whose value is used: a failable call's or a T? has to be
+// unwrapped first.
 static type check_expr(checker *c, expr *e)
+{
+    const type t = check_expr_any(c, e);
+    if (!is_wrapped(t)) return t;
+    unwrap_error(e, t);
+    return e->type = T_ERR; // Reported: what takes it doesn't again
+}
+
+// An expression of any type, failable calls' and T? values too: what `??`,
+// `is`, `!`, `try` and `var` take.
+static type check_expr_any(checker *c, expr *e)
 {
     const bool whole_ok = c->device_whole_ok == e;
     c->device_whole_ok = NULL;
@@ -2538,17 +2935,45 @@ static type check_expr(checker *c, expr *e)
     case E_LITERAL: t = check_literal(c, e); break;
     case E_BINARY: {
         const bool short_circuit = e->op == T_AND || e->op == T_OR;
+        const bool compared = e->op == T_EQ || e->op == T_NE;
+        // `found == null`: whether a T? is nothing, as in C#.
+        expr *const null_side = e->lhs->kind == E_NULL ? e->lhs : e->rhs->kind == E_NULL ? e->rhs : NULL;
+        if (null_side) {
+            expr *other = null_side == e->lhs ? e->rhs : e->lhs;
+            const type o = other->kind == E_NULL ? T_ERR : check_expr_any(c, other);
+            null_side->type = o;
+            if (other->kind == E_NULL) {
+                diag_error(e->at, "nothing says which T? these nulls are");
+            } else if (!compared) {
+                diag_error(null_side->at, "'null' can't be used with operator %s", op_str(e->op));
+                diag_note("a T? is compared with null, with == and !=");
+            } else if (o.kind == TY_OPTIONAL) {
+                t = T_BOOL_;
+            } else if (o.kind == TY_FAILABLE) {
+                diag_error(null_side->at, "%s can fail, but is never null", wrapped_what(other));
+                diag_note("'is %s' is true when it fails", pattern_example(wrapped_error(o), true));
+            } else {
+                null_error(null_side, o);
+            }
+            break;
+        }
         // `x == default`: it takes the other side's type. As in C#, it's only ever compared.
         expr *const dflt = e->lhs->kind == E_DEFAULT ? e->lhs : e->rhs->kind == E_DEFAULT ? e->rhs : NULL;
-        const bool compared = e->op == T_EQ || e->op == T_NE;
         if (dflt && !compared) {
             diag_error(dflt->at, "'default' can't be used with operator %s", op_str(e->op));
             diag_note("it's only compared, with == and !=; write the value itself here");
         }
         type l = e->lhs == dflt ? T_ERR : check_expr(c, e->lhs);
-        if (short_circuit) c->short_circuit_depth++;
+        const char *outer_side = c->short_circuit_side;
+        if (short_circuit) {
+            c->short_circuit_depth++;
+            c->short_circuit_side = "on the right side of && or ||";
+        }
         type r = e->rhs == dflt ? T_ERR : check_expr(c, e->rhs);
-        if (short_circuit) c->short_circuit_depth--;
+        if (short_circuit) {
+            c->short_circuit_depth--;
+            c->short_circuit_side = outer_side;
+        }
         if (dflt == e->lhs && compared) l = check_default_value(c, dflt, r);
         else if (dflt && compared) r = check_default_value(c, dflt, l);
         t = binary_result(e->op, l, r, e->at, &e->method);
@@ -2578,6 +3003,14 @@ static type check_expr(checker *c, expr *e)
         diag_error(e->at, "'default' takes its type from where it goes, and nothing here says which");
         diag_note("use it where a value of one type goes, like 'float2 center = default;' or an argument");
         break;
+    case E_NULL:
+        diag_error(e->at, "'null' is the nothing of a T? value, and nothing here says which type");
+        diag_note("use it where a T? goes, like 'int? best = null;', or 'return null;' in a function that returns 'int?'");
+        break;
+    case E_COALESCE: t = check_coalesce(c, e); break;
+    case E_IS: t = check_is(c, e); break;
+    case E_TRY: t = check_try(c, e); break;
+    case E_DEFAULTED: t = check_defaulted(c, e); break;
     case E_UNARY: {
         const type operand = check_expr(c, e->lhs);
         if (operand.kind == TY_ERROR) break;
@@ -2699,6 +3132,10 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         diag_error(root->at, "'" STR_FMT "' is read-only", STR_ARG(root->name));
         if (arg_of) diag_note("'" STR_FMT "' changes its '" STR_FMT "'", STR_ARG(called->name), STR_ARG(arg_of->name));
         else if (called) diag_note("'" STR_FMT "' is a mut method: it changes what it's called on", STR_ARG(called->name));
+        if (!local->value) { // x is int name
+            diag_note("a name after 'is' is read-only; copy it into a 'mut var' to change it");
+            return false;
+        }
         if (local->type_name.len > 0) {
             diag_note("declare it as 'mut " STR_FMT " " STR_FMT " = ...' to change it", STR_ARG(local->type_name), STR_ARG(local->name));
         } else {
@@ -2721,7 +3158,7 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
 
 static void check_assign(checker *c, const stmt *s)
 {
-    const type target = check_expr(c, s->target);
+    const type target = check_expr_any(c, s->target); // A T? local, or one that holds a failable call's result
     const type value = check_expr_want(c, s->value, target);
     if (target.kind == TY_ERROR) return;
     if (s->target->kind != E_INDEX && through_element(s->target)) {
@@ -2826,6 +3263,7 @@ static bool always_exits(const stmt *s)
     if (never_ends(s)) return true;
     switch (s->kind) {
     case S_RETURN:
+    case S_FAIL:
     case S_BREAK:
     case S_CONTINUE: return true;
     case S_BLOCK:
@@ -2919,13 +3357,43 @@ static void check_return(checker *c, const stmt *s)
     }
 }
 
+// `fail error;`: ends a function or method that says it `fails`, with an error
+// of that type.
+static void check_fail(checker *c, const stmt *s)
+{
+    const decl *m = c->method;
+    const type value = check_expr_want(c, s->value, m && m->fails.kind != TY_VOID ? m->fails : T_ERR);
+    if (!m) {
+        diag_error(s->at, "%s can't fail: nothing calls it to take the error", code_what(c));
+        if (!c->in_input && c->system) {
+            diag_note("'return;' ends it; to tell other code what went wrong, send an event");
+        }
+        return;
+    }
+    if (m->fails.kind == TY_VOID && m->fails_name.len > 0) return; // Its `fails` is wrong, and said so
+    if (m->fails.kind == TY_VOID) {
+        diag_error(s->at, "'" STR_FMT "' doesn't say it can fail", STR_ARG(m->name));
+        if (m->takes_block) diag_note("a function that takes a Block can't fail yet");
+        else if (value.kind != TY_ERROR && value.kind != TY_VOID) {
+            diag_note("say what it fails with after its parameters: '" STR_FMT " " STR_FMT "(...) fails %s'",
+                      STR_ARG(m->return_type_name), STR_ARG(m->name), type_name(value));
+        }
+        return;
+    }
+    if (!type_assignable(m->fails, value)) {
+        diag_error(s->value->at, "'" STR_FMT "' fails with %s, not %s", STR_ARG(m->name), type_name(m->fails),
+                   type_name(value));
+    }
+}
+
 // Whether every path through `s` ends in a return.
 static bool always_returns(const stmt *s)
 {
     if (!s) return false;
     if (never_ends(s)) return true;
     switch (s->kind) {
-    case S_RETURN: return true;
+    case S_RETURN:
+    case S_FAIL: return true;
     case S_BLOCK:
         for (int i = 0; i < s->stmts.count; i++) {
             if (always_returns(s->stmts.items[i])) return true;
@@ -2949,16 +3417,19 @@ static bool always_returns(const stmt *s)
 
 static void check_var(checker *c, stmt *s)
 {
-    // `default`, and a list after a type, take the type: they're checked once it's known.
-    const bool typed_value = s->type_name.len > 0 && (s->value->kind == E_DEFAULT || s->value->kind == E_LIST);
+    // A typed local's value is checked once its type is known: `default`, a
+    // list and `null` take it, and a T? takes a value or nothing.
     type value = T_ERR;
     if (s->value->kind == E_DEFAULT && s->type_name.len == 0) {
         diag_error(s->value->at, "'var' takes its type from the value, and 'default' takes its type from the variable");
         diag_note("write the type instead, like 'float2 " STR_FMT " = default;'", STR_ARG(s->name));
-    } else if (!typed_value) {
-        value = check_expr(c, s->value);
+    } else if (s->value->kind == E_NULL && s->type_name.len == 0) {
+        diag_error(s->value->at, "'var' takes its type from the value, and 'null' takes its type from the variable");
+        diag_note("write the type instead, like 'int? " STR_FMT " = null;'", STR_ARG(s->name));
+    } else if (s->type_name.len == 0) {
+        value = check_expr_any(c, s->value); // `var` holds a failable call's result, or a T?, as it is
+        if (s->value->kind == E_NAME && s->value->bind == BIND_TYPE) value = T_ERR;
     }
-    if (s->value->kind == E_NAME && s->value->bind == BIND_TYPE) value = T_ERR;
 
     if (s->type_name.len == 0) {
         if (value.kind == TY_VOID) {
@@ -2967,29 +3438,33 @@ static void check_var(checker *c, stmt *s)
         }
         s->type = value;
     } else {
-        decl *d = str_starts_with_c(s->type_name, "List<") ? NULL : find_type(c, s->type_name, s->type_at);
-        if (builtin_type_named(s->type_name, &s->type)) {
-        } else if (resolve_list_type(c, s->type_name, s->type_qual_at.line ? s->type_qual_at : s->at, &s->type)) {
-        } else if (str_eq_c(s->type_name, "string")) {
+        str inner_name;
+        const bool optional = optional_name(s->type_name, &inner_name);
+        const str type_name_ = optional ? inner_name : s->type_name;
+        decl *d = str_starts_with_c(type_name_, "List<") ? NULL : find_type(c, type_name_, s->type_at);
+        if (builtin_type_named(type_name_, &s->type)) {
+        } else if (resolve_list_type(c, type_name_, s->type_qual_at.line ? s->type_qual_at : s->at, &s->type)) {
+        } else if (str_eq_c(type_name_, "string")) {
             s->type = (type){TY_STRING, NULL};
-        } else if (str_eq_c(s->type_name, "Block")) {
+        } else if (str_eq_c(type_name_, "Block")) {
             diag_error(s->type_at, "a Block is only ever a function's last parameter, run with 'content();'");
             s->type = T_ERR;
         } else if (d) {
             s->type = decl_type(d);
         } else {
-            diag_error(s->type_at.line ? s->type_at : s->at, "unknown type '" STR_FMT "'", STR_ARG(s->type_name));
-            suggestion sg = suggest_start(s->type_name);
+            diag_error(s->type_at.line ? s->type_at : s->at, "unknown type '" STR_FMT "'", STR_ARG(type_name_));
+            suggestion sg = suggest_start(type_name_);
             suggest_builtin_types(&sg);
             suggest_decls(&sg, c->prog, true, true, true);
             suggest_structs(&sg, c->prog);
             suggest_note(&sg);
-            const fix create = {.kind = FIX_CREATE_STRUCT, .at = s->type_qual_at.line ? s->type_qual_at : s->at, .name = s->type_name};
+            const fix create = {.kind = FIX_CREATE_STRUCT, .at = s->type_qual_at.line ? s->type_qual_at : s->at, .name = type_name_};
             vec_push(c->prog->fixes, create);
             s->type = T_ERR;
         }
-        if (s->value->kind == E_DEFAULT) {
-            value = check_default_value(c, s->value, s->type);
+        if (optional) s->type = optional_type(c, s->type, s->type_qual_at.line ? s->type_qual_at : s->at);
+        if (s->value->kind == E_DEFAULT || s->value->kind == E_NULL || (optional && s->value->kind == E_LIST)) {
+            value = check_expr_want(c, s->value, s->type);
         } else if (s->value->kind == E_LIST) {
             if (s->type.kind != TY_LIST && s->type.kind != TY_ERROR) {
                 diag_error(s->value->at, "can't initialize %s with a list", type_name(s->type));
@@ -3000,6 +3475,9 @@ static void check_var(checker *c, stmt *s)
                 else diag_note("a list's type is 'List<T>', like 'List<int> " STR_FMT " = [1, 2];'", STR_ARG(s->name));
             }
             value = check_list_literal(c, s->value, s->type);
+        } else {
+            value = check_expr_want(c, s->value, s->type);
+            if (s->value->kind == E_NAME && s->value->bind == BIND_TYPE) value = T_ERR;
         }
         if (!type_assignable(s->type, value)) {
             diag_error(s->value->at, "can't initialize %s with %s", type_name(s->type), type_name(value));
@@ -3011,6 +3489,17 @@ static void check_var(checker *c, stmt *s)
         diag_error(s->at, "'" STR_FMT "' is already declared", STR_ARG(s->name));
     }
     vec_push(c->locals, s);
+}
+
+// The `is` tests in a condition whose names are in scope where it's true: the
+// condition itself, or its parts joined by &&.
+static void allow_bindings(expr *cond)
+{
+    if (!cond) return;
+    if (cond->kind == E_IS) cond->binding_ok = true;
+    if (cond->kind != E_BINARY || cond->op != T_AND) return;
+    allow_bindings(cond->lhs);
+    allow_bindings(cond->rhs);
 }
 
 // The type a foreach's variable declares, for the list's elements to be checked against.
@@ -3037,12 +3526,16 @@ static void check_stmt(checker *c, stmt *s)
         pop_scope(c);
         break;
     case S_IF: {
+        // Names after `is` in the condition are in scope where it's true.
+        allow_bindings(s->cond);
+        push_scope(c);
         const type cond = check_expr(c, s->cond);
         if (cond.kind != TY_ERROR && cond.kind != TY_BOOL) {
             diag_error(s->cond->at, "condition must be bool, not %s", type_name(cond));
         }
         push_scope(c);
         check_stmt(c, s->then_stmt);
+        pop_scope(c);
         pop_scope(c);
         if (s->else_stmt) {
             push_scope(c);
@@ -3053,6 +3546,9 @@ static void check_stmt(checker *c, stmt *s)
     }
     case S_RETURN:
         check_return(c, s);
+        break;
+    case S_FAIL:
+        check_fail(c, s);
         break;
     case S_VAR:
         check_var(c, s);
@@ -3119,6 +3615,7 @@ static void check_stmt(checker *c, stmt *s)
         }
         c->loop_header++;
         if (s->cond) {
+            allow_bindings(s->cond); // In scope in the step and the body
             const type cond = check_expr(c, s->cond);
             if (cond.kind != TY_ERROR && cond.kind != TY_BOOL) {
                 diag_error(s->cond->at, "a loop's condition must be bool, not %s", type_name(cond));
@@ -3145,15 +3642,24 @@ static void check_stmt(checker *c, stmt *s)
     }
     case S_EXPR: {
         expr *e = s->value;
-        check_expr(c, e);
-        const builtin_call call = e->call;
-        const bool effect = (e->kind == E_METHOD
+        check_expr_any(c, e);
+        // `Open()!` and `try Open()` are statements when what they unwrap is a call.
+        const expr *called = e->kind == E_DEFAULTED || e->kind == E_TRY ? e->lhs : e;
+        const builtin_call call = called->call;
+        const bool effect = (called->kind == E_METHOD
                              && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
-                         || (e->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION
+                         || (called->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION
                          || call == CALL_SEND || call == CALL_LOAD || call == CALL_UNLOAD || call == CALL_SCENE_PLAYER
                          || call == CALL_GUI || call == CALL_BLOCK || call == CALL_SESSION || call == CALL_SNAP
-                         || (call == CALL_LIST && !str_eq_c(e->name, "Contains") && !str_eq_c(e->name, "IndexOf"));
+                         || (call == CALL_LIST && !str_eq_c(called->name, "Contains") && !str_eq_c(called->name, "IndexOf"))
+                         || e->kind == E_TRY; // Passes an error on, even from a variable
         if (!effect && e->type.kind != TY_ERROR) diag_error(e->at, "this expression does nothing on its own");
+        // A call that can fail, whose error nothing looks at.
+        if (e->type.kind == TY_FAILABLE && effect) {
+            diag_warning(e->at, "%s can fail, and nothing handles its error here", wrapped_what(e));
+            diag_note("handle it with 'is %s', pass it on with 'try', or carry on without it: '" STR_FMT "(...)!'",
+                      pattern_example(wrapped_error(e->type), true), STR_ARG(e->method ? e->method->name : e->name));
+        }
         if (e->block) {
             // The block after a call: the caller's own code, run where the function runs it.
             const bool takes = (call == CALL_GUI && (e->gui & GUI_CONTAINER)) || (call == CALL_FUNCTION && e->method->takes_block);
@@ -3355,6 +3861,12 @@ static void resolve_field_types(const checker *c, const decl *d)
         const loc at = f->type_qual_at.line ? f->type_qual_at : f->at;
         if (builtin_type_named(f->type_name, &f->type)) continue;
         f->type = T_ERR;
+        str inner;
+        if (optional_name(f->type_name, &inner)) {
+            diag_error(at, "fields can't be T? yet: they always hold a value");
+            diag_note("keep a bool beside it that says whether it's set, like 'bool hasTarget;'");
+            continue;
+        }
         if (resolve_list_type(c, f->type_name, at, &f->type)) continue;
         if (str_eq_c(f->type_name, "string")) {
             f->type = (type){TY_STRING, NULL};
@@ -3522,6 +4034,8 @@ static void check_fields(checker *c, const decl *d)
 static type method_type(const checker *c, const str name, const loc at, const bool is_return)
 {
     type t;
+    str inner;
+    if (optional_name(name, &inner)) return optional_type(c, method_type(c, inner, at, is_return), at); // int?
     if (is_return && str_eq_c(name, "void")) return T_VOID_;
     if (builtin_type_named(name, &t)) return t;
     if (resolve_list_type(c, name, at, &t)) return t;
@@ -3552,6 +4066,40 @@ static type method_type(const checker *c, const str name, const loc at, const bo
         vec_push(c->prog->fixes, create);
     }
     return T_ERR;
+}
+
+// `fails ParseError` after a function's or method's parameters: the error it
+// can end with, which makes what a call gives `T fails ParseError`.
+static void check_fails(const checker *c, decl *m)
+{
+    m->fails = T_VOID_;
+    m->result = m->return_type;
+    if (m->fails_name.len == 0) return;
+    const loc at = m->fails_type_qual_at.line ? m->fails_type_qual_at : m->fails_at;
+    const type error = method_type(c, m->fails_name, at, false);
+    if (error.kind == TY_ERROR || m->return_type.kind == TY_ERROR) return;
+    if (m->is_operator) {
+        diag_error(m->fails_at, "operators can't fail");
+        diag_note("a method or function can: 'Money Parse(string text) fails ParseError'");
+    } else if (m->is_extern) {
+        diag_error(m->fails_at, "C functions can't fail: they return what C returns");
+        diag_note("check what C returns in a Tide function that fails, and call that");
+    } else if (m->takes_block) {
+        diag_error(m->fails_at, "a function that takes a Block can't fail yet");
+    } else if (error.kind == TY_OPTIONAL) {
+        diag_error(at, "an error is a type of its own, not a T?");
+        diag_note("an enum names each way it can fail: 'enum ParseError { Empty, NotANumber }'");
+    } else if (m->return_type.kind == TY_OPTIONAL) {
+        diag_error(m->fails_at, "a function that can fail can't return a T? too");
+        diag_note("fail when there's nothing, or return '%s' without 'fails'", type_name(m->return_type));
+    } else if (same_type(error, m->return_type)) {
+        diag_error(at, "'" STR_FMT "' can't fail with %s, the type it returns: 'is' couldn't tell them apart",
+                   STR_ARG(m->name), type_name(error));
+        diag_note("give the error a type of its own, like 'enum ParseError { Empty, NotANumber }'");
+    } else if (result_value_ok(error, at, "an error") && result_value_ok(m->return_type, m->return_type_qual_at, "the value of a function that can fail")) {
+        m->fails = error;
+        m->result = result_of(c->prog, m->return_type, error, false);
+    }
 }
 
 // The types in a method's or function's signature.
@@ -3592,6 +4140,7 @@ static void check_signature(const checker *c, decl *m)
         diag_note("its call is a statement, with the block after it; change what the caller passes as 'mut' instead");
         m->takes_block = false;
     }
+    check_fails(c, m);
 }
 
 static bool is_comparison(const tok_kind op)
@@ -3674,6 +4223,11 @@ static void check_interpolate_decl(const checker *c, decl *d, decl *m)
 {
     check_signature(c, m);
     m->is_interpolate = true;
+    if (m->fails.kind != TY_VOID) {
+        diag_error(m->fails_at, "Interpolate can't fail: views blend with whatever it returns");
+        m->fails = T_VOID_;
+        m->result = m->return_type;
+    }
     const type self = d->kind == DECL_COMPONENT ? (type){TY_COMPONENT, d} : (type){TY_STRUCT, d};
     const bool ok = m->params.count == 3 && same_type(m->params.items[0].type, self) && same_type(m->params.items[1].type, self)
                  && m->params.items[2].type.kind == TY_FLOAT && same_type(m->return_type, self) && !m->is_mut_method;
@@ -3746,6 +4300,7 @@ static const char *c_refuses(const type t)
     case TY_LIST: return "lists";
     case TY_BLOCK: return "a Block";
     case TY_RECORD: return "the devices";
+    case TY_OPTIONAL: return "T? values";
     case TY_STRUCT:
     case TY_COMPONENT: return decl_holds_text(t.decl) ? "text or lists" : NULL;
     default: return NULL;
@@ -3887,7 +4442,12 @@ static void check_method_body(checker *c, decl *m)
     const type_kind ret = m->return_type.kind;
     if (ret != TY_VOID && ret != TY_ERROR && !always_returns(m->body)) {
         diag_error(m->at, "'" STR_FMT "' doesn't return a value on every path", STR_ARG(m->name));
-        diag_note("end every path with 'return value;', as the method returns %s", type_name(m->return_type));
+        if (m->fails.kind != TY_VOID) {
+            diag_note("end every path with 'return value;' or 'fail error;', as it returns %s or fails with %s",
+                      type_name(m->return_type), type_name(m->fails));
+        } else {
+            diag_note("end every path with 'return value;', as the method returns %s", type_name(m->return_type));
+        }
     }
     c->method = NULL;
     c->system = NULL;
@@ -4011,6 +4571,15 @@ static void check_params(const checker *c, decl *sys)
             continue;
         }
 
+        str inner;
+        if (!d && optional_name(p->type_name, &inner)) {
+            diag_error(p->type_at.line ? p->type_at : p->at, "a %s's parameters are there or it doesn't run, so they can't be T?",
+                       system_what(sys));
+            diag_note("to run for entities with or without a component, write two %ss, one 'with' it and one 'without'",
+                      system_what(sys));
+            p->type = T_ERR;
+            continue;
+        }
         if (!d) {
             diag_error(p->type_at.line ? p->type_at : p->at, "unknown component or singleton '" STR_FMT "'",
                        STR_ARG(p->type_name));
@@ -4526,6 +5095,7 @@ static void collect_decls(program *prog)
         case DECL_STRUCT: // Ordered once their fields are known; see order_struct
         case DECL_METHOD: // Not in prog->decls
         case DECL_LIST:
+        case DECL_RESULT:
         case DECL_FUNCTION:
             break;
         case DECL_SYSTEM:

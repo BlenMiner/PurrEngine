@@ -238,6 +238,11 @@ static str namespace_path(const expr *e)
 static void type_ref(const loc qual_at, const loc at, const str text, const type t)
 {
     if (text.len == 0) return;
+    if (text.ptr[text.len - 1] == '?') { // int?: the type it holds
+        const type inner = t.kind == TY_OPTIONAL ? t.decl->fields.items[0].type : (type){TY_ERROR, NULL};
+        type_ref(qual_at, at, (str){text.ptr, text.len - 1}, inner);
+        return;
+    }
     if (str_starts_with_c(text, "List<") && text.ptr[text.len - 1] == '>') {
         add_occ((occurrence){.at = qual_at, .len = 4, .kind = OCC_TYPE, .name = str_from("List"), .type = t});
         // The element's type, as the formatter writes it: right after "List<"
@@ -321,6 +326,38 @@ static void walk_expr(const expr *e)
     case E_DEFAULT:
         if (e->type.kind != TY_ERROR) {
             add_occ((occurrence){.at = e->at, .len = 7, .kind = OCC_DEFAULT, .name = str_from("default"), .type = e->type});
+        }
+        break;
+
+    case E_NULL:
+        if (e->type.kind == TY_OPTIONAL) {
+            add_occ((occurrence){.at = e->at, .len = 4, .kind = OCC_DEFAULT, .name = str_from("null"), .type = e->type});
+        }
+        break;
+
+    case E_COALESCE:
+    case E_TRY:
+    case E_DEFAULTED:
+        walk_expr(e->lhs);
+        walk_expr(e->rhs);
+        break;
+
+    case E_IS: // x is int score, x is ParseError.Empty
+        walk_expr(e->lhs);
+        if (e->looks_for == IS_MEMBER && e->enum_member) {
+            const str type_part = {e->pattern.ptr, e->pattern.len - e->enum_member->name.len - 1};
+            const str type_name_ = last_part(type_part);
+            const loc type_at = {e->pattern_at.line, e->pattern_at.col - 1 - type_name_.len, e->pattern_at.file};
+            type_ref(e->pattern_qual_at, type_at, type_part, (type){TY_ENUM, e->type_decl});
+            add_occ((occurrence){.at = e->pattern_at, .len = e->enum_member->name.len, .kind = OCC_ENUM_MEMBER,
+                                 .decl = e->type_decl, .name = e->enum_member->name});
+        } else {
+            type_ref(e->pattern_qual_at, e->pattern_at, e->pattern, e->binding ? e->binding->type : (type){TY_ERROR, NULL});
+        }
+        if (e->binding) {
+            const stmt *b = e->binding;
+            add_occ((occurrence){.at = b->name_at, .len = b->name.len, .kind = OCC_LOCAL, .declaration = true, .local = b,
+                                 .name = b->name, .type = b->type});
         }
         break;
 
@@ -511,6 +548,7 @@ static void walk_stmt(const stmt *s)
         walk_stmt(s->else_stmt);
         break;
     case S_RETURN:
+    case S_FAIL:
         walk_expr(s->value);
         break;
     case S_VAR:
@@ -582,6 +620,7 @@ static void walk_routine(const decl *m)
     if (!str_eq_c(m->return_type_name, "void")) {
         type_ref(m->return_type_qual_at, m->return_type_at, m->return_type_name, m->return_type);
     }
+    type_ref(m->fails_type_qual_at, m->fails_type_at, m->fails_name, m->fails);
     walk_params(m);
     walk_code = m;
     walk_stmt(m->body);
@@ -795,6 +834,7 @@ static const char *decl_keyword(const decl *d)
     case DECL_EVENT: return "event";
     case DECL_ENUM: return "enum";
     case DECL_LIST: return "list";
+    case DECL_RESULT: return "result";
     case DECL_SYSTEM: return d->is_view ? "view" : d->is_handler ? "event" : "system";
     }
     return "";
@@ -864,6 +904,7 @@ static void format_routine(const decl *m, sb *out)
         format_param(&m->params.items[i], out);
     }
     sb_put(out, ")");
+    if (m->fails_name.len > 0) sb_printf(out, " fails " STR_FMT, STR_ARG(m->fails_name));
 }
 
 // The source text of a field's default value, from the tokens between '=' and ';'.
@@ -988,6 +1029,7 @@ static void describe_default(const type t, sb *out)
     case TY_COMPONENT: case TY_SINGLETON: case TY_INPUT: case TY_STRUCT: case TY_EVENT:
         sb_printf(out, "`" STR_FMT " { }`: each field's default, and zero where it has none", STR_ARG(t.decl->name));
         break;
+    case TY_OPTIONAL: sb_put(out, "Nothing"); break;
     default: sb_put(out, "All zeros"); break;
     }
     sb_printf(out, ": the default value of `%s`, the type where it goes.", type_name(t));
@@ -998,8 +1040,8 @@ static void describe(const occurrence *o, sb *out)
 {
     sb code = {0};
     switch (o->kind) {
-    case OCC_DEFAULT:
-        sb_printf(&code, "default: %s", type_name(o->type));
+    case OCC_DEFAULT: // `default`, or `null`
+        sb_printf(&code, STR_FMT ": %s", STR_ARG(o->name), type_name(o->type));
         code_block(out, code.data);
         sb_put(out, "\n\n");
         describe_default(o->type, out);
@@ -2141,6 +2183,16 @@ static bool block_contains(const stmt *block, const loc at)
 
 static void collect_list(stmt *const *stmts, int count, loc at, scope *sc);
 
+// The names `is` gives in a condition, joined by &&: in scope where it's true.
+static void collect_bindings(const expr *cond, scope *sc)
+{
+    if (!cond) return;
+    if (cond->kind == E_IS && cond->binding) vec_push(sc->locals, cond->binding);
+    if (cond->kind != E_BINARY || cond->op != T_AND) return;
+    collect_bindings(cond->lhs, sc);
+    collect_bindings(cond->rhs, sc);
+}
+
 static void collect_locals(const stmt *block, const loc at, scope *sc)
 {
     collect_list(block->stmts.items, block->stmts.count, at, sc);
@@ -2156,7 +2208,10 @@ static void collect_list(stmt *const *stmts, const int count, const loc at, scop
         if (s->kind == S_VAR && loc_cmp(s->name_at, at) < 0) vec_push(sc->locals, s);
         if (block_contains(s, at)) collect_locals(s, at, sc);
         if (s->kind == S_IF) {
-            if (block_contains(s->then_stmt, at)) collect_locals(s->then_stmt, at, sc);
+            if (block_contains(s->then_stmt, at)) {
+                collect_bindings(s->cond, sc); // if (Parse(t) is int score)
+                collect_locals(s->then_stmt, at, sc);
+            }
             if (block_contains(s->else_stmt, at)) collect_locals(s->else_stmt, at, sc);
         }
         if (s->kind == S_FOREACH && block_contains(s->then_stmt, at)) {
@@ -2165,6 +2220,7 @@ static void collect_list(stmt *const *stmts, const int count, const loc at, scop
         }
         if ((s->kind == S_WHILE || s->kind == S_FOR) && block_contains(s->then_stmt, at)) {
             if (s->init && s->init->kind == S_VAR) vec_push(sc->locals, s->init); // for (var i = 0; ...)
+            collect_bindings(s->cond, sc);
             collect_locals(s->then_stmt, at, sc);
         }
         if (s->kind == S_EXPR && block_contains(s->value->block, at)) collect_locals(s->value->block, at, sc);
@@ -2645,9 +2701,17 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         static const char *const keywords[] = {"if", "else", "return", "var", "mut", "switch", "case", "default", "break",
                                                "while", "for", "foreach", "continue"};
         for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) item(c, keywords[i], CK_KEYWORD, NULL, NULL, NULL);
+        // A function that can fail ends with its error
+        if (sc.decl && is_routine(sc.decl) && sc.decl->fails.kind != TY_VOID) {
+            item(c, "fail", CK_KEYWORD, NULL, "Ends the function with an error.", NULL);
+        }
     }
     item(c, "true", CK_KEYWORD, NULL, NULL, NULL);
     item(c, "false", CK_KEYWORD, NULL, NULL, NULL);
+    item(c, "null", CK_KEYWORD, NULL, "Nothing, for a T?.", NULL);
+    if (sc.decl && is_routine(sc.decl) && sc.decl->fails.kind != TY_VOID) {
+        item(c, "try", CK_KEYWORD, NULL, "A call's value, or its error passed on to the caller.", NULL);
+    }
     if (!statement) item(c, "default", CK_KEYWORD, NULL, NULL, NULL); // A statement's list has it, for switches
     // this: the entity the code runs for, or whose component a method is called on
     const type entity = this_type(&sc);
@@ -2789,7 +2853,19 @@ static bool starts_function(const int i)
     if (t->kind != T_IDENT || t->at.col != 1) return false;
     int k = i + 1;
     while (DOC->toks[k].kind == T_DOT && DOC->toks[k + 1].kind == T_IDENT) k += 2;
+    if (DOC->toks[k].kind == T_QUESTION) k++; // int? Find(
     return DOC->toks[k].kind == T_IDENT && DOC->toks[k + 1].kind == T_LPAREN;
+}
+
+// Whether the `{` at token `i` follows `) fails ParseError`: a function's body.
+static bool after_fails(const int i)
+{
+    for (int k = i - 1; k > 0; k--) {
+        const token *t = &DOC->toks[k];
+        if (t->kind == T_IDENT && str_eq_c(t->text, "fails")) return DOC->toks[k - 1].kind == T_RPAREN;
+        if (t->kind != T_IDENT && t->kind != T_DOT && t->kind != T_LT && t->kind != T_GT) return false;
+    }
+    return false;
 }
 
 static bool starts_declaration(const int i)
@@ -2870,7 +2946,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             depth--;
         } else if (kind == T_LBRACE && depth < 63) {
             context_kind next = CTX_CODE;
-            if (top == CTX_TOP && before == T_IDENT) next = CTX_DATA;
+            if (top == CTX_TOP && before == T_IDENT && !after_fails(i)) next = CTX_DATA;
             else if ((top == CTX_CODE || top == CTX_LITERAL) && before == T_IDENT) next = CTX_LITERAL;
             stack[++depth] = (frame){next, i};
         } else if (kind == T_RBRACE && depth > 0) {
@@ -3250,7 +3326,8 @@ static bool param_named(const decl *d, const str name)
 static const char *check_new_name(const occurrence *target, const str name)
 {
     static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with", "without", "if",
-                                           "else", "return", "true", "false", "switch", "case", "default", "break"};
+                                           "else", "return", "true", "false", "switch", "case", "default", "break",
+                                           "fail", "try", "is", "null"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
                                            "GUI", "GUILayout", "Screen", "Anchor", "Block", "Session", "SessionState",
@@ -3597,7 +3674,38 @@ static const char *token_start(const token *t)
 static bool ends_operand(const tok_kind k)
 {
     return k == T_IDENT || k == T_INT || k == T_FLOAT || k == T_STRING || k == T_RPAREN || k == T_RBRACKET
-        || k == T_TRUE || k == T_FALSE || k == T_THIS || k == T_DEFAULT || k == T_INTERP || k == T_INTERP_PART;
+        || k == T_TRUE || k == T_FALSE || k == T_THIS || k == T_DEFAULT || k == T_NULL || k == T_INTERP
+        || k == T_INTERP_PART;
+}
+
+// Whether the token at `i` ends an operand: `Parse(t)!`'s `!` does too.
+static bool ends_operand_at(const int i)
+{
+    const tok_kind k = DOC->toks[i].kind;
+    return ends_operand(k) || (k == T_NOT && i > 0 && ends_operand_at(i - 1));
+}
+
+// Whether the `!` at token `i` comes after a value, `Parse(t)!`, rather than
+// before one.
+static bool is_postfix_bang(const int i)
+{
+    return DOC->toks[i].kind == T_NOT && i > 0 && ends_operand_at(i - 1);
+}
+
+// Whether the `?` at token `i` makes a type a T?, as in `int? best = null;`
+// or `int? Find(...)`, rather than starting `?:`.
+static bool is_type_question(const int i)
+{
+    if (DOC->toks[i].kind != T_QUESTION || i == 0 || i + 2 >= DOC->tok_count) return false;
+    const tok_kind before = DOC->toks[i - 1].kind;
+    if ((before != T_IDENT && before != T_GT) || DOC->toks[i + 1].kind != T_IDENT) return false;
+    const tok_kind after = DOC->toks[i + 2].kind;
+    if (after == T_ASSIGN || after == T_SEMI || after == T_COMMA || after == T_RPAREN) return true;
+    if (after != T_LPAREN) return false;
+    // A function's declaration: its type starts the line, maybe after `mut`.
+    int k = i - 1;
+    while (k >= 2 && DOC->toks[k - 1].kind == T_DOT && DOC->toks[k - 2].kind == T_IDENT) k -= 2;
+    return k == 0 || DOC->toks[k - 1].at.line != DOC->toks[k].at.line || DOC->toks[k - 1].kind == T_MUT;
 }
 
 // Whether the `default` at token `i` is a switch's label rather than a value:
@@ -3630,7 +3738,10 @@ static bool space_between(const fmt_item *a, const fmt_item *b)
     if ((x == T_INTERP || x == T_INTERP_PART) && DOC->toks[a->tok].text.ptr[DOC->toks[a->tok].text.len - 1] == '{') return false;
     if (y == T_RPAREN || y == T_RBRACKET || y == T_COMMA || y == T_SEMI || y == T_DOT) return false;
     if (x == T_LPAREN || x == T_LBRACKET || x == T_DOT) return false;
-    if (a->unary || x == T_NOT || x == T_TILDE) return false;
+    // Parse(t)! and int?: against what they follow
+    if (y == T_NOT && is_postfix_bang(b->tok)) return false;
+    if (y == T_QUESTION && is_type_question(b->tok)) return false;
+    if (a->unary || (x == T_NOT && !is_postfix_bang(a->tok)) || x == T_TILDE) return false;
     // List<Item>: a type, not a comparison
     if (x == T_IDENT && y == T_LT && str_eq_c(DOC->toks[a->tok].text, "List")) return false;
     if (x == T_LT && a->tok > 0 && str_eq_c(DOC->toks[a->tok - 1].text, "List")) return false;
@@ -3803,7 +3914,7 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
             }
         }
         if (i == DOC->tok_count) break;
-        const bool unary = t->kind == T_MINUS && (i == 0 || !ends_operand(DOC->toks[i - 1].kind));
+        const bool unary = t->kind == T_MINUS && (i == 0 || !ends_operand_at(i - 1));
         const fmt_item item = {token_start(t), token_len(t), i, unary};
         vec_push(lines[t->at.line], item);
         p = next + token_len(t);

@@ -1,0 +1,8 @@
+// expect: '!' after a call carries on with the default when it fails, and 'Twice' can't fail
+int Twice(int x) { return x * 2; }
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.value = Twice(2)!;
+}

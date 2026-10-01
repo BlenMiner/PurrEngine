@@ -1,0 +1,14 @@
+// expect: write '?? fallback' for a value when it fails, 'is int value' to use it only when it succeeds
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+int Twice(int x) { return x * 2; }
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.value = Twice(Parse("1"));
+}

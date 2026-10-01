@@ -28,6 +28,10 @@ static const struct {
     {"foreach", T_FOREACH},
     {"continue", T_CONTINUE},
     {"this", T_THIS},
+    {"fail", T_FAIL},
+    {"try", T_TRY},
+    {"is", T_IS},
+    {"null", T_NULL},
 };
 
 typedef struct lexer {
@@ -373,7 +377,7 @@ static token *lex_impl(const source *src, const bool tolerant)
         case ';': t.kind = T_SEMI; break;
         case ',': t.kind = T_COMMA; break;
         case '.': t.kind = T_DOT; break;
-        case '?': t.kind = T_QUESTION; break;
+        case '?': t.kind = n == '?' ? (len = 2, T_COALESCE) : T_QUESTION; break;
         case ':': t.kind = T_COLON; break;
         case '=': t.kind = n == '=' ? (len = 2, T_EQ) : T_ASSIGN; break;
         case '!': t.kind = n == '=' ? (len = 2, T_NE) : T_NOT; break;
@@ -483,6 +487,11 @@ const char *tok_kind_name(const tok_kind kind)
     case T_FOREACH: return "'foreach'";
     case T_CONTINUE: return "'continue'";
     case T_THIS: return "'this'";
+    case T_FAIL: return "'fail'";
+    case T_TRY: return "'try'";
+    case T_IS: return "'is'";
+    case T_NULL: return "'null'";
+    case T_COALESCE: return "'?\?'";
     case T_PLUS_PLUS: return "'++'";
     case T_INTERP: return "text";
     case T_INTERP_PART: return "'}' after a value in text";

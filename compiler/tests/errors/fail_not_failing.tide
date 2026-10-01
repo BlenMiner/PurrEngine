@@ -1,0 +1,8 @@
+// expect: 'Parse' doesn't say it can fail
+enum ParseError { Empty }
+int Parse(string text)
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+scene Main { }

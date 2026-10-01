@@ -1,0 +1,14 @@
+// expect: 'Parse' fails with ParseError, not LoadError
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+enum LoadError { Missing }
+singleton Score { bool missing; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.missing = Parse("") is LoadError.Missing;
+}

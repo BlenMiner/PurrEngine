@@ -25,6 +25,7 @@ The editors' formatter lays code out this way (see [Editors](../guide/editors.md
 | `List<T>` | A list of values (see [Text and lists](./text-and-lists.md)) |
 | `Entity` | A handle to an entity (see [Components and entities](./entities.md)) |
 | `PlayerID` | A player (see [Input](./input.md)) |
+| `T?`, like `int?` | A value or nothing (see [Errors](./errors.md)) |
 
 Everything is a value: assigning copies it, and nothing is shared, text and lists included. That's what keeps the whole world plain data, which the engine copies to take snapshots.
 
@@ -65,6 +66,8 @@ Its type comes from where it goes: a typed local, an assignment, an argument, a 
 ## Operators
 
 Operators and their precedence follow C#, including compound assignments (`+=`, `<<=` and the rest) and `cond ? a : b`. `i++`, `i--`, `++i` and `--i` are statements, the same as `i += 1` and `i -= 1`, not expressions.
+
+`??`, `is`, `!` after a value and `try` unwrap what a function that can fail gives, and `T?` values (see [Errors](./errors.md)).
 
 Expressions run left to right: operands, arguments and field values in the order they're written. That's part of what makes every machine spawn the same entities with the same IDs.
 

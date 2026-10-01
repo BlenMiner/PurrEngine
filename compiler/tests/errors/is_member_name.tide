@@ -1,0 +1,13 @@
+// expect: 'ParseError.Empty' is one error, so it takes no name
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    if (Parse("") is ParseError.Empty empty) score.value = 1;
+}

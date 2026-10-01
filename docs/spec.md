@@ -314,7 +314,7 @@ tidec v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Syntax
 
-- Statements: blocks, `if`/`else`, `switch`, loops (see Loops), `break;`, `continue;`, `return;`, local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), `i++` and `i--`, and calls: of `Spawn`, `Add`, `Remove`, `Destroy`, `Send`, the `Draw` and GUI functions, lists' methods, and methods and functions, with a block after the ones that take one.
+- Statements: blocks, `if`/`else`, `switch`, loops (see Loops), `break;`, `continue;`, `return;`, `fail error;` (see Errors), local declarations, assignments (`= += -= *= /= %= <<= >>= &= |= ^=`), `i++` and `i--`, and calls: of `Spawn`, `Add`, `Remove`, `Destroy`, `Send`, the `Draw` and GUI functions, lists' methods, and methods and functions, with a block after the ones that take one, and with `!` after or `try` before the ones that can fail.
 
 ### Functions and blocks
 
@@ -607,6 +607,86 @@ system Advance(mut Match match)
 - Lists of lists, dictionaries and sets.
 - Sorting, and searching with a condition.
 - Fixed-size arrays inside components, which need no heap.
+
+## Errors
+
+### Decided
+
+- Errors are values, never exceptions. An error is any type: usually an enum, a struct when it needs to carry more.
+- A function says it can fail with `fails`, and `fail` ends it with an error, as `return` does with a value. A function with no value works the same: `void Open() fails OpenError`.
+- The combined type, a value or an error, is never written: `var` holds it.
+- At the call: `var score = ParseScore(text) ?? 0;` falls back to a value, `if (ParseScore(text) is int score) { ... }` runs only on success, `if (ParseScore(text) is ParseError why) { ... }` only on failure, and `var score = try ParseScore(text);` passes the error on to the caller.
+- `try` only works inside a function that `fails` with the same error type. In a system it's an error, since systems have no caller: handling happens at the call.
+- `T?` is for lookups where absence isn't an error: a value or nothing, unwrapped the same way (`??`, `is`).
+- Postfix `!`, as in C#, after the expression (`ParseScore(t)!`), means: on failure, carry on with the type's default value (0 for int), never crash. It also silences the warning for ignoring an error.
+- Using a failable call's value without unwrapping it is a compile error whose message says how to unwrap it (`??`, `is`, `!`, `try`). Calling a failable function as a statement and ignoring its error is a warning, which `!` silences.
+- Forgiving defaults stay as they are for indexing, arithmetic and text. Asynchronous failures stay events (`Disconnected`).
+
+```csharp
+enum ParseError
+{
+    Empty,
+    NotANumber,
+}
+
+int ParseScore(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    mut var score = 0;
+    for (var i = 0; i < text.Length; i++)
+    {
+        var digit = "0123456789".IndexOf(text.Substring(i, 1));
+        if (digit < 0) fail ParseError.NotANumber;
+        score = score * 10 + digit;
+    }
+    return score;
+}
+
+int Doubled(string text) fails ParseError
+{
+    var score = try ParseScore(text);
+    return score * 2;
+}
+
+int? Find(List<int> items, int wanted)
+{
+    for (var i = 0; i < items.Count; i++)
+    {
+        if (items[i] == wanted) return i;
+    }
+    return null;
+}
+
+system Score(mut Board board)
+{
+    board.points = ParseScore(board.typed) ?? 0;
+    if (Doubled(board.typed) is ParseError.NotANumber) board.mistakes += 1;
+    if (Find(board.picks, 3) is int at) board.last = at;
+}
+```
+
+### Provisional
+
+- `fail`, `try`, `is` and `null` are keywords everywhere; `fails` is one only right after a function's parameters.
+- Methods can fail too. Operators, `Interpolate`, extern functions and functions that take a Block can't. Systems, views, handlers and the input's `Sample` and `Sanitize` can't fail, and can't `try`.
+- An error's type is one a function can return. It can't be the type the function returns, which `is` couldn't tell apart, nor a `T?`, and a function that fails can't return a `T?` too.
+- `try` binds like a unary operator, as C#'s `await` does: `try Parse(a) + 1` adds 1 to the value. It works on a variable that holds a result too, and as a statement: `try Open();`. It keeps its place in the evaluation order: what's before it in its statement runs first, and when it passes an error on, nothing after it runs. In a block written after a call, `try` and `fail` leave the function the block is written in, as `return` does. Leaving a function this way closes the GUI containers it opened.
+- `??` binds and groups as in C#: looser than `||`, tighter than `?:`, to the right. Its right side only runs when the left fails or is nothing, so, like the right side of `&&` and `||`, it can't spawn, load scenes or draw widgets. The right side takes the value's type (`?? []`, `?? default`), an int widens to a float (`ParseScore(t) ?? 0.5` is a float), and it can be another failable call or `T?`, which is then what the whole gives: `a ?? b ?? 0`.
+- `is` is relational, as in C#. After it goes the value's type (true when it succeeds, or a `T?` has one), the error's type (true when it fails), or one of an error enum's members, `is ParseError.Empty` (true when it fails with that one). Tide has no other type tests: `is` on a plain value is an error.
+- A name after `is`'s type declares a read-only local. It goes in the condition of an `if`, `while` or `for`, alone or joined with `&&`, and is in scope in the rest of the condition and where it's true: the `if`'s body (not its `else`), or the loop's body and a for's step. Elsewhere `is` takes no name.
+- `!` gives the type's default as `default` does: a struct's field defaults. A `T?` takes `!` too. `F()!;` and `try F();` are statements, for functions with no value.
+- `var` holds a failable call's result or a `T?` as it is, and a `mut var` can take another of the same type. A result can't be passed, returned (that's `try`), shown in text or compared; it's unwrapped first.
+- `T?` goes on functions' and methods' return types and parameters, and on locals: `int? best = null;`. Not on fields, in lists or inputs, or on system parameters yet. `null` and `default` are nothing, and a value converts to a `T?` by itself, as in C# (an int to a `float?` too). `x == null` and `x != null` tell whether it's nothing. C functions can't take or return one.
+- The warning for ignoring an error is on a statement that calls a failable function; `try` and `!` handle it.
+- Editors show a failable call's result as `int fails ParseError`, and offer `fail` and `try` in functions that fail.
+- In generated C, a failable call's result and a `T?` are a small struct, `tide_result<n>`: the value, the error and whether it succeeded, plain data with no padding the compiler adds. A zeroed one is nothing. Results never go in the world, so snapshots never hold one.
+
+### Open
+
+- Built-in calls that fail, like `Session.Open()` when it can't take players: today Session calls are requests the host acts on after the frame, so their failures come later, as events.
+- `is not`, as in C#'s `if (ParseScore(t) is not int score) return;`, which keeps the name in scope after the `if`.
+- `T?` in fields, lists and inputs, and `??=`.
+- `switch` on an error, and functions that take a Block failing.
 
 ## Input
 

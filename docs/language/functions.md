@@ -78,6 +78,7 @@ system Regenerate(mut Unit unit)
 - A parameter is a read-only copy. A `mut` parameter is the caller's variable itself, which the function changes. The caller must be able to write it, so `Heal(unit.stats, 0.5)` needs `mut Unit unit`.
 - Parameters and return values are built-in types, structs and components, and an argument's type matches exactly.
 - A function returns a value on every path, unless it returns `void`.
+- A function or method can fail, with `fails` after its parameters, and its callers handle the error where they call (see [Errors](./errors.md)).
 - A function shares its name with nothing else in its namespace. Methods can't share a name either, even with different parameters, or share one with a field.
 
 Functions see their parameters and `Math`, and methods their fields too, but nothing else. Neither can spawn or change entities: systems do. A function can draw and use the GUI, and then only views, and other functions like it, can call it.

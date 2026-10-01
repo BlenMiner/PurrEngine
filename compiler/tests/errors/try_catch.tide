@@ -1,0 +1,8 @@
+// expect: Tide has no 'try { } catch': errors are values
+scene Main { }
+system Count()
+{
+    try
+    {
+    }
+}

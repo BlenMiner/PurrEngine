@@ -1,0 +1,12 @@
+// expect: 'Parse' can fail, so its value needs unwrapping first
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+int Load(string text) fails ParseError
+{
+    return Parse(text);
+}
+scene Main { }

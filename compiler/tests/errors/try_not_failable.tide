@@ -1,0 +1,8 @@
+// expect: 'try' passes on the error of a call that can fail, and 'Twice' can't fail
+enum ParseError { Empty }
+int Twice(int x) { return x * 2; }
+int Load(int x) fails ParseError
+{
+    return try Twice(x);
+}
+scene Main { }
