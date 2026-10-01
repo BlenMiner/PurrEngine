@@ -51,36 +51,35 @@ typedef struct tide_layout_enum {
     const tide_layout_member *members;
 } tide_layout_enum;
 
-// Where a singleton, or a component's column in an archetype, is.
+// Where a singleton is in its world's struct, or which column of an
+// archetype a component is.
 typedef struct tide_layout_place {
     int32_t type;
     uint32_t offset;
 } tide_layout_place;
 
+// An archetype's columns (tide/table.h): the entity, the scene each is in
+// (`scenes`), then its components.
 typedef struct tide_layout_archetype {
-    uint32_t offset;       // In the world
-    uint32_t count;        // Offsets in the archetype: its row count,
-    uint32_t entities;     // ...its entity column,
-    uint32_t scenes;       // ...and the scene each row is in, or UINT32_MAX if its world has no scenes
+    bool scenes;
     uint32_t component_count;
-    const tide_layout_place *components;
+    const tide_layout_place *components; // Their columns, in order
 } tide_layout_archetype;
 
-// The match (tide_world) or the local world (tide_local).
+// The match (tide_world) or the local world (tide_local), as its bytes are
+// (tide_world_pack): its struct with the storage zeroed, then its entity
+// table, its archetypes' tables in this order, its queue, and its heap.
 typedef struct tide_layout_world {
-    uint32_t size;
+    uint32_t size; // Of its struct
     uint32_t singleton_count;
     const tide_layout_place *singletons;
-    uint32_t entities; // Offset of its tide_entities
     uint32_t archetype_count;
     const tide_layout_archetype *archetypes;
-    uint32_t capacity;     // Rows each archetype has room for
-    uint32_t commands;     // Offset of the number of changes waiting, 0 between ticks and frames
     int32_t input;         // The match: the input's type, or -1
-    uint32_t inputs;       // ...its players' and the server's inputs,
+    uint32_t inputs;       // ...its players' and the server's inputs, in the struct,
     uint32_t previous;     // ...and last tick's
     uint32_t input_count;
-    uint32_t heap;         // Offset of its tide_heap, or UINT32_MAX
+    bool heap;             // It has a heap
 } tide_layout_world;
 
 typedef struct tide_layout {

@@ -16,6 +16,22 @@ static tide_client *clients[3];
 static int who[3] = {0, 1, 2};
 static double now;
 
+// Whether two worlds hold the same: the same bytes (tide_world_pack, which
+// leaves out where their pages are), and the same hash.
+static bool same(const void *a, const void *b)
+{
+    const uint32_t size = tide_world_pack(a, NULL, 0);
+    if (tide_world_pack(b, NULL, 0) != size) return false;
+    uint8_t *x = malloc(size);
+    uint8_t *y = malloc(size);
+    tide_world_pack(a, x, size);
+    tide_world_pack(b, y, size);
+    const bool equal = memcmp(x, y, size) == 0;
+    free(x);
+    free(y);
+    return equal && tide_world_hash(a) == tide_world_hash(b);
+}
+
 // Each player's input, from the tick: it changes every so often, as a player's does.
 static void sample(void *user, const uint32_t tick, void *input)
 {
@@ -344,15 +360,15 @@ TIDE_TEST(net_local_code_starts_a_match)
     const tide_world *w = tide_session_world(s);
     TIDE_REQUIRE(w != NULL);
     TIDE_CHECK(w->Players.joined == 1);
-    TIDE_CHECK(memcmp(w, tide_session_server_world(s), sizeof *w) == 0);
+    TIDE_CHECK(same(w, tide_session_server_world(s)));
 
     // The match started in Arena, not Main.
     uint32_t arenas = 0;
     uint32_t mains = 0;
     for (uint32_t i = 0; i < w->entities.next_unused; i++) {
-        const tide_entity e = {i, w->entities.slots[i].generation};
-        arenas += tide_get_Arena((tide_world *)w, e) != NULL;
-        mains += tide_get_Main((tide_world *)w, e) != NULL;
+        const tide_entity e = tide_entity_in_slot(&w->entities, i);
+        arenas += tide_read_Arena(w, e) != NULL;
+        mains += tide_read_Main(w, e) != NULL;
     }
     TIDE_CHECK(arenas == 1 && mains == 0);
 
@@ -476,7 +492,7 @@ TIDE_TEST(net_a_session_survives_a_pause)
     const uint32_t ticks = after.client.verified_tick - before.client.verified_tick;
     TIDE_CHECK(ticks >= 60u && ticks <= 68u);
     TIDE_REQUIRE(tide_session_world(s) != NULL);
-    TIDE_CHECK(memcmp(tide_session_world(s), tide_session_server_world(s), sizeof(tide_world)) == 0);
+    TIDE_CHECK(same(tide_session_world(s), tide_session_server_world(s)));
     tide_session_destroy(s);
 }
 
@@ -517,7 +533,7 @@ TIDE_TEST(net_a_session_takes_a_new_build_of_its_game)
     // Both the server and this machine's client run the new build's ticks
     TIDE_CHECK(new_build_ticks >= 2 * (int)(after.client.verified_tick - before.client.verified_tick));
     TIDE_REQUIRE(tide_session_world(s) != NULL);
-    TIDE_CHECK(memcmp(tide_session_world(s), tide_session_server_world(s), sizeof(tide_world)) == 0);
+    TIDE_CHECK(same(tide_session_world(s), tide_session_server_world(s)));
     tide_session_event e;
     bool disconnected = false;
     while (tide_session_next_event(s, &e)) disconnected |= e.kind == TIDE_SESSION_DISCONNECTED_EVENT;
@@ -563,7 +579,7 @@ TIDE_TEST(net_a_session_carries_its_match_over_to_another_layout)
     TIDE_CHECK(after.client.state == TIDE_SESSION_CONNECTED);
     TIDE_CHECK(after.client.resyncs == 0);
     TIDE_CHECK(after.client.verified_tick >= before.client.verified_tick + 55u);
-    TIDE_CHECK(memcmp(tide_session_world(s), tide_session_server_world(s), sizeof(tide_world)) == 0);
+    TIDE_CHECK(same(tide_session_world(s), tide_session_server_world(s)));
     tide_session_destroy(s);
 }
 
@@ -783,8 +799,9 @@ TIDE_TEST(net_a_session_goes_on_from_a_world)
     const tide_world *w = tide_session_server_world(next);
     TIDE_CHECK(players_in(w)->joined == 1); // Not twice
     TIDE_CHECK(w->Time.tick >= left->Time.tick + 55); // Went on from it
-    TIDE_CHECK(memcmp(tide_session_world(next), w, sizeof(tide_world)) == 0);
+    TIDE_CHECK(same(tide_session_world(next), w));
     tide_session_destroy(next);
+    tide_world_free(left);
     free(left);
 }
 

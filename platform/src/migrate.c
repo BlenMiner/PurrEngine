@@ -7,6 +7,7 @@
 
 #include "tide/entity.h"
 #include "tide/heap.h"
+#include "tide/net.h"
 
 // See tide/migrate.h.
 
@@ -30,18 +31,6 @@ static const tide_layout_field *find_field(const tide_layout_type *t, const char
         if (strcmp(t->fields[i].name, name) == 0) return &t->fields[i];
     }
     return NULL;
-}
-
-static uint32_t read_u32(const uint8_t *at)
-{
-    uint32_t v;
-    memcpy(&v, at, sizeof v);
-    return v;
-}
-
-static void write_u32(uint8_t *at, const uint32_t v)
-{
-    memcpy(at, &v, sizeof v);
 }
 
 // Whether a field's value carries over to a field of the same name.
@@ -167,37 +156,157 @@ static const char *lost_scene(const carry *c, const tide_layout_world *tw, const
     return NULL;
 }
 
-bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world *fw, const void *from_world,
-                        const tide_layout *to_layout, const tide_layout_world *tw, void *to_world, tide_migration *m)
+// An archetype's columns, as a world's bytes have them (tide/table.h): the
+// entity, the scene each is in, then its components, each column's values
+// one after another.
+static uint32_t column_count(const tide_layout_archetype *a)
 {
-    const uint8_t *from = from_world;
-    uint8_t *to = to_world;
-    *m = (tide_migration){0};
-    if (read_u32(from + fw->commands) != 0) {
-        snprintf(m->failed, sizeof m->failed, "it had changes waiting to be applied");
-        return false;
+    return 1u + (a->scenes ? 1u : 0u) + a->component_count;
+}
+
+static uint32_t column_size(const tide_layout *l, const tide_layout_archetype *a, const uint32_t column)
+{
+    if (column == 0 || (a->scenes && column == 1)) return (uint32_t)sizeof(tide_entity);
+    for (uint32_t i = 0; i < a->component_count; i++) {
+        if (a->components[i].offset == column) return l->types[a->components[i].type].size;
     }
-    carry c = {from_layout, to_layout, calloc(to_layout->type_count ? to_layout->type_count : 1u, sizeof(int32_t))};
-    uint32_t *counts = calloc(tw->archetype_count ? tw->archetype_count : 1u, sizeof *counts);
-    if (!c.types || !counts) {
-        free(c.types);
-        free(counts);
+    return 0;
+}
+
+static uint64_t row_size(const tide_layout *l, const tide_layout_archetype *a)
+{
+    uint64_t size = 0;
+    for (uint32_t k = 0; k < column_count(a); k++) size += column_size(l, a, k);
+    return size;
+}
+
+// Where row `row` of column `column` is in an archetype's `count` rows.
+static const uint8_t *cell(const tide_layout *l, const tide_layout_archetype *a, const uint8_t *rows,
+                           const uint32_t count, const uint32_t column, const uint32_t row)
+{
+    uint64_t at = 0;
+    for (uint32_t k = 0; k < column; k++) at += (uint64_t)count * column_size(l, a, k);
+    return rows + at + (uint64_t)row * column_size(l, a, column);
+}
+
+// The new bytes, `n` more of them.
+static uint8_t *take(tide_writer *w, const uint32_t n)
+{
+    uint8_t *at = w->data + w->size;
+    w->size += n;
+    return at;
+}
+
+// What's read of the old world's bytes.
+typedef struct old_world {
+    tide_entities entities;
+    const uint8_t **rows; // Each archetype's
+    uint32_t *counts;
+    const uint8_t *heap;  // Its heap's bytes, the rest of them
+    uint32_t heap_size;
+} old_world;
+
+static void free_old(old_world *w)
+{
+    tide_entities_free(&w->entities);
+    free(w->rows);
+    free(w->counts);
+}
+
+static bool read_old(const tide_layout *l, const tide_layout_world *fw, const uint8_t *from, const uint32_t size,
+                     old_world *w, tide_migration *m)
+{
+    w->rows = calloc(fw->archetype_count ? fw->archetype_count : 1u, sizeof *w->rows);
+    w->counts = calloc(fw->archetype_count ? fw->archetype_count : 1u, sizeof *w->counts);
+    if (!w->rows || !w->counts) {
         snprintf(m->failed, sizeof m->failed, "there wasn't enough memory");
         return false;
     }
-    for (uint32_t i = 0; i < to_layout->type_count; i++) c.types[i] = find_type(from_layout, to_layout->types[i].name);
+    tide_reader r = {from, size, fw->size, size < fw->size};
+    bool ok = !r.failed && tide_entities_unpack(&w->entities, &r);
+    for (uint32_t a = 0; ok && a < fw->archetype_count; a++) {
+        w->counts[a] = tide_read_u32(&r);
+        const uint64_t bytes = (uint64_t)w->counts[a] * row_size(l, &fw->archetypes[a]);
+        ok = !r.failed && bytes <= r.size - r.at;
+        if (ok) w->rows[a] = tide_read_bytes(&r, (uint32_t)bytes);
+    }
+    const uint32_t commands = ok ? tide_read_u32(&r) : 0u;
+    ok = ok && !r.failed;
+    if (ok && commands) {
+        snprintf(m->failed, sizeof m->failed, "it had changes waiting to be applied");
+        return false;
+    }
+    w->heap = from + r.at;
+    w->heap_size = ok ? size - r.at : 0u;
+    if (!ok || (!fw->heap && w->heap_size)) {
+        snprintf(m->failed, sizeof m->failed, "its bytes weren't a world of the old build");
+        return false;
+    }
+    return true;
+}
+
+bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world *fw, const void *from_bytes,
+                        const uint32_t from_size, const tide_layout *to_layout, const tide_layout_world *tw, void **to_bytes,
+                        uint32_t *to_size, tide_migration *m)
+{
+    const uint8_t *from = from_bytes;
+    *m = (tide_migration){0};
+    *to_bytes = NULL;
+    *to_size = 0;
+    old_world old = {0};
+    carry c = {from_layout, to_layout, calloc(to_layout->type_count ? to_layout->type_count : 1u, sizeof(int32_t))};
+    uint32_t *counts = calloc(tw->archetype_count ? tw->archetype_count : 1u, sizeof *counts);
+    int32_t *goes = calloc(fw->archetype_count ? fw->archetype_count : 1u, sizeof *goes);
+    bool ok = c.types && counts && goes;
+    if (!ok) snprintf(m->failed, sizeof m->failed, "there wasn't enough memory");
+    ok = ok && read_old(from_layout, fw, from, from_size, &old, m);
+    for (uint32_t i = 0; ok && i < to_layout->type_count; i++) c.types[i] = find_type(from_layout, to_layout->types[i].name);
 
     // A scene that's gone takes the match with it
-    for (uint32_t a = 0; a < fw->archetype_count; a++) {
-        const tide_layout_archetype *fa = &fw->archetypes[a];
-        const char *scene = read_u32(from + fa->offset + fa->count) ? lost_scene(&c, tw, fa) : NULL;
+    for (uint32_t a = 0; ok && a < fw->archetype_count; a++) {
+        const char *scene = old.counts[a] ? lost_scene(&c, tw, &fw->archetypes[a]) : NULL;
         if (scene) {
             snprintf(m->failed, sizeof m->failed, "the scene %s is gone", scene);
-            free(c.types);
-            free(counts);
-            return false;
+            ok = false;
         }
     }
+
+    // Entities keep their IDs, and go to the storage for their components, in
+    // the order of the old archetypes and their rows
+    for (uint32_t a = 0; ok && a < fw->archetype_count; a++) {
+        const tide_layout_archetype *fa = &fw->archetypes[a];
+        goes[a] = new_archetype(&c, tw, fa);
+        for (uint32_t row = 0; row < old.counts[a]; row++) {
+            tide_entity e;
+            memcpy(&e, cell(from_layout, fa, old.rows[a], old.counts[a], 0, row), sizeof e);
+            if (goes[a] < 0) {
+                tide_entity_destroy(&old.entities, e);
+                m->entities_dropped++;
+            } else {
+                tide_entity_set_location(&old.entities, e, (tide_location){(uint32_t)goes[a], counts[goes[a]]++});
+            }
+        }
+    }
+
+    // The new world's bytes (see tide_world_pack): its struct, the entities, the
+    // tables, an empty queue and the heap as it was
+    const uint32_t empty_heap = (uint32_t)(sizeof(uint32_t) * (2u + TIDE_HEAP_CLASSES));
+    uint64_t size = tw->size + (ok ? tide_entities_packed_size(&old.entities) : 0u) + 4u;
+    for (uint32_t k = 0; k < tw->archetype_count; k++) size += 4u + (uint64_t)counts[k] * row_size(to_layout, &tw->archetypes[k]);
+    if (tw->heap) size += fw->heap ? old.heap_size : empty_heap;
+    uint8_t *to = ok && size <= UINT32_MAX ? calloc(1, (size_t)size) : NULL;
+    if (ok && !to) {
+        snprintf(m->failed, sizeof m->failed, "there wasn't enough memory");
+        ok = false;
+    }
+    if (!ok) {
+        free_old(&old);
+        free(c.types);
+        free(counts);
+        free(goes);
+        return false;
+    }
+    tide_writer w = {to, (uint32_t)size, tw->size, false};
 
     for (uint32_t i = 0; i < tw->singleton_count; i++) {
         const tide_layout_place *ts = &tw->singletons[i];
@@ -210,59 +319,53 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
 
     // The input, whatever its name
     if (tw->input >= 0) {
-        const uint32_t size = to_layout->types[tw->input].size;
-        const uint32_t old_size = fw->input >= 0 ? from_layout->types[fw->input].size : 0u;
+        const uint32_t input = to_layout->types[tw->input].size;
+        const uint32_t old_input = fw->input >= 0 ? from_layout->types[fw->input].size : 0u;
         for (uint32_t i = 0; i < tw->input_count; i++) {
             const bool had = fw->input >= 0 && i < fw->input_count;
-            carry_value(&c, tw->input, fw->input, to + tw->inputs + i * size, had ? from + fw->inputs + i * old_size : NULL);
-            carry_value(&c, tw->input, fw->input, to + tw->previous + i * size,
-                        had ? from + fw->previous + i * old_size : NULL);
+            carry_value(&c, tw->input, fw->input, to + tw->inputs + i * input, had ? from + fw->inputs + i * old_input : NULL);
+            carry_value(&c, tw->input, fw->input, to + tw->previous + i * input,
+                        had ? from + fw->previous + i * old_input : NULL);
         }
     }
 
-    if (tw->heap != UINT32_MAX && fw->heap != UINT32_MAX) {
-        tide_heap_copy((tide_heap *)(to + tw->heap), (const tide_heap *)(from + fw->heap));
-    }
+    tide_entities_pack(&old.entities, &w);
 
-    // Entities keep their IDs, and move to the storage for their components
-    tide_entities *entities = (tide_entities *)(to + tw->entities);
-    tide_entities_copy(entities, (const tide_entities *)(from + fw->entities));
-    for (uint32_t a = 0; a < fw->archetype_count; a++) {
-        const tide_layout_archetype *fa = &fw->archetypes[a];
-        const uint32_t rows = read_u32(from + fa->offset + fa->count);
-        if (rows == 0) continue;
-        const int32_t k = new_archetype(&c, tw, fa);
-        const tide_layout_archetype *ta = k >= 0 ? &tw->archetypes[k] : NULL;
-        for (uint32_t r = 0; r < rows; r++) {
-            tide_entity e;
-            memcpy(&e, from + fa->offset + fa->entities + r * sizeof e, sizeof e);
-            if (!ta || counts[k] >= tw->capacity) {
-                tide_entity_destroy(entities, e);
-                m->entities_dropped++;
-                continue;
-            }
-            const uint32_t row = counts[k]++;
-            memcpy(to + ta->offset + ta->entities + row * sizeof e, &e, sizeof e);
-            if (ta->scenes != UINT32_MAX && fa->scenes != UINT32_MAX) {
-                memcpy(to + ta->offset + ta->scenes + row * sizeof e, from + fa->offset + fa->scenes + r * sizeof e,
-                       sizeof e);
-            }
-            for (uint32_t i = 0; i < ta->component_count; i++) {
-                const tide_layout_place *tc = &ta->components[i];
-                const tide_layout_place *fc = old_component(&c, fa, tc->type);
-                const uint32_t size = to_layout->types[tc->type].size;
-                const uint32_t old_size = from_layout->types[fc->type].size;
-                carry_value(&c, tc->type, fc->type, to + ta->offset + tc->offset + row * size,
-                            from + fa->offset + fc->offset + r * old_size);
-            }
-            tide_entity_set_location(entities, e, (tide_location){(uint32_t)k, row});
-        }
-    }
     for (uint32_t k = 0; k < tw->archetype_count; k++) {
-        write_u32(to + tw->archetypes[k].offset + tw->archetypes[k].count, counts[k]);
+        const tide_layout_archetype *ta = &tw->archetypes[k];
+        tide_write_u32(&w, counts[k]);
+        for (uint32_t column = 0; column < column_count(ta); column++) {
+            const uint32_t bytes = column_size(to_layout, ta, column);
+            const tide_layout_place *tc = NULL;
+            for (uint32_t i = 0; i < ta->component_count; i++) {
+                if (ta->components[i].offset == column) tc = &ta->components[i];
+            }
+            for (uint32_t a = 0; a < fw->archetype_count; a++) {
+                if (goes[a] != (int32_t)k) continue;
+                const tide_layout_archetype *fa = &fw->archetypes[a];
+                for (uint32_t row = 0; row < old.counts[a]; row++) {
+                    uint8_t *value = take(&w, bytes);
+                    if (tc) {
+                        const tide_layout_place *fc = old_component(&c, fa, tc->type);
+                        carry_value(&c, tc->type, fc->type, value,
+                                    cell(from_layout, fa, old.rows[a], old.counts[a], fc->offset, row));
+                    } else if (column == 0 || fa->scenes) { // The entity, and the scene it's in
+                        memcpy(value, cell(from_layout, fa, old.rows[a], old.counts[a], column, row), bytes);
+                    }
+                }
+            }
+        }
     }
+    tide_write_u32(&w, 0); // No changes waiting
+    if (tw->heap && fw->heap) tide_write_bytes(&w, old.heap, old.heap_size);
+    else if (tw->heap) take(&w, empty_heap); // Zeros: an empty heap
+
+    free_old(&old);
     free(c.types);
     free(counts);
+    free(goes);
+    *to_bytes = to;
+    *to_size = w.size;
     return true;
 }
 

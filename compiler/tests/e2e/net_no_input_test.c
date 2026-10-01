@@ -1,7 +1,24 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "game.h"
 #include "tide_test.h"
+
+// Whether two worlds hold the same: the same bytes (tide_world_pack, which
+// leaves out where their pages are), and the same hash.
+static bool same(const void *a, const void *b)
+{
+    const uint32_t size = tide_world_pack(a, NULL, 0);
+    if (tide_world_pack(b, NULL, 0) != size) return false;
+    uint8_t *x = malloc(size);
+    uint8_t *y = malloc(size);
+    tide_world_pack(a, x, size);
+    tide_world_pack(b, y, size);
+    const bool equal = memcmp(x, y, size) == 0;
+    free(x);
+    free(y);
+    return equal && tide_world_hash(a) == tide_world_hash(b);
+}
 
 // Clients stay ahead of the server by how early their inputs reach it. A game
 // with no input sends none, so that says nothing, and a client that read it
@@ -25,7 +42,7 @@ TIDE_TEST(net_no_input_single_player_keeps_to_the_server)
     TIDE_CHECK(status.client.state == TIDE_SESSION_CONNECTED);
     TIDE_CHECK(status.client.resyncs == 0);
     TIDE_CHECK(status.client.verified_tick >= 170u);
-    TIDE_CHECK(memcmp(tide_session_world(s), tide_session_server_world(s), sizeof(tide_world)) == 0);
+    TIDE_CHECK(same(tide_session_world(s), tide_session_server_world(s)));
     tide_session_destroy(s);
 }
 

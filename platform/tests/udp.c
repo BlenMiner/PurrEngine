@@ -76,6 +76,20 @@ static bool read_input(const uint8_t *data, const uint32_t size, void *input)
     return true;
 }
 
+// The world as bytes, to send it: plain data, as it is.
+static uint32_t pack(const void *w, uint8_t *out, const uint32_t capacity)
+{
+    if (out && capacity >= sizeof(world)) memcpy(out, w, sizeof(world));
+    return sizeof(world);
+}
+
+static bool unpack(void *w, const uint8_t *data, const uint32_t size)
+{
+    if (size != sizeof(world)) return false;
+    memcpy(w, data, size);
+    return true;
+}
+
 static const tide_game game = {
     .hash = 42,
     .world_size = sizeof(world),
@@ -85,6 +99,8 @@ static const tide_game game = {
     .tick = tick,
     .copy_world = copy,
     .hash_world = hash,
+    .pack_world = pack,
+    .unpack_world = unpack,
     .player_joined = joined,
     .player_left = left,
     .set_input = set_input,

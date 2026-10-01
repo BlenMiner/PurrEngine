@@ -21,7 +21,6 @@ TIDE_TEST(default_value_all_checks_pass)
     if (r->firstFailure) printf("    check %d failed\n", (int)r->firstFailure);
     TIDE_CHECK(r->checks == 23);
     TIDE_CHECK(r->passed == r->checks);
-    TIDE_CHECK(world.heap.failed == 0);
 }
 
 TIDE_TEST(default_value_field_defaults)

@@ -1,0 +1,52 @@
+// A world past the limits worlds used to have: thousands of entities in one
+// archetype, and of changes in one tick. It grows as it needs.
+
+component Crowd
+{
+    int index;
+    float value;
+    string label;
+}
+
+component Marked
+{
+    int when;
+}
+
+singleton Counts
+{
+    int spawned;
+    int retired;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Counts counts)
+{
+    for (var i = 0; i < 6000; i++)
+    {
+        Spawn(Crowd { index = i, value = float(i), label = $"crowd {i}" });
+    }
+    counts.spawned = 6000;
+}
+
+system Grow(mut Crowd crowd)
+{
+    crowd.value += 1;
+}
+
+// Some move to another archetype each tick, and some of those go.
+system Mark(Time time, Crowd crowd, without Marked)
+{
+    if (crowd.index % 97 == time.tick % 97)
+        this.Add(Marked { when = time.tick });
+}
+
+system Retire(mut Counts counts, Crowd crowd, with Marked)
+{
+    if (crowd.index % 5 == 0)
+    {
+        counts.retired += 1;
+        this.Destroy();
+    }
+}

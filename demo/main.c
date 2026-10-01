@@ -108,8 +108,8 @@ static void smoke_input(const uint32_t t)
 static const Body *find_player(const tide_world *w)
 {
     for (uint32_t i = 0; i < w->entities.next_unused; i++) {
-        const tide_entity e = {i, w->entities.slots[i].generation};
-        if (tide_get_Owner((tide_world *)w, e)) return tide_get_Body((tide_world *)w, e);
+        const tide_entity e = tide_entity_in_slot(&w->entities, i);
+        if (tide_read_Owner(w, e)) return tide_read_Body(w, e);
     }
     return NULL;
 }
@@ -126,8 +126,8 @@ static uint64_t world_hash(const tide_world *w)
 {
     uint64_t h = 0xcbf29ce484222325ull;
     for (uint32_t i = 0; i < w->entities.next_unused; i++) {
-        const tide_entity e = {i, w->entities.slots[i].generation};
-        const Body *body = tide_get_Body((tide_world *)w, e);
+        const tide_entity e = tide_entity_in_slot(&w->entities, i);
+        const Body *body = tide_read_Body(w, e);
         if (!body) continue;
         h = fnv1a(h, &e, sizeof e);
         h = fnv1a(h, body, sizeof *body);

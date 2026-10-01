@@ -67,8 +67,8 @@ TIDE_TEST(blend_views_see_the_match_between_ticks)
     TIDE_CHECK(nth(TIDE_DRAW_CIRCLE, 0)->a.x == 8.0f);
 }
 
-// A snapshot copies what's in use, and clears what the world it goes into
-// had beyond it: the same bytes as copying the whole world.
+// A snapshot shares the pages of what it's a snapshot of, and lets go of what
+// the world it goes into had: the same world, ticking the same way.
 TIDE_TEST(blend_snapshots_are_what_is_in_use)
 {
     tide_world_init(&before, 1.0f / 20.0f);
@@ -76,10 +76,10 @@ TIDE_TEST(blend_snapshots_are_what_is_in_use)
     tide_world_init(&now, 1.0f / 20.0f);
     tide_world_tick(&now);
     tide_world_copy(&before, &now);
-    TIDE_CHECK(memcmp(&before, &now, sizeof now) == 0);
+    TIDE_CHECK(tide_world_entity_count(&before) == tide_world_entity_count(&now));
     TIDE_CHECK(tide_world_hash(&before) == tide_world_hash(&now));
     tide_world_tick(&before);
     tide_world_tick(&now);
     TIDE_CHECK(tide_world_hash(&before) == tide_world_hash(&now));
-    TIDE_CHECK(memcmp(&before, &now, sizeof now) == 0);
+    TIDE_CHECK(tide_world_entity_count(&before) == tide_world_entity_count(&now));
 }

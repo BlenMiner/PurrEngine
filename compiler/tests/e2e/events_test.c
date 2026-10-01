@@ -26,7 +26,7 @@ TIDE_TEST(events_sent_in_main_are_handled_as_it_applies)
     // a, b, the mirror, the player, and the mirror's Hit passed on to a.
     TIDE_CHECK(world.Stats.hits == 5);
     TIDE_CHECK(world.Stats.pings == 1);
-    TIDE_CHECK(world.command_count == 0);
+    TIDE_CHECK(world.commands.count == 0);
 }
 
 TIDE_TEST(events_handlers_run_in_order)

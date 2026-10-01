@@ -762,35 +762,20 @@ tide_str tide_str_replace(const tide_str a, const tide_str from, const tide_str 
 // ---------------------------------------------------------------------------
 // Text in fields
 
-#define TEXT_MATCH 0u // The top two bits of tide_text.at
-#define TEXT_LOCAL 1u
-#define TEXT_SCRATCH 2u
 #define TEXT_WHERE(at) ((at) >> 30)
 #define TEXT_OFFSET(at) ((at) & 0x3FFFFFFFu)
 
-typedef struct text_world {
-    tide_heap *heap;
-    uintptr_t begin;
-    uintptr_t end;
-} text_world;
+static TIDE_THREAD_LOCAL tide_heap *text_heaps[2]; // The match's and the local world's
 
-static TIDE_THREAD_LOCAL text_world text_worlds[2]; // The match's and the local world's
-
-void tide_text_use(tide_heap *match_heap, const void *match, const size_t match_size, tide_heap *local_heap,
-                   const void *local, const size_t local_size)
+void tide_text_use(tide_heap *match_heap, tide_heap *local_heap)
 {
-    text_worlds[TEXT_MATCH] = (text_world){match_heap, (uintptr_t)match, (uintptr_t)match + (match ? match_size : 0)};
-    text_worlds[TEXT_LOCAL] = (text_world){local_heap, (uintptr_t)local, (uintptr_t)local + (local ? local_size : 0)};
+    text_heaps[TIDE_IN_MATCH] = match_heap;
+    text_heaps[TIDE_IN_LOCAL] = local_heap;
 }
 
-// Which world's memory `p` is in: TEXT_MATCH, TEXT_LOCAL, or -1 for neither.
-static int world_of(const void *p)
+tide_heap *tide_heap_of(const uint32_t where)
 {
-    const uintptr_t at = (uintptr_t)p;
-    for (int w = 0; w < 2; w++) {
-        if (text_worlds[w].heap && at >= text_worlds[w].begin && at < text_worlds[w].end) return w;
-    }
-    return -1;
+    return where == TIDE_IN_MATCH || where == TIDE_IN_LOCAL ? text_heaps[where] : NULL;
 }
 
 static tide_str view_block(const tide_heap *heap, const uint32_t offset)
@@ -809,11 +794,11 @@ tide_str tide_text_view(const tide_text t)
     if (!t.at) return TIDE_STR_EMPTY;
     const uint32_t where = TEXT_WHERE(t.at);
     const uint32_t offset = TEXT_OFFSET(t.at);
-    if (where == TEXT_SCRATCH) {
+    if (where == TIDE_IN_SCRATCH) {
         const tide_block *b = (const tide_block *)(uintptr_t)(scratch + offset);
         return (tide_str){(const char *)(b + 1), (int32_t)b->a, (int32_t)b->b};
     }
-    const tide_heap *heap = text_worlds[where].heap;
+    const tide_heap *heap = tide_heap_of(where);
     return heap ? view_block(heap, offset) : TIDE_STR_EMPTY;
 }
 
@@ -828,65 +813,52 @@ tide_text tide_text_temp(const tide_str value)
     tide_block *b = (tide_block *)(uintptr_t)(p + pad);
     *b = (tide_block){0, 0, (uint32_t)value.bytes, (uint32_t)value.chars};
     memcpy(b + 1, value.ptr, (size_t)value.bytes);
-    return (tide_text){TEXT_SCRATCH << 30 | (uint32_t)((char *)b - scratch)};
+    return (tide_text){TIDE_IN_SCRATCH << 30 | (uint32_t)((char *)b - scratch)};
 }
 
-// A block in `w`'s heap holding `value`, or 0 when it's full.
-static uint32_t heap_copy(const int w, const tide_str value)
+// A block in `heap` holding `value`, tagged as `where`'s.
+static uint32_t heap_copy(tide_heap *heap, const uint32_t where, const tide_str value)
 {
-    tide_heap *heap = text_worlds[w].heap;
     const uint32_t block = tide_heap_alloc(heap, (uint32_t)value.bytes + 1u);
-    if (!block) return 0;
-    tide_block *b = tide_heap_block(heap, block);
+    tide_block *b = tide_heap_write(heap, block);
     b->a = (uint32_t)value.bytes;
     b->b = (uint32_t)value.chars;
     char *bytes = (char *)(b + 1);
     memcpy(bytes, value.ptr, (size_t)value.bytes);
     bytes[value.bytes] = '\0';
-    return (uint32_t)w << 30 | block;
+    return where << 30 | block;
 }
 
-void tide_text_set(tide_text *field, const tide_str value)
+void tide_text_set(tide_text *field, const tide_str value, const uint32_t where)
 {
-    const int w = world_of(field);
-    if (w < 0) {
+    tide_heap *heap = tide_heap_of(where);
+    if (!heap) {
         *field = tide_text_temp(value);
         return;
     }
-    uint32_t at = 0;
-    if (value.bytes > 0) {
-        at = heap_copy(w, value);
-        if (!at) return; // The heap is full: it keeps its old text
-    }
-    tide_text_release(field);
+    // The new text first: `value` may be the old text itself.
+    const uint32_t at = value.bytes > 0 ? heap_copy(heap, where, value) : 0u;
+    tide_text_release(field, where);
     field->at = at;
 }
 
-void tide_text_own(tide_text *field)
+void tide_text_own(tide_text *field, const uint32_t where)
 {
-    const int w = world_of(field);
-    if (w < 0 || !field->at) return;
-    field->at = heap_copy(w, tide_text_view(*field)); // Empty if the heap is full
+    tide_heap *heap = tide_heap_of(where);
+    if (!heap || !field->at) return;
+    field->at = heap_copy(heap, where, tide_text_view(*field));
 }
 
-void tide_text_release(tide_text *field)
+void tide_text_release(tide_text *field, const uint32_t where)
 {
-    const int w = world_of(field);
-    if (w < 0 || !field->at || TEXT_WHERE(field->at) != (uint32_t)w) return;
-    tide_heap_release(text_worlds[w].heap, TEXT_OFFSET(field->at));
+    tide_heap *heap = tide_heap_of(where);
+    if (!heap || !field->at || TEXT_WHERE(field->at) != where) return;
+    tide_heap_release(heap, TEXT_OFFSET(field->at));
     field->at = 0;
 }
 
 // ---------------------------------------------------------------------------
 // For tide/list.h
-
-tide_heap *tide_heap_of(const void *p, uint32_t *where)
-{
-    const int w = world_of(p);
-    if (w < 0) return NULL;
-    *where = (uint32_t)w;
-    return text_worlds[w].heap;
-}
 
 tide_block *tide_scratch_block(const uint32_t bytes, uint32_t *at)
 {
@@ -895,7 +867,7 @@ tide_block *tide_scratch_block(const uint32_t bytes, uint32_t *at)
     if (!p) return NULL;
     tide_block *b = (tide_block *)(uintptr_t)(p + pad);
     *b = (tide_block){0, 0, 0, 0};
-    *at = TEXT_SCRATCH << 30 | (uint32_t)((char *)b - scratch);
+    *at = TIDE_IN_SCRATCH << 30 | (uint32_t)((char *)b - scratch);
     return b;
 }
 
@@ -904,7 +876,17 @@ tide_block *tide_block_at(const uint32_t at)
     if (!at) return NULL;
     const uint32_t where = TEXT_WHERE(at);
     const uint32_t offset = TEXT_OFFSET(at);
-    if (where == TEXT_SCRATCH) return (tide_block *)(uintptr_t)(scratch + offset);
-    tide_heap *heap = text_worlds[where].heap;
+    if (where == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(scratch + offset);
+    tide_heap *heap = tide_heap_of(where);
     return heap ? tide_heap_block(heap, offset) : NULL;
+}
+
+tide_block *tide_block_write(const uint32_t at)
+{
+    if (!at) return NULL;
+    const uint32_t where = TEXT_WHERE(at);
+    const uint32_t offset = TEXT_OFFSET(at);
+    if (where == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(scratch + offset);
+    tide_heap *heap = tide_heap_of(where);
+    return heap ? tide_heap_write(heap, offset) : NULL;
 }

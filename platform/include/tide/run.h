@@ -89,6 +89,21 @@ static inline void tide_run_unload(void)
     tide_scratch_free();
 }
 
+static inline void tide_run_local_free(void *local)
+{
+    tide_local_free(local);
+}
+
+static inline uint32_t tide_run_local_pack(const void *local, uint8_t *out, const uint32_t capacity)
+{
+    return tide_local_pack(local, out, capacity);
+}
+
+static inline bool tide_run_local_unpack(void *local, const uint8_t *data, const uint32_t size)
+{
+    return tide_local_unpack(local, data, size);
+}
+
 // The game as hosts run it.
 static const tide_host_game tide_host_game_api = {
     .game = &tide_game_api,
@@ -97,6 +112,9 @@ static const tide_host_game tide_host_game_api = {
     .main_is_local = true,
 #endif
     .local_init = tide_run_local_init,
+    .local_free = tide_run_local_free,
+    .local_pack = tide_run_local_pack,
+    .local_unpack = tide_run_local_unpack,
 #ifdef TIDE_HAS_INPUT
     .sample_input = tide_run_sample_input,
 #endif

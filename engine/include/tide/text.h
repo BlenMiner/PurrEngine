@@ -112,8 +112,10 @@ int32_t tide_utf8_chars(const char *bytes, int32_t count);
 // which goes back when the text changes or leaves the world. Text anywhere
 // else, like a struct copied into a local, only borrows: it points at the
 // heap text it was copied from, which stays until the running code is done,
-// or at a copy in the scratch area. Which is which comes from the address
-// being written, so a function changing a `mut` struct works the same on a
+// or at a copy in the scratch area. Generated code says which with `where`:
+// the world whose memory the field is in (TIDE_IN_MATCH or TIDE_IN_LOCAL), or
+// TIDE_IN_SCRATCH for memory that's no world's. A function changing a `mut`
+// struct gets its `where` along with it, so it works the same on a
 // component's field and on a local.
 //
 // Heap text never changes once it's written: changing a field writes new text
@@ -123,10 +125,19 @@ typedef struct tide_text {
     uint32_t at; // 0: empty. Otherwise the block's offset, and where in the top two bits
 } tide_text;
 
-// The worlds generated code runs with, so text knows whose memory it's in and
-// can find its heap: the match (or NULL), and the local world (or NULL).
-void tide_text_use(tide_heap *match_heap, const void *match, size_t match_size, tide_heap *local_heap,
-                   const void *local, size_t local_size);
+// Where memory is, for `where` arguments, and in the top two bits of a
+// block's tagged offset.
+#define TIDE_IN_MATCH 0u
+#define TIDE_IN_LOCAL 1u
+#define TIDE_IN_SCRATCH 2u
+
+// The heaps of the worlds generated code runs with: the match's (or NULL),
+// and the local world's (or NULL).
+void tide_text_use(tide_heap *match_heap, tide_heap *local_heap);
+
+// The heap of TIDE_IN_MATCH or TIDE_IN_LOCAL, as tide_text_use set it; NULL
+// for TIDE_IN_SCRATCH.
+tide_heap *tide_heap_of(uint32_t where);
 
 // Reading: a view of the text, which lasts until the running code is done.
 tide_str tide_text_view(tide_text t);
@@ -136,43 +147,38 @@ tide_str tide_text_read(const tide_heap *heap, tide_text t);
 
 // Writing a field: its own copy of `value` if the field is part of a world
 // (the old text is released), or a borrowed one.
-void tide_text_set(tide_text *field, tide_str value);
+void tide_text_set(tide_text *field, tide_str value, uint32_t where);
 
 // A value just copied into a world, such as a spawn's components going into
 // the command queue: its borrowed text becomes the world's own copy.
-void tide_text_own(tide_text *field);
+void tide_text_own(tide_text *field, uint32_t where);
 
 // A world's own text leaving it, as its entity goes: freed once the running
 // code is done.
-void tide_text_release(tide_text *field);
+void tide_text_release(tide_text *field, uint32_t where);
 
 // Text for a value being built, like a struct literal's field: a borrowed
 // copy in the scratch area.
 tide_text tide_text_temp(tide_str value);
 
-// For tide/list.h, which keeps its blocks the way text does. Where a block is
-// goes in the top two bits of its offset.
-#define TIDE_IN_MATCH 0u
-#define TIDE_IN_LOCAL 1u
-#define TIDE_IN_SCRATCH 2u
-
-// The heap of the world whose memory `p` is in, and TIDE_IN_MATCH or
-// TIDE_IN_LOCAL in `where`; NULL for memory that's in neither.
-tide_heap *tide_heap_of(const void *p, uint32_t *where);
+// For tide/list.h, which keeps its blocks the way text does.
 
 // A block in the scratch area with room for `bytes` after its header, 16-byte
 // aligned: its header, or NULL when the area is full. `at` gets its tagged
 // offset.
 tide_block *tide_scratch_block(uint32_t bytes, uint32_t *at);
 
-// A tagged offset's block, or NULL for 0.
+// A tagged offset's block, or NULL for 0: to read, and to change (a world's
+// is made its own, apart from its snapshots: see tide/page.h).
 tide_block *tide_block_at(uint32_t at);
+tide_block *tide_block_write(uint32_t at);
 
 // A `mut string` parameter: the caller's text, a field's or a local's, which
 // the function reads and changes.
 typedef struct tide_textref {
     tide_text *field; // A field's text, or NULL
     tide_str *local;  // Or a local's
+    uint32_t where;   // The field's: whose memory it's in
 } tide_textref;
 
 static inline tide_str tide_textref_get(const tide_textref r)
@@ -182,6 +188,6 @@ static inline tide_str tide_textref_get(const tide_textref r)
 
 static inline void tide_textref_set(const tide_textref r, const tide_str value)
 {
-    if (r.field) tide_text_set(r.field, value);
+    if (r.field) tide_text_set(r.field, value, r.where);
     else *r.local = value;
 }

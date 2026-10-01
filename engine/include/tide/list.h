@@ -13,14 +13,16 @@
 // later.
 //
 // A tide_list is where its elements are: a block in a world's heap, or in the
-// scratch area. As with text, which one comes from the handle's address: a
-// list that's part of a world (a component's field, a singleton's, the command
-// queue's) has its own block in that world's heap, and any other list has one
-// in the scratch area. A list is never shared: taking one out of a field or a
-// variable copies it (tide_list_copy), so changing a list in place is safe.
+// scratch area. As with text, generated code says where the list is with
+// `where` (see tide/text.h): a list that's part of a world (a component's
+// field, a singleton's, the command queue's) has its own block in that
+// world's heap, and any other list has one in the scratch area. A list is
+// never shared: taking one out of a field or a variable copies it
+// (tide_list_copy), so changing a list in place is safe.
 //
-// Nothing fails: past the end, reads find nothing and writes do nothing, and
-// when there's no room left, adding does nothing.
+// Nothing fails: past the end, reads find nothing and writes do nothing. A
+// world's lists grow with its heap; a list in the scratch area stops growing
+// when the area is full.
 
 typedef struct tide_list {
     uint32_t at; // 0: empty. Otherwise its block's offset, and where in the top two bits
@@ -29,14 +31,17 @@ typedef struct tide_list {
 int32_t tide_list_count(tide_list l);
 
 // The element at `i`, or NULL past the end. It moves when the list grows.
+// tide_list_at is to read it, and tide_list_at_mut to change it in place (a
+// world's block is made its own, apart from its snapshots: see tide/page.h).
 void *tide_list_at(tide_list l, int32_t i, uint32_t size);
+void *tide_list_at_mut(tide_list l, int32_t i, uint32_t size);
 
 // A new element at the end, zeroed, or NULL when there's no room.
-void *tide_list_add(tide_list *l, uint32_t size);
+void *tide_list_add(tide_list *l, uint32_t size, uint32_t where);
 
 // A new element at `i` (clamped to the list), zeroed, the ones after it moved
 // along; or NULL when there's no room.
-void *tide_list_insert(tide_list *l, int32_t i, uint32_t size);
+void *tide_list_insert(tide_list *l, int32_t i, uint32_t size, uint32_t where);
 
 // Removes the element at `i`, moving the ones after it back. Past the end, it
 // does nothing. Release its text first.
@@ -54,11 +59,11 @@ tide_list tide_list_from(const void *items, int32_t count, uint32_t size);
 // Assigning: `value`'s elements, a copy if `to` is part of a world, or `value`
 // itself otherwise. Release the old elements' text first, and own the new ones'
 // after.
-void tide_list_set(tide_list *to, tide_list value, uint32_t size);
+void tide_list_set(tide_list *to, tide_list value, uint32_t size, uint32_t where);
 
 // A list just copied into a world, like a spawn's component into the command
 // queue: its elements in a block of the world's own. Own their text after.
-void tide_list_own(tide_list *l, uint32_t size);
+void tide_list_own(tide_list *l, uint32_t size, uint32_t where);
 
 // A world's list leaving it. Release its elements' text first.
-void tide_list_release(tide_list *l);
+void tide_list_release(tide_list *l, uint32_t where);

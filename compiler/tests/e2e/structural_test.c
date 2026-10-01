@@ -61,7 +61,7 @@ TIDE_TEST(structural_spawned_children_point_at_spawner)
     TIDE_CHECK(tide_get_Spawner(&world, SPAWNER)->remaining == 0);
     TIDE_REQUIRE(CHILDREN.count == 2);
     for (uint32_t i = 0; i < CHILDREN.count; i++) {
-        TIDE_CHECK(tide_entity_equal(CHILDREN.Child[i].parent, SPAWNER));
+        TIDE_CHECK(tide_entity_equal(TIDE_AT(&world, arch3_Child, Child, i)->parent, SPAWNER));
     }
 }
 

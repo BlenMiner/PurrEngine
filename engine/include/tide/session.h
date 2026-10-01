@@ -38,7 +38,7 @@
 // <game>.h; games without an input have no input functions.
 typedef struct tide_game {
     uint64_t hash;            // Tells builds apart: servers only take players of the same game
-    uint32_t world_size;      // sizeof(tide_world)
+    uint32_t world_size;      // sizeof(tide_world): a world starts as that many zeros
     uint32_t input_size;      // sizeof(tide_input), or 0
     uint32_t max_input_bytes; // The most write_input writes
     uint32_t start_size;      // sizeof(tide_start)
@@ -46,10 +46,19 @@ typedef struct tide_game {
     // it starts in, or NULL for Main.
     void (*start)(void *world, float dt, const void *start);
     void (*tick)(void *world);
-    // A snapshot: `to` becomes `from`, copying only what's in use. The hash
-    // covers the same, so its cost follows the world's contents, not its size.
+    // A snapshot: `to` becomes `from`, sharing its pages until one of them
+    // changes. The hash covers what's in use, and only reads what changed since
+    // it was last taken.
     void (*copy_world)(void *to, const void *from);
     uint64_t (*hash_world)(const void *world);
+    // Lets go of what a world has, before its memory goes; NULL for worlds of
+    // plain data.
+    void (*free_world)(void *world);
+    // The world as bytes, to send it: written into `out` when they fit in
+    // `capacity` (NULL to ask), and how many there are. Unpacking makes a
+    // world from them, false if they aren't one.
+    uint32_t (*pack_world)(const void *world, uint8_t *out, uint32_t capacity);
+    bool (*unpack_world)(void *world, const uint8_t *data, uint32_t size);
     void (*player_joined)(void *world, tide_player_id player);
     void (*player_left)(void *world, tide_player_id player);
     void (*set_input)(void *world, tide_player_id player, const void *input);

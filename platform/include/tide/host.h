@@ -34,9 +34,14 @@ typedef struct tide_run_desc {
 // `start` are the game's tide_local, tide_world and tide_start.
 typedef struct tide_host_game {
     const tide_game *game;
-    uint32_t local_size; // sizeof(tide_local)
+    uint32_t local_size; // sizeof(tide_local): local state starts as that many zeros
     bool main_is_local;  // TIDE_MAIN_IS_LOCAL: the program starts outside any match
     void (*local_init)(void *local);
+    // Lets go of what local state has, before its memory goes, and the local
+    // state as bytes and back, as tide_game's worlds (tide_local_pack).
+    void (*local_free)(void *local);
+    uint32_t (*local_pack)(const void *local, uint8_t *out, uint32_t capacity);
+    bool (*local_unpack)(void *local, const uint8_t *data, uint32_t size);
     // tide_input_sample, into `input`; NULL for a game without an input
     void (*sample_input)(const tide_devices *devices, const void *local, void *input);
     void (*frame)(const void *world, const void *previous, float alpha, void *local, tide_draw_list *draw,
@@ -242,6 +247,7 @@ static inline void tide_run_end(void)
 {
     tide_session_destroy(tide_run_session);
     tide_run_session = NULL;
+    if (tide_run_local) tide_run_game->local_free(tide_run_local);
     free(tide_run_local);
     free(tide_run_start);
     tide_run_local = NULL;

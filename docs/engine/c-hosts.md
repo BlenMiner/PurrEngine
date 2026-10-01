@@ -38,19 +38,21 @@ The generated header is the API between the game and its host. Namespaced declar
 
 **The world**
 
-- `tide_world` is the whole match as plain data. Copying it is a snapshot.
-- `tide_world_init(w, dt)` clears it, sets `Time.dt` and the singletons' defaults, and loads `Main` if it's the match's. `tide_world_start(w, dt, start)` starts in another scene.
+- `tide_world` is the whole match. Its data is in pages it shares with its snapshots, so a world starts zeroed (`{0}`, static or `calloc`), copying the struct isn't a snapshot (`tide_world_copy` is), and `tide_world_free(w)` lets it go.
+- `tide_world_init(w, dt)` clears it (what it had goes), sets `Time.dt` and the singletons' defaults, and loads `Main` if it's the match's. `tide_world_start(w, dt, start)` starts in another scene.
 - `tide_world_tick(w)` runs every system once, then applies structural changes and events. If that leaves no scene loaded, it loads `Main` again when it's the match's (`tide_frame` does the same for a local `Main`).
 - `tide_world_ended(w)` says whether the match is over: its last scene unloaded and `Main` is local. A server stops there and tells every player, who go offline with `TIDE_DISCONNECT_ENDED`.
-- `tide_get_<Component>(w, entity)` gives an entity's component, or `NULL`.
+- `tide_get_<Component>(w, entity)` gives an entity's component to change, or `NULL`. `tide_read_<Component>(w, entity)` gives it only to read, which leaves the pages the world shares with its snapshots shared.
+- `TIDE_AT(w, arch0_Body, Body, row)` reads a row's component in an archetype's storage, and `TIDE_ENTITY_AT(w, arch0_Body, row)` its entity: for tests and tools that go through every entity.
 - `tide_world_player_joined(w, player)` and `tide_world_player_left(w, player)` send `PlayerJoined` and `PlayerLeft`, handled at the end of the next tick.
-- `tide_world_copy(to, from)` and `tide_world_hash(w)`: snapshots and hashes, covering only what's in use.
+- `tide_world_copy(to, from)` and `tide_world_hash(w)`: snapshots and hashes. A snapshot shares the world's pages until one of them changes a page, so it costs the memory of what's different, and each page keeps its hash until it changes, so hashing reads what changed since the last time.
+- `tide_world_pack(w, out, capacity)` and `tide_world_unpack(w, data, size)`: the world as bytes, as sessions send it.
 - `tide_world_entity_count(w)` and `tide_world_print(w)`, for debugging.
 - Text fields are offsets into the world's heap: read one with `tide_text_read(&w->heap, field)`.
 
 **Local state**
 
-- `tide_local` is this machine's local state, outside every world. `tide_local_init(local)` clears it and sets its defaults. `TIDE_MAIN_IS_LOCAL` is defined when `Main` is local.
+- `tide_local` is this machine's local state, outside every world. `tide_local_init(local)` clears it and sets its defaults, and `tide_local_free(local)` lets it go. `TIDE_MAIN_IS_LOCAL` is defined when `Main` is local.
 - `tide_frame(w, previous, alpha, local, draw, gui)` runs every view once, blending the match between `previous` and `w` by `alpha`, then applies the local changes they made. Pass `NULL` and 1 to draw `w` as it is, and `NULL` for `w` outside a match.
 
 **Input**
@@ -74,13 +76,6 @@ tide_gui_end(&gui, &draw);
 tide_platform_draw(&draw);
 ```
 
-## Limits
+## Memory
 
-The generated code and the engine library read these compile definitions. To raise one, define it for the whole build, not only the game's target, since the engine's own sources depend on it too:
-
-| Definition | Default |
-|---|---|
-| `TIDE_MAX_ENTITIES` | 16384 |
-| `TIDE_ARCHETYPE_CAPACITY` | 1024 entities per archetype |
-| `TIDE_MAX_COMMANDS` | 4096 structural changes and events per tick |
-| `TIDE_HEAP_BYTES` | 256 KiB of text and lists per world |
+Worlds grow as they need, with no limits but memory: entities, rows of each archetype, structural changes and events in a tick, and the text and lists in a world's heap. Running out of memory ends the program, saying so. An archetype keeps its rows in chunks, and the first starts small, so archetypes with a few entities take little memory.

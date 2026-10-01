@@ -478,7 +478,7 @@ event(Spawned) Arm(with Player)
 - `event` is only a keyword at the start of a declaration, like `input`.
 - A trigger's name is optional for any event: a handler that doesn't read the event leaves it out.
 - `Spawned` handlers run as the spawn is applied, and `Destroyed` handlers just before the entity goes, both in the queue's order. A spawn's `Spawned` handlers run before the next change in the queue.
-- Structural changes and events share one queue per tick, `TIDE_MAX_COMMANDS` long (4096 by default). What handlers record goes on its end, so an endless chain of events fills it, and the program stops with a message naming the define to raise.
+- Structural changes and events share one queue per tick, which grows as it needs. What handlers record goes on its end, so an endless chain of events never ends: it goes on until memory runs out.
 - Events can be locals (`var h = hit;`) and can be sent on (`other.Send(hit)`), but they can't be fields, function parameters or system parameters.
 - `[Before]` and `[After]` only order handlers of the same event. Handlers and systems are ordered separately.
 - Games can't send the built-in events. The host sends `PlayerJoined` and `PlayerLeft` with `tide_world_player_joined` and `tide_world_player_left`: they're handled at the end of the next tick, before anything that tick sends. `tide/run.h` has player 0 join before the first tick.
@@ -560,8 +560,8 @@ system Advance(mut Match match)
 
 - `string` is text, as a value: assigning copies it, and nothing is ever shared.
 - A string's `Length` counts characters (Unicode code points), not bytes.
-- Components, singletons, structs and events can hold text. A world keeps it in its heap, part of the world, with a size fixed when the game is built, so snapshots copy it and every machine runs out of room at the same point.
-- Nothing about text fails: past the end of a string, positions are clamped, and when there's no room left, text stops growing.
+- Components, singletons, structs and events can hold text. A world keeps it in its heap, part of the world, so snapshots have it too. The heap grows as it needs, with no limit but memory.
+- Nothing about text fails: past the end of a string, positions are clamped. Text that code makes stops growing when the scratch area is full.
 
 ### Provisional
 
@@ -573,7 +573,6 @@ system Advance(mut Match match)
 - `Length`, and the methods `Contains`, `StartsWith`, `EndsWith`, `IndexOf` (-1 if it's not there), `Substring(start)` and `Substring(start, length)`, `ToUpper` and `ToLower` (ASCII letters only, for now), `Trim` and `Replace(from, to)`.
 - Text that code makes, joining and formatting, lives in a scratch area that's cleared once the system, view or handler that made it is done, for each entity. It's only ever copied into a world's heap.
 - Heap text never changes once it's written: changing a field writes new text. What's released only goes back once the code running is done, so a copy of a field made before it changed still reads the old text, with no copying.
-- The heap is 256 KiB by default (`TIDE_HEAP_BYTES`). When it's full, a field keeps its old text.
 - An input can't hold text: what players send each tick is numbers, bools and enums.
 - `GUILayout.TextField(label, mut text)` and `GUI.TextField(rect, label, mut text)`: a field the player types into, which changes the text as they type. Enter or Escape stop typing, and Backspace takes off the last character.
 - Systems that change the match's text or lists wait for each other, as their heap is one: `tidec --schedule` says "both change text or lists".
@@ -590,7 +589,7 @@ system Advance(mut Match match)
 
 - `List<T>` is a list of values, as a value: assigning or passing one copies it, and changing a copy never changes the original.
 - A world keeps its lists in its heap, like text.
-- Nothing about lists fails: past the end, a read gives the element type's zero and a write does nothing, and when there's no room left, adding does nothing.
+- Nothing about lists fails: past the end, a read gives the element type's zero and a write does nothing. A world's lists grow with its heap, and a list that code makes stops growing when the scratch area is full.
 
 ### Provisional
 

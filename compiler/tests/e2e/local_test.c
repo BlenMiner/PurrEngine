@@ -1,14 +1,50 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "game.h"
 #include "tide_test.h"
 
 static tide_world world;
-static tide_world world_before;
 static tide_local local;
-static tide_local local_before;
 static tide_draw_list draw;
 static tide_gui gui;
+
+// A world's bytes (tide_world_pack), to see later whether it changed.
+static uint8_t *world_bytes(const tide_world *w, uint32_t *size)
+{
+    *size = tide_world_pack(w, NULL, 0);
+    uint8_t *bytes = malloc(*size);
+    tide_world_pack(w, bytes, *size);
+    return bytes;
+}
+
+static bool world_is(const tide_world *w, uint8_t *bytes, const uint32_t size)
+{
+    uint32_t now_size;
+    uint8_t *now = world_bytes(w, &now_size);
+    const bool same = now_size == size && memcmp(now, bytes, size) == 0;
+    free(now);
+    free(bytes);
+    return same;
+}
+
+static uint8_t *local_bytes(const tide_local *l, uint32_t *size)
+{
+    *size = tide_local_pack(l, NULL, 0);
+    uint8_t *bytes = malloc(*size);
+    tide_local_pack(l, bytes, *size);
+    return bytes;
+}
+
+static bool local_is(const tide_local *l, uint8_t *bytes, const uint32_t size)
+{
+    uint32_t now_size;
+    uint8_t *now = local_bytes(l, &now_size);
+    const bool same = now_size == size && memcmp(now, bytes, size) == 0;
+    free(now);
+    free(bytes);
+    return same;
+}
 
 static void start(void)
 {
@@ -53,19 +89,21 @@ TIDE_TEST(local_frames_leave_the_match_alone)
 {
     start();
     tide_world_tick(&world);
-    memcpy(&world_before, &world, sizeof world);
+    uint32_t size;
+    uint8_t *before = world_bytes(&world, &size);
     frame(&world);
     frame(&world);
-    TIDE_CHECK(memcmp(&world_before, &world, sizeof world) == 0);
+    TIDE_CHECK(world_is(&world, before, size));
 }
 
 TIDE_TEST(local_ticks_leave_local_state_alone)
 {
     start();
     frame(&world);
-    memcpy(&local_before, &local, sizeof local);
+    uint32_t size;
+    uint8_t *before = local_bytes(&local, &size);
     tide_world_tick(&world);
-    TIDE_CHECK(memcmp(&local_before, &local, sizeof local) == 0);
+    TIDE_CHECK(local_is(&local, before, size));
 }
 
 TIDE_TEST(local_views_run_outside_a_match)

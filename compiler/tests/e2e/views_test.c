@@ -1,13 +1,32 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "game.h"
 #include "tide_test.h"
 
 static tide_world world;
-static tide_world before;
 static tide_local local;
 static tide_draw_list draw;
 static tide_gui gui;
+
+// A world's bytes (tide_world_pack), to see later whether it changed.
+static uint8_t *world_bytes(const tide_world *w, uint32_t *size)
+{
+    *size = tide_world_pack(w, NULL, 0);
+    uint8_t *bytes = malloc(*size);
+    tide_world_pack(w, bytes, *size);
+    return bytes;
+}
+
+static bool world_is(const tide_world *w, uint8_t *bytes, const uint32_t size)
+{
+    uint32_t now_size;
+    uint8_t *now = world_bytes(w, &now_size);
+    const bool same = now_size == size && memcmp(now, bytes, size) == 0;
+    free(now);
+    free(bytes);
+    return same;
+}
 
 static bool same_color(const tide_color a, const tide_color b)
 {
@@ -79,12 +98,13 @@ TIDE_TEST(views_leave_the_world_alone)
 {
     tide_world_init(&world, 1.0f);
     tide_world_tick(&world);
-    memcpy(&before, &world, sizeof world);
+    uint32_t size;
+    uint8_t *before = world_bytes(&world, &size);
     tide_local_init(&local);
     tide_draw_reset(&draw);
     tide_frame(&world, NULL, 1.0f, &local, &draw, &gui);
     tide_frame(&world, NULL, 1.0f, &local, &draw, &gui);
-    TIDE_CHECK(memcmp(&before, &world, sizeof world) == 0);
+    TIDE_CHECK(world_is(&world, before, size));
     TIDE_CHECK(draw.count == 22); // Drawing twice without a reset adds up
 }
 

@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "game.h"
@@ -5,6 +6,22 @@
 
 static tide_world world;
 static tide_world copy;
+
+// Whether two worlds hold the same: the same bytes (tide_world_pack, which
+// leaves out where their pages are), and the same hash.
+static bool same(const tide_world *a, const tide_world *b)
+{
+    const uint32_t size = tide_world_pack(a, NULL, 0);
+    if (tide_world_pack(b, NULL, 0) != size) return false;
+    uint8_t *x = malloc(size);
+    uint8_t *y = malloc(size);
+    tide_world_pack(a, x, size);
+    tide_world_pack(b, y, size);
+    const bool equal = memcmp(x, y, size) == 0;
+    free(x);
+    free(y);
+    return equal && tide_world_hash(a) == tide_world_hash(b);
+}
 
 static bool reads(const tide_world *w, const tide_text t, const char *expected)
 {
@@ -29,7 +46,6 @@ TIDE_TEST(text_fields_keep_their_own_text)
     TIDE_CHECK(reads(&world, world.Log.last, "nobodys said hi"));
     TIDE_CHECK(reads(&world, world.Log.status, "tick 0"));
     TIDE_CHECK(world.heap.pending == 0);
-    TIDE_CHECK(world.heap.failed == 0);
 
     tide_world_tick(&world);
     TIDE_CHECK(tide_get_Named(&world, (tide_entity){2, 1}) == NULL); // Destroyed, its text released
@@ -41,12 +57,12 @@ TIDE_TEST(text_fields_snapshot_and_repeat)
 {
     tide_world_init(&world, 1.0f);
     tide_world_tick(&world);
-    memcpy(&copy, &world, sizeof world); // A snapshot, heap and all
+    tide_world_copy(&copy, &world); // A snapshot, heap and all
     for (int i = 0; i < 5; i++) {
         tide_world_tick(&world);
         tide_world_tick(&copy);
     }
-    TIDE_CHECK(memcmp(&world, &copy, sizeof world) == 0);
+    TIDE_CHECK(same(&world, &copy));
 }
 
 TIDE_TEST(text_fields_reuse_their_memory)

@@ -30,6 +30,24 @@ static void say_carried(const tide_layout *from, const tide_layout *to, const ui
     printf("\n");
 }
 
+// A world, or local state, carried over to a new build's layout from its bytes
+// (tide_world_pack, tide_local_pack): made in `to`, zeroed, by the new build's
+// `unpack`. False, with `done->failed` saying why, if it can't be.
+static bool carry_bytes(const tide_layout *old, const tide_layout_world *old_world, const void *bytes,
+                        const uint32_t size, const tide_layout *now, const tide_layout_world *now_world,
+                        bool (*unpack)(void *, const uint8_t *, uint32_t), void *to, tide_migration *done)
+{
+    void *carried = NULL;
+    uint32_t carried_size = 0;
+    bool ok = tide_migrate_world(old, old_world, bytes, size, now, now_world, &carried, &carried_size, done);
+    if (ok && !unpack(to, carried, carried_size)) {
+        snprintf(done->failed, sizeof done->failed, "the new build couldn't take what was carried over");
+        ok = false;
+    }
+    free(carried);
+    return ok;
+}
+
 #if defined(__wasm__)
 
 #include "tide_web.h"
@@ -43,8 +61,8 @@ _Noreturn void tide_host_run_library(const tide_run_desc *desc, const char *dir)
 }
 
 // What a program leaves the next one: this, then its layout (packed), its
-// match's world as the server has it, its local state and its GUI, each
-// 8-aligned.
+// match's world as the server has it and its local state, as bytes
+// (tide_world_pack, tide_local_pack), and its GUI, each 8-aligned.
 #define SAVED_MAGIC 0x53525550u // "PURS"
 
 typedef struct saved {
@@ -83,9 +101,9 @@ __attribute__((export_name("tide_reload_save"))) uint32_t tide_reload_save(void)
     h.layout = align8(sizeof h);
     h.layout_size = layout_size;
     h.world = align8(h.layout + layout_size);
-    h.world_size = world ? game->game->world_size : 0u;
+    h.world_size = world ? game->game->pack_world(world, NULL, 0) : 0u;
     h.local = align8(h.world + h.world_size);
-    h.local_size = game->local_size;
+    h.local_size = game->local_pack(tide_run_local, NULL, 0);
     h.gui = align8(h.local + h.local_size);
     h.gui_size = sizeof tide_run_gui;
     h.size = h.gui + h.gui_size;
@@ -97,8 +115,8 @@ __attribute__((export_name("tide_reload_save"))) uint32_t tide_reload_save(void)
     memset(block, 0, h.size);
     memcpy(block, &h, sizeof h);
     memcpy(block + h.layout, layout, layout_size);
-    if (world) memcpy(block + h.world, world, h.world_size);
-    memcpy(block + h.local, tide_run_local, h.local_size);
+    if (world) game->game->pack_world(world, block + h.world, h.world_size);
+    game->local_pack(tide_run_local, block + h.local, h.local_size);
     memcpy(block + h.gui, &tide_run_gui, h.gui_size);
     free(layout);
     return (uint32_t)(uintptr_t)block;
@@ -132,16 +150,18 @@ static bool resume(void)
     tide_migration match_done = {0};
     bool ok = local && (world || !h.world_size);
     if (ok) {
-        ok = tide_migrate_world(old, &old->local, block + h.local, game->layout, &game->layout->local, local,
-                                &local_done);
+        ok = carry_bytes(old, &old->local, block + h.local, h.local_size, game->layout, &game->layout->local,
+                         game->local_unpack, local, &local_done);
     }
     if (ok && world) {
-        ok = tide_migrate_world(old, &old->match, block + h.world, game->layout, &game->layout->match, world,
-                                &match_done);
+        ok = carry_bytes(old, &old->match, block + h.world, h.world_size, game->layout, &game->layout->match,
+                         game->game->unpack_world, world, &match_done);
     }
     if (!ok) {
         const char *why = local_done.failed[0] ? local_done.failed : match_done.failed;
         printf("tide: reloaded, and started over: %s\n", why[0] ? why : "there wasn't enough memory");
+        if (local) game->local_free(local);
+        if (world) game->game->free_world(world);
         free(local);
         free(world);
         free(block);
@@ -156,6 +176,7 @@ static bool resume(void)
     if (h.gui_size == sizeof tide_run_gui) memcpy(&tide_run_gui, block + h.gui, sizeof tide_run_gui);
     if (h.hash == game->game->hash) printf("tide: reloaded\n");
     else say_carried(old, game->layout, local_done.entities_dropped + match_done.entities_dropped);
+    if (world) game->game->free_world(world);
     free(world);
     free(block);
     return true;
@@ -296,18 +317,38 @@ static const tide_host_game *load(const uint32_t build, void **library)
 // the server's, or the client's when another machine runs it: what's said of
 // the carrying over is about that one.
 typedef struct match_carry {
-    const tide_layout *from;
-    const tide_layout *to;
+    const tide_host_game *from;
+    const tide_host_game *to;
     tide_migration first;
     tide_migration failed;
     int worlds;
 } match_carry;
 
+// A world, or local state, of the old build, packed by `pack` and carried over
+// to the new one's (see carry_bytes).
+static bool carry_world(uint32_t (*pack)(const void *, uint8_t *, uint32_t), const void *from, const tide_layout *old,
+                        const tide_layout_world *old_world, const tide_layout *now, const tide_layout_world *now_world,
+                        bool (*unpack)(void *, const uint8_t *, uint32_t), void *to, tide_migration *done)
+{
+    *done = (tide_migration){0};
+    const uint32_t size = pack(from, NULL, 0);
+    uint8_t *bytes = malloc(size);
+    if (!bytes) {
+        snprintf(done->failed, sizeof done->failed, "there wasn't enough memory");
+        return false;
+    }
+    pack(from, bytes, size);
+    const bool ok = carry_bytes(old, old_world, bytes, size, now, now_world, unpack, to, done);
+    free(bytes);
+    return ok;
+}
+
 static bool carry_match(void *user, const void *from, void *to)
 {
     match_carry *m = user;
     tide_migration done;
-    const bool ok = tide_migrate_world(m->from, &m->from->match, from, m->to, &m->to->match, to, &done);
+    const bool ok = carry_world(m->from->game->pack_world, from, m->from->layout, &m->from->layout->match, m->to->layout,
+                                &m->to->layout->match, m->to->game->unpack_world, to, &done);
     if (m->worlds++ == 0) m->first = done;
     if (!ok) m->failed = done;
     return ok;
@@ -325,20 +366,22 @@ static bool carry_over(const tide_host_game *next)
     void *local = calloc(1, next->local_size);
     void *start = calloc(1, next->game->start_size);
     tide_migration local_done = {0};
-    match_carry match = {old->layout, next->layout, {0}, {0}, 0};
+    match_carry match = {old, next, {0}, {0}, 0};
     bool ok = local && start;
     if (ok) {
-        ok = tide_migrate_world(old->layout, &old->layout->local, tide_run_local, next->layout, &next->layout->local,
-                                local, &local_done);
+        ok = carry_world(old->local_pack, tide_run_local, old->layout, &old->layout->local, next->layout,
+                         &next->layout->local, next->local_unpack, local, &local_done);
     }
     if (ok) ok = tide_session_migrate(tide_run_session, next->game, carry_match, &match);
     if (!ok) {
         const char *why = local_done.failed[0] ? local_done.failed : match.failed.failed;
         printf("tide: reloaded, and started over: %s\n", why[0] ? why : "there wasn't enough memory");
+        if (local) next->local_free(local);
         free(local);
         free(start);
         return false;
     }
+    old->local_free(tide_run_local);
     free(tide_run_local);
     free(tide_run_start);
     tide_run_local = local;

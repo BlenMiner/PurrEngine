@@ -19,7 +19,7 @@ TIDE_TEST(crlf_text_ends_where_the_line_does)
     bool plain = false;
     bool formatted = false;
     for (uint32_t i = 0; i < world.entities.next_unused; i++) {
-        const tide_entity e = {i, world.entities.slots[i].generation};
+        const tide_entity e = tide_entity_in_slot(&world.entities, i);
         const Label *label = tide_get_Label(&world, e);
         if (!label) continue;
         labels++;

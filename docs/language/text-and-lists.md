@@ -1,6 +1,6 @@
 # Text and lists
 
-Text and lists are values, like everything else: assigning one copies it, and changing a copy never changes the original. Nothing about them fails, either. Past the end, positions are clamped, and when there's no room left, they stop growing.
+Text and lists are values, like everything else: assigning one copies it, and changing a copy never changes the original. Nothing about them fails, either: past the end, positions are clamped.
 
 ## Text
 
@@ -87,9 +87,9 @@ Elements are built-in types, text, enums and structs. Lists of lists, and struct
 
 ## Where they live
 
-A world keeps the text and lists in its components in its **heap**, which is part of the world. So a snapshot copies them with everything else, and every machine runs out of room at the same point. The heap is 256 KiB by default. When it's full, a field keeps its old text, and adding to a list does nothing.
+A world keeps the text and lists in its components in its **heap**, which is part of the world. So a snapshot has them with everything else. The heap grows as it needs, with no limit but memory.
 
-Text and lists that code makes along the way, joining text, say, live in a scratch area that's cleared once the system, view or handler is done, and are only copied into the world when they're stored in it.
+Text and lists that code makes along the way, joining text, say, live in a scratch area that's cleared once the system, view or handler is done, and are only copied into the world when they're stored in it. The scratch area is 1 MiB: when it's full, what code makes stops growing.
 
 An input can't hold text or lists: what players send every tick is numbers, bools and enums.
 

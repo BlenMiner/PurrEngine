@@ -69,6 +69,12 @@ static windows windows_for(const uint32_t rate)
     return (windows){prediction, prediction + 8u, history};
 }
 
+// Lets go of what a world has, before its memory goes. NULL does nothing.
+static void free_world(const tide_game *g, void *world)
+{
+    if (world && g->free_world) g->free_world(world);
+}
+
 static uint32_t millis(const double t)
 {
     return t > 0.0 ? (uint32_t)(uint64_t)(t * 1000.0) : 0u;
@@ -267,14 +273,24 @@ static void stop_sending(connection *c)
     c->sending = false;
 }
 
-// Packs the world as it is now, before the next tick, to send it.
+// Packs the world as it is now, before the next tick, to send it: its size
+// as bytes (tide_game.pack_world), then those bytes with runs of zeros packed.
 static void start_snapshot(tide_server *s, connection *c)
 {
     stop_sending(c);
-    const uint32_t bound = tide_zeros_bound(s->game->world_size);
-    c->snapshot = malloc(bound);
-    if (!c->snapshot) return;
-    c->snapshot_size = tide_zeros_pack(s->world, s->game->world_size, c->snapshot, bound);
+    const uint32_t size = s->game->pack_world(s->world, NULL, 0);
+    uint8_t *image = malloc(size);
+    const uint32_t bound = tide_zeros_bound(size);
+    c->snapshot = image ? malloc(4u + (size_t)bound) : NULL;
+    if (!c->snapshot) {
+        free(image);
+        return;
+    }
+    s->game->pack_world(s->world, image, size);
+    tide_writer w = {c->snapshot, 4u, 0, false};
+    tide_write_u32(&w, size);
+    c->snapshot_size = 4u + tide_zeros_pack(image, size, c->snapshot + 4u, bound);
+    free(image);
     c->chunk_count = (c->snapshot_size + CHUNK - 1u) / CHUNK;
     c->chunk_sent = calloc(c->chunk_count ? c->chunk_count : 1u, sizeof *c->chunk_sent);
     c->snapshot_tick = s->tick;
@@ -733,6 +749,7 @@ void tide_server_destroy(tide_server *s)
     }
     for (uint32_t i = 0; s->frames && i < s->w.history; i++) free(s->frames[i].data);
     free(s->frames);
+    free_world(s->game, s->world);
     free(s->world);
     free(s->frame);
     free(s->packet);
@@ -1188,7 +1205,13 @@ static void load_snapshot(tide_client *c)
     // Ahead of the world that came, it keeps its predicted ticks, which it runs again
     const uint32_t tick = c->snapshot_tick;
     if (!c->loaded || c->ahead < tick) c->verified = c->ahead = tick;
-    const bool ok = tide_zeros_unpack(c->snapshot, c->snapshot_size, world_at(c, tick), c->game->world_size);
+    // Its size as bytes, then the bytes with runs of zeros packed (see start_snapshot)
+    tide_reader r = {c->snapshot, c->snapshot_size, 0, false};
+    const uint32_t size = tide_read_u32(&r);
+    uint8_t *image = r.failed ? NULL : malloc(size ? size : 1u);
+    const bool ok = image && tide_zeros_unpack(c->snapshot + 4u, c->snapshot_size - 4u, image, size)
+                 && c->game->unpack_world(world_at(c, tick), image, size);
+    free(image);
     stop_receiving(c);
     if (!ok) {
         c->need_snapshot = true;
@@ -1389,7 +1412,10 @@ void tide_client_destroy(tide_client *c)
     free(c->frames);
     free(c->input_tick);
     free(c->input_size);
-    for (uint32_t i = 0; c->worlds && i < c->ring; i++) free(c->worlds[i]);
+    for (uint32_t i = 0; c->worlds && i < c->ring; i++) {
+        free_world(c->game, c->worlds[i]);
+        free(c->worlds[i]);
+    }
     free(c->worlds);
     free(c->inputs);
     free(c->input);
@@ -1730,8 +1756,9 @@ typedef struct client_migration {
     uint8_t *inputs;
 } client_migration;
 
-static void discard_server_migration(server_migration *m)
+static void discard_server_migration(const tide_game *g, server_migration *m)
 {
+    free_world(g, m->world);
     free(m->world);
     free(m->frame);
     free(m->input);
@@ -1740,9 +1767,12 @@ static void discard_server_migration(server_migration *m)
     for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) free(m->inputs[i]);
 }
 
-static void discard_client_migration(const tide_client *c, client_migration *m)
+static void discard_client_migration(const tide_client *c, const tide_game *g, client_migration *m)
 {
-    for (uint32_t i = 0; m->worlds && i < c->ring; i++) free(m->worlds[i]);
+    for (uint32_t i = 0; m->worlds && i < c->ring; i++) {
+        free_world(g, m->worlds[i]);
+        free(m->worlds[i]);
+    }
     free(m->worlds);
     free(m->input);
     free(m->inputs);
@@ -1770,6 +1800,7 @@ static bool prepare_server(const tide_server *s, const tide_game *g, const tide_
 // last ones stand for them until new ones arrive.
 static void commit_server(tide_server *s, const tide_game *g, server_migration *m)
 {
+    free_world(s->game, s->world);
     free(s->world);
     free(s->frame);
     free(s->input);
@@ -1818,7 +1849,10 @@ static bool prepare_client(const tide_client *c, const tide_game *g, const tide_
 // for them, were the old build's.
 static void commit_client(tide_client *c, const tide_game *g, client_migration *m)
 {
-    for (uint32_t i = 0; i < c->ring; i++) free(c->worlds[i]);
+    for (uint32_t i = 0; i < c->ring; i++) {
+        free_world(c->game, c->worlds[i]);
+        free(c->worlds[i]);
+    }
     free(c->worlds);
     c->worlds = m->worlds;
     free(c->input);
@@ -1854,12 +1888,12 @@ bool tide_session_migrate(tide_session *s, const tide_game *game, const tide_mig
     server_migration sm = {0};
     client_migration cm = {0};
     if (s->server && !prepare_server(s->server, game, migrate, user, &sm)) {
-        discard_server_migration(&sm);
+        discard_server_migration(game, &sm);
         return false;
     }
     if (s->client && !prepare_client(s->client, game, own ? NULL : migrate, user, &cm)) {
-        discard_server_migration(&sm);
-        discard_client_migration(s->client, &cm);
+        discard_server_migration(game, &sm);
+        discard_client_migration(s->client, game, &cm);
         return false;
     }
     if (s->server) commit_server(s->server, game, &sm);
