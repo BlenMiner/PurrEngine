@@ -68,15 +68,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Windows and Linux build with the LLVM tide's built-in clang comes from
+      # (cmake/LLVM.cmake), which builds players' games: the runners' own is
+      # older. clang-toolchain.cmake finds it through LLVM_ROOT.
+      - name: LLVM version
+        run: |
+          version=$(sed -nE 's/^set\(TIDE_LLVM_VERSION ([0-9.]+)\).*/\1/p' cmake/LLVM.cmake)
+          test -n "$version"
+          echo "LLVM_VERSION=$version" >> "$GITHUB_ENV"
+      # LLVM's own packages, of the same major version.
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
         run: |
+          major=${LLVM_VERSION%%.*}
+          codename=$(lsb_release -cs)
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-$major main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install -y clang lld ninja-build zstd libx11-dev libxrandr-dev libxinerama-dev \
-            libxcursor-dev libxi-dev libgl1-mesa-dev
+          sudo apt-get install -y clang-$major lld-$major llvm-$major ninja-build zstd libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+          echo "LLVM_ROOT=/usr/lib/llvm-$major" >> "$GITHUB_ENV"
+      # LLVM's own release, the very archive tide's package unpacks: its
+      # programs and clang's headers.
       - name: Install tools (Windows)
         if: runner.os == 'Windows'
-        run: choco install ninja zstandard -y --no-progress
+        run: |
+          choco install ninja zstandard -y --no-progress
+          name="clang+llvm-$LLVM_VERSION-x86_64-pc-windows-msvc"
+          mkdir -p /c/llvm
+          curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$name.tar.zst" \
+            | zstd -d -q --long=31 | tar -x -f - -C /c/llvm --strip-components=1 "$name/bin" "$name/lib/clang"
+          echo "LLVM_ROOT=C:/llvm" >> "$GITHUB_ENV"
       # Apple's clang builds native code; web builds need Homebrew's LLVM, and its lld for wasm-ld.
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
