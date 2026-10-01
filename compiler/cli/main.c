@@ -36,7 +36,7 @@ static void usage(void)
            "run and build:\n"
            "  --release          optimized, the way players get it\n"
            "  --web              a web page (WebGL 2), with clang's WebAssembly target\n"
-           "  --title <title>    the window's title (default: the folder's name)\n"
+           "  --title <title>    the window's title (default: the game's title setting, or the folder's name)\n"
            "  --stats            show the tick, the entity count, the ping and the frame rate\n"
            "  -o <path>          build: where the program goes\n"
            "  --no-open          run --web: serve the page without opening a browser\n"

@@ -1,4 +1,4 @@
-// expect: Session has no 'Begin'; it has Start, Open, Close, Kick, KickAll, Join, Connect and Leave
+// expect: Session has no 'Begin'; it has Start, Open, Close, Kick, KickAll, End, Join, Connect and Leave
 local scene Main { }
 view Menu()
 {

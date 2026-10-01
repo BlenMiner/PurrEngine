@@ -34,6 +34,6 @@ event(Spawned) Setup(with Main)
 - A file has at most one namespace, and files without one are in the global namespace. Namespaces can be dotted: `namespace Game.Combat;`.
 - `namespace` and `using` come before any declaration.
 - A plain name is looked up in the file's namespace, then the namespaces around it, then the `using` ones, then the global namespace. If two `using` namespaces both have it, it's ambiguous: write the namespace.
-- Qualified names work wherever a type is named: parameters (`mut Combat.Health health`), `with` and `without`, component values, `Spawn`, `Add` and `Remove`, and `[Before]` and `[After]` (`[After(Physics.Gravity)]`).
+- Qualified names work wherever a type is named: parameters (`mut Combat.Health health`), `with` and `without`, component values, `Spawn`, `Add` and `Remove`, and `[Before]` and `[After]` (`[After(Physics.Gravity)]`). They work for constants too: `Combat.CRIT_MULTIPLIER`.
 - The same name can be declared in different namespaces.
 - There's exactly one `Main` in a game, in any file or namespace.

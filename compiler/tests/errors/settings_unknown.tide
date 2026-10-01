@@ -1,0 +1,3 @@
+// expect: did you mean 'tickRate'?
+settings { tickRat = 30; }
+scene Main { }

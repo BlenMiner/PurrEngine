@@ -18,6 +18,9 @@
 // tells rooms apart, so a transport left over from the last one does nothing.
 static uint32_t backend_host(void);
 static uint32_t backend_join(const char *code);
+static uint32_t backend_migrate(const char *code, const char *key);
+static int backend_moved(uint32_t number); // tide_platform_room_migrated's answer, for room `number`
+static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1]);
 static void backend_close(uint32_t number);
 static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1]);
 static bool backend_failed(void);
@@ -36,6 +39,21 @@ static uint32_t backend_host(void)
 static uint32_t backend_join(const char *code)
 {
     return tide_web_room_join(code);
+}
+
+static uint32_t backend_migrate(const char *code, const char *key)
+{
+    return tide_web_room_migrate(code, key);
+}
+
+static int backend_moved(const uint32_t number)
+{
+    return tide_web_room_migrated(number);
+}
+
+static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1])
+{
+    tide_web_room_key(out);
 }
 
 static void backend_close(const uint32_t number)
@@ -79,12 +97,15 @@ typedef struct room_peer {
 typedef struct native_room {
     uint32_t number;
     bool hosting;
+    bool moving; // Host migration: the relay says whether it hosts the room or joins it (`moved`, see backend_moved)
+    int moved;
     bool failed;
     bool reachable; // Hosting: the relay knows the room
     bool connected; // Joining: the host is reached
     double opened;
     double join_again; // Joining a room the relay doesn't know yet: when to ask again
     char code[TIDE_ROOM_CODE_LENGTH + 1];
+    char key[TIDE_ROOM_KEY_LENGTH + 1]; // Lets its players meet in it again, with host migration
     rtc_ws ws;
     bool ws_live;
     double reconnect_at;
@@ -112,6 +133,14 @@ static void new_code(char code[TIDE_ROOM_CODE_LENGTH + 1])
     rtc_random(r, sizeof r);
     for (int i = 0; i < TIDE_ROOM_CODE_LENGTH; i++) code[i] = TIDE_ROOM_CODE_LETTERS[r[i] & 31];
     code[TIDE_ROOM_CODE_LENGTH] = '\0';
+}
+
+// A room's key: 128 random bits, in hex.
+static void new_key(char key[TIDE_ROOM_KEY_LENGTH + 1])
+{
+    uint8_t r[TIDE_ROOM_KEY_LENGTH / 2];
+    rtc_random(r, sizeof r);
+    for (int i = 0; i < TIDE_ROOM_KEY_LENGTH / 2; i++) snprintf(key + 2 * i, 3, "%02x", r[i]);
 }
 
 static void relay_send(native_room *r, const char *json)
@@ -150,6 +179,7 @@ static void relay_lost(native_room *r, const double now)
         r->reconnect_at = now + 1.0;
     } else if (!r->connected && !r->failed) {
         r->failed = true;
+        if (r->moving) r->moved = -1;
         fprintf(stderr, "tide: can't reach the relay at %s to join room %s\n", relay_url(), r->code);
     }
 }
@@ -241,18 +271,35 @@ static void on_relay(native_room *r, const char *text)
 {
     const rtc_json m = rtc_json_of(text, strlen(text));
     if (!m.text) return;
-    char code[16], json[64];
+    char code[16], json[128];
     double n = 0;
     if (rtc_json_get(m, "relay").text) {
         read_ice(r, rtc_json_get(m, "ice"));
-        snprintf(json, sizeof json, "{\"%s\":\"%s\"}", r->hosting ? "host" : "join", r->code);
+        if (r->moving) snprintf(json, sizeof json, "{\"migrate\":\"%s\",\"key\":\"%s\"}", r->code, r->key);
+        else if (r->hosting) snprintf(json, sizeof json, "{\"host\":\"%s\",\"key\":\"%s\"}", r->code, r->key);
+        else snprintf(json, sizeof json, "{\"join\":\"%s\"}", r->code);
         relay_send(r, json);
     } else if (rtc_json_get(m, "hosting").text) {
         r->reachable = true;
+        if (r->moving) { // The room's host was gone: this machine is now
+            r->moving = false;
+            r->hosting = true;
+            r->moved = 1;
+        }
+    } else if (rtc_json_get(m, "taken").text && r->moving) { // Another key: not the match it was in
+        r->moving = false;
+        r->failed = true;
+        r->moved = -1;
+        fprintf(stderr, "tide: room %s has another match now\n", r->code);
     } else if (rtc_json_get(m, "taken").text) {
         new_code(r->code);
-        snprintf(json, sizeof json, "{\"host\":\"%s\"}", r->code);
+        snprintf(json, sizeof json, "{\"host\":\"%s\",\"key\":\"%s\"}", r->code, r->key);
         relay_send(r, json);
+    } else if (rtc_json_string(rtc_json_get(m, "lost"), code, sizeof code) && r->hosting) {
+        // Its players took the room over, thinking it gone: it hosts it no more
+        r->failed = true;
+        r->reachable = false;
+        fprintf(stderr, "tide: room %s has another host now\n", code);
     } else if (rtc_json_string(rtc_json_get(m, "missing"), code, sizeof code) && !r->hosting
                && rtc_now() - r->opened < 5.0) {
         // A room its host just opened, which the relay may not know yet
@@ -269,6 +316,10 @@ static void on_relay(native_room *r, const char *text)
                     code);
         }
     } else if (rtc_json_get(m, "joined").text) {
+        if (r->moving) { // The room's host is there: this machine joins it
+            r->moving = false;
+            r->moved = 2;
+        }
         if (!r->hosting && !r->peer_count && !add_peer(r, true, 0, 0)) r->failed = true;
     } else if (rtc_json_number(rtc_json_get(m, "peer"), &n)) {
         if (r->hosting) add_peer(r, false, r->next_number++, (int)n);
@@ -288,7 +339,7 @@ static void on_relay(native_room *r, const char *text)
 static void pump(native_room *r)
 {
     const double now = rtc_now();
-    const bool joining = !r->hosting && !r->connected && !r->failed && r->reconnect_at > 0.0;
+    const bool joining = !r->hosting && !r->connected && !r->failed && r->reconnect_at > 0.0; // Or migrating
     if (!r->ws_live && (r->hosting || joining) && now >= r->reconnect_at) relay_connect(r, now);
     if (r->join_again > 0.0 && now >= r->join_again) {
         r->join_again = 0.0;
@@ -333,16 +384,19 @@ static void backend_close(const uint32_t number)
     room = NULL;
 }
 
-static uint32_t open_room(const bool hosting, const char *code)
+static uint32_t open_room(const bool hosting, const char *code, const char *key)
 {
     if (room) backend_close(room->number);
     room = calloc(1, sizeof *room);
     if (!room) return 0;
     room->number = ++rooms_opened;
     room->hosting = hosting;
+    room->moving = key != NULL;
     room->reachable = true;
     room->next_number = 1;
     room->opened = rtc_now();
+    if (key) snprintf(room->key, sizeof room->key, "%s", key);
+    else if (hosting) new_key(room->key);
     if (hosting) {
         new_code(room->code);
     } else {
@@ -357,6 +411,7 @@ static uint32_t open_room(const bool hosting, const char *code)
         }
         if (!valid || n != TIDE_ROOM_CODE_LENGTH) {
             room->failed = true;
+            if (room->moving) room->moved = -1;
             fprintf(stderr, "tide: '%s' isn't a room code: they're 6 letters and digits, like K7QF2M\n", code);
             return room->number;
         }
@@ -367,12 +422,30 @@ static uint32_t open_room(const bool hosting, const char *code)
 
 static uint32_t backend_host(void)
 {
-    return open_room(true, NULL);
+    return open_room(true, NULL, NULL);
 }
 
 static uint32_t backend_join(const char *code)
 {
-    return open_room(false, code);
+    return open_room(false, code, NULL);
+}
+
+static uint32_t backend_migrate(const char *code, const char *key)
+{
+    return open_room(false, code, key);
+}
+
+static int backend_moved(const uint32_t number)
+{
+    if (!room || room->number != number) return -1;
+    if (room->moving && !room->failed) pump(room);
+    if (!room || room->number != number) return -1;
+    return room->failed && room->moved == 0 ? -1 : room->moved;
+}
+
+static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1])
+{
+    snprintf(out, TIDE_ROOM_KEY_LENGTH + 1, "%s", room && room->hosting && !room->failed ? room->key : "");
 }
 
 static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1])
@@ -502,6 +575,38 @@ void tide_platform_room_code(char *out, const size_t size)
 bool tide_platform_room_failed(void)
 {
     return backend_failed();
+}
+
+void tide_platform_room_key(char *out, const size_t size)
+{
+    char key[TIDE_ROOM_KEY_LENGTH + 1] = {0};
+    backend_key(key);
+    if (size) snprintf(out, size, "%s", key);
+}
+
+// The room being migrated to (see tide_platform_room_migrate), and its code, packed.
+static uint32_t migrating_number;
+static uint32_t migrating_code;
+
+void tide_platform_room_migrate(const char *code, const char *key)
+{
+    if (!pack(code, &migrating_code)) migrating_code = TIDE_ROOM_CODE_BIT;
+    migrating_number = backend_migrate(code, key);
+}
+
+int tide_platform_room_migrated(tide_transport *out, tide_address *server)
+{
+    if (!migrating_number) return -1;
+    const int moved = backend_moved(migrating_number);
+    if (moved <= 0) {
+        if (moved < 0) migrating_number = 0;
+        return moved;
+    }
+    const uint32_t number = migrating_number;
+    migrating_number = 0;
+    *server = (tide_address){.kind = TIDE_ADDRESS_ROOM, .host = migrating_code, .port = 0};
+    // Its host's players see it as 0, as in any room it hosts; to one joining, the host has the room's code
+    return transport(number, moved == 1 ? 0u : migrating_code, out) ? moved : -1;
 }
 
 // ---------------------------------------------------------------------------

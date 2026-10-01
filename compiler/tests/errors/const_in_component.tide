@@ -1,0 +1,7 @@
+// expect: constants go at the top of a file, outside 'Health'
+component Health
+{
+    const int MAX = 100;
+    int value;
+}
+scene Main { }

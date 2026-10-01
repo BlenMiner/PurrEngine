@@ -1,0 +1,4 @@
+// expect: 'Speed' is already declared
+struct Speed { float value; }
+const float Speed = 2;
+scene Main { }

@@ -1,0 +1,4 @@
+// expect: a constant is a built-in type, text, a struct or an enum, not a component
+component Health { int value; }
+const Health FULL = Health { value = 100 };
+scene Main { }

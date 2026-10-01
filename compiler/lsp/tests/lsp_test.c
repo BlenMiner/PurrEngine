@@ -702,6 +702,92 @@ TIDE_TEST(lsp_enums_and_switch)
     TIDE_CHECK(has(symbols, "\"name\":\"Playing\",\"detail\":\"5\",\"kind\":22"));
 }
 
+TIDE_TEST(lsp_constants)
+{
+    start();
+    static const char game[] = "const int MAX = 100;\nconst float2 ORIGIN = float2(1, 2);\nstruct Stats { int armor; }\n"
+                               "const Stats START = Stats { armor = MAX / 2 };\nsingleton Match { int n = MAX; float x; }\n"
+                               "scene Main { }\nsystem S(mut Match match)\n{\n    match.n += MAX;\n    match.x = ORIGIN.y;\n}\n";
+    open_document(game);
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Laid out as the formatter would
+
+    open_document("const int MAX = 100;\nsingleton Match { int n; }\nscene Main { }\n"
+                  "system S(mut Match match) { match.n += M$AX; }\n");
+    const char *hover = request("textDocument/hover");
+    TIDE_CHECK(has(hover, "const int MAX = 100"));
+    TIDE_CHECK(has(hover, "Constant: the same on every machine"));
+    TIDE_CHECK(has(request("textDocument/definition"), "\"range\":{\"start\":{\"line\":0,\"character\":10}"));
+    TIDE_CHECK(count(request_with("textDocument/references", "\"context\":{\"includeDeclaration\":true}"), "\"uri\"") == 2);
+
+    // A value with braces in it shows whole.
+    open_document("struct Stats { int armor; }\nconst Stats ST$ART = Stats { armor = 2 };\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "const Stats START = Stats { armor = 2 }"));
+
+    const char *in_code = complete("const int MAX = 100;\nsingleton Match { int n; }\nscene Main { }\n"
+                                   "system S(mut Match match) { match.n = $ }\n");
+    TIDE_CHECK(offers(in_code, "MAX"));
+    TIDE_CHECK(offers(complete("const int MAX = 100;\nsingleton Match { int n = $ }\nscene Main { }\n"), "MAX"));
+    TIDE_CHECK(offers(complete("const float2 ORIGIN = float2(1, 2);\nsingleton Match { float x; }\nscene Main { }\n"
+                               "system S(mut Match match) { match.x = ORIGIN.$ }\n"),
+                      "y"));
+    TIDE_CHECK(offers(complete("$\n"), "const"));
+
+    open_document(game);
+    const char *symbols = request("textDocument/documentSymbol");
+    TIDE_CHECK(has(symbols, "\"name\":\"MAX\",\"detail\":\"const\",\"kind\":14"));
+
+    // Renaming one renames every use.
+    static const char program[] = "const int MAX = 100;\nsingleton Match { int n = MAX; }\nscene Main { }\n"
+                                  "system S(mut Match match) { match.n += MAX; }\n";
+    open_document("const int M$AX = 100;\nsingleton Match { int n = MAX; }\nscene Main { }\n"
+                  "system S(mut Match match) { match.n += MAX; }\n");
+    TIDE_CHECK(has(request("textDocument/prepareRename"), "\"result\":{\"start\""));
+    request_with("textDocument/rename", "\"newName\":\"LIMIT\"");
+    const char *renamed = apply_reply(program, "file:///test.tide");
+    TIDE_CHECK(has(renamed, "const int LIMIT = 100;"));
+    TIDE_CHECK(has(renamed, "int n = LIMIT;"));
+    TIDE_CHECK(has(renamed, "match.n += LIMIT;"));
+    TIDE_CHECK(!has(renamed, "MAX"));
+}
+
+TIDE_TEST(lsp_settings)
+{
+    start();
+    static const char game[] = "const int RATE = 30;\n\nsettings\n{\n    title = \"Asteroids\";\n    tickRate = RATE;\n}\n\n"
+                               "scene Main { }\n";
+    open_document(game);
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Laid out as the formatter would
+
+    open_document("settings\n{\n    tick$Rate = 30;\n}\nscene Main { }\n");
+    const char *hover = request("textDocument/hover");
+    TIDE_CHECK(has(hover, "int tickRate"));
+    TIDE_CHECK(has(hover, "Without it: 60."));
+    TIDE_CHECK(has(request("textDocument/prepareRename"), "Settings are the engine's"));
+    open_document("settings\n{\n    hostMig$ration = true;\n}\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "bool hostMigration"));
+
+    const char *empty = complete("settings\n{\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(empty, "tickRate"));
+    TIDE_CHECK(offers(empty, "title"));
+    TIDE_CHECK(!offers(empty, "float3")); // Names, not values
+    const char *rest = complete("settings\n{\n    tickRate = 30;\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(!offers(rest, "tickRate")); // Set already
+    TIDE_CHECK(offers(rest, "title"));
+    TIDE_CHECK(offers(complete("const int RATE = 30;\nsettings\n{\n    tickRate = $\n}\nscene Main { }\n"), "RATE"));
+    TIDE_CHECK(offers(complete("scene Main { }\n$\n"), "settings"));
+
+    open_document(game);
+    const char *symbols = request("textDocument/documentSymbol");
+    TIDE_CHECK(has(symbols, "\"name\":\"settings\",\"detail\":\"the engine's\",\"kind\":19"));
+    TIDE_CHECK(has(symbols, "\"name\":\"tickRate\",\"kind\":7"));
+
+    // A name that isn't a setting says which one was meant.
+    open_document("settings { tickRat = 30; }\nscene Main { }\n");
+    TIDE_CHECK(has(last_sent(), "did you mean 'tickRate'?"));
+}
+
 TIDE_TEST(lsp_default_value)
 {
     start();
@@ -1091,6 +1177,7 @@ TIDE_TEST(lsp_sessions)
     TIDE_CHECK(offers(calls, "Close"));
     TIDE_CHECK(offers(calls, "Kick"));
     TIDE_CHECK(offers(calls, "KickAll"));
+    TIDE_CHECK(offers(calls, "End"));
     TIDE_CHECK(offers(calls, "Join"));
     TIDE_CHECK(offers(calls, "Connect"));
     TIDE_CHECK(offers(calls, "Leave"));

@@ -1,0 +1,12 @@
+// expect: a case is an int or one of an enum's members, like 'case 3:'
+const float HALF = 0.5;
+singleton Match { int n; }
+scene Main { }
+system S(mut Match match)
+{
+    switch (match.n)
+    {
+        case HALF:
+            break;
+    }
+}

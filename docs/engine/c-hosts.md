@@ -10,7 +10,7 @@ tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME 
 
 - The game is every `.tide` file in the current source folder and its subfolders. `SOURCES` lists the files instead.
 - The game's C, which defines its `extern` functions (see [Calling C](../language/c-functions.md)), is every `.c` file there but the `HOST` ones, or the `.c` files listed in `SOURCES`. Unlike `tide`, CMake doesn't pick up prebuilt libraries: link them to the target yourself.
-- Without `HOST`, the game is the whole program: a generated `main` runs it in a window. On the web, it's `<target>.html`.
+- Without `HOST`, the game is the whole program: a generated `main` runs it in a window, titled `TITLE`, or the game's `title` setting, or `<target>`. On the web, it's `<target>.html`.
 - With `HOST`, those C files are the program. They include `<name>.h`, the generated header, where `NAME` defaults to `<target>`.
 - Warnings are errors in the repo's build: a warning from tidec fails it, unless part of its text is listed after `WARNINGS`, and each of those has to be there. Tests use it for programs tidec warns about on purpose.
 - `<target>_schedule` is a build target that prints the game's [schedule](./schedule.md).
@@ -29,7 +29,7 @@ int main(int argc, char **argv)
 }
 ```
 
-It opens a window and runs the game in a session (`tide/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]`, `--join code` and `--connect address` from the command line. `--host` opens the match, in a room (see [Multiplayer](../language/multiplayer.md#rooms)), and a UDP port too, except on the web. `tide_run_desc` also has `width` and `height` (960 by 540 by default), `tick_rate` (60 by default) and `stats`.
+It opens a window and runs the game in a session (`tide/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]`, `--join code` and `--connect address` from the command line. `--host` opens the match, in a room (see [Multiplayer](../language/multiplayer.md#rooms)), and a UDP port too, except on the web. `title` and `tick_rate` go over the game's settings (see [Settings](../language/basics.md#settings)): leave them out for those, and `game_name` stands in for a title the game doesn't set. `tide_run_desc` also has `width` and `height` (960 by 540 by default) and `stats`.
 
 Hosts include `tide/platform.h`, never raylib: the generated header names types after the game's components, and raylib defines many of the same names.
 
@@ -64,7 +64,8 @@ The generated header is the API between the game and its host. Namespaced declar
 
 **Sessions**
 
-- `tide_game_api` is the game as a session runs it (`tide_game` in `tide/session.h`).
+- `tide_game_api` is the game as a session runs it (`tide_game` in `tide/session.h`), with its settings: `tick_rate` and `title`, 0 and `NULL` where it sets none. A session whose desc leaves `tick_rate` at 0 starts its matches at the game's rate, or 60. The settings are in the generated `.c`, not the header, so they don't change the game's hash.
+- With host migration (`tide_game_api.host_migration`), the host that runs a match tells its session the room's code and key every frame (`tide_session_set_room`, with `tide_platform_room_code` and `tide_platform_room_key`). A session whose match lost its server says so (`tide_session_migrating`): the host goes to the room again (`tide_platform_room_migrate`), and once `tide_platform_room_migrated` says whether this machine hosts it now, calls `tide_session_take_over` or `tide_session_join`. `tide/host.h` does all of it.
 - `tide_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Start`, in order: call it until it's false. `tide_local_set_session`, `tide_local_connected` and `tide_local_disconnected` tell local code where it stands; `tide_local_set_session` takes whether the match is open too (`tide_session_status`'s `open`), and the code of the room the match is in (`tide_platform_room_code`), or `""` while it's closed; `tide_local_disconnected` takes a kick's message (`tide_session_event`'s `message`), or NULL.
 
 ## A frame

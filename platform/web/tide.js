@@ -367,6 +367,9 @@
     // channels that neither order nor resend, like UDP. A program is in one
     // room at a time: the one it hosts, or the one it joined. Players in it are
     // numbered: the host is 0 to those who join, and they're 1 and up to it.
+    // A room it hosts has a key, which lets the players of its match meet there
+    // again when it goes (host migration): the relay makes the first one there
+    // its host, and introduces the others to it.
 
     const relayUrl = config.relay || 'wss://relay.tide-engine.dev';
     const CODE_LETTERS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // No look-alikes: 0 and O, 1 and I
@@ -374,17 +377,22 @@
     let rooms = 0; // Rooms opened so far, which numbers them
 
     const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => CODE_LETTERS[b & 31]).join('');
+    const newKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
 
-    function openRoom(hosting, code) {
+    // `key`: going to the room again with it, to host it or join its host,
+    // whichever the relay says (`moved`: 1 hosting, 2 joining, -1 failed).
+    function openRoom(hosting, code, key) {
         closeRoom();
         room = {
             number: ++rooms, hosting, code, failed: false, reachable: true, connected: false, opened: performance.now(),
             ws: null, ice: [], peers: new Map(), byRelay: new Map(), next: 1, inbox: [],
+            key: key || (hosting ? newKey() : ''), moving: !!key, moved: 0,
         };
         if (/^[2-9A-HJ-NP-Z]{6}$/.test(code)) {
             connectRelay(room);
         } else {
             room.failed = true;
+            if (room.moving) room.moved = -1;
             printErr(`tide: '${code}' isn't a room code: they're 6 letters and digits, like K7QF2M`);
         }
         return room.number;
@@ -423,12 +431,27 @@
             }
             if (m.relay) {
                 r.ice = m.ice || [];
-                send(r.hosting ? { host: r.code } : { join: r.code });
+                send(r.moving ? { migrate: r.code, key: r.key } : r.hosting ? { host: r.code, key: r.key } : { join: r.code });
             } else if (m.hosting) {
                 r.reachable = true;
+                if (r.moving) { // The room's host was gone: this program is now
+                    r.moving = false;
+                    r.hosting = true;
+                    r.moved = 1;
+                }
+            } else if (m.taken && r.moving) { // Another key: not the match it was in
+                r.moving = false;
+                r.failed = true;
+                r.moved = -1;
+                printErr(`tide: room ${r.code} has another match now`);
             } else if (m.taken) {
                 r.code = newCode();
-                send({ host: r.code });
+                send({ host: r.code, key: r.key });
+            } else if (m.lost && r.hosting) {
+                // Its players took the room over, thinking it gone: it hosts it no more
+                r.failed = true;
+                r.reachable = false;
+                printErr(`tide: room ${m.lost} has another host now`);
             } else if (m.missing && !r.hosting && performance.now() - r.opened < 5000) {
                 // A room its host just opened, which the relay may not know
                 // yet (it can take a few seconds to wake up): ask again soon
@@ -441,6 +464,10 @@
                         : `tide: room ${m.closed} closed`);
                 }
             } else if (m.joined) {
+                if (r.moving) { // The room's host is there: this program joins it
+                    r.moving = false;
+                    r.moved = 2;
+                }
                 offer(r, send);
             } else if (m.peer) {
                 const peer = newPeer(r, r.next++, signal => send({ to: m.peer, signal }));
@@ -468,6 +495,7 @@
                     setTimeout(() => { if (room === r && !r.ws) connectRelay(r); }, 1000);
                 } else if (!r.connected && !r.failed) {
                     r.failed = true;
+                    if (r.moving) r.moved = -1;
                     printErr(`tide: lost the relay at ${relayUrl} while joining room ${r.code}`);
                 }
                 return;
@@ -560,6 +588,14 @@
     Object.assign(platform, {
         room_host: () => openRoom(true, newCode()),
         room_join: codePtr => openRoom(false, string(codePtr).replace(/\s+/g, '').toUpperCase()),
+        room_migrate: (codePtr, keyPtr) => openRoom(false, string(codePtr), string(keyPtr)),
+        room_migrated: number => !room || room.number !== number ? -1 : room.failed && !room.moved ? -1 : room.moved,
+        // The key of the room it hosts into `out` (33 bytes), "" for none
+        room_key(outPtr) {
+            const key = room && room.hosting && !room.failed ? room.key : '';
+            u8().set(encoder.encode(key), outPtr);
+            u8()[outPtr + key.length] = 0;
+        },
         room_close(number) { if (room && room.number === number) closeRoom(); },
         // The code into `out` (7 bytes), "" while there's none: never a room
         // that failed, nor one the relay can't be told about.

@@ -1,0 +1,4 @@
+// expect: 'A' is worked out from itself
+const int A = B + 1;
+const int B = A;
+scene Main { }

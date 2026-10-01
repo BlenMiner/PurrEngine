@@ -42,6 +42,10 @@ Views draw the predicted world, blended between its last two ticks (see [Views](
 
 A player who joins gets the whole world, packed, and a cookie. Joining the same server again with the cookie gets them their `PlayerID` back, and with it everything the game kept for them.
 
+## Host migration
+
+With the game's `hostMigration` setting, the server tells every player what they need for its match to go on without it: its room's code, the room's key (which lets only them take the room over), which players are in the match, and the SHA-256 of each one's cookie. When the server leaves or stops answering, its players go to the room again. The relay pings the room's host: if it's gone, the first player there hosts the room, and the relay introduces the others to it. That machine runs the server from the last tick it verified, with the players already in its world, and the others join it with their cookies, which it checks against the hashes. See [Multiplayer](../language/multiplayer.md#host-migration).
+
 ## Reliability
 
 Everything is sent again until it's acknowledged. Nothing waits on a reliable stream, so one lost packet never holds up the ones after it.

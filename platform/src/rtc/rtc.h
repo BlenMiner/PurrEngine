@@ -18,19 +18,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "tide/sha256.h"
+
 // ---------------------------------------------------------------------------
 // Hashes
 
-typedef struct rtc_sha256 {
-    uint32_t h[8];
-    uint64_t bytes;
-    uint8_t block[64];
-} rtc_sha256;
-
-void rtc_sha256_init(rtc_sha256 *s);
-void rtc_sha256_add(rtc_sha256 *s, const void *data, size_t size);
-void rtc_sha256_end(rtc_sha256 *s, uint8_t out[32]);
-void rtc_sha256_of(const void *data, size_t size, uint8_t out[32]);
+// SHA-256 is the engine's, which sessions use too (tide/sha256.h).
+typedef tide_sha256 rtc_sha256;
+#define rtc_sha256_init tide_sha256_init
+#define rtc_sha256_add tide_sha256_add
+#define rtc_sha256_end tide_sha256_end
+#define rtc_sha256_of tide_sha256_of
 
 typedef struct rtc_sha1 {
     uint32_t h[5];

@@ -159,6 +159,8 @@ typedef enum decl_kind {
     DECL_ENUM,     // enum Page { Title, Options }: a type with named values
     DECL_LIST,     // List<T>, one per element type: its one field is the element; in program.lists
     DECL_RESULT,   // T? or `T fails E`, one per combination: field 0 is the value, field 1 the error; in program.results
+    DECL_CONST,    // const int MAX_HEALTH = 100;: a value code reads by name, the same on every machine
+    DECL_SETTINGS, // settings { tickRate = 30; }: the engine's settings, as fields; in program.settings
 } decl_kind;
 
 // One of an enum's members: `Options`, or `Options = 3`.
@@ -189,7 +191,7 @@ typedef struct decl {
 
     // Components, singletons, inputs, records, structs and events
     VEC(field) fields;
-    int index; // Component bit / singleton index / event index / system order.
+    int index; // Component bit / singleton index / event index / system order. Constants: 1 while checking, 2 once checked.
 
     // Events
     bool world_event;        // Built-in events the engine sends to the world, never to an entity
@@ -213,7 +215,7 @@ typedef struct decl {
     bool snapped;             // Singletons: something calls .Snap() on it, so it counts its snaps
     bool shown;               // Values with fields, and lists: text shows one somewhere, so it has a text helper
     tok_kind op;              // An operator's: T_PLUS, T_EQ, ...; T_MINUS is negation with one parameter
-    str return_type_name;     // "void" if it returns nothing
+    str return_type_name;     // "void" if it returns nothing. A constant's type.
     loc return_type_at;       // Its last part, if it's qualified
     loc return_type_qual_at;
     type return_type;
@@ -223,6 +225,9 @@ typedef struct decl {
     loc fails_type_qual_at;
     type fails;               // The error type; TY_VOID if it can't fail
     type result;              // What a call gives: return_type, or `return_type fails E` (TY_FAILABLE)
+
+    // Constants
+    struct expr *value; // A constant expression of its type (return_type)
 
     // Systems, views, methods, functions, and an input's Sample
     VEC(param) params;
@@ -346,6 +351,7 @@ typedef enum binding_kind {
     BIND_FIELD, // A field of the input, named directly inside its Sample or Sanitize.
     BIND_NAMESPACE, // `Combat` in Combat.Health
     BIND_DEVICES,   // `Devices`: this machine's devices, in views and the input's Sample
+    BIND_CONST,     // A constant, MAX_HEALTH or Combat.MAX_HEALTH: `constant` is it
 } binding_kind;
 
 typedef enum input_edge {
@@ -366,7 +372,7 @@ struct expr {
     loc at;
     type type;
 
-    // E_INT, E_FLOAT
+    // E_INT, E_FLOAT. int_value is a case label's value too, worked out by the checker.
     str text;
     int64_t int_value;
 
@@ -379,6 +385,7 @@ struct expr {
     param *param;       // BIND_PARAM
     stmt *local;        // BIND_LOCAL: the S_VAR declaring it
     decl *type_decl;    // BIND_TYPE, E_LITERAL's type, and CALL_SEND's event
+    decl *constant;     // BIND_CONST, on an E_NAME or E_MEMBER
 
     // E_MEMBER, E_METHOD
     expr *object;
@@ -546,6 +553,12 @@ typedef struct program {
     uint64_t removed_mask;     // Components that appear in Remove.
     bool uses_destroy;
     VEC(struct fix) fixes;     // Quick fixes for editors
+
+    // The engine's settings for the game (builtins.h), from `settings { ... }`
+    VEC(decl *) settings;      // Each block written, though a game has one
+    uint32_t tick_rate;        // tickRate, or 0 where it isn't set
+    const expr *title;         // title, the text it's set to, or NULL
+    bool host_migration;       // hostMigration
 } program;
 
 // A change that fixes a diagnostic, which editors offer as a quick fix.

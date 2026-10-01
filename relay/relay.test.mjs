@@ -2,13 +2,15 @@
 // client: node --test relay/
 
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { connect as tcpConnect } from 'node:net';
 import { after, before, test } from 'node:test';
 
 import { cloudflareTurn, createRelay, DEFAULT_ICE } from './relay.mjs';
 
 let relay, url;
 before(async () => {
-    relay = createRelay({ limits: { loneSeconds: 0.5, messageBurst: 20, messagesPerSecond: 1 } });
+    relay = createRelay({ limits: { loneSeconds: 0.5, messageBurst: 20, messagesPerSecond: 1, probeSeconds: 0.3 } });
     await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve));
     url = `ws://127.0.0.1:${relay.address().port}`;
 });
@@ -84,6 +86,117 @@ test('signals go between the host and each joiner', async () => {
     assert.deepEqual(await b.next(), { closed: 'ABCDEF' });
     assert.equal(await b.closed, 1000);
     assert.equal(relay.rooms.has('ABCDEF'), false);
+});
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// A host that never answers pings, like one whose machine went away without
+// its connection closing: a WebSocket by hand, which only talks.
+async function deafHost() {
+    const socket = tcpConnect(relay.address().port, '127.0.0.1');
+    await new Promise(resolve => socket.once('connect', resolve));
+    socket.write(`GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+        + `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+    let buffer = Buffer.alloc(0);
+    let upgraded = false;
+    const queue = [], waiting = [];
+    socket.on('data', chunk => {
+        buffer = Buffer.concat([buffer, chunk]);
+        if (!upgraded) {
+            const end = buffer.indexOf('\r\n\r\n');
+            if (end < 0) return;
+            buffer = buffer.subarray(end + 4);
+            upgraded = true;
+        }
+        while (buffer.length >= 2) {
+            const opcode = buffer[0] & 0x0f;
+            let size = buffer[1] & 0x7f, at = 2;
+            if (size === 126) {
+                if (buffer.length < 4) return;
+                size = buffer.readUInt16BE(2);
+                at = 4;
+            }
+            if (buffer.length < at + size) return;
+            const payload = buffer.subarray(at, at + size);
+            buffer = buffer.subarray(at + size);
+            if (opcode !== 0x1) continue; // Pings go unanswered
+            const message = JSON.parse(payload.toString());
+            if (waiting.length) waiting.shift()(message);
+            else queue.push(message);
+        }
+    });
+    const next = () => queue.length ? Promise.resolve(queue.shift()) : new Promise(resolve => waiting.push(resolve));
+    const send = message => {
+        const payload = Buffer.from(JSON.stringify(message));
+        const mask = randomBytes(4);
+        socket.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask,
+            Buffer.from(payload.map((b, i) => b ^ mask[i & 3]))]));
+    };
+    await next(); // The hello
+    return { socket, next, send };
+}
+
+test('players take a room over once its host is gone', async () => {
+    const host = await connect();
+    host.send({ host: 'MGRATE', key: 'k1' });
+    assert.deepEqual(await host.next(), { hosting: 'MGRATE' });
+    host.ws.close();
+    while (relay.rooms.has('MGRATE')) await sleep(10);
+    const a = await connect();
+    a.send({ migrate: 'MGRATE', key: 'k1' });
+    assert.deepEqual(await a.next(), { hosting: 'MGRATE' });
+    const b = await connect();
+    b.send({ migrate: 'MGRATE', key: 'k1' }); // Just taken over: b joins a
+    assert.deepEqual(await b.next(), { joined: 'MGRATE' });
+    assert.deepEqual(await a.next(), { peer: 1 });
+    a.ws.close();
+    b.ws.close();
+});
+
+test('a host that answers keeps its room, and its players join it', async () => {
+    const host = await connect(); // Node's WebSocket answers pings by itself
+    host.send({ host: 'KEEPXT', key: 'k2' });
+    assert.deepEqual(await host.next(), { hosting: 'KEEPXT' });
+    await sleep(350); // Long enough for the relay to ask
+    const a = await connect();
+    a.send({ migrate: 'KEEPXT', key: 'k2' });
+    assert.deepEqual(await a.next(), { joined: 'KEEPXT' });
+    assert.deepEqual(await host.next(), { peer: 1 });
+    host.ws.close();
+    a.ws.close();
+});
+
+test('a host that doesn\'t answer loses its room to its players', async () => {
+    const host = await deafHost();
+    host.send({ host: 'DEAFHS', key: 'k3' });
+    assert.deepEqual(await host.next(), { hosting: 'DEAFHS' });
+    await sleep(350);
+    const a = await connect();
+    const b = await connect();
+    a.send({ migrate: 'DEAFHS', key: 'k3' });
+    await sleep(50);
+    b.send({ migrate: 'DEAFHS', key: 'k3' }); // While the relay waits on the host
+    assert.deepEqual(await a.next(), { hosting: 'DEAFHS' });
+    assert.deepEqual(await b.next(), { joined: 'DEAFHS' });
+    assert.deepEqual(await a.next(), { peer: 1 });
+    assert.deepEqual(await host.next(), { lost: 'DEAFHS' });
+    host.socket.destroy();
+    a.ws.close();
+    b.ws.close();
+});
+
+test('another key is another match', async () => {
+    const host = await connect();
+    host.send({ host: 'KEYED2', key: 'right' });
+    assert.deepEqual(await host.next(), { hosting: 'KEYED2' });
+    const a = await connect();
+    a.send({ migrate: 'KEYED2', key: 'wrong' });
+    assert.deepEqual(await a.next(), { taken: 'KEYED2' });
+    const b = await connect();
+    b.send({ migrate: 'KEYED2', key: 'not a key!' });
+    assert.equal(await b.closed, 1008);
+    host.ws.close();
+    a.ws.close();
 });
 
 test('a code has 6 characters without look-alikes', async () => {

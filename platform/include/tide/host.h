@@ -20,10 +20,11 @@
 #include "tide/session.h"
 
 typedef struct tide_run_desc {
-    const char *title; // Default "Tide"
-    int width;         // Starting window size in pixels; default 960 x 540
+    const char *title;      // The window's title, over the game's title setting; NULL for that
+    const char *game_name;  // The title when neither says: the game's folder or target; default "Tide"
+    int width;              // Starting window size in pixels; default 960 x 540
     int height;
-    int tick_rate;     // Ticks per second; default 60
+    int tick_rate;          // Ticks per second, over the game's tickRate setting; 0 for that, or else 60
     bool stats;        // Show the tick, entity count, ping and frame rate in a corner
     int argc;          // The command line, for --host, --join and --connect
     char **argv;
@@ -100,6 +101,8 @@ static double tide_run_now; // Seconds since the program started
 // The server went away or turned this machine away: not because it left,
 // couldn't start, was kicked, or the match ran out of scenes
 static bool tide_run_dropped;
+// Host migration: when this machine went to its match's room again, or 0
+static double tide_run_migrating_since;
 
 // This machine's input for one tick.
 static inline void tide_run_sample(void *user, const uint32_t tick, void *input)
@@ -166,6 +169,9 @@ static inline void tide_run_request(const tide_session_request *request, const v
     case TIDE_REQUEST_LEAVE:
         tide_session_leave(s);
         break;
+    case TIDE_REQUEST_END:
+        tide_session_end(s);
+        break;
     default:
         break;
     }
@@ -194,21 +200,25 @@ static inline bool tide_run_arguments(tide_session_request *request)
     return false;
 }
 
-// Opens the window, with the defaults for what `desc` leaves out.
+// Opens tide_run_game's window, with the defaults for what `desc` and the
+// game's settings leave out.
 static inline void tide_run_open(const tide_run_desc *desc)
 {
     tide_run_settings = *desc;
+    if (!tide_run_settings.title) tide_run_settings.title = tide_run_game->game->title;
+    if (!tide_run_settings.title) tide_run_settings.title = tide_run_settings.game_name;
     if (!tide_run_settings.title) tide_run_settings.title = "Tide";
     if (tide_run_settings.width <= 0) tide_run_settings.width = 960;
     if (tide_run_settings.height <= 0) tide_run_settings.height = 540;
-    if (tide_run_settings.tick_rate <= 0) tide_run_settings.tick_rate = 60;
+    if (tide_run_settings.tick_rate < 0) tide_run_settings.tick_rate = 0; // The game's
 
     tide_platform_open(&(tide_window_desc){.title = tide_run_settings.title,
                                            .width = tide_run_settings.width,
                                            .height = tide_run_settings.height});
 }
 
-// A session for tide_run_game, in no match yet.
+// A session for tide_run_game, in no match yet. Its matches tick at the game's
+// rate unless the host said otherwise.
 static inline tide_session *tide_run_new_session(void)
 {
     return tide_session_create(&(tide_session_desc){
@@ -254,7 +264,44 @@ static inline void tide_run_end(void)
     tide_run_local = NULL;
     tide_run_start = NULL;
     tide_run_dropped = false;
+    tide_run_migrating_since = 0.0;
     memset(&tide_run_gui, 0, sizeof tide_run_gui);
+}
+
+// Host migration (see tide_session_take_over). The machine that runs a match
+// tells the server the room its players can meet in again; one whose match
+// lost its server goes there, to take the match over or to join whoever did.
+static inline void tide_run_migrate(void)
+{
+    tide_session *s = tide_run_session;
+    char code[TIDE_ROOM_CODE_LENGTH + 1] = "";
+    char key[TIDE_ROOM_KEY_LENGTH + 1] = "";
+    if (tide_session_status_of(s).server) {
+        tide_platform_room_code(code, sizeof code);
+        tide_platform_room_key(key, sizeof key);
+        tide_session_set_room(s, code, key);
+    }
+    if (!tide_session_migrating(s, code, key)) {
+        tide_run_migrating_since = 0.0;
+        return;
+    }
+    if (tide_run_migrating_since == 0.0) {
+        tide_run_migrating_since = tide_run_now > 0.0 ? tide_run_now : 1e-9;
+        fprintf(stderr, "tide: the match lost its host; to room %s again\n", code);
+        tide_platform_room_migrate(code, key);
+        return;
+    }
+    tide_transport network;
+    tide_address server;
+    const int moved = tide_platform_room_migrated(&network, &server);
+    if (moved == 1) {
+        fprintf(stderr, "tide: this machine hosts the match now, in room %s\n", code);
+        tide_session_take_over(s, network, tide_run_now);
+    } else if (moved == 2) {
+        tide_session_join(s, network, server, tide_run_now);
+    } else if (moved < 0 || tide_run_now - tide_run_migrating_since > 30.0) {
+        tide_session_fail(s, TIDE_DISCONNECT_TIMED_OUT);
+    }
 }
 
 static inline int tide_run_frame(void *user, const float seconds)
@@ -269,6 +316,7 @@ static inline int tide_run_frame(void *user, const float seconds)
     // rather than timing out.
     if (tide_platform_room_failed()) tide_session_fail(s, TIDE_DISCONNECT_FAILED);
     tide_session_update(s, tide_run_now);
+    tide_run_migrate();
     tide_session_event event;
     while (tide_session_next_event(s, &event)) {
         const bool connected = event.kind == TIDE_SESSION_CONNECTED_EVENT;
@@ -307,8 +355,8 @@ static inline int tide_run_frame(void *user, const float seconds)
 // Runs `game` in a window until it closes (see tide/run.h).
 _Noreturn static inline void tide_host_run(const tide_run_desc *desc, const tide_host_game *game)
 {
-    tide_run_open(desc);
     tide_run_game = game;
+    tide_run_open(desc);
     tide_run_begin();
     tide_platform_run(tide_run_frame, NULL);
 }

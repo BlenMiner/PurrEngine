@@ -22,7 +22,7 @@ tide <command> [folder] [options]
 |---|---|
 | `--release` | Optimized, the way players get it |
 | `--web` | A web page (WebGL 2), built with clang's WebAssembly target |
-| `--title <title>` | The window's title (default: the folder's name) |
+| `--title <title>` | The window's title, over the game's `title` setting (default: that, or the folder's name) |
 | `--stats` | Shows the tick, the entity count, the ping and the frame rate |
 | `-o <path>` | `build` only: where the program goes |
 | `--no-open` | `run --web` only: serves the page without opening a browser |

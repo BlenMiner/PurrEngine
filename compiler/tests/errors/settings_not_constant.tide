@@ -1,0 +1,4 @@
+// expect: a setting's value must be a constant expression
+singleton Rates { int n = 30; }
+settings { tickRate = n; }
+scene Main { }

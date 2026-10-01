@@ -1,0 +1,6 @@
+// expect: settings are set without a type: 'tickRate = ...;'
+settings
+{
+    int tickRate = 30;
+}
+scene Main { }

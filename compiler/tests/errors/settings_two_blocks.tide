@@ -1,0 +1,4 @@
+// expect: a game has one 'settings' block
+settings { tickRate = 30; }
+settings { title = "Again"; }
+scene Main { }

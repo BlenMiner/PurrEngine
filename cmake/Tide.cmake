@@ -7,8 +7,9 @@
 # define its extern functions, compile with it: every .c file in the folder
 # but the HOST ones, or the .c files listed after SOURCES.
 #
-# Without HOST, the game is the whole program: it opens a window titled TITLE
-# (default <target>) and runs (see platform/include/tide/run.h). STATS shows the
+# Without HOST, the game is the whole program: it opens a window titled TITLE,
+# or the game's title setting, or <target>, and runs (see
+# platform/include/tide/run.h). STATS shows the
 # tick, entity count and frame rate in a corner. On the web it's <target>.html.
 #
 # With HOST, those C files are the program instead, for tests and custom hosts.
@@ -39,8 +40,11 @@ function(tide_add_game target)
     if(ARG_NAME)
         set(name "${ARG_NAME}")
     endif()
+    # TITLE goes over the game's title setting; the target's name only stands in for it
+    set(title_field "game_name")
     set(title "${target}")
     if(ARG_TITLE)
+        set(title_field "title")
         set(title "${ARG_TITLE}")
     endif()
 
@@ -128,7 +132,7 @@ function(tide_add_game target)
 
 int main(int argc, char **argv)
 {
-    tide_run(&(tide_run_desc){.title = "@title@", .stats = @stats@, .argc = argc, .argv = argv});
+    tide_run(&(tide_run_desc){.@title_field@ = "@title@", .stats = @stats@, .argc = argc, .argv = argv});
 }
 ]])
         add_executable(${target} "${main}" "${out_c}" "${out_h}" ${c_sources})

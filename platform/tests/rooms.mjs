@@ -258,6 +258,25 @@ await test('two desktop players in a match', async () => {
     await within(Promise.all([host.line(/^ok/), joiner.line(/^ok/)]), 45, 'meeting');
 });
 
+// Host migration: the host leaves, and its two players carry on, one of them
+// hosting the room now, each the same player as before.
+await test('a desktop match changes hands when its host leaves', async () => {
+    const host = player(['handover-host'], 'host');
+    players.push(host);
+    const code = (await within(host.line(/^room /), 15, 'hosting')).split(' ')[1];
+    const a = player(['handover-join', code, '2'], 'a');
+    const b = player(['handover-join', code, '3'], 'b');
+    players.push(a, b);
+    const before = await within(Promise.all([a.line(/^ok before/), b.line(/^ok before/)]), 45, 'meeting');
+    if ((await within(host.exited, 15, 'the host leaving')) !== 0) throw new Error('the host failed');
+    const after = await within(Promise.all([a.line(/^ok after/), b.line(/^ok after/)]), 45, 'the match changing hands');
+    const player_of = line => line.match(/player (\d+)/)[1];
+    for (let i = 0; i < 2; i++) {
+        if (player_of(before[i]) !== player_of(after[i])) throw new Error(`another player after: ${before[i]}, ${after[i]}`);
+    }
+    if (after.filter(line => line.endsWith('hosting')).length !== 1) throw new Error('not one of them hosts');
+});
+
 // Chrome (or Edge) and Firefox: two WebRTC implementations of their own.
 // Each shows its address, then hides it behind a .local name, as it does for
 // players: the desktop side then learns where it is from the checks it sends

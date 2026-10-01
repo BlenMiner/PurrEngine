@@ -1447,6 +1447,14 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         sb_put(o, e->hoisted); // Already ran, before the statement: a unit, or an operator that calls C
         return;
     }
+    if (e->bind == BIND_CONST) {
+        // A constant is its value, as its own type, wherever it's read: C
+        // works it out while compiling, and it's in no header.
+        sb_put(o, "(");
+        gen_as(g, o, e->constant->value, e->constant->return_type);
+        sb_put(o, ")");
+        return;
+    }
     switch (e->kind) {
     case E_INT:
         // Hex and binary literals can be negative (0xFFFFFFFF is -1).
@@ -2107,10 +2115,11 @@ static void declare_bindings(gen *g, const expr *cond)
 static void gen_stmt(gen *g, const stmt *s);
 static void gen_body_stmt(gen *g, const stmt *s);
 
-// Session.Start(Arena { ... }), Join, Connect and Leave, Session.Open and
+// Session.Start(Arena { ... }), Join, Connect, Leave and End, Session.Open and
 // Close, and Session.Kick and KickAll: recorded in the local state, for the
-// host program to act on after the frame. A Start, Join, Connect or Leave ends
-// the match the Opens, Closes and Kicks before it were for, so it drops them.
+// host program to act on after the frame. A Start, Join, Connect, Leave or End
+// ends the match the Opens, Closes and Kicks before it were for, so it drops
+// them.
 static void gen_session_call(gen *g, const expr *e)
 {
     sb *o = &g->c;
@@ -2162,7 +2171,9 @@ static void gen_session_call(gen *g, const expr *e)
     }
     indent(g, o);
     sb_printf(o, "tide_l->tide_request = (tide_session_request){.kind = %s};\n",
-              str_eq_c(e->name, "Start") ? "TIDE_REQUEST_START" : "TIDE_REQUEST_LEAVE");
+              str_eq_c(e->name, "Start") ? "TIDE_REQUEST_START"
+              : str_eq_c(e->name, "End") ? "TIDE_REQUEST_END"
+                                         : "TIDE_REQUEST_LEAVE");
     if (!e->type_decl) return;
     int index = 0;
     while (g->prog->start_scenes.items[index] != e->type_decl) index++;
@@ -2386,9 +2397,19 @@ static void gen_stmt(gen *g, const stmt *s)
                     line(g, o, "default:");
                     continue;
                 }
+                // A literal or a member as it's written; anything else, as the
+                // checker worked it out, so it's a constant C can switch on.
+                const expr *label = section->labels.items[k];
+                const enum_member *member = label->enum_member;
+                for (int m = 0; !member && label->type.kind == TY_ENUM && m < label->type.decl->members.count; m++) {
+                    if (label->type.decl->members.items[m].number == label->int_value) member = &label->type.decl->members.items[m];
+                }
                 indent(g, o);
                 sb_put(o, "case ");
-                gen_expr(g, o, section->labels.items[k]);
+                if (member) sb_put(o, enum_member_cname(label->type.decl, member));
+                else if (label->kind == E_INT) gen_expr(g, o, label);
+                else if (label->int_value == INT32_MIN) sb_put(o, "(-2147483647 - 1)");
+                else sb_printf(o, "%lld", (long long)label->int_value);
                 sb_put(o, ":\n");
             }
             line(g, o, "{");
@@ -5649,6 +5670,14 @@ static void gen_game_api(gen *g)
         sb_put(o, "    .write_input = tide_game_write_input,\n    .read_input = tide_game_read_input,\n");
     }
     sb_put(o, "    .ended = tide_game_ended,\n");
+    // Its settings: here rather than in the header, so they don't change the game's hash
+    if (prog->tick_rate) sb_printf(o, "    .tick_rate = %uu,\n", (unsigned)prog->tick_rate);
+    if (prog->host_migration) sb_put(o, "    .host_migration = true,\n");
+    if (prog->title) {
+        sb_put(o, "    .title = ");
+        gen_c_literal(o, prog->title->text, false);
+        sb_put(o, ",\n");
+    }
     sb_put(o, "};\n");
 }
 

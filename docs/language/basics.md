@@ -49,6 +49,56 @@ mut float scale = 1;             // mutable, explicit type
 
 A local needs a value when it's declared, and can't reuse the name of another local or parameter in scope.
 
+## Constants
+
+`const` declares a value that code reads by name. Constants go at the top level of a file:
+
+```csharp
+const int MAX_HEALTH = 100;
+const float REGEN_PER_SECOND = MAX_HEALTH / 20.0;
+
+component Health
+{
+    float value = MAX_HEALTH;
+}
+
+system Regenerate(mut Health health, Time time)
+{
+    health.value = Math.Min(health.value + REGEN_PER_SECOND * time.dt, MAX_HEALTH);
+}
+```
+
+- The type is written out. The value is worked out from literals, other constants, constructors, `Math` and operators, like a field's default. It can't read fields, singletons or `Time`.
+- Constants are named in FULL_CASE.
+- A constant is the same on every machine. Any code can read one: systems, views, handlers, functions and other constants. Reading one never makes a system wait for another.
+- They work anywhere a constant value is needed: field defaults, `[Clamp]` bounds, `case` labels and the values of enum members. In the last two, int constants and operators on them work: `case MAX_LEVEL + 1:`.
+- A constant can be a number, vector, matrix, quaternion, `bool`, `Color`, `Rect`, text, struct or enum. It can't be a list or an entity.
+- A constant in a namespace belongs to it: code outside writes `Combat.CRIT_MULTIPLIER` (see [Namespaces and files](./namespaces.md)).
+- Changing a constant under `tide run` reloads the game and keeps the match where it is.
+
+## Settings
+
+`settings` sets the engine's settings for the game. It goes at the top level of any one of the game's files:
+
+```csharp
+settings
+{
+    title = "Asteroids";
+    tickRate = 30;
+}
+```
+
+| Setting | What it is | Without it |
+|---|---|---|
+| `title` | The window's title | The game's folder's name |
+| `tickRate` | How many times a second the match ticks, from 1 to 1000: `Time.dt` is 1 / `tickRate` | 60 |
+| `hostMigration` | When the machine running a room's match goes, another player's takes it over (see [Host migration](./multiplayer.md#host-migration)) | `false` |
+
+- Settings are set without a type, to constant expressions, which can name constants. A game's own values go in constants, not settings.
+- A game has one `settings` block. The editors complete the settings' names and show what each one does.
+- Settings are part of the build. The machine that runs a match decides its tick rate, and every player ticks at that rate. Under `tide run`, a new `tickRate` takes effect when a match starts.
+- `--title` goes over the `title` setting (see [The tide command](../guide/cli.md)).
+
 ## Default values
 
 `default` is the default value of the type where it goes, so the type doesn't have to be spelled out:
@@ -121,10 +171,10 @@ system Advance(mut Match match)
 }
 ```
 
-- A member without a value is one more than the one before it, and the first is 0.
+- A member without a value is one more than the one before it, and the first is 0. A value is an int, which can come from constants: `Playing = FIRST_LEVEL + 1`.
 - Members are always written with their enum: `Phase.Playing`.
 - `==` and `!=` compare two values of the same enum, and `int(phase)` gives a member's value.
-- `switch` works on ints and enums. Every section ends with `break` or `return`, so none runs into the next.
+- `switch` works on ints and enums. A case is an int, an enum's member, or a constant. Every section ends with `break` or `return`, so none runs into the next.
 
 ## Comments and attributes
 

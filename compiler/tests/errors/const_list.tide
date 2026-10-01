@@ -1,0 +1,3 @@
+// expect: a constant can't be a list yet
+const List<int> PRIMES = [2, 3, 5];
+scene Main { }

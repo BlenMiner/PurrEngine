@@ -32,6 +32,15 @@
 // Single-player and hosting are the same: a server and its own player on one
 // machine, over a loopback transport (tide_session).
 //
+// Host migration (tide_game.host_migration): the server tells its players
+// where to meet when it goes, its room and the room's key, and the digests of
+// every player's cookie (SHA-256, so none can be worked back from them). When
+// the server leaves or stops answering, its players go to the room: one takes
+// the match over from the last tick it verified (tide_session_take_over), and
+// the others join it again, as the same players, since it knows their
+// cookies' digests. The server's player leaves the match. Nothing else
+// changes hands: what the server kept of its own, the others never had.
+//
 // A match whose last scene unloads, when Main is local, ends: the server stops
 // ticking and tells every player, who go offline with TIDE_DISCONNECT_ENDED.
 
@@ -70,6 +79,10 @@ typedef struct tide_game {
     // Whether the match is over: its last scene unloaded, and Main is local,
     // so it can't come back. The server ends it then. NULL: it never is.
     bool (*ended)(const void *world);
+    // The game's settings (`settings { ... }`), 0 or NULL where it sets none
+    uint32_t tick_rate;  // tickRate: what servers run its matches at, unless their desc says
+    const char *title;   // title: the window's, unless the host says
+    bool host_migration; // hostMigration: when a room's server goes, another machine takes the match over
 } tide_game;
 
 typedef enum tide_session_state {
@@ -104,17 +117,25 @@ typedef struct tide_server tide_server;
 
 typedef struct tide_server_desc {
     const tide_game *game;
-    uint32_t tick_rate;          // Ticks per second
+    uint32_t tick_rate;          // Ticks per second; 0 for the game's (tide_game.tick_rate), or else 60
     float dt;                    // Time.dt; 1 / tick_rate when 0
     const void *start;           // The game's tide_start, or NULL: Main
     tide_transport transports[2]; // Where players connect from; the ones with no `send` are unused
     bool local_first;            // Players on transports[0] are on this machine: their input is the server's too
     bool wait_for_first;         // Tick once the first player has joined, before anything happens without them
-    // Hot reloading: the match goes on from this world (the game's tide_world)
-    // instead of starting from `start`, with `players` in it already, a bit
-    // per player. A player joining into one of their slots gets no PlayerJoined.
+    // Hot reloading and host migration: the match goes on from this world (the
+    // game's tide_world) instead of starting from `start`, with `players` in it
+    // already, a bit per player. A player joining into one of their slots gets
+    // no PlayerJoined; those who haven't come back in 20 seconds get
+    // PlayerLeft. `leaving` went with the last server: PlayerLeft at the first
+    // tick.
     const void *world;
     uint32_t players;
+    uint32_t leaving;
+    // Host migration: the digests of the players' cookies (TIDE_MAX_PLAYERS of
+    // them, 0 for none), which they come back with. NULL: none.
+    const uint64_t *digests;
+    bool closed;                 // Takes no one new from the start, only players coming back
     const tide_jobs *jobs;       // Threads to run ticks on (tide/jobs.h), or NULL: this one
 } tide_server_desc;
 
@@ -192,7 +213,7 @@ typedef struct tide_session tide_session;
 
 typedef struct tide_session_desc {
     const tide_game *game;
-    uint32_t tick_rate;
+    uint32_t tick_rate; // The matches it starts: 0 for the game's at the time (tide_game.tick_rate), or else 60
     tide_sample_fn sample;
     void *user;
     const tide_jobs *jobs; // Threads to run ticks on (tide/jobs.h), or NULL: this one
@@ -238,8 +259,30 @@ void tide_session_kick(tide_session *s, tide_player_id player, const char *messa
 // The same for every player on another machine.
 void tide_session_kick_all(tide_session *s, const char *message);
 // Joining the server it joined last, it's the same player again, if the server
-// still has room for them.
+// still has room for them. While migrating, it's the match's next server.
 void tide_session_join(tide_session *s, tide_transport network, tide_address server, double now);
+// Ends the match this machine runs, for everyone: every player goes offline
+// with TIDE_DISCONNECT_ENDED, this machine's too, and no other machine takes
+// it over. The server tells them for a moment. Nothing on a client.
+void tide_session_end(tide_session *s);
+
+// Host migration (tide_game.host_migration), on the machine that runs the
+// match: the room its players can meet in again when it goes, by its code and
+// key ("" for none), which the server tells them. Once a frame will do.
+void tide_session_set_room(tide_session *s, const char *code, const char *key);
+// Whether this machine's match lost its server and waits to change hands: the
+// room's `code` and `key` are where to meet. Until this machine takes it over
+// (tide_session_take_over) or joins the one that did (tide_session_join),
+// local code sees it connecting and views see the last world it had. Hosts
+// fail it (tide_session_fail) if the room can't be reached.
+bool tide_session_migrating(const tide_session *s, char code[TIDE_ROOM_CODE_LENGTH + 1],
+                            char key[TIDE_ROOM_KEY_LENGTH + 1]);
+// This machine takes the match over: it runs the server from the last tick it
+// verified, at the match's tick rate, taking players on `network` (the room).
+// The others join it again as the same players; the last server's player
+// leaves. Local code sees no Connected or Disconnected, only that this
+// machine runs the server now.
+void tide_session_take_over(tide_session *s, tide_transport network, double now);
 void tide_session_leave(tide_session *s);
 // A session that couldn't start, or whose network gave out: leaves the match,
 // if it's in one, and reports Disconnected with the reason.
@@ -274,7 +317,7 @@ typedef bool (*tide_migrate_fn)(void *user, const void *from, void *to);
 bool tide_session_migrate(tide_session *s, const tide_game *game, tide_migrate_fn migrate, void *user);
 
 // What local code asked for, with Session.Start, Join, Connect, Leave, Open,
-// Close, Kick and KickAll.
+// Close, Kick, KickAll and End.
 typedef enum tide_session_request_kind {
     TIDE_REQUEST_NONE,
     TIDE_REQUEST_START,
@@ -285,6 +328,7 @@ typedef enum tide_session_request_kind {
     TIDE_REQUEST_CLOSE,   // ...and no longer
     TIDE_REQUEST_KICK,    // A player, with a message
     TIDE_REQUEST_KICK_ALL,
+    TIDE_REQUEST_END,     // The match this machine runs ends, for everyone
 } tide_session_request_kind;
 
 #define TIDE_DEFAULT_PORT 7777u

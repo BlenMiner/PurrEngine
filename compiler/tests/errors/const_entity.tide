@@ -1,0 +1,3 @@
+// expect: an Entity constant would always be the null entity
+const Entity NOBODY = default;
+scene Main { }

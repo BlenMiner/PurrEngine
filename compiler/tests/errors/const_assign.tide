@@ -1,0 +1,8 @@
+// expect: 'LIMIT' is a constant, so it can't change
+const int LIMIT = 3;
+singleton Match { int n; }
+scene Main { }
+system S(mut Match match)
+{
+    LIMIT = match.n;
+}
