@@ -1035,12 +1035,12 @@ TIDE_TEST(lsp_sessions)
     TIDE_CHECK(offers(calls, "Close"));
     TIDE_CHECK(offers(calls, "Kick"));
     TIDE_CHECK(offers(calls, "KickAll"));
-    const char *gone = complete("local scene Main { }\nlocal event(Disconnected gone) Lost()\n{\n    var why = gone.$\n}\n");
-    TIDE_CHECK(offers(gone, "reason"));
-    TIDE_CHECK(offers(gone, "message"));
     TIDE_CHECK(offers(calls, "Join"));
     TIDE_CHECK(offers(calls, "Connect"));
     TIDE_CHECK(offers(calls, "Leave"));
+    const char *gone = complete("local scene Main { }\nlocal event(Disconnected gone) Lost()\n{\n    var why = gone.$\n}\n");
+    TIDE_CHECK(offers(gone, "reason"));
+    TIDE_CHECK(offers(gone, "message"));
     const char *fields = complete("local scene Main { }\nview Menu(Session session)\n{\n    var s = session.$\n}\n");
     TIDE_CHECK(offers(fields, "state"));
     TIDE_CHECK(offers(fields, "ping"));
