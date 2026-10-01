@@ -1,0 +1,6 @@
+// expect: Session.Join takes the room's code as text
+local scene Main { }
+view Start()
+{
+    Session.Join(7777);
+}

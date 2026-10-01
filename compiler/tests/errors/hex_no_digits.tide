@@ -1,0 +1,7 @@
+// expect: '0x' needs digits after it
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = 0x;
+}

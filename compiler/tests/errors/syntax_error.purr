@@ -1,5 +1,0 @@
-// expect: expected ';'
-system Main()
-{
-    var x = 1
-}

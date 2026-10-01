@@ -1,0 +1,3 @@
+// expect: which players see a scene is the match's to decide, so local code can't change it
+local scene Main { }
+view Show(with Main) { Scene.AddPlayer(this, PlayerID(0)); }

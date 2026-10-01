@@ -1,0 +1,8 @@
+// expect: only input fields have '.down'
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    bool held = true;
+    var edge = held.down;
+}

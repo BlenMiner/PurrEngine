@@ -1,0 +1,3 @@
+// expect: unknown component or singleton 'Velocity'
+scene Main { }
+system Move(Velocity v) { }

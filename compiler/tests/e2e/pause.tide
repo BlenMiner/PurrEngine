@@ -1,0 +1,41 @@
+// A pause menu: views read this machine's devices once per frame, and a modal
+// takes them while it's up.
+
+local singleton Pause
+{
+    bool open;
+    int opened;
+    int resumed;
+    int behind;
+}
+
+local scene Main { }
+
+view Hud(mut Pause pause)
+{
+    if (GUILayout.Button("Behind")) pause.behind += 1;
+}
+
+// A function that reads this frame's devices, like one that draws.
+bool Opens()
+{
+    return Devices.keyboard.escape.down || Devices.gamepad.start.down;
+}
+
+view Menu(mut Pause pause)
+{
+    if (Opens())
+    {
+        pause.open = true;
+        pause.opened += 1;
+    }
+    GUILayout.Modal(Anchor.MiddleCenter, pause.open)
+    {
+        GUILayout.Label("Paused");
+        if (GUILayout.Button("Resume"))
+        {
+            pause.open = false;
+            pause.resumed += 1;
+        }
+    }
+}

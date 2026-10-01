@@ -1,0 +1,8 @@
+// expect: 'x' is read-only
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = 1;
+    x = 2;
+}

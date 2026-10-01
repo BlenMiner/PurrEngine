@@ -18,7 +18,7 @@ typedef struct lsp_server {
     lsp_send_fn send;
     void *user;
     // Which files make up each game: lines of "<game>\t<path>", written by
-    // purr_add_game. Open folders can have their own (see game_of). May be NULL.
+    // tide_add_game. Open folders can have their own (see game_of). May be NULL.
     const char *manifest;
     char **roots; // The folders open in the editor, ending in '/'
     int root_count;

@@ -1,0 +1,9 @@
+// expect: 'trs' is read-only
+component Transform { float3 position; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Transform); }
+system Clamp(Transform trs)
+{
+    trs.position.y = 0;
+}

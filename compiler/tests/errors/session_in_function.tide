@@ -1,0 +1,11 @@
+// expect: can't start or leave matches yet; views and local handlers do
+local scene Main { }
+scene Arena { }
+void Menu()
+{
+    if (GUILayout.Button("Play")) Session.Play(Arena);
+}
+view Start()
+{
+    Menu();
+}

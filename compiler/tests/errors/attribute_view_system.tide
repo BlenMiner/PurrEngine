@@ -1,0 +1,8 @@
+// expect: systems and views are ordered separately
+component Body { float2 position; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
+view Show(Body body) { }
+[After(Show)]
+system Move(mut Body body) { }

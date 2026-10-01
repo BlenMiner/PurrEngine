@@ -1,0 +1,9 @@
+// expect: only handlers of the same event run in an order
+event Ping { }
+event Pong { }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Send(Ping); Send(Pong); }
+event(Ping) A() { }
+[After(A)]
+event(Pong) B() { }

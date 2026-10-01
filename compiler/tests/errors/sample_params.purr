@@ -1,7 +1,0 @@
-// expect: Sample takes the devices: 'Sample(Devices devices)'
-input PlayerInput
-{
-    bool jump;
-    Sample(int x) { }
-}
-system Main() { }

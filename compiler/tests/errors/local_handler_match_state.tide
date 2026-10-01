@@ -1,0 +1,6 @@
+// expect: 'Score' belongs to the match, and local handlers only take local state for now
+singleton Score { int value; }
+local event Blink { }
+scene Main { }
+view Show() { Send(Blink); }
+local event(Blink) Count(Score score) { }

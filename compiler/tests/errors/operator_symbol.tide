@@ -1,0 +1,7 @@
+// expect: expected an operator a struct can declare after 'operator'
+struct Money
+{
+    int cents;
+    bool operator &&(Money a, Money b) { return true; }
+}
+scene Main { }

@@ -1,5 +1,0 @@
-// expect: did you mean 'float3'?
-system Main()
-{
-    flaot3 v = float3(1);
-}

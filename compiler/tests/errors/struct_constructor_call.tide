@@ -1,0 +1,5 @@
+// expect: write 'Range { ... }' to make a struct value
+struct Range { float lo; float hi; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { var r = Range(0, 1); }

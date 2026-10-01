@@ -1,0 +1,3 @@
+// expect: in text, '?:' goes in parentheses: '{(a ? b : c)}'
+scene Main { }
+view V() { Draw.Text($"{true ? 1 : 2}", float2(0, 0), 10, Color.white); }

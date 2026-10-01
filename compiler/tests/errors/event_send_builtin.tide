@@ -1,0 +1,5 @@
+// expect: the engine sends 'Spawned'; games can't
+component Body { float2 position; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { var e = Spawn(Body); e.Send(Spawned); }

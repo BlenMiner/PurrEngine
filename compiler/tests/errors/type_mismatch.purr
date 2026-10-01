@@ -1,5 +1,0 @@
-// expect: can't initialize bool with float
-system Main()
-{
-    bool b = 1.5;
-}

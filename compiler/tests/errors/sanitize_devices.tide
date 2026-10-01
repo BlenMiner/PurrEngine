@@ -1,0 +1,8 @@
+// expect: Sanitize runs on every machine for every player's input, so it can't read this machine's Devices
+input PlayerInput
+{
+    bool jump;
+    Sample() { jump = Devices.keyboard.space.pressed; }
+    Sanitize() { jump = Devices.keyboard.space.pressed; }
+}
+scene Main { }

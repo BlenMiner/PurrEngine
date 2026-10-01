@@ -67,7 +67,7 @@ static char *find_editor(const editor *e)
 
 static void find_extension(void *user, const char *name, const bool is_dir)
 {
-    if (is_dir && strncmp(name, "purrengine.purrlang-", 20) == 0) *(bool *)user = true;
+    if (is_dir && strncmp(name, "tide-engine.tide-", 17) == 0) *(bool *)user = true;
 }
 
 // Whether the editor has the extension already.
@@ -83,11 +83,11 @@ static bool has_extension(const editor *e)
     return found;
 }
 
-int purr_editors(const char *root, const bool only_updates)
+int tide_editors(const char *root, const bool only_updates)
 {
-    char *vsix = path_join(root, "editors/purrlang.vsix");
+    char *vsix = path_join(root, "editors/tide.vsix");
     if (!sys_exists(vsix)) {
-        if (!only_updates) fprintf(stderr, "purr: there's no editor extension in %s; reinstall purr\n", root);
+        if (!only_updates) fprintf(stderr, "tide: there's no editor extension in %s; reinstall tide\n", root);
         free(vsix);
         return only_updates ? 0 : 1;
     }
@@ -105,16 +105,16 @@ int purr_editors(const char *root, const bool only_updates)
         }
         const char *const argv[] = {command, "--install-extension", vsix, "--force", NULL};
         if (sys_run(argv, NULL, true) == 0) {
-            printf(only_updates ? "Updated PurrLang in %s.\n" : "Added PurrLang to %s.\n", e->name);
+            printf(only_updates ? "Updated Tide in %s.\n" : "Added Tide to %s.\n", e->name);
         } else {
-            fprintf(stderr, "purr: couldn't add PurrLang to %s (%s --install-extension failed)\n", e->name, command);
+            fprintf(stderr, "tide: couldn't add Tide to %s (%s --install-extension failed)\n", e->name, command);
             failed++;
         }
         free(command);
     }
     if (found == 0 && !only_updates) {
-        printf("purr found no editor to add PurrLang to (VS Code, Cursor, VSCodium or Windsurf).\n"
-               "For JetBrains IDEs and others, see https://github.com/BlenMiner/PurrEngine#editors\n");
+        printf("tide found no editor to add Tide to (VS Code, Cursor, VSCodium or Windsurf).\n"
+               "For JetBrains IDEs and others, see https://github.com/BlenMiner/tide-engine#editors\n");
     }
     free(vsix);
     return failed > 0 ? 1 : 0;

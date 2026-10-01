@@ -1,0 +1,3 @@
+// expect: structs belong to neither side: the match and local state both hold them
+local struct Range { float lo; }
+scene Main { }

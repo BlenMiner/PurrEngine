@@ -25,7 +25,7 @@ static void *pool_alloc(size_t size)
         const size_t cap = size > 65536 ? size : 65536;
         pool_block *block = malloc(sizeof(pool_block) + cap);
         if (!block) {
-            fprintf(stderr, "purrls: out of memory\n");
+            fprintf(stderr, "tidels: out of memory\n");
             exit(1);
         }
         block->next = pool;
@@ -307,7 +307,7 @@ void jb_putn(jbuf *b, const char *s, const size_t n)
         while (cap < b->len + n + 1) cap *= 2;
         char *data = realloc(b->data, cap);
         if (!data) {
-            fprintf(stderr, "purrls: out of memory\n");
+            fprintf(stderr, "tidels: out of memory\n");
             exit(1);
         }
         b->data = data;

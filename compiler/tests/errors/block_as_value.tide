@@ -1,0 +1,4 @@
+// expect: a Block can only be run: 'content();'
+scene Main { }
+component Counter { int n; }
+void Keep(Block content) { var copy = content; }

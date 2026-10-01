@@ -1,0 +1,7 @@
+// expect: integer '0x100000000' is too large for int
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = 0x100000000;
+}

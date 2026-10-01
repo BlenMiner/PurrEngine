@@ -1,0 +1,6 @@
+// expect: struct 'Stats' has no field 'helth'
+struct Stats { float health; }
+component Unit { Stats stats; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Unit { stats = Stats { helth = 1 } }); }

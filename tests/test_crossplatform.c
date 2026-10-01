@@ -1,8 +1,8 @@
 #include <inttypes.h>
 #include <stdio.h>
 
-#include "purr/math.h"
-#include "purr_test.h"
+#include "tide/math.h"
+#include "tide_test.h"
 
 // Cross-platform determinism. Each test hashes the exact bits of many results,
 // and the hash must be the same on every platform: native x64, WebAssembly, and
@@ -24,7 +24,7 @@ static uint64_t hash_bits(uint64_t h, const uint32_t bits)
 // hashes the same. NaN in simulation state is a bug anyway.
 static uint64_t hash_float(const uint64_t h, const float x)
 {
-    return hash_bits(h, x != x ? 0x7FC00000u : purr_f_bits(x));
+    return hash_bits(h, x != x ? 0x7FC00000u : tide_f_bits(x));
 }
 
 static uint64_t hash_int(const uint64_t h, const int32_t x)
@@ -32,7 +32,7 @@ static uint64_t hash_int(const uint64_t h, const int32_t x)
     return hash_bits(h, (uint32_t)x);
 }
 
-static uint64_t hash_f3(const uint64_t h, const purr_float3 v)
+static uint64_t hash_f3(const uint64_t h, const tide_float3 v)
 {
     return hash_float(hash_float(hash_float(h, v.x), v.y), v.z);
 }
@@ -48,7 +48,7 @@ static uint32_t next_bits(void)
 // Any float at all: every exponent, NaN and infinity included.
 static float any_float(void)
 {
-    return purr_f_from_bits(next_bits());
+    return tide_f_from_bits(next_bits());
 }
 
 // A typical game value, in [-128, 128).
@@ -60,28 +60,28 @@ static float game_float(void)
 // C leaves the order of a call's arguments unspecified (clang goes right to left
 // on Windows, left to right on WebAssembly), so random inputs are always drawn
 // into locals first, one statement at a time.
-static purr_float3 game_f3(void)
+static tide_float3 game_f3(void)
 {
     const float x = game_float();
     const float y = game_float();
     const float z = game_float();
-    return purr_f3(x, y, z);
+    return tide_f3(x, y, z);
 }
 
 static void expect_hash(const char *what, const uint64_t got, const uint64_t want)
 {
     if (got != want) printf("    %s: hash is 0x%016" PRIX64 ", expected 0x%016" PRIX64 "\n", what, got, want);
-    PURR_CHECK(got == want);
+    TIDE_CHECK(got == want);
 }
 
 #define SAMPLES 100000
 
-PURR_TEST(crossplatform_transcendentals)
+TIDE_TEST(crossplatform_transcendentals)
 {
     typedef float (*unary)(float);
     static const unary functions[] = {
-        purr_sin_f, purr_cos_f, purr_tan_f, purr_asin_f, purr_acos_f, purr_atan_f,
-        purr_exp_f, purr_exp2_f, purr_log_f, purr_log2_f, purr_log10_f,
+        tide_sin_f, tide_cos_f, tide_tan_f, tide_asin_f, tide_acos_f, tide_atan_f,
+        tide_exp_f, tide_exp2_f, tide_log_f, tide_log2_f, tide_log10_f,
     };
     uint64_t h = 0xCBF29CE484222325ull;
     for (size_t f = 0; f < sizeof functions / sizeof functions[0]; f++) {
@@ -95,63 +95,63 @@ PURR_TEST(crossplatform_transcendentals)
     for (int i = 0; i < SAMPLES; i++) {
         const float y1 = game_float();
         const float x1 = game_float();
-        h = hash_float(h, purr_atan2_f(y1, x1));
+        h = hash_float(h, tide_atan2_f(y1, x1));
         const float y2 = any_float();
         const float x2 = any_float();
-        h = hash_float(h, purr_atan2_f(y2, x2));
-        const float base = purr_abs_f(game_float());
+        h = hash_float(h, tide_atan2_f(y2, x2));
+        const float base = tide_abs_f(game_float());
         const float exponent = game_float() * 0.25f;
-        h = hash_float(h, purr_pow_f(base, exponent));
+        h = hash_float(h, tide_pow_f(base, exponent));
         const float any_base = any_float();
         const float any_exponent = any_float();
-        h = hash_float(h, purr_pow_f(any_base, any_exponent));
+        h = hash_float(h, tide_pow_f(any_base, any_exponent));
     }
     expect_hash("transcendentals", h, 0x03B04AA14C16B94Bull);
 }
 
-PURR_TEST(crossplatform_basic_operations)
+TIDE_TEST(crossplatform_basic_operations)
 {
     uint64_t h = 0xCBF29CE484222325ull;
     rng = 200;
     for (int i = 0; i < SAMPLES; i++) {
         const float a = any_float();
         const float b = game_float();
-        h = hash_float(h, purr_sqrt_f(a));
-        h = hash_float(h, purr_rsqrt_f(b));
-        h = hash_float(h, purr_round_f(a));
-        h = hash_float(h, purr_floor_f(b));
-        h = hash_float(h, purr_ceil_f(a));
-        h = hash_float(h, purr_frac_f(b));
-        h = hash_float(h, purr_smoothstep_f(-1.0f, 1.0f, b));
-        h = hash_int(h, purr_i_from_f(a));
+        h = hash_float(h, tide_sqrt_f(a));
+        h = hash_float(h, tide_rsqrt_f(b));
+        h = hash_float(h, tide_round_f(a));
+        h = hash_float(h, tide_floor_f(b));
+        h = hash_float(h, tide_ceil_f(a));
+        h = hash_float(h, tide_frac_f(b));
+        h = hash_float(h, tide_smoothstep_f(-1.0f, 1.0f, b));
+        h = hash_int(h, tide_i_from_f(a));
         const int32_t x = (int32_t)next_bits();
         const int32_t y = (int32_t)next_bits() >> 20;
-        h = hash_int(h, purr_div_i(x, y));
-        h = hash_int(h, purr_mod_i(x, y));
-        h = hash_int(h, purr_mul_i(x, y));
-        h = hash_int(h, purr_shr_i(x, y));
-        h = hash_int(h, purr_shl_i(x, y));
+        h = hash_int(h, tide_div_i(x, y));
+        h = hash_int(h, tide_mod_i(x, y));
+        h = hash_int(h, tide_mul_i(x, y));
+        h = hash_int(h, tide_shr_i(x, y));
+        h = hash_int(h, tide_shl_i(x, y));
     }
     expect_hash("basic operations", h, 0x5A04D500E2C9D82Aull);
 }
 
-PURR_TEST(crossplatform_geometry)
+TIDE_TEST(crossplatform_geometry)
 {
     uint64_t h = 0xCBF29CE484222325ull;
     rng = 300;
-    purr_quaternion q = purr_identity_q();
+    tide_quaternion q = tide_identity_q();
     for (int i = 0; i < SAMPLES; i++) {
-        const purr_float3 v = game_f3();
-        const purr_float3 w = game_f3();
-        h = hash_f3(h, purr_normalize_f3(v));
-        h = hash_f3(h, purr_cross_f3(v, w));
-        h = hash_float(h, purr_length_f3(v));
-        const purr_quaternion r = purr_euler_q(purr_mul_f3(v, purr_f3_splat(0.05f)));
-        q = purr_normalize_q(purr_slerp_q(q, r, 0.3f));
-        h = hash_f3(h, purr_rotate_q(q, w));
-        const purr_float4x4 m = purr_trs_f4x4(v, q, purr_f3(1.5f, 1.0f, 0.5f));
-        h = hash_f3(h, purr_transform_f4x4(purr_inverse_f4x4(m), w));
-        h = hash_float(h, purr_determinant_f4x4(m));
+        const tide_float3 v = game_f3();
+        const tide_float3 w = game_f3();
+        h = hash_f3(h, tide_normalize_f3(v));
+        h = hash_f3(h, tide_cross_f3(v, w));
+        h = hash_float(h, tide_length_f3(v));
+        const tide_quaternion r = tide_euler_q(tide_mul_f3(v, tide_f3_splat(0.05f)));
+        q = tide_normalize_q(tide_slerp_q(q, r, 0.3f));
+        h = hash_f3(h, tide_rotate_q(q, w));
+        const tide_float4x4 m = tide_trs_f4x4(v, q, tide_f3(1.5f, 1.0f, 0.5f));
+        h = hash_f3(h, tide_transform_f4x4(tide_inverse_f4x4(m), w));
+        h = hash_float(h, tide_determinant_f4x4(m));
     }
     expect_hash("geometry", h, 0xA244CB549F91E603ull);
 }

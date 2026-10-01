@@ -1,6 +1,0 @@
-// expect: appears twice; an entity has at most one
-component Player { float3 speed; }
-system Main()
-{
-    Spawn(Player, Player);
-}

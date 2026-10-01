@@ -1,0 +1,14 @@
+// expect: input fields have '.down' and '.up', not '.released'
+component Jumps { int count; }
+input PlayerInput
+{
+    bool jump;
+    Sample() { jump = Devices.keyboard.space.pressed; }
+}
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Jumps, Owner); }
+system Land(PlayerInput input, mut Jumps jumps)
+{
+    if (input.jump.released) jumps.count += 1;
+}

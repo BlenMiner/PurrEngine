@@ -1,0 +1,4 @@
+// expect: 'inv' is read-only
+scene Main { }
+component Inventory { List<int> scores; }
+system S(Inventory inv) { inv.scores.Add(1); }

@@ -1,8 +1,0 @@
-// expect: did you mean 'speed'?
-component Body { float2 position; }
-system Main() { Spawn(Body); }
-system Move(mut Body body)
-{
-    var speed = 2.0;
-    body.position.x += sped;
-}

@@ -1,0 +1,4 @@
+// expect: 'default' takes its type from where it goes, and nothing here says which
+scene Main { }
+component T { int n; }
+system S(mut T t) { if (default) t.n = 1; }

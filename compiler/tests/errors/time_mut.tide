@@ -1,0 +1,3 @@
+// expect: 'Time' is managed by the engine
+scene Main { }
+system Rewind(mut Time time) { }

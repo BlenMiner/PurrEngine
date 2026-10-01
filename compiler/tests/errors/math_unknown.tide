@@ -1,0 +1,7 @@
+// expect: Math has no function 'Foo'
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = Math.Foo(1);
+}

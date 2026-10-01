@@ -1,0 +1,3 @@
+// expect: a member's value is an int, like 'Playing = 3'
+enum Phase { Warmup, Playing = 1.5 }
+scene Main { }

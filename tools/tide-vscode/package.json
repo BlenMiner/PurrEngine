@@ -1,0 +1,106 @@
+{
+  "name": "tide",
+  "displayName": "Tide",
+  "description": "The Tide language: errors as you type, completion, go to definition, rename, formatting and more, from tidels",
+  "version": "0.0.0",
+  "publisher": "tide-engine",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlenMiner/tide-engine"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:tide"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "tide",
+        "aliases": [
+          "Tide",
+          "tide"
+        ],
+        "extensions": [
+          ".tide"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tide",
+        "scopeName": "source.tide",
+        "path": "./syntaxes/tide.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Tide",
+      "properties": {
+        "tide.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The language server to run. Empty: the open folder's `build/tools/tidels` when it's Tide itself, else `tidels` from `PATH`, or from where tide is installed. `${workspaceFolder}` is the open folder."
+        },
+        "tide.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `tide` that **Tide: Run** and **Tide: Run on the Web** run. Empty: `tide` from `PATH`, or from where tide is installed. `${workspaceFolder}` is the open folder."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "tide.restartServer",
+        "title": "Restart Language Server",
+        "category": "Tide"
+      },
+      {
+        "command": "tide.run",
+        "title": "Run",
+        "category": "Tide",
+        "icon": "$(play)"
+      },
+      {
+        "command": "tide.runWeb",
+        "title": "Run on the Web",
+        "category": "Tide",
+        "icon": "$(globe)"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "tide.run",
+          "when": "resourceLangId == tide"
+        },
+        {
+          "command": "tide.runWeb",
+          "when": "resourceLangId == tide"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "[tide]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.js --bundle --platform=node --format=cjs --external:vscode --minify --outfile=out/extension.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

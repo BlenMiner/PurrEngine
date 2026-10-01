@@ -1,0 +1,38 @@
+<idea-plugin>
+    <id>io.github.blenminer.tide</id>
+    <name>Tide</name>
+    <vendor url="https://github.com/BlenMiner/tide-engine">Tide</vendor>
+    <description><![CDATA[
+        <p>The language of the <a href="https://github.com/BlenMiner/tide-engine">Tide</a> game engine.</p>
+        <p>Highlighting, completion, errors as you type with quick fixes, hover, go to definition, find usages, rename,
+        formatting, parameter hints, inlay hints, the structure view, symbols across the game, folding, moving a
+        declaration to a file of its own, and each system's schedule above it, for <code>.tide</code> files.</p>
+        <p>Run a game from its <code>.tide</code> files: in a window of its own, or on the web, in the IDE. Saving a
+        file reloads it as it runs.</p>
+        <p>It runs <code>tidels</code>, the language server that comes with tide: install tide first
+        (see the <a href="https://github.com/BlenMiner/tide-engine#install">install steps</a>). Then open your game's
+        folder, the one you'd run <code>tide run</code> in: every <code>.tide</code> file in it is one game.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.redhat.devtools.lsp4ij</depends>
+    <depends>org.jetbrains.plugins.textmate</depends>
+
+    <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
+        <server id="tidels" name="Tide" factoryClass="io.github.blenminer.tide.TidelsFactory">
+            <description><![CDATA[tidels, the Tide language server that comes with tide.]]></description>
+        </server>
+        <!-- By file name, so the TextMate grammar keeps coloring the text. -->
+        <fileNamePatternMapping patterns="*.tide" serverId="tidels" languageId="tide"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <textmate.bundleProvider implementation="io.github.blenminer.tide.TideTextMateBundle"/>
+        <notificationGroup id="Tide" displayType="BALLOON"/>
+        <configurationType implementation="io.github.blenminer.tide.TideRunConfigurationType"/>
+        <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Desktop"/>
+        <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Web"/>
+        <toolWindow id="Tide Game" anchor="right" icon="AllIcons.General.Web" doNotActivateOnStart="true"
+                    factoryClass="io.github.blenminer.tide.TideGamePage$Window"/>
+    </extensions>
+</idea-plugin>

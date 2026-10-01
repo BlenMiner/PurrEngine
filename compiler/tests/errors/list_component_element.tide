@@ -1,0 +1,4 @@
+// expect: a list holds values, like numbers, text, enums and structs, not Body
+scene Main { }
+component Body { float2 position; }
+component Swarm { List<Body> bodies; }

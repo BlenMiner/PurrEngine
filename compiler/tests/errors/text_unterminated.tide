@@ -1,0 +1,6 @@
+// expect: text is missing its closing '"'
+scene Main { }
+view Label()
+{
+    Draw.Text("oops, float2(0, 0), 1, Color.white);
+}

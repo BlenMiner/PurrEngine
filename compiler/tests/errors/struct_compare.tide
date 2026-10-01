@@ -1,0 +1,6 @@
+// expect: compare their fields instead
+struct Range { float lo; float hi; }
+singleton Limits { Range a; Range b; bool same; }
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Limits limits) { limits.same = limits.a == limits.b; }

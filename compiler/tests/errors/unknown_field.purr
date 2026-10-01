@@ -1,7 +1,0 @@
-// expect: Transform has no field 'pos'
-component Transform { float3 position; }
-system Main() { }
-system Move(mut Transform trs)
-{
-    trs.pos = float3(0, 0, 0);
-}

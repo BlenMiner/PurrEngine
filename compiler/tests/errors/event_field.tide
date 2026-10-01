@@ -1,0 +1,4 @@
+// expect: fields can't hold events
+event Hit { int damage; }
+component Memory { Hit last; }
+scene Main { }

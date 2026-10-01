@@ -1,0 +1,4 @@
+// expect: 'with' and 'without' filter entities by component
+component Transform { float3 position; }
+scene Main { }
+system Tick(mut Transform trs, with Time) { }

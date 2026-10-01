@@ -1,0 +1,7 @@
+// expect: can't initialize bool with float
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    bool b = 1.5;
+}

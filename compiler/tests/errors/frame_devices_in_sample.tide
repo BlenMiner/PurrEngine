@@ -1,0 +1,11 @@
+// expect: 'Confirm' reads this frame's Devices, so only views and the functions they call can call it
+bool Confirm()
+{
+    return Devices.keyboard.enter.down;
+}
+input PlayerInput
+{
+    bool accept;
+    Sample() { accept = Confirm(); }
+}
+scene Main { }

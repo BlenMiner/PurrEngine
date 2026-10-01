@@ -1,0 +1,47 @@
+// A program that starts in a local scene, a menu, before there's any match.
+
+local scene Main { }
+
+local scene Menu
+{
+    int page;
+}
+
+local component Button
+{
+    int id;
+}
+
+local singleton Frames
+{
+    int count;
+    int opened;
+}
+
+local event(Spawned) Open(with Main, mut Frames frames)
+{
+    frames.opened += 1;
+    Scene.Load(Menu { page = 1 });
+}
+
+local event(Spawned) Buttons(with Menu)
+{
+    Spawn(Button { id = 1 });
+    Spawn(Button { id = 2 });
+}
+
+view Count(mut Frames frames)
+{
+    frames.count += 1;
+}
+
+view Close(with Menu, Frames frames)
+{
+    if (frames.count == 2) Scene.Unload(this);
+}
+
+// Main leaves too, and with no scene left, it loads again.
+view Leave(with Main, Frames frames)
+{
+    if (frames.count == 3) Scene.Unload(this);
+}

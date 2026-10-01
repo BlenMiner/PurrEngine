@@ -1,0 +1,9 @@
+// expect: operators go in structs
+component Health
+{
+    int value;
+    Health operator +(Health a, Health b) { return Health { value = a.value + b.value }; }
+}
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Health); }

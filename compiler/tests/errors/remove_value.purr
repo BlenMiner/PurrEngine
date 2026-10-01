@@ -1,7 +1,0 @@
-// expect: Remove takes component types
-component Stunned { float duration; }
-system Main()
-{
-    var e = Spawn(Stunned);
-    e.Remove(Stunned { duration = 1 });
-}

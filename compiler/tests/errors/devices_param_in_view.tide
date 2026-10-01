@@ -1,0 +1,3 @@
+// expect: views read this machine's devices as 'Devices', not as a parameter
+scene Main { }
+view Pause(Devices devices) { }

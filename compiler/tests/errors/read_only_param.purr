@@ -1,7 +1,0 @@
-// expect: 'trs' is read-only
-component Transform { float3 position; }
-system Main() { Spawn(Transform); }
-system Clamp(Transform trs)
-{
-    trs.position.y = 0;
-}

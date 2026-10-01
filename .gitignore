@@ -6,3 +6,7 @@ cmake-build-*/
 .claude/
 .codex/
 CMakeUserPresets.json
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/public/demo/

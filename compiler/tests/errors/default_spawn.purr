@@ -1,4 +1,0 @@
-// expect: default values must be constant expressions
-component Spawner { int count = 1; }
-component Child { int n = Spawn(Spawner); }
-system Main() { }

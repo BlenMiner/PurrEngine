@@ -1,0 +1,5 @@
+// expect: Spawn takes components, and 'Hit' is an event
+event Hit { int damage; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Hit { damage = 1 }); }

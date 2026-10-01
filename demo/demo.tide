@@ -1,0 +1,144 @@
+// Tide demo: steer the yellow ball and fire balls that bounce around the arena.
+// World units, y up. The views at the end draw it; the simulation never depends on them.
+
+singleton Arena
+{
+    float2 halfSize = float2(400, 225);
+}
+
+component Body
+{
+    float2 position;
+    float2 velocity;
+    float radius = 10;
+}
+
+component Ball
+{
+    Color color = Color.white;
+}
+
+// Fired balls disappear after a while.
+component Lifetime
+{
+    int ticks = 300;
+}
+
+// The direction the player fires in: the last one they moved in.
+component Aim
+{
+    float2 direction = float2(1, 0);
+}
+
+input PlayerInput
+{
+    float2 move;
+    bool fire;
+
+    Sample()
+    {
+        var keys = Devices.keyboard;
+        if (keys.d.pressed || keys.rightArrow.pressed) move.x += 1;
+        if (keys.a.pressed || keys.leftArrow.pressed) move.x -= 1;
+        if (keys.w.pressed || keys.upArrow.pressed) move.y += 1;
+        if (keys.s.pressed || keys.downArrow.pressed) move.y -= 1;
+        var stick = Devices.gamepad.leftStick;
+        if (Math.Length(stick) > 0.2) move += stick;
+        fire = keys.space.pressed || Devices.gamepad.buttonSouth.pressed;
+    }
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Body { radius = 16 }, Aim, Owner { player = PlayerID(0) });
+    Spawn(Body { position = float2(-250, 120), velocity = float2(160, -90) }, Ball { color = Color(0.35, 0.67, 1) });
+    Spawn(Body { position = float2(200, -80), velocity = float2(-120, 140), radius = 14 }, Ball { color = Color(0.94, 0.35, 0.47) });
+    Spawn(Body { position = float2(60, 150), velocity = float2(90, 60), radius = 8 }, Ball { color = Color(0.47, 0.86, 0.55) });
+}
+
+system Steer(PlayerInput input, mut Body body, mut Aim aim)
+{
+    mut var move = input.move;
+    if (Math.Length(move) > 1) move = Math.Normalize(move);
+    body.velocity = move * 260;
+    if (Math.LengthSq(move) > 0) aim.direction = Math.Normalize(move);
+}
+
+system Fire(PlayerInput input, Body body, Aim aim)
+{
+    if (!input.fire.down) return;
+    var muzzle = body.position + aim.direction * (body.radius + 10);
+    Spawn(Body { position = muzzle, velocity = aim.direction * 420, radius = 6 }, Ball, Lifetime);
+}
+
+system Move(Time time, mut Body body)
+{
+    body.position += body.velocity * time.dt;
+}
+
+system Bounce(Arena arena, mut Body body)
+{
+    var limit = arena.halfSize - body.radius;
+    if (body.position.x > limit.x) { body.position.x = limit.x; body.velocity.x = -Math.Abs(body.velocity.x); }
+    if (body.position.x < -limit.x) { body.position.x = -limit.x; body.velocity.x = Math.Abs(body.velocity.x); }
+    if (body.position.y > limit.y) { body.position.y = limit.y; body.velocity.y = -Math.Abs(body.velocity.y); }
+    if (body.position.y < -limit.y) { body.position.y = -limit.y; body.velocity.y = Math.Abs(body.velocity.y); }
+}
+
+system Expire(mut Lifetime life)
+{
+    life.ticks -= 1;
+    if (life.ticks <= 0) this.Destroy();
+}
+
+// Views run once per frame and draw the world. They can only read it; how it
+// looks is this machine's own, local state that the options change.
+
+local singleton Look
+{
+    bool open;
+    bool aim = true;
+    float zoom = 1.1;
+    Color player = Color(1, 0.77, 0.24);
+}
+
+view DrawArena(Arena arena, Look look)
+{
+    Draw.Clear(Color(0.08, 0.08, 0.11));
+    Draw.Camera(float2(0, 0), arena.halfSize.y * look.zoom);
+    Draw.WireRect(float2(0, 0), arena.halfSize * 2, Color(0.24, 0.24, 0.31));
+    var help = float2(8 - arena.halfSize.x, 26 - arena.halfSize.y);
+    Draw.Text("move: WASD, arrows or left stick    fire: space or A    options: Esc or Start", help, 18,
+              Color(0.43, 0.43, 0.51));
+}
+
+view DrawBalls(Body body, Ball ball)
+{
+    Draw.Circle(body.position, body.radius, ball.color);
+}
+
+view DrawPlayers(Body body, Aim aim, with Owner, Look look)
+{
+    Draw.Circle(body.position, body.radius, look.player);
+    if (look.aim) Draw.Line(body.position, body.position + aim.direction * (body.radius + 12), look.player);
+}
+
+// The GUI, over the world. The button, Escape or Start bring up the options,
+// and back (Escape or B) puts them away.
+view Options(mut Look look)
+{
+    if (Devices.keyboard.escape.down || Devices.gamepad.start.down) look.open = true;
+    GUILayout.Area(Anchor.UpperLeft)
+    {
+        if (GUILayout.Button("Options")) look.open = true;
+    }
+    GUILayout.Modal(Anchor.MiddleCenter, look.open)
+    {
+        GUILayout.Toggle("Aim line", look.aim);
+        GUILayout.Slider("Zoom", look.zoom, 0.5, 2);
+        GUILayout.ColorField("Player", look.player);
+        if (GUILayout.Button("Close")) look.open = false;
+    }
+}

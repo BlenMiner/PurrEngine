@@ -1,0 +1,7 @@
+// expect: does nothing on its own
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Math.Dot(float3(1), float3(2));
+}

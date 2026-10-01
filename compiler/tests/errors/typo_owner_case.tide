@@ -1,0 +1,7 @@
+// expect: did you mean 'Math'?
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var angle = math.PI;
+}

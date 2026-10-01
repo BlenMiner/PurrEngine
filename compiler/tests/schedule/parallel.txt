@@ -25,3 +25,6 @@ stage 3  Report  (per entity)
          reads Enemy
          after Drag: this has [After(Drag)]
          alongside PushPlayers, PushEnemies, Tally
+
+Event handlers, at the end of the tick, as their events are sent:
+         Spawned: Setup

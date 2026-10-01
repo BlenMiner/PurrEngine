@@ -1,0 +1,68 @@
+// Structural changes: spawning from systems, adding, removing and destroying.
+
+component Health
+{
+    int value;
+}
+
+component Poisoned
+{
+    int damage;
+}
+
+component Dead
+{
+}
+
+component Spawner
+{
+    int remaining;
+}
+
+component Child
+{
+    Entity parent;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var a = Spawn(Health { value = 3 });
+    a.Add(Poisoned { damage = 1 });
+
+    Spawn(Health { value = 1 }, Poisoned { damage = 5 });
+    Spawn(Spawner { remaining = 2 });
+}
+
+// Poison hurts every tick.
+system Poison(mut Health health, Poisoned poison)
+{
+    health.value -= poison.damage;
+}
+
+// At zero health an entity is cured of poison and marked dead.
+system Die(Health health, without Dead)
+{
+    if (health.value <= 0)
+    {
+        this.Remove(Poisoned);
+        this.Add(Dead);
+    }
+}
+
+// Dead entities are destroyed on the next tick.
+system Cleanup(with Dead)
+{
+    this.Destroy();
+}
+
+// A spawner creates one child per tick until it runs out.
+system SpawnChildren(mut Spawner spawner)
+{
+    if (spawner.remaining > 0)
+    {
+        spawner.remaining -= 1;
+        Spawn(Child { parent = this });
+    }
+}

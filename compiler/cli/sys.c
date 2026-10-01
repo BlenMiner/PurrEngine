@@ -16,7 +16,10 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -121,6 +124,40 @@ int64_t sys_mtime(const char *path)
     return stat(path, &info) == 0 ? (int64_t)info.st_mtime : 0;
 }
 
+uint64_t sys_file_stamp(const char *path)
+{
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return 0;
+    const uint64_t time = (uint64_t)info.ftLastWriteTime.dwHighDateTime << 32 | info.ftLastWriteTime.dwLowDateTime;
+    const uint64_t size = (uint64_t)info.nFileSizeHigh << 32 | info.nFileSizeLow;
+#else
+    struct stat info;
+    if (stat(path, &info) != 0) return 0;
+#ifdef __APPLE__
+    const uint64_t time = (uint64_t)info.st_mtimespec.tv_sec * 1000000000u + (uint64_t)info.st_mtimespec.tv_nsec;
+#else
+    const uint64_t time = (uint64_t)info.st_mtim.tv_sec * 1000000000u + (uint64_t)info.st_mtim.tv_nsec;
+#endif
+    const uint64_t size = (uint64_t)info.st_size;
+#endif
+    return (time ^ size * 0x9E3779B97F4A7C15ull) | 1u;
+}
+
+int64_t sys_file_size(const char *path)
+{
+#ifdef _WIN32
+    // The file's own record, which is current while it's written, unlike
+    // what a directory listing sees.
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return -1;
+    return (int64_t)((uint64_t)info.nFileSizeHigh << 32 | info.nFileSizeLow);
+#else
+    struct stat info;
+    return stat(path, &info) == 0 ? (int64_t)info.st_size : -1;
+#endif
+}
+
 static bool make_dir(const char *path)
 {
 #ifdef _WIN32
@@ -144,6 +181,18 @@ bool sys_mkdirs(const char *path)
     const bool ok = sys_is_dir(p);
     free(p);
     return ok;
+}
+
+void sys_hide(const char *path)
+{
+#ifdef _WIN32
+    const DWORD attributes = GetFileAttributesA(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_HIDDEN)) {
+        SetFileAttributesA(path, attributes | FILE_ATTRIBUTE_HIDDEN);
+    }
+#else
+    (void)path;
+#endif
 }
 
 bool sys_rename(const char *from, const char *to)
@@ -259,6 +308,27 @@ int64_t sys_now(void)
     return (int64_t)time(NULL);
 }
 
+int64_t sys_now_ms(void)
+{
+#ifdef _WIN32
+    return (int64_t)GetTickCount64();
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+#endif
+}
+
+bool sys_is_terminal(void)
+{
+#ifdef _WIN32
+    DWORD mode;
+    return GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &mode) != 0;
+#else
+    return isatty(STDOUT_FILENO) != 0;
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Programs
 
@@ -312,7 +382,7 @@ static bool ends_with(const char *s, const char *suffix)
     return n >= k && _stricmp(s + n - k, suffix) == 0;
 }
 
-int sys_run(const char *const *argv, const char *cwd, const bool quiet)
+static bool start_process(const char *const *argv, const char *cwd, const bool quiet, PROCESS_INFORMATION *process)
 {
     char *line = NULL;
     size_t len = 0;
@@ -339,18 +409,65 @@ int sys_run(const char *const *argv, const char *cwd, const bool quiet)
         startup.hStdOutput = null_file;
         startup.hStdError = null_file;
     }
-    PROCESS_INFORMATION process;
-    const BOOL started = CreateProcessA(NULL, command, NULL, NULL, quiet, 0, NULL, cwd, &startup, &process);
+    const BOOL started = CreateProcessA(NULL, command, NULL, NULL, quiet, 0, NULL, cwd, &startup, process);
     if (command != line) free(command);
     free(line);
     if (null_file != INVALID_HANDLE_VALUE) CloseHandle(null_file);
-    if (!started) return -1;
+    return started != 0;
+}
+
+int sys_run(const char *const *argv, const char *cwd, const bool quiet)
+{
+    PROCESS_INFORMATION process;
+    if (!start_process(argv, cwd, quiet, &process)) return -1;
     WaitForSingleObject(process.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(process.hProcess, &code);
     CloseHandle(process.hProcess);
     CloseHandle(process.hThread);
     return (int)code;
+}
+
+struct sys_process {
+    PROCESS_INFORMATION info;
+};
+
+sys_process *sys_start(const char *const *argv, const char *cwd)
+{
+    sys_process *p = malloc(sizeof *p);
+    if (!p) abort();
+    if (!start_process(argv, cwd, false, &p->info)) {
+        free(p);
+        return NULL;
+    }
+    return p;
+}
+
+bool sys_wait(sys_process *p, const int ms, int *code)
+{
+    if (WaitForSingleObject(p->info.hProcess, (DWORD)ms) != WAIT_OBJECT_0) return false;
+    DWORD exit_code = 1;
+    GetExitCodeProcess(p->info.hProcess, &exit_code);
+    CloseHandle(p->info.hProcess);
+    CloseHandle(p->info.hThread);
+    free(p);
+    *code = (int)exit_code;
+    return true;
+}
+
+uint32_t sys_pid(void)
+{
+    return (uint32_t)GetCurrentProcessId();
+}
+
+bool sys_process_alive(const uint32_t pid)
+{
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (!process) return GetLastError() == ERROR_ACCESS_DENIED; // Someone else's
+    DWORD code = 0;
+    const bool alive = GetExitCodeProcess(process, &code) && code == STILL_ACTIVE;
+    CloseHandle(process);
+    return alive;
 }
 
 #else
@@ -377,7 +494,112 @@ int sys_run(const char *const *argv, const char *cwd, const bool quiet)
     return 1;
 }
 
+struct sys_process {
+    pid_t pid;
+};
+
+sys_process *sys_start(const char *const *argv, const char *cwd)
+{
+    const pid_t pid = fork();
+    if (pid < 0) return NULL;
+    if (pid == 0) {
+        if (cwd && chdir(cwd) != 0) _exit(127);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    sys_process *p = malloc(sizeof *p);
+    if (!p) abort();
+    p->pid = pid;
+    return p;
+}
+
+bool sys_wait(sys_process *p, const int ms, int *code)
+{
+    for (int waited = 0;; waited += 10) {
+        int status = 0;
+        const pid_t done = waitpid(p->pid, &status, WNOHANG);
+        if (done == p->pid || done < 0) {
+            *code = done == p->pid && WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+            free(p);
+            return true;
+        }
+        if (waited >= ms) return false;
+        const struct timespec nap = {0, 10 * 1000000};
+        nanosleep(&nap, NULL);
+    }
+}
+
+uint32_t sys_pid(void)
+{
+    return (uint32_t)getpid();
+}
+
+bool sys_process_alive(const uint32_t pid)
+{
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
 #endif
+
+// Lines typed into the terminal: a thread reads them, and hands each one over
+// through `typed`, waiting until it's taken.
+static char typed[256];
+static int typed_ready; // Read and written atomically
+
+#ifdef _WIN32
+static DWORD WINAPI read_lines(void *unused)
+#else
+static void *read_lines(void *unused)
+#endif
+{
+    (void)unused;
+    char line[sizeof typed];
+    while (fgets(line, sizeof line, stdin)) {
+        while (__atomic_load_n(&typed_ready, __ATOMIC_ACQUIRE)) {
+#ifdef _WIN32
+            Sleep(20);
+#else
+            const struct timespec nap = {0, 20 * 1000000};
+            nanosleep(&nap, NULL);
+#endif
+        }
+        line[strcspn(line, "\r\n")] = '\0';
+        memcpy(typed, line, sizeof typed);
+        __atomic_store_n(&typed_ready, 1, __ATOMIC_RELEASE);
+    }
+    return 0;
+}
+
+void sys_read_lines(void)
+{
+#ifdef _WIN32
+    const HANDLE thread = CreateThread(NULL, 0, read_lines, NULL, 0, NULL);
+    if (thread) CloseHandle(thread);
+#else
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, read_lines, NULL) == 0) pthread_detach(thread);
+#endif
+}
+
+bool sys_typed_line(char *out, const size_t size)
+{
+    if (!__atomic_load_n(&typed_ready, __ATOMIC_ACQUIRE)) return false;
+    snprintf(out, size, "%s", typed);
+    __atomic_store_n(&typed_ready, 0, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool sys_open_in_browser(const char *page)
+{
+#if defined(_WIN32)
+    const char *const argv[] = {"cmd.exe", "/c", "start", "", page, NULL};
+#elif defined(__APPLE__)
+    const char *const argv[] = {"open", page, NULL};
+#else
+    const char *const argv[] = {"xdg-open", page, NULL};
+#endif
+    return sys_run(argv, NULL, true) == 0;
+}
 
 char *sys_which(const char *name)
 {

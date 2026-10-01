@@ -1,0 +1,3 @@
+// expect: only methods are 'mut': they change their struct's fields
+mut void Reset() { }
+scene Main { }

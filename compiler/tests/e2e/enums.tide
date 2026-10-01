@@ -1,0 +1,74 @@
+// Enums and switch: named values, and switches over them and over ints.
+
+enum Phase
+{
+    Warmup,
+    Playing = 5,
+    Over,
+}
+
+enum Weapon { Sword, Bow }
+
+struct Loadout
+{
+    Weapon primary = Weapon.Bow;
+}
+
+singleton Match
+{
+    Phase phase; // Warmup: 0, like every field without a default
+    int ticksInPhase;
+    int score;
+    int phaseValue;
+    Loadout loadout;
+}
+
+// A value from another machine that isn't one of Weapon's members becomes the default.
+input Controls
+{
+    Weapon weapon = Weapon.Sword;
+}
+
+scene Main { }
+
+system Advance(mut Match match, Time time)
+{
+    match.ticksInPhase += 1;
+    switch (match.phase)
+    {
+        case Phase.Warmup:
+            if (match.ticksInPhase >= 2)
+            {
+                match.phase = Phase.Playing;
+                match.ticksInPhase = 0;
+            }
+            break;
+        case Phase.Playing:
+            match.score += Points(time.tick);
+            if (match.ticksInPhase >= 3) match.phase = Phase.Over;
+            break;
+        default:
+            break;
+    }
+    match.phaseValue = int(match.phase);
+}
+
+system Arm(Controls controls, mut Match match)
+{
+    if (controls.weapon != match.loadout.primary) match.loadout.primary = controls.weapon;
+}
+
+// Every section returns, and there's a default, so the function always returns.
+int Points(int tick)
+{
+    switch (tick % 3)
+    {
+        case 0:
+            return 10;
+        case 1:
+        case -1:
+            return 1;
+        default:
+            return 0;
+    }
+}

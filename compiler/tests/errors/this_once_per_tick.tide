@@ -1,0 +1,7 @@
+// expect: 'Cleanup' takes no components, so it runs once per tick, not for an entity, and has no 'this'
+singleton Round { int number; }
+scene Main { }
+system Cleanup(Round round)
+{
+    if (round.number > 3) this.Destroy();
+}

@@ -1,0 +1,7 @@
+// expect: invalid number '0b102'
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = 0b102;
+}

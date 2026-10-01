@@ -1,0 +1,42 @@
+// When a world's last scene unloads, Main loads again.
+
+scene Main { }
+
+scene Arena
+{
+    int round;
+}
+
+component Wall { }
+
+singleton Stats
+{
+    int mainLoads;
+    int arenaLoads;
+}
+
+// Main hands over to an arena and leaves. The third time, it leaves nothing
+// loaded, so it loads again every tick after, once.
+event(Spawned) Setup(with Main, mut Stats stats)
+{
+    stats.mainLoads += 1;
+    if (stats.mainLoads < 3) Scene.Load(Arena);
+    Scene.Unload(this);
+}
+
+event(Spawned) SetupArena(with Arena, mut Stats stats)
+{
+    stats.arenaLoads += 1;
+}
+
+system Rounds(mut Arena arena)
+{
+    arena.round += 1;
+    if (arena.round == 2) Scene.Unload(this);
+}
+
+// In no scene, so it doesn't keep Main from loading.
+system Build(Time time)
+{
+    if (time.tick == 0) Spawn(Wall);
+}

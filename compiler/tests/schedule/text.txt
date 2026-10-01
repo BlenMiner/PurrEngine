@@ -1,0 +1,18 @@
+text: 3 systems each tick, 2 stages deep; 2 can run alongside others.
+A system starts once everything it runs after is done.
+
+stage 1  Rename  (per entity)
+         writes Name
+         alongside nothing
+stage 2  Retitle  (per entity)
+         writes Title
+         after Rename: both change text or lists, which the match keeps in one heap
+         alongside Count
+stage 2  Count  (per entity)
+         reads Name
+         writes Score
+         after Rename: it writes Name, which this reads
+         alongside Retitle
+
+Event handlers, at the end of the tick, as their events are sent:
+         Spawned: Setup

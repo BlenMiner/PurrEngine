@@ -1,3 +1,0 @@
-// expect: unknown component or singleton 'Velocity'
-system Main() { }
-system Move(Velocity v) { }

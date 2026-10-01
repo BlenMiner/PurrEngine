@@ -1,0 +1,7 @@
+// expect: operator '<<' can't be used with float and int
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = 1.5 << 2;
+}

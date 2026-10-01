@@ -1,0 +1,5 @@
+// expect: Send takes events, and 'Health' is a component
+component Health { int value; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { var e = Spawn(Health); e.Send(Health { value = 1 }); }

@@ -1,0 +1,7 @@
+// expect: Sanitize takes no parameters
+input PlayerInput
+{
+    float move;
+    Sanitize(Devices devices) { }
+}
+scene Main { }

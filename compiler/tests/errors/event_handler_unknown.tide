@@ -1,0 +1,4 @@
+// expect: did you mean 'Hit'?
+event Hit { int damage; }
+scene Main { }
+event(Hitt hit) TakeHit() { }

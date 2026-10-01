@@ -1,0 +1,39 @@
+// Systems take Devices: the devices of the player who owns the entity, or the
+// server's. The input sends what match code reads of them, and nothing else.
+// There's no input declaration: the game gets one that only sends devices.
+
+component Walker
+{
+    float2 position;
+    int jumps;
+    float throttle;
+    bool connected;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Walker, Owner { player = PlayerID(0) });
+    Spawn(Walker, Owner { player = PlayerID(1) });
+    Spawn(Walker); // No owner: the server's devices
+}
+
+// A part of the devices, passed on: what the function reads is sent.
+float2 Stick(Gamepad pad)
+{
+    return pad.leftStick;
+}
+
+bool Jumped(Devices devices)
+{
+    return devices.keyboard.space.down || devices.gamepad.buttonSouth.down;
+}
+
+system Walk(Devices devices, Time time, mut Walker w)
+{
+    w.position += Stick(devices.gamepad) * time.dt;
+    if (Jumped(devices)) w.jumps += 1;
+    w.throttle = devices.gamepad.rightTrigger;
+    w.connected = devices.gamepad.connected;
+}

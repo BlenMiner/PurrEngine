@@ -1,0 +1,6 @@
+// expect: Session has no 'Start'; it has Play, Host, Join, Connect and Leave
+local scene Main { }
+view Start()
+{
+    Session.Start("127.0.0.1");
+}

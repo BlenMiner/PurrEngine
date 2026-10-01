@@ -1,0 +1,3 @@
+// expect: did you mean 'Button'?
+scene Main { }
+view Buttons() { GUILayout.Buton("Play"); }

@@ -1,0 +1,7 @@
+// expect: the entity a view runs for is 'this', not a parameter
+local component Spark { int framesLeft; }
+scene Main { }
+view Fade(LocalEntity spark, with Spark)
+{
+    spark.Destroy();
+}

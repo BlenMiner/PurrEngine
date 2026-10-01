@@ -1,0 +1,7 @@
+// expect: float3 needs 3 components, got 2
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var v = float3(1, 2);
+}

@@ -1,8 +1,0 @@
-// expect: Sanitize runs outside the simulation, so it can't spawn entities
-component Coin { int value; }
-input PlayerInput
-{
-    bool jump;
-    Sanitize() { Spawn(Coin); }
-}
-system Main() { Spawn(Coin); }

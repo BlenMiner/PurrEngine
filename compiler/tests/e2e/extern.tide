@@ -1,0 +1,209 @@
+// Functions written in C (extern_c.c), called by systems and functions, with
+// values, structs and enums both ways, `mut` and `in` parameters by address,
+// lists as pointers to their elements, and text as C text.
+
+struct Pair
+{
+    float a;
+    int b;
+}
+
+enum Mode { Off, Slow, Fast }
+
+[NativeName("c_add")]
+extern float Add(float a, float b);
+extern int c_twice(int x);
+extern float3 c_scale(float3 v, float s);
+extern Pair c_swap(Pair p);
+extern void c_bump(mut int counter, mut Pair pair);
+extern Mode c_next(Mode mode);
+extern bool c_is_even(int x);
+extern int c_calls();
+
+// By address, read-only
+extern float c_length(in float3 v);
+extern float c_pair_sum(in Pair p);
+
+// Lists: their elements, and how many
+extern float c_sum(List<float> values, int count);
+extern void c_double_all(mut List<int> values, int count);
+extern bool c_is_null(List<int> values);
+
+// Text
+extern int c_text_bytes(string text);
+extern string c_greet(string name);
+extern string c_nothing();
+
+// C that keeps state: calls run left to right, whatever order C picks
+extern int c_tick();
+extern int c_digits(int a, int b);
+extern int c_loop_tick();
+extern int c_return_tick();
+extern int c_unit_tick();
+extern int c_loop2_tick();
+extern int c_op_tick();
+extern int c_spawn_tick();
+extern int c_each_tick();
+
+// An operator that calls C
+struct Money
+{
+    int cents;
+
+    Money operator +(Money a, Money b) { return Money { cents = c_op_tick() }; }
+}
+
+component Result
+{
+    float sum;
+    int twice;
+    float3 scaled;
+    Pair swapped;
+    int counter = 5;
+    Pair bumped;
+    Mode mode;
+    bool even;
+    float half;
+    int calls;
+    int local;
+
+    float3 direction = float3(3, 4, 0);
+    float length;
+    float computedLength;
+    float convertedLength;
+    float pairSum;
+
+    List<float> weights;
+    List<int> counts;
+    int countsAfter;
+    float weightSum;
+    float literalSum;
+    bool emptyIsNull;
+
+    int bytes;
+    int formattedBytes;
+    int fieldBytes;
+    string greeting;
+    string nothing;
+
+    int order;
+    int viaFunction;
+    int rounds;
+    int returned;
+
+    bool picked;
+    int mixed;
+    bool never;
+    int after;
+    bool either;
+    int rounds2;
+    int operatorOrder;
+    int spawnCalls;
+    int eachOrder;
+}
+
+component Enemy
+{
+    int hp;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Result);
+}
+
+// A function that calls C
+float Triple(float x)
+{
+    return Add(Add(x, x), x);
+}
+
+// Calls C through another function: its calls keep their order too
+int Tick()
+{
+    return c_tick();
+}
+
+List<int> Both(int a, int b)
+{
+    return [a, b];
+}
+
+int TwoTicks()
+{
+    return c_digits(c_return_tick(), c_return_tick());
+}
+
+system Run(mut Result r)
+{
+    r.sum = Triple(1.5);
+    r.twice = c_twice(21);
+    r.scaled = c_scale(float3(1, 2, 3), 2);
+    r.swapped = c_swap(Pair { a = 7, b = 3 });
+    c_bump(r.counter, r.bumped);
+    r.mode = c_next(Mode.Slow);
+    r.even = c_is_even(r.twice);
+    r.half = Noise.Half(5);
+    mut var n = 1;
+    mut Pair p = Pair { };
+    c_bump(n, p);
+    r.local = n;
+    r.calls = c_calls();
+
+    r.length = c_length(r.direction);
+    r.computedLength = c_length(r.direction * 2);
+    r.convertedLength = c_length(int3(0, 0, 7));
+    r.pairSum = c_pair_sum(r.swapped);
+
+    r.weights = [1.5, 2.5, 3];
+    r.weightSum = c_sum(r.weights, r.weights.Count);
+    r.literalSum = c_sum([10, 20], 2);
+    r.counts = [1, 2, 3];
+    c_double_all(r.counts, r.counts.Count);
+    r.countsAfter = r.counts[0] * 100 + r.counts[1] * 10 + r.counts[2];
+    List<int> none = [];
+    r.emptyIsNull = c_is_null(none);
+
+    r.bytes = c_text_bytes("héllo");
+    r.formattedBytes = c_text_bytes($"n{r.twice}");
+    r.greeting = c_greet("cat");
+    r.fieldBytes = c_text_bytes(r.greeting);
+    r.nothing = c_nothing();
+
+    r.order = c_digits(c_tick(), c_tick());
+    r.viaFunction = c_digits(Tick(), Tick());
+    mut var rounds = 0;
+    while (c_digits(c_loop_tick(), c_loop_tick()) < 60)
+    {
+        rounds++;
+    }
+    r.rounds = rounds;
+    r.returned = TwoTicks();
+
+    // In parts that run only sometimes: the right of && and ||, the sides of ?:
+    var ready = r.twice > 0;
+    r.picked = ready && c_digits(c_unit_tick(), c_unit_tick()) == 12;
+    r.mixed = c_digits(c_unit_tick(), ready ? c_unit_tick() : 0);
+    r.never = !ready && c_digits(c_unit_tick(), c_unit_tick()) > 0;
+    r.after = c_unit_tick();
+    r.either = !ready || c_digits(c_unit_tick(), c_unit_tick()) == 67;
+    mut var rounds2 = 0;
+    while (ready && c_digits(c_loop2_tick(), c_loop2_tick()) < 60)
+    {
+        rounds2++;
+    }
+    r.rounds2 = rounds2;
+    var money = Money { cents = 1 };
+    r.operatorOrder = c_digits((money + money).cents, c_op_tick());
+
+    // A spawn's values run once, before it
+    Spawn(Enemy { hp = c_spawn_tick() });
+    r.spawnCalls = c_spawn_tick();
+    // A foreach's list is made once, in order
+    foreach (var tick in Both(c_each_tick(), c_each_tick()))
+    {
+        r.eachOrder = r.eachOrder * 10 + tick;
+    }
+}

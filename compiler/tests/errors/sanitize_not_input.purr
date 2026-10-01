@@ -1,7 +1,0 @@
-// expect: only inputs have Sanitize
-component Health
-{
-    int value;
-    Sanitize() { }
-}
-system Main() { }

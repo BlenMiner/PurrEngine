@@ -1,0 +1,7 @@
+// expect: 'camera' is read-only
+singleton Camera { float2 center; }
+scene Main { }
+system Cut(Camera camera)
+{
+    camera.Snap();
+}

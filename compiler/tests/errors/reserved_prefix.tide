@@ -1,0 +1,3 @@
+// expect: reserved for generated code
+component tide_thing { int value; }
+scene Main { }

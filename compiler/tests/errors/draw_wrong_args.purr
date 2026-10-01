@@ -1,7 +1,0 @@
-// expect: no version of Draw.Circle takes (float2, Color)
-component Body { float2 position; }
-system Main() { Spawn(Body); }
-view Dot(Body body)
-{
-    Draw.Circle(body.position, Color.red);
-}

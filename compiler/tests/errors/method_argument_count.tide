@@ -1,0 +1,11 @@
+// expect: 'Scale' takes 1 argument, not 2
+struct Range
+{
+    float lo;
+    float hi;
+    mut void Scale(float factor) { lo *= factor; hi *= factor; }
+}
+singleton Limits { Range range; }
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Limits limits) { limits.range.Scale(2, 3); }

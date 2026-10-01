@@ -1,0 +1,52 @@
+// The conditional operator: cond ? a : b.
+
+singleton Defaults
+{
+    int picked = 2 > 1 ? 10 : 20;     // 10
+    float widened = false ? 0.5 : 1;  // 1: the int side widens to float
+}
+
+singleton Results
+{
+    int sign;
+    float half;
+    bool flag;
+    int precedence;
+    float3 position;
+}
+
+component Counter
+{
+    int ticks;
+}
+
+input PlayerInput
+{
+    float horizontal;
+
+    Sample()
+    {
+        float left = Devices.keyboard.a.pressed ? 1 : 0;
+        float right = Devices.keyboard.d.pressed ? 1 : 0;
+        horizontal = right - left;
+    }
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Counter);
+}
+
+system Count(mut Counter counter, mut Results results)
+{
+    counter.ticks += 1;
+    // Groups to the right, so the first true condition picks.
+    results.sign = counter.ticks > 2 ? 1 : counter.ticks == 2 ? 0 : -1;
+    results.half = counter.ticks > 1 ? 0.5 : 1;
+    results.flag = counter.ticks > 1 ? false : true;
+    // Looser than ||: (false || true) ? 1 : 2.
+    results.precedence = false || true ? 1 : 2;
+    results.position = counter.ticks % 2 == 0 ? float3(1, 2, 3) : float3(0);
+}

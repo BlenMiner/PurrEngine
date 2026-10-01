@@ -1,0 +1,4 @@
+// expect: names starting with 'tide_' belong to the engine
+scene Main { }
+[NativeName("tide_world_tick")]
+extern void Tick();

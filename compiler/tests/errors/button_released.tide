@@ -1,0 +1,7 @@
+// expect: 'up' is true on the tick the button went up
+input PlayerInput
+{
+    bool jump;
+    Sample() { jump = Devices.keyboard.space.released; }
+}
+scene Main { }

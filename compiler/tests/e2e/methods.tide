@@ -1,0 +1,172 @@
+// Methods on structs and components, and functions: code other code calls.
+
+struct Range
+{
+    float lo;
+    float hi = 1;
+
+    float Width() { return hi - lo; }
+
+    mut void Scale(float factor)
+    {
+        lo *= factor;
+        hi *= factor;
+    }
+}
+
+struct Stats
+{
+    float health = 100;
+    Range damage;
+
+    // Read-only: fields are in scope by name, and can't be changed.
+    bool IsDead()
+    {
+        if (health <= 0) return true;
+        return false;
+    }
+
+    float Hit() { return damage.hi; }
+
+    // mut: changes the fields, and can call other methods.
+    mut void TakeHit()
+    {
+        health -= Hit();
+        if (IsDead()) health = 0;
+    }
+
+    mut void Enrage()
+    {
+        damage.Scale(2); // A mut method on a field
+        TakeHit();       // Another mut method
+    }
+}
+
+component Unit
+{
+    Stats stats;
+    int kills;
+
+    bool IsAlive() { return !stats.IsDead(); }
+
+    mut void Kill() { kills += 1; }
+}
+
+// A component's methods have this: the entity whose component they're called on.
+component Tracker
+{
+    Entity me;
+    Entity other;
+    bool isMe;
+    bool otherIsMe;
+    int calls;
+
+    bool IsMe(Entity e) { return e == this; }
+
+    mut void Remember()
+    {
+        me = this;
+        calls += 1;
+    }
+
+    // Uses this through Remember and IsMe.
+    mut void Track()
+    {
+        Remember();
+        isMe = IsMe(me);
+        otherIsMe = IsMe(other);
+    }
+}
+
+singleton Log
+{
+    float width;
+    float literal_width;
+    int bumps;
+    float healed;
+    int alive;
+    float2 sampled;
+}
+
+input PlayerInput
+{
+    float2 move;
+
+    Sample()
+    {
+        move = float2(3, 4);
+        Normalize(move); // A function with a mut parameter, on a field of the input
+    }
+}
+
+// Functions: not run by the engine, only called.
+void Normalize(mut float2 v)
+{
+    var length = Math.Length(v);
+    if (length > 0) v = v / length;
+}
+
+void Bump(mut int counter) { counter += 1; }
+
+float Heal(mut Stats stats, float amount)
+{
+    stats.health += amount;
+    return stats.health;
+}
+
+Range Wider(Range r)
+{
+    mut var copy = r;
+    copy.Scale(3);
+    return copy;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Unit);
+    Spawn(Unit { stats = Stats { health = 1, damage = Range { hi = 5 } } });
+    var first = Spawn(Tracker);
+    Spawn(Tracker { other = first });
+}
+
+// In a handler, this is the entity the event was sent to.
+event(Spawned) Greet(mut Tracker tracker)
+{
+    tracker.Remember();
+}
+
+system Watch(mut Tracker tracker)
+{
+    tracker.Track();
+}
+
+system Fight(mut Unit unit)
+{
+    unit.stats.TakeHit();
+    if (!unit.IsAlive()) unit.Kill();
+}
+
+system Rage(mut Unit unit)
+{
+    if (unit.kills > 0) unit.stats.Enrage();
+}
+
+system Record(Unit unit, mut Log log)
+{
+    log.width = Wider(unit.stats.damage).Width();
+    log.literal_width = Range { lo = 1, hi = 4 }.Width(); // On a value that isn't stored
+    Bump(log.bumps);
+    if (unit.IsAlive()) log.alive += 1;
+}
+
+system Mend(mut Unit unit, mut Log log)
+{
+    if (unit.IsAlive()) log.healed = Heal(unit.stats, 2);
+}
+
+system ReadInput(PlayerInput input, mut Log log)
+{
+    log.sampled = input.move;
+}

@@ -1,3 +1,0 @@
-// expect: 'Draw' is built into the language
-component Draw { int x; }
-system Main() { }

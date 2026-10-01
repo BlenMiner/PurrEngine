@@ -1,0 +1,9 @@
+// expect: 'GUILayout.Button' doesn't take a block
+scene Main { }
+view Buttons()
+{
+    GUILayout.Button("Play")
+    {
+        GUILayout.Label("inside");
+    }
+}

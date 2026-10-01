@@ -1,0 +1,7 @@
+// expect: a loop's condition must be bool, not int
+scene Main { }
+component Tally { int n; }
+system Count(mut Tally t)
+{
+    while (t.n) t.n -= 1;
+}

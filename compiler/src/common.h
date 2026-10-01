@@ -7,7 +7,7 @@
 
 // ---------------------------------------------------------------------------
 // Memory. Everything comes from one arena and is never freed individually.
-// purrc runs once and exits; the language server resets the arena before each
+// tidec runs once and exits; the language server resets the arena before each
 // analysis, so nothing the compiler allocates may outlive one.
 
 void *arena_alloc(size_t size); // Zeroed.

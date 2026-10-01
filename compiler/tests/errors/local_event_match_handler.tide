@@ -1,0 +1,5 @@
+// expect: 'Blink' is local, so its handlers are too: 'local event(Blink ...) Count(...)'
+local event Blink { }
+scene Main { }
+view Show() { Send(Blink); }
+event(Blink) Count() { }

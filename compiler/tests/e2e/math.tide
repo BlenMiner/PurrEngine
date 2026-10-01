@@ -1,0 +1,94 @@
+// Vector math: every built-in type, constructors, swizzles, operators,
+// Math functions, quaternions and matrices.
+
+component Body
+{
+    float3 position = float3(1, 2, 3);
+    float2 flat;
+    float4 color = float4(1, 0.5, 0.25, 1);
+    int2 cell = int2(3, -4);
+    quaternion rotation = quaternion.identity;
+    float3x3 basis = float3x3.identity;
+    float4x4 world;
+    float angle = Math.Radians(90);
+    float pi = Math.PI;
+}
+
+component Results
+{
+    float3 swizzled;
+    float4 built;
+    float3 splat;
+    float3 scaled;
+    int3 halved;
+    float3 widened;
+    int3 truncated;
+    int converted;
+    float dotted;
+    float length;
+    float3 normalized;
+    float3 crossed;
+    float3 rotated;
+    float3 transformed;
+    float determinant;
+    int clamped;
+    float3 lerped;
+    float sine;
+    float angle45;
+    float power;
+    float3 written;
+    float2x2 matrixFromRows;
+    float3 columnScaled;
+    float3 negated;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Body, Results);
+}
+
+system Compute(mut Body body, mut Results r)
+{
+    r.swizzled = body.position.zyx;
+    body.flat = body.position.xz;
+    r.built = float4(body.position.xy, 7, 8);
+    r.splat = float3(2);
+    r.scaled = body.position * 2 + 1;
+    r.halved = int3(7, -7, 9) / 2;
+    r.widened = body.cell.xyx + float3(0.5);
+    r.truncated = int3(float3(1.9, -1.9, 1e20));
+    r.converted = int(-2.75);
+
+    r.dotted = Math.Dot(body.position, float3(1, 1, 1));
+    r.length = Math.Length(float3(3, 4, 12));
+    r.normalized = Math.Normalize(float3(0, 5, 0));
+    r.crossed = Math.Cross(float3(1, 0, 0), float3(0, 1, 0));
+
+    quaternion yaw = quaternion.AxisAngle(float3(0, 1, 0), body.angle);
+    r.rotated = Math.Rotate(yaw, float3(1, 0, 0));
+    body.rotation = Math.Mul(body.rotation, yaw);
+
+    float4x4 m = float4x4.TRS(float3(1, 2, 3), quaternion.identity, float3(2));
+    r.transformed = Math.Transform(m, float3(1, 1, 1));
+    r.determinant = Math.Determinant(m);
+    body.world = m;
+
+    r.clamped = Math.Clamp(5, 0, 1);
+    r.lerped = Math.Lerp(float3(0), float3(10, 20, 30), 0.5);
+    r.sine = Math.Sin(Math.PI / 2);
+    r.angle45 = Math.Degrees(Math.Atan2(1, 1));
+    r.power = Math.Pow(2, 10);
+
+    mut float3 w = float3(0);
+    w.xz = float2(4, 5);
+    w.y += 1;
+    w.zx += float2(1, 1);
+    r.written = w;
+
+    r.matrixFromRows = float2x2(1, 2,
+                                3, 4);
+    r.columnScaled = body.basis.c1 * 3;
+    r.negated = -body.position;
+}

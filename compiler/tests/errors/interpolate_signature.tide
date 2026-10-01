@@ -1,0 +1,11 @@
+// expect: Interpolate takes last tick's value, this tick's, and how far between them, and returns the value between: 'Angle Interpolate(Angle from, Angle to, float t)'
+struct Angle
+{
+    float degrees;
+
+    Angle Interpolate(Angle to, float t)
+    {
+        return to;
+    }
+}
+scene Main { }

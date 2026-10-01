@@ -1,0 +1,4 @@
+// expect: a scene's visibility is 'SceneVisibility.Public' or 'SceneVisibility.Private', not bool
+scene Hand { }
+scene Main { }
+event(Spawned) Setup(with Main) { Scene.Load(Hand, true); }

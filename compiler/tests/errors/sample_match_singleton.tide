@@ -1,0 +1,8 @@
+// expect: 'Score' belongs to the match, and Sample only reads local singletons
+singleton Score { int points; }
+input PlayerInput
+{
+    bool jump;
+    Sample(Score score) { jump = score.points > 3; }
+}
+scene Main { }

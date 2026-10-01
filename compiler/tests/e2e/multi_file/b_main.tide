@@ -1,0 +1,21 @@
+using Physics;
+
+// Records the order systems run in, one step each.
+singleton Trace
+{
+    int step;
+    int gravity;
+    int move;
+    int damage;
+    int heal;
+    Combat.Hit hit; // A struct from another namespace
+    int hit_seen;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    // Body through `using Physics`; two components named Health, told apart by namespace.
+    Spawn(Body, Combat.Health { value = 10 }, Items.Health { value = 3 });
+}

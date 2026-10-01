@@ -1,0 +1,6 @@
+// expect: 'Noise2' and 'Noise' are the same C function, stb_perlin_noise3
+scene Main { }
+[NativeName("stb_perlin_noise3")]
+extern float Noise(float x, float y, float z, int xw, int yw, int zw);
+[NativeName("stb_perlin_noise3")]
+extern float Noise2(float x, float y, float z, int xw, int yw, int zw);

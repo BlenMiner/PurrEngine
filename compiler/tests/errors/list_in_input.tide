@@ -1,0 +1,8 @@
+// expect: an input can't hold a list
+scene Main { }
+input Keys
+{
+    List<int> pressed;
+
+    Sample() { }
+}

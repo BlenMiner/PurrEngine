@@ -1,0 +1,4 @@
+// expect: 'default' could be quaternion or float3 here: Math.Mul has a version for each
+scene Main { }
+component T { quaternion q; }
+system S(mut T t) { var r = Math.Mul(t.q, default); }

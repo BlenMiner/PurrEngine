@@ -1,0 +1,8 @@
+// expect: 'operator <' compares, so it returns bool
+struct Money
+{
+    int cents;
+    int operator <(Money a, Money b) { return a.cents - b.cents; }
+    int operator >(Money a, Money b) { return b.cents - a.cents; }
+}
+scene Main { }

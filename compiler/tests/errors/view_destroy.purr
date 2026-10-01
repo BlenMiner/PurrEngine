@@ -1,7 +1,0 @@
-// expect: views only read the world, so they can't change entities
-component Body { float2 position; }
-system Main() { Spawn(Body); }
-view Cull(Entity e, Body body)
-{
-    if (body.position.x > 100) e.Destroy();
-}

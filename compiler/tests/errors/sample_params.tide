@@ -1,0 +1,7 @@
+// expect: Sample takes local singletons, and 'int' is a built-in type
+input PlayerInput
+{
+    bool jump;
+    Sample(int x) { }
+}
+scene Main { }

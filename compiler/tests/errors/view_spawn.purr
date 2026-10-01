@@ -1,7 +1,0 @@
-// expect: views only read the world, so they can't spawn entities
-component Spark { float life; }
-system Main() { }
-view Sparkle()
-{
-    Spawn(Spark);
-}

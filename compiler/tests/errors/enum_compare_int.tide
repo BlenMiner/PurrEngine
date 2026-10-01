@@ -1,0 +1,5 @@
+// expect: operator '==' can't be used with Phase and int
+enum Phase { Warmup, Playing }
+singleton Match { Phase phase; int n; }
+scene Main { }
+system S(mut Match match) { if (match.phase == 1) match.n = 1; }

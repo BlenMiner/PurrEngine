@@ -1,0 +1,4 @@
+﻿// expect: it's the scene named 'Main', with a capital M
+system main()
+{
+}

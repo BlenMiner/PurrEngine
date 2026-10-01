@@ -1,0 +1,9 @@
+// expect: a view can't change the match, and this entity belongs to it
+component Body { float2 position; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
+view Cull(Body body)
+{
+    if (body.position.x > 100) this.Destroy();
+}

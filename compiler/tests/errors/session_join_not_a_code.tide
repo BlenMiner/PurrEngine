@@ -1,0 +1,6 @@
+// expect: "K7QF0M" isn't a room's code: they're 6 letters and digits
+local scene Main { }
+view Start()
+{
+    Session.Join("K7QF0M");
+}

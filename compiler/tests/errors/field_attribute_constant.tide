@@ -1,0 +1,7 @@
+// expect: attribute bounds must be constants
+input PlayerInput
+{
+    float limit = 2;
+    [Max(limit)] float move;
+}
+scene Main { }

@@ -1,0 +1,4 @@
+// expect: Math.Abs takes numbers and vectors of any size, so 'default' could be any of them
+scene Main { }
+component T { int n; }
+system S(mut T t) { t.n = Math.Abs(default); }

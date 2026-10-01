@@ -1,0 +1,6 @@
+// expect: 'Combat.Health' is a type, not a value
+namespace Combat;
+component Health { int value; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { var h = Combat.Health; }

@@ -1,4 +1,0 @@
-// expect: 'Combat.Health' is a type, not a value
-namespace Combat;
-component Health { int value; }
-system Main() { var h = Combat.Health; }

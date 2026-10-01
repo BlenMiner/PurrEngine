@@ -1,0 +1,8 @@
+// expect: an input can't hold text
+scene Main { }
+input Keys
+{
+    string typed;
+
+    Sample() { }
+}

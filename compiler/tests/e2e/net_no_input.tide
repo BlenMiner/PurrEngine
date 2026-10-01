@@ -1,0 +1,20 @@
+// A match of a game with no input: its clients have nothing to send, so they
+// keep to the server's time instead of running ahead of it.
+
+component Ball
+{
+    float2 position;
+    float2 velocity;
+}
+
+system Move(mut Ball ball, Time time)
+{
+    ball.position += ball.velocity * time.dt;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Ball { velocity = float2(1, 0.5) });
+}

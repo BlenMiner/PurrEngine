@@ -1,0 +1,3 @@
+// expect: Rect has x, y, width and height, not 'w'
+scene Main { }
+view Corner() { var r = Rect(0, 0, 10, 10); var w = r.w; }

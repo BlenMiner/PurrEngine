@@ -1,0 +1,16 @@
+namespace Items;
+
+// Not the same component as Combat.Health.
+component Health
+{
+    int value;
+}
+
+system Heal(mut Trace trace, mut Health health)
+{
+    health.value += 1;
+    trace.heal = trace.step;
+    trace.step += 1;
+    Combat.Hit hit = trace.hit; // A local of a struct from another namespace
+    trace.hit_seen = Combat.Strength(hit); // A function from another namespace
+}

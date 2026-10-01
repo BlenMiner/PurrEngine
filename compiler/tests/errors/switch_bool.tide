@@ -1,0 +1,12 @@
+// expect: switch works on ints and enums, not bool
+singleton Match { bool on; int n; }
+scene Main { }
+system S(mut Match match)
+{
+    switch (match.on)
+    {
+        default:
+            match.n = 1;
+            break;
+    }
+}

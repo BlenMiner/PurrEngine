@@ -1,5 +1,0 @@
-// expect: operator '<<' can't be used with float and int
-system Main()
-{
-    var x = 1.5 << 2;
-}

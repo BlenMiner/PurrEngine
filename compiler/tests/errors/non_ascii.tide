@@ -1,0 +1,8 @@
+// expect: non-ASCII characters are only allowed in comments
+// Comments can say café freely.
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var café = 1;
+}

@@ -1,0 +1,3 @@
+// expect: unknown name 'health'
+float Half() { return health / 2; }
+scene Main { }

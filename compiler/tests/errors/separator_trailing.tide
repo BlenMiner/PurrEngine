@@ -1,0 +1,7 @@
+// expect: invalid number '1_'
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var x = 1_;
+}

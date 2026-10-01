@@ -1,0 +1,4 @@
+// expect: foreach goes through a list, and this is string
+scene Main { }
+component T { int n; }
+system S(mut T t) { foreach (var c in "text") t.n += 1; }

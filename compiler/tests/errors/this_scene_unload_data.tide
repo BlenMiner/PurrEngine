@@ -1,0 +1,17 @@
+// expect: 'main' is the scene's data, and its entity is 'this': 'Scene.Unload(this)'
+local scene Main
+{
+    string address = "127.0.0.1";
+}
+scene Game { }
+view Menu(mut Main main)
+{
+    GUILayout.Area(Anchor.MiddleCenter)
+    {
+        if (GUILayout.Button("Host"))
+        {
+            Session.Host(Game);
+            Scene.Unload(main);
+        }
+    }
+}

@@ -1,0 +1,9 @@
+// expect: Draw can only be used in views, and in functions they call
+component Body { float2 position; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Body); }
+system Move(mut Body body)
+{
+    Draw.Circle(body.position, 1, Color.red);
+}

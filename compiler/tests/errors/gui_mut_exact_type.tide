@@ -1,0 +1,4 @@
+// expect: no version of GUILayout.Slider takes (string, int, int, int)
+scene Main { }
+local singleton Settings { int volume; }
+view Options(mut Settings settings) { GUILayout.Slider("Volume", settings.volume, 0, 10); }

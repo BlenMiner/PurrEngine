@@ -1,0 +1,33 @@
+// A game whose Main is local: its match ends when the match's last scene
+// unloads, and every machine goes back offline, to its Main.
+
+local scene Main { }
+
+scene Arena
+{
+    int rounds = 30;
+}
+
+system Countdown(mut Arena arena)
+{
+    arena.rounds -= 1;
+    if (arena.rounds == 0) Scene.Unload(this);
+}
+
+local singleton Menu
+{
+    bool play;
+    int ended;
+}
+
+view Start(mut Menu menu)
+{
+    if (!menu.play) return;
+    menu.play = false;
+    Session.Play(Arena);
+}
+
+local event(Disconnected gone) Back(mut Menu menu)
+{
+    if (gone.reason == DisconnectReason.Ended) menu.ended += 1;
+}

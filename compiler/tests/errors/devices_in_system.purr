@@ -1,3 +1,0 @@
-// expect: Devices can only be read in the input's Sample
-system Main() { }
-system Peek(Devices devices) { }

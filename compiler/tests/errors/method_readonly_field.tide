@@ -1,0 +1,7 @@
+// expect: 'health' is read-only in 'Heal'
+struct Stats
+{
+    float health;
+    void Heal(float amount) { health += amount; }
+}
+scene Main { }

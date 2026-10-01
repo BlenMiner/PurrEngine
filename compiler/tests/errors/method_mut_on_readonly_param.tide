@@ -1,0 +1,10 @@
+// expect: 'Kill' is a mut method: it changes what it's called on
+component Unit
+{
+    int kills;
+    mut void Kill() { kills += 1; }
+}
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Unit); }
+system Fight(Unit unit) { unit.Kill(); }

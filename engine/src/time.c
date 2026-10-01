@@ -3,14 +3,14 @@
 #define _POSIX_C_SOURCE 199309L
 #endif
 
-#include "purr/time.h"
+#include "tide/time.h"
 
 #if defined(_WIN32)
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-uint64_t purr_time_now_ns(void)
+uint64_t tide_time_now_ns(void)
 {
     LARGE_INTEGER freq, now;
     QueryPerformanceFrequency(&freq);
@@ -26,7 +26,7 @@ uint64_t purr_time_now_ns(void)
 
 #include <time.h>
 
-uint64_t purr_time_now_ns(void)
+uint64_t tide_time_now_ns(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

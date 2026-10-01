@@ -1,0 +1,5 @@
+// expect: 'Menu' draws, so only views and the functions they call can call it
+scene Main { }
+void Title() { GUILayout.Label("title"); }
+void Menu() { Title(); }
+system Hud() { Menu(); }

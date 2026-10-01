@@ -1,0 +1,7 @@
+// expect: 'Spark' is local and 'Ball' belongs to the match, and no entity has both
+component Ball { float2 position; }
+local component Spark { float life; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Ball); }
+view Show(Ball ball, Spark spark) { }

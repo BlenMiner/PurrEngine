@@ -1,0 +1,4 @@
+// expect: Scene has no 'Open'; it has Load, Unload, AddPlayer and RemovePlayer
+scene Arena { }
+scene Main { }
+event(Spawned) Setup(with Main) { Scene.Open(Arena); }

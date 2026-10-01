@@ -1,0 +1,7 @@
+// expect: int3 takes ints, not float
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var v = int3(1.5, 2, 3);
+}

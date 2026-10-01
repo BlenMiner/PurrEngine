@@ -45,7 +45,7 @@
       "name": "mingw-release",
       "inherits": "base",
       "displayName": "MinGW Release",
-      "description": "Windows only: the MinGW-w64 target that purr builds games for, optimized. Its platform layer goes in the package.",
+      "description": "Windows only: the MinGW-w64 target that tide builds games for, optimized. Its platform layer goes in the package.",
       "toolchainFile": "${sourceDir}/cmake/mingw-toolchain.cmake",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
@@ -54,19 +54,19 @@
       "name": "package",
       "inherits": "base",
       "displayName": "Package",
-      "description": "The purr package's native half: optimized, with clang and lld built into purr, the C runtime linked statically on Windows, and the editor extensions.",
+      "description": "The tide package's native half: optimized, with clang and lld built into tide, the C runtime linked statically on Windows, and the editor extensions.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
-        "PURR_EDITOR_EXTENSIONS": "ON",
-        "PURR_EMBED_LLVM": "ON"
+        "TIDE_EDITOR_EXTENSIONS": "ON",
+        "TIDE_EMBED_LLVM": "ON"
       }
     },
     {
       "name": "web-package",
       "inherits": "web-base",
       "displayName": "Web Package",
-      "description": "The purr package's web half: the platform layer as WebAssembly.",
+      "description": "The tide package's web half: the platform layer as WebAssembly.",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],

@@ -1,0 +1,5 @@
+// expect: did you mean 'red'?
+component Tint { Color color = Color.Red; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Tint); }

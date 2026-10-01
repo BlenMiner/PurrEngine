@@ -1,0 +1,7 @@
+// expect: Spawn can't be in a loop's condition or a for's step
+scene Main { }
+component Tally { int n; }
+system Count(Tally t)
+{
+    while (Spawn(Tally) == Spawn(Tally)) { }
+}

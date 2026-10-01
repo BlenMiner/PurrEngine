@@ -1,0 +1,4 @@
+// expect: 'Health' is a component; a handler handles an event
+component Health { int value; }
+scene Main { }
+event(Health health) Heal() { }

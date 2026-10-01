@@ -1,0 +1,7 @@
+// expect: can't assign float to int
+component Counter { int value; }
+scene Main { }
+system Count(mut Counter counter)
+{
+    counter.value = 1.5;
+}

@@ -1,0 +1,80 @@
+// Field default values and bitwise operators.
+
+singleton Physics
+{
+    int collisionCount = 69;
+    float3 gravity = float3(0, -9.81, 0);
+    int flags = 1 << 3 | 1;       // 9
+    int mask = ~0 & 15;            // 15
+}
+
+component Health
+{
+    int value = 100;
+    int max = 2 * 2 * 25;         // 100
+    Entity attacker;               // always starts as the null entity
+}
+
+component Marker
+{
+    int id = -7;
+}
+
+singleton Overridden
+{
+    int value = 5;
+}
+
+// Hex and binary literals use all 32 bits: 0xFFFFFFFF is -1.
+singleton Literals
+{
+    int hex = 0xFF;
+    int upperHex = 0XaB;
+    int binary = 0b1010;
+    int allBits = 0xFFFFFFFF;
+    int lowest = 0x80000000;
+    int mask = 0b11110000;
+    int million = 1_000_000;
+    int separatedMask = 0b1111_0000;
+    int separatedHex = 0x_FF_FF;
+    float separatedFloat = 1_000.25;
+}
+
+component Bits
+{
+    int shifted;
+    int negativeShift;
+    int bigShift;
+    int mixed;
+    int masked;
+    int negatedLowest;
+    float fromHex;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Overridden overridden)
+{
+    var bare = Spawn(Health);
+    var partial = Spawn(Health { max = 200 });
+    bare.Add(Marker);
+    Spawn(Bits);
+    overridden.value = 6; // Main runs after defaults are applied.
+}
+
+system Shifts(mut Bits bits)
+{
+    bits.shifted = 1 << 4;              // 16
+    bits.negativeShift = -16 >> 2;      // -4: >> keeps the sign
+    bits.bigShift = 1 << 33;            // 2: the count uses its low 5 bits
+    mut var m = 12;
+    m &= 10;                            // 8
+    m |= 1;                             // 9
+    m ^= 3;                             // 10
+    m <<= 1;                            // 20
+    m >>= 2;                            // 5
+    bits.mixed = m;
+    bits.masked = 0xF0 & 0b00111100;    // 48
+    bits.negatedLowest = -0x80000000;   // wraps back to the lowest int
+    bits.fromHex = 0x10;                // 16.0
+}

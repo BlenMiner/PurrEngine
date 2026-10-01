@@ -1,0 +1,4 @@
+// expect: a view can't change the match, and 'Arena' is one of its scenes
+scene Arena { int size; }
+scene Main { }
+view Show() { Scene.Load(Arena); }

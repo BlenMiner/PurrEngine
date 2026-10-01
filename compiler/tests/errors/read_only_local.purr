@@ -1,6 +1,0 @@
-// expect: 'x' is read-only
-system Main()
-{
-    var x = 1;
-    x = 2;
-}

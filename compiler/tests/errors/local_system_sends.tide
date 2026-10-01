@@ -1,0 +1,5 @@
+// expect: 'Blink' is local, and the match can't use local state
+local event Blink { }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Send(Blink); }

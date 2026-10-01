@@ -1,0 +1,32 @@
+// Methods and functions read and write what they're called on and passed:
+// the scheduler sees it through the system's parameters.
+
+struct Stats
+{
+    float health;
+
+    bool IsDead() { return health <= 0; }
+    mut void Hurt() { health -= 1; }
+}
+
+component Unit { Stats stats; }
+singleton Log { int deaths; }
+
+void Count(mut int counter) { counter += 1; }
+
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Unit); }
+
+// Writes Unit through a mut method.
+system Hurt(mut Unit unit)
+{
+    unit.stats.Hurt();
+}
+
+// Reads Unit through a read-only method, so it runs after Hurt, and writes
+// Log through a function's mut parameter.
+system Tally(Unit unit, mut Log log)
+{
+    if (unit.stats.IsDead()) Count(log.deaths);
+}

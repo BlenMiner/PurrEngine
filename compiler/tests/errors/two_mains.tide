@@ -1,0 +1,3 @@
+// expect: there can only be one 'scene Main'
+scene Main { }
+local scene Main { }

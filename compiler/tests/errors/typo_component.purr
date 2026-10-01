@@ -1,4 +1,0 @@
-// expect: did you mean 'Body'?
-component Body { float2 position; }
-system Main() { Spawn(Body); }
-system Move(mut Bdy body) { }

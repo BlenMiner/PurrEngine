@@ -1,0 +1,142 @@
+// `default`: the default value of the type where it goes.
+
+enum Mood { Calm, Angry }
+enum Rank { Low = 1, High = 2 } // No member is 0
+
+struct Range
+{
+    float lo;
+    float hi = 1;
+}
+
+struct Stats
+{
+    int armor = 3;
+    Range reach;
+    string title = "knight";
+}
+
+component Unit
+{
+    int level = 5;
+    int reset = default;   // Zero, like no default
+    Entity target = default;
+    Stats stats = default; // Stats' own defaults
+    string name = "unit";
+    List<int> scores = [1, 2];
+    Mood mood = Mood.Angry;
+    float2 aim = float2(1, 2);
+}
+
+component Results
+{
+    int checks;
+    int passed;
+    int firstFailure;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Unit, Results);
+}
+
+void Expect(mut Results t, bool ok)
+{
+    t.checks += 1;
+    if (ok) t.passed += 1;
+    else if (t.firstFailure == 0) t.firstFailure = t.checks;
+}
+
+float Width(float2 size, float scale)
+{
+    return size.x * scale;
+}
+
+Stats Fresh()
+{
+    return default;
+}
+
+Rect Nowhere(bool empty)
+{
+    if (empty) return default;
+    return Rect(1, 2, 3, 4);
+}
+
+system Use(mut Unit unit, mut Results t)
+{
+    if (t.checks > 0) return; // Once
+
+    // Field defaults
+    Expect(t, unit.reset == 0 && unit.target == default);
+    Expect(t, unit.stats.armor == 3 && unit.stats.reach.hi == 1 && unit.stats.title == "knight");
+
+    // Typed locals
+    int i = default;
+    float f = default;
+    bool b = default;
+    float2 v = default;
+    quaternion q = default;
+    float4x4 m = default;
+    Color c = default;
+    Entity e = default;
+    PlayerID p = default;
+    Mood mood = default;
+    Rank rank = default;
+    string s = default;
+    List<int> l = default;
+    Stats stats = default;
+    Unit u = default;
+    Expect(t, i == 0 && f == 0 && !b);
+    Expect(t, v.x == 0 && v.y == 0 && q.value.w == 0 && m.c3.w == 0 && c.a == 0);
+    Expect(t, e == default && p == default && this != default);
+    Expect(t, mood == Mood.Calm && rank != Rank.Low && rank != Rank.High);
+    Expect(t, s == "" && s.Length == 0 && l.Count == 0);
+    Expect(t, stats.armor == 3 && stats.reach.lo == 0 && stats.reach.hi == 1 && stats.title == "knight");
+    Expect(t, u.level == 5 && u.name == "unit" && u.scores.Count == 2 && u.mood == Mood.Angry && u.aim.y == 2);
+
+    // Assignments
+    unit.level = default;
+    unit.name = default;
+    unit.scores = default;
+    unit.aim = default;
+    unit.mood = default;
+    unit.target = this;
+    unit.target = default;
+    unit.stats.title = "squire";
+    unit.stats = default;
+    Expect(t, unit.level == 0 && unit.name == "" && unit.scores.Count == 0);
+    Expect(t, unit.aim.x == 0 && unit.mood == Mood.Calm && unit.target == default);
+    Expect(t, unit.stats.title == "knight" && unit.stats.armor == 3);
+
+    // Arguments: functions, built-ins, lists and text
+    Expect(t, Width(default, 2) == 0 && Width(float2(3, 0), 2) == 6);
+    Expect(t, Math.Max(default, -4) == 0 && Math.Max(default, 1.5) == 1.5);
+    Expect(t, Math.Dot(default, float3(1, 2, 3)) == 0);
+    Expect(t, Math.Length(Math.Lerp(default, float2(4, 0), 0.5)) == 2);
+    mut List<int> items = [default, 7];
+    items.Add(default);
+    Expect(t, items.Count == 3 && items[0] == 0 && items[1] == 7 && items[2] == 0);
+    Expect(t, "knight".Substring(default) == "knight");
+
+    // Values of structs, and returns
+    var range = Range { lo = default, hi = default };
+    Expect(t, range.lo == 0 && range.hi == 0);
+    Expect(t, Fresh().armor == 3 && Fresh().title == "knight");
+    Expect(t, Nowhere(true).width == 0 && Nowhere(false).width == 3);
+
+    // Comparisons and ?:
+    Expect(t, default == unit.level && unit.name == default);
+    int picked = b ? 5 : default;
+    float2 other = b ? default : float2(1, 2);
+    Expect(t, picked == 0 && other.y == 2);
+}
+
+// Draw calls take `default` too.
+view Render(with Main)
+{
+    Draw.Circle(default, 5, Color.yellow);
+    Draw.Text(default, default, 1, default);
+}

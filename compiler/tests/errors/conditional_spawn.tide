@@ -1,0 +1,9 @@
+// expect: Spawn can't be inside '?:'
+component Coin { int value; }
+singleton Rules { bool bonus; }
+scene Main { }
+
+event(Spawned) Setup(with Main, Rules rules)
+{
+    var coin = rules.bonus ? Spawn(Coin { value = 5 }) : Spawn(Coin);
+}

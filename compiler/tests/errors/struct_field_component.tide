@@ -1,0 +1,4 @@
+// expect: fields can't hold components
+component Transform { float3 position; }
+struct Body { Transform transform; }
+scene Main { }

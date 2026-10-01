@@ -1,0 +1,348 @@
+#include <string.h>
+
+#include "tide/gui.h"
+#include "tide/text.h"
+#include "tide_test.h"
+
+// The GUI runtime driven by made-up devices, on a 1920 x 1080 window. The
+// mouse is given from the top left, y down, like the GUI.
+
+static tide_gui gui;
+static tide_devices devices;
+static tide_draw_list draw;
+
+static void start(void)
+{
+    memset(&gui, 0, sizeof gui);
+    memset(&devices, 0, sizeof devices);
+}
+
+static void mouse(const float x, const float y, const bool held)
+{
+    devices.mouse.position = tide_f2(x, 1080.0f - y);
+    tide_button_set(&devices.mouse.left, held);
+}
+
+static void key(tide_button *b, const bool held)
+{
+    tide_button_set(b, held);
+}
+
+static void begin(void)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+}
+
+static void end(void)
+{
+    tide_draw_reset(&draw);
+    tide_gui_end(&gui, &draw);
+    devices.text.count = 0; // Typed characters last one frame
+}
+
+static void type(const char *text)
+{
+    for (const char *c = text; *c; c++) devices.text.chars[devices.text.count++] = (uint32_t)*c;
+}
+
+// A frame with two layout buttons; returns which were pressed (bit 0 and 1).
+static int two_buttons(void)
+{
+    begin();
+    const bool a = tide_gui_layout_button(&gui, 10, "Play");
+    const bool b = tide_gui_layout_button(&gui, 20, "Quit");
+    end();
+    return (a ? 1 : 0) | (b ? 2 : 0);
+}
+
+TIDE_TEST(gui_button_clicks_on_release)
+{
+    start();
+    // Play is at the top left, 28 tall; Quit below it after 5 of spacing.
+    mouse(20.0f, 47.0f, false);
+    TIDE_CHECK(two_buttons() == 0);
+    mouse(20.0f, 47.0f, true);
+    TIDE_CHECK(two_buttons() == 0); // Pressed, not released yet
+    mouse(20.0f, 47.0f, false);
+    TIDE_CHECK(two_buttons() == 2);
+    TIDE_CHECK(two_buttons() == 0);
+
+    // A press that leaves the button before it's released doesn't count.
+    mouse(20.0f, 20.0f, true);
+    TIDE_CHECK(two_buttons() == 0);
+    mouse(900.0f, 900.0f, true);
+    TIDE_CHECK(two_buttons() == 0);
+    mouse(900.0f, 900.0f, false);
+    TIDE_CHECK(two_buttons() == 0);
+}
+
+TIDE_TEST(gui_draws_over_the_world)
+{
+    start();
+    begin();
+    tide_gui_layout_label(&gui, "Hello");
+    tide_gui_layout_button(&gui, 1, "Go");
+    end();
+    TIDE_REQUIRE(draw.count >= 4);
+    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_GUI);
+    TIDE_CHECK(draw.commands[1].kind == TIDE_DRAW_TEXT && strcmp(draw.text + draw.commands[1].text, "Hello") == 0);
+    TIDE_CHECK(draw.commands[2].kind == TIDE_DRAW_RECT); // The button, below the label
+    TIDE_CHECK(draw.commands[2].a.y == 28.0f + 5.0f + 14.0f);
+
+    begin(); // A frame without a GUI adds nothing
+    end();
+    TIDE_CHECK(draw.count == 0);
+}
+
+TIDE_TEST(gui_toggle_and_slider_change_values)
+{
+    start();
+    bool on = false;
+    float volume = 0.5f;
+    for (int frame = 0; frame < 3; frame++) {
+        mouse(10.0f, 14.0f, frame == 1);
+        begin();
+        const bool toggled = tide_gui_layout_toggle(&gui, 1, "Fullscreen", &on);
+        tide_gui_layout_slider(&gui, 2, "", &volume, 0.0f, 1.0f);
+        end();
+        TIDE_CHECK(toggled == (frame == 2));
+    }
+    TIDE_CHECK(on);
+
+    // The slider is below the toggle: its track goes from x 6 to 6 + 180 + 56 - 56 - 12.
+    const float left = 6.0f;
+    const float width = 180.0f - 12.0f;
+    for (int frame = 0; frame < 3; frame++) {
+        mouse(frame == 0 ? left + 10.0f : left + width * 0.25f, 28.0f + 5.0f + 14.0f, frame < 2);
+        begin();
+        tide_gui_layout_toggle(&gui, 1, "Fullscreen", &on);
+        tide_gui_layout_slider(&gui, 2, "", &volume, 0.0f, 1.0f);
+        end();
+    }
+    TIDE_CHECK(volume == 0.25f);
+}
+
+TIDE_TEST(gui_ids_tell_loops_apart)
+{
+    start();
+    begin();
+    const uint32_t a = tide_gui_id(&gui, 7, 3);
+    const uint32_t b = tide_gui_id(&gui, 7, 3);
+    const uint32_t c = tide_gui_id(&gui, 8, 3);
+    end();
+    TIDE_CHECK(a != b && a != c && b != c);
+    TIDE_CHECK(a != 0 && b != 0 && c != 0);
+    begin();
+    TIDE_CHECK(tide_gui_id(&gui, 7, 3) == a); // The same next frame
+    TIDE_CHECK(tide_gui_id(&gui, 7, 3) == b);
+    end();
+}
+
+TIDE_TEST(gui_keyboard_navigation)
+{
+    start();
+    TIDE_CHECK(two_buttons() == 0); // Lays them out, for the order
+    key(&devices.keyboard.downArrow, true);
+    TIDE_CHECK(two_buttons() == 0);
+    TIDE_CHECK(gui.focus == 10); // The first one
+    key(&devices.keyboard.downArrow, false);
+    TIDE_CHECK(two_buttons() == 0);
+    key(&devices.keyboard.downArrow, true);
+    TIDE_CHECK(two_buttons() == 0);
+    TIDE_CHECK(gui.focus == 20);
+    key(&devices.keyboard.downArrow, false);
+    key(&devices.keyboard.enter, true);
+    TIDE_CHECK(two_buttons() == 2);
+    key(&devices.keyboard.enter, false);
+
+    // While a widget has the focus, the game doesn't see the keyboard.
+    tide_devices sampled = devices;
+    key(&sampled.keyboard.w, true);
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(!sampled.keyboard.w.held && !sampled.keyboard.w.pressed);
+
+    key(&devices.keyboard.escape, true);
+    TIDE_CHECK(two_buttons() == 0);
+    TIDE_CHECK(gui.focus == 0);
+    key(&devices.keyboard.escape, false);
+    sampled = devices;
+    key(&sampled.keyboard.w, true);
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(sampled.keyboard.w.held);
+}
+
+TIDE_TEST(gui_arrows_wait_while_the_game_reads_them)
+{
+    start();
+    TIDE_CHECK(two_buttons() == 0);
+    // The game sampled the devices: the arrows are its, not the GUI's.
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    key(&devices.keyboard.downArrow, true);
+    TIDE_CHECK(two_buttons() == 0);
+    TIDE_CHECK(gui.focus == 0);
+    key(&devices.keyboard.downArrow, false);
+    // Tab always moves the focus.
+    tide_gui_hide(&gui, &sampled);
+    key(&devices.keyboard.tab, true);
+    TIDE_CHECK(two_buttons() == 0);
+    TIDE_CHECK(gui.focus == 10);
+}
+
+TIDE_TEST(gui_mouse_over_the_gui_is_hidden)
+{
+    start();
+    mouse(20.0f, 20.0f, false);
+    two_buttons();
+    tide_devices sampled = devices;
+    tide_button_set(&sampled.mouse.left, true);
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(!sampled.mouse.left.pressed);
+
+    mouse(900.0f, 900.0f, false);
+    two_buttons();
+    sampled = devices;
+    tide_button_set(&sampled.mouse.left, true);
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(sampled.mouse.left.pressed);
+}
+
+// A frame with an int field under a label column.
+static bool int_field(int32_t *value)
+{
+    begin();
+    const bool changed = tide_gui_layout_int_field(&gui, 5, "Players", value);
+    end();
+    return changed;
+}
+
+TIDE_TEST(gui_typing_into_a_field)
+{
+    start();
+    int32_t players = 4;
+    mouse(170.0f, 14.0f, false); // Past the 130 label column
+    int_field(&players);
+    mouse(170.0f, 14.0f, true);
+    int_field(&players);
+    TIDE_CHECK(gui.editing == 5);
+    mouse(170.0f, 14.0f, false);
+    type("1x2"); // The x isn't part of a number
+    TIDE_CHECK(!int_field(&players));
+    TIDE_CHECK(players == 4); // Not until it's kept
+    key(&devices.keyboard.enter, true);
+    TIDE_CHECK(int_field(&players));
+    TIDE_CHECK(players == 12);
+    TIDE_CHECK(gui.editing == 0);
+    key(&devices.keyboard.enter, false);
+
+    // Escape goes back to the old value.
+    key(&devices.keyboard.enter, true); // It still has the focus: Enter types again
+    int_field(&players);
+    key(&devices.keyboard.enter, false);
+    type("99");
+    int_field(&players);
+    key(&devices.keyboard.escape, true);
+    TIDE_CHECK(!int_field(&players));
+    TIDE_CHECK(players == 12);
+    key(&devices.keyboard.escape, false);
+
+    // With the focus, the arrows step it.
+    key(&devices.keyboard.rightArrow, true);
+    TIDE_CHECK(int_field(&players));
+    TIDE_CHECK(players == 13);
+}
+
+TIDE_TEST(gui_anchored_area_centers_its_content)
+{
+    start();
+    for (int frame = 0; frame < 2; frame++) {
+        begin();
+        const int depth = tide_gui_begin_area_at(&gui, 99, TIDE_ANCHOR_MIDDLE_CENTER);
+        tide_gui_layout_button(&gui, 1, "Play");
+        tide_gui_close(&gui, depth);
+        end();
+    }
+    // The panel, then the button, centered on the screen both frames.
+    TIDE_REQUIRE(draw.count >= 3);
+    TIDE_CHECK(draw.commands[1].a.x == 960.0f && draw.commands[1].a.y == 540.0f);
+    TIDE_CHECK(draw.commands[2].a.x == 960.0f && draw.commands[2].a.y == 540.0f);
+    TIDE_CHECK(draw.commands[1].b.y == 28.0f + 2.0f * 12.0f);
+}
+
+// The draw list's rects, in the GUI's order: each one's left and right edges.
+static void rect_edges(const int index, float *left, float *right)
+{
+    int seen = 0;
+    for (uint32_t i = 0; i < draw.count; i++) {
+        const tide_draw_command *c = &draw.commands[i];
+        if (c->kind != TIDE_DRAW_RECT || seen++ != index) continue;
+        *left = c->a.x - c->b.x * 0.5f;
+        *right = c->a.x + c->b.x * 0.5f;
+        return;
+    }
+    *left = *right = -1.0f;
+}
+
+TIDE_TEST(gui_rows_shrink_to_fit_the_screen)
+{
+    start();
+    // On a screen 400 wide, the row wants 402 and its area has 352: the text
+    // field and the button shrink, the label's column first.
+    tide_str local = TIDE_STR_EMPTY;
+    const tide_textref ip = {.local = &local};
+    for (int frame = 0; frame < 3; frame++) {
+        tide_gui_begin(&gui, &devices, tide_f2(400.0f, 600.0f), NULL);
+        const int area = tide_gui_begin_area_at(&gui, 99, TIDE_ANCHOR_MIDDLE_CENTER);
+        tide_gui_layout_button(&gui, 1, "Start Host");
+        const int row = tide_gui_begin_horizontal(&gui, 2);
+        tide_gui_layout_text_field(&gui, 3, "IP", ip);
+        tide_gui_layout_button(&gui, 4, "Connect");
+        tide_gui_close(&gui, row);
+        tide_gui_close(&gui, area);
+        end();
+    }
+    float left, right;
+    rect_edges(0, &left, &right); // The panel, 12 from both edges
+    TIDE_CHECK(left > 11.99f && left < 12.01f);
+    TIDE_CHECK(right > 387.99f && right < 388.01f);
+    rect_edges(1, &left, &right); // Start Host, as wide as the area's room
+    TIDE_CHECK(left > 23.99f && right < 376.01f && right > 375.99f);
+    rect_edges(2, &left, &right); // The text field's box: the column shrank, not the box
+    TIDE_CHECK(right - left > 179.99f && right - left < 180.01f);
+    TIDE_CHECK(left > 24.0f + 19.2f + 10.0f);
+    rect_edges(3, &left, &right); // Connect, shrunk a little
+    TIDE_CHECK(right - left < 87.2f && right - left > 77.2f);
+    TIDE_CHECK(right > 375.99f && right < 376.01f);
+}
+
+TIDE_TEST(gui_horizontal_groups_sit_side_by_side)
+{
+    start();
+    begin();
+    const int depth = tide_gui_begin_horizontal(&gui, 3);
+    tide_gui_layout_button(&gui, 1, "A");
+    tide_gui_layout_button(&gui, 2, "B");
+    tide_gui_close(&gui, depth);
+    tide_gui_layout_button(&gui, 4, "C");
+    end();
+    // A and B on one row, C under them.
+    TIDE_REQUIRE(draw.count >= 7);
+    const tide_draw_command *a = &draw.commands[1];
+    const tide_draw_command *b = &draw.commands[3];
+    const tide_draw_command *c = &draw.commands[5];
+    TIDE_CHECK(a->a.y == b->a.y && b->a.x > a->a.x);
+    TIDE_CHECK(c->a.y == a->a.y + 28.0f + 5.0f);
+}
+
+TIDE_TEST(gui_close_ends_what_was_left_open)
+{
+    start();
+    begin();
+    const int outer = tide_gui_begin_vertical(&gui, 1);
+    tide_gui_begin_horizontal(&gui, 2); // A return skipped its close
+    tide_gui_close(&gui, outer);
+    TIDE_CHECK(gui.depth == 0);
+    tide_gui_begin_vertical(&gui, 3);
+    end(); // Closes the rest
+    TIDE_CHECK(gui.depth == 0);
+}

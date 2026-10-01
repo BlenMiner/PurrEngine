@@ -1,0 +1,6 @@
+// expect: an event can't change once it's sent
+event Hit { int damage; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Send(Hit); }
+event(Hit hit) Double() { hit.damage = 2; }

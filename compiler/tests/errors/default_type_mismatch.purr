@@ -1,3 +1,0 @@
-// expect: field 'alive' is bool, not int
-component Health { bool alive = 1; }
-system Main() { }

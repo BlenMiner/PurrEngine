@@ -6,11 +6,11 @@
 #include <string.h>
 
 // Set by the build: the engine this server was built with.
-#ifndef PURR_ENGINE_INCLUDE_DIR
-#define PURR_ENGINE_INCLUDE_DIR "engine/include"
+#ifndef TIDE_ENGINE_INCLUDE_DIR
+#define TIDE_ENGINE_INCLUDE_DIR "engine/include"
 #endif
 
-// The headers generated code includes, so everything PurrLang builds on.
+// The headers generated code includes, so everything Tide builds on.
 static const char *const header_names[] = {"color.h", "devices.h", "draw.h", "entity.h", "math.h", "player.h"};
 #define HEADER_COUNT (sizeof header_names / sizeof header_names[0])
 
@@ -23,7 +23,7 @@ typedef struct header {
 
 static header headers[HEADER_COUNT];
 static bool loaded;
-static const char *include_dir = PURR_ENGINE_INCLUDE_DIR;
+static const char *include_dir = TIDE_ENGINE_INCLUDE_DIR;
 
 void cdefs_set_include_dir(const char *dir)
 {
@@ -39,7 +39,7 @@ static void load(void)
         const size_t path_len = strlen(include_dir) + strlen(header_names[h]) + 8;
         hd->path = malloc(path_len);
         if (!hd->path) return;
-        snprintf(hd->path, path_len, "%s/purr/%s", include_dir, header_names[h]);
+        snprintf(hd->path, path_len, "%s/tide/%s", include_dir, header_names[h]);
 
         FILE *f = fopen(hd->path, "rb");
         if (!f) continue;
@@ -118,7 +118,7 @@ static bool defines(const char *line, const int column, const char *name)
     if (strstr(line, "typedef struct ") && find_word(line, name, 0) == column) return true;
     if (*after != '(') return false;
     if (start == line + column) return false; // A call at the start of a line
-    // Before the name, only a return type: `static inline purr_float3 `, `void *`.
+    // Before the name, only a return type: `static inline tide_float3 `, `void *`.
     for (const char *p = start; p < line + column; p++) {
         if (!is_ident(*p) && *p != ' ' && *p != '\t' && *p != '*') return false;
     }
@@ -163,18 +163,18 @@ bool cdefs_find(const char *name, jbuf *out)
     load();
     if (search_definition(name, out)) return true;
 
-    // Names that macros generate: purr_<base>_<f|i><2|3|4>.
+    // Names that macros generate: tide_<base>_<f|i><2|3|4>.
     const size_t n = strlen(name);
-    if (n < 8 || strncmp(name, "purr_", 5) != 0 || !isdigit((unsigned char)name[n - 1])) return false;
+    if (n < 8 || strncmp(name, "tide_", 5) != 0 || !isdigit((unsigned char)name[n - 1])) return false;
     const char kind = name[n - 2];
     if (name[n - 3] != '_' || (kind != 'f' && kind != 'i')) return false;
 
-    // A template in a macro body: purr_normalize_f##N.
+    // A template in a macro body: tide_normalize_f##N.
     char pasted[128];
     snprintf(pasted, sizeof pasted, "%.*s##N", (int)(n - 1), name);
     if (search_text(pasted, out)) return true;
 
-    // A macro invocation: PURR_MAP1(float, f, sin, f).
+    // A macro invocation: TIDE_MAP1(float, f, sin, f).
     char base[64];
     snprintf(base, sizeof base, "%.*s", (int)(n - 8), name + 5);
     const char *element = kind == 'f' ? "(float," : "(int,";
@@ -182,7 +182,7 @@ bool cdefs_find(const char *name, jbuf *out)
         const header *hd = &headers[h];
         for (int l = 0; l < hd->line_count; l++) {
             const char *line = hd->lines[l];
-            if (strncmp(line, "PURR_", 5) != 0 || !strstr(line, element)) continue;
+            if (strncmp(line, "TIDE_", 5) != 0 || !strstr(line, element)) continue;
             const int c = find_word(line, base, 0);
             if (c >= 0) {
                 write_location(hd, l, c, (int)strlen(base), out);
@@ -198,10 +198,10 @@ static const struct {
     const char *struct_name;
     const char *macros[3];
 } member_macros[] = {
-    {"purr_keyboard", {"PURR_KEYBOARD_KEYS"}},
-    {"purr_mouse", {"PURR_MOUSE_AXES", "PURR_MOUSE_BUTTONS"}},
-    {"purr_dpad", {"PURR_DPAD_BUTTONS"}},
-    {"purr_gamepad", {"PURR_GAMEPAD_STICKS", "PURR_GAMEPAD_TRIGGERS", "PURR_GAMEPAD_BUTTONS"}},
+    {"tide_keyboard", {"TIDE_KEYBOARD_KEYS"}},
+    {"tide_mouse", {"TIDE_MOUSE_AXES", "TIDE_MOUSE_BUTTONS"}},
+    {"tide_dpad", {"TIDE_DPAD_BUTTONS"}},
+    {"tide_gamepad", {"TIDE_GAMEPAD_STICKS", "TIDE_GAMEPAD_TRIGGERS", "TIDE_GAMEPAD_BUTTONS"}},
 };
 
 bool cdefs_find_member(const char *struct_name, const char *member, jbuf *out)

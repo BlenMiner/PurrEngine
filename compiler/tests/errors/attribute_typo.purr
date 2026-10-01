@@ -1,6 +1,0 @@
-// expect: did you mean 'After'?
-singleton Log { int n; }
-system Main() { }
-system A(mut Log log) { log.n += 1; }
-[Afer(A)]
-system B(mut Log log) { log.n += 1; }

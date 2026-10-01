@@ -54,7 +54,7 @@ bool compile_program(const char **inputs, const int count, const codegen_options
         src->path = inputs[i];
         char *text = read_file(inputs[i], &src->len);
         if (!text) {
-            fprintf(stderr, "purrc: can't read %s\n", inputs[i]);
+            fprintf(stderr, "tidec: can't read %s\n", inputs[i]);
             return false;
         }
         src->text = text;

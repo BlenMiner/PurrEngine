@@ -1,0 +1,4 @@
+// expect: 'break' ends a loop or a switch's section, and it's in neither
+scene Main { }
+
+event(Spawned) Setup(with Main) { break; }

@@ -1,0 +1,6 @@
+// expect: singletons are parameters: '(Session session)'
+local scene Main { }
+view Status()
+{
+    var s = Session;
+}

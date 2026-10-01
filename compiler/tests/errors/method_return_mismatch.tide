@@ -1,0 +1,8 @@
+// expect: 'Width' returns float, not bool
+struct Range
+{
+    float lo;
+    float hi;
+    float Width() { return hi > lo; }
+}
+scene Main { }

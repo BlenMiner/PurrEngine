@@ -1,0 +1,6 @@
+// expect: an input isn't drawn, so there's nothing to snap
+input Controls
+{
+    [Snap] float2 move;
+}
+scene Main { }

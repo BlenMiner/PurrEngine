@@ -1,6 +1,6 @@
 // Which systems in the tick could run at the same time, and why the others
 // wait. The tick doesn't run on threads yet; this is the plan it will follow,
-// shown in editors (above each system, and on hover) and by `purrc --schedule`
+// shown in editors (above each system, and on hover) and by `tidec --schedule`
 // so game code can be written for it now.
 
 #include <string.h>
@@ -17,6 +17,7 @@ static arch_set archetypes_of(const program *prog, const decl *sys)
     arch_set set = {{0}};
     for (int a = 0; a < prog->archetypes.count && a < 256; a++) {
         const uint64_t mask = prog->archetypes.items[a];
+        if (prog->archetype_local.items[a] != sys->entity_local) continue; // Another world's
         if ((mask & sys->need_mask) == sys->need_mask && !(mask & sys->without_mask)) {
             set.words[a / 64] |= (uint64_t)1 << (a % 64);
         }
@@ -36,6 +37,10 @@ static bool share_archetypes(const arch_set *a, const arch_set *b)
 // them writes. Components only count if the systems can meet the same entity.
 static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
+    if (earlier->writes_text && later->writes_text) {
+        const conflict c = {NULL, CONFLICT_TEXT};
+        vec_push(w->conflicts, c);
+    }
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
         const bool component = a->type.kind == TY_COMPONENT;
@@ -155,6 +160,11 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
         [CONFLICT_EARLIER_WRITES] = ", which this reads",
     };
     bool first_part = true;
+    for (int i = 0; i < w->conflicts.count; i++) {
+        if (w->conflicts.items[i].kind != CONFLICT_TEXT) continue;
+        sb_put(out, "both change text or lists, which the match keeps in one heap");
+        first_part = false;
+    }
     for (int kind = CONFLICT_BOTH_WRITE; kind <= CONFLICT_EARLIER_WRITES; kind++) {
         int count = 0;
         for (int i = 0; i < w->conflicts.count; i++) count += (int)w->conflicts.items[i].kind == kind;
@@ -243,6 +253,22 @@ void print_schedule(const program *prog, const char *game, sb *out)
         for (int i = 0; i < prog->views.count; i++) {
             sb_put(out, "         ");
             put_decl_name(out, prog->views.items[i], "", NULL);
+            sb_put(out, "\n");
+        }
+    }
+
+    if (prog->handlers.count > 0) {
+        sb_put(out, "\nEvent handlers, at the end of the tick, as their events are sent:\n");
+        for (int i = 0; i < prog->events.count; i++) {
+            const decl *event = prog->events.items[i];
+            if (event->handlers.count == 0) continue;
+            sb_put(out, "         ");
+            put_decl_name(out, event, "", NULL);
+            sb_put(out, ": ");
+            for (int k = 0; k < event->handlers.count; k++) {
+                if (k) sb_put(out, ", ");
+                put_decl_name(out, event->handlers.items[k], "", NULL);
+            }
             sb_put(out, "\n");
         }
     }

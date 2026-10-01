@@ -1,0 +1,76 @@
+// Text: literals, joining, values in text with formats, comparing, and methods.
+
+enum Page
+{
+    Title,
+    Options,
+}
+
+component Results
+{
+    int checks;
+    int passed;
+    int firstFailure; // 1-based; 0 if every check passed
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Results);
+}
+
+void Expect(mut Results r, bool ok)
+{
+    r.checks += 1;
+    if (ok) r.passed += 1;
+    else if (r.firstFailure == 0) r.firstFailure = r.checks;
+}
+
+string Greet(string who)
+{
+    return "hi " + who;
+}
+
+system Check(mut Results r)
+{
+    Expect(r, $"score {42}" == "score 42");
+    Expect(r, $"{1.5:F2}" == "1.50");
+    Expect(r, $"{0.1}" == "0.1");
+    Expect(r, $"{7:D3}" == "007");
+    Expect(r, $"{255:X}" == "FF");
+    Expect(r, $"{true} {false}" == "true false");
+    Expect(r, $"{Page.Options}" == "Options");
+    Expect(r, $"{float2(1, 0.5)}" == "(1, 0.5)");
+    Expect(r, $"a{{b}}c" == "a{b}c");
+    Expect(r, "a" + 1 + "b" == "a1b");
+    Expect(r, 1 + "a" == "1a");
+    Expect(r, "héllo".Length == 5);
+    Expect(r, "héllo".Substring(1, 2) == "él");
+    Expect(r, "hello".IndexOf("l") == 2);
+    Expect(r, "hello".IndexOf("z") == -1);
+    Expect(r, "Hello".ToUpper() == "HELLO");
+    Expect(r, "Hello".ToLower() == "hello");
+    Expect(r, "  x \n".Trim() == "x");
+    Expect(r, "a-b-c".Replace("-", "+") == "a+b+c");
+    Expect(r, "cat".Contains("at") && "cat".StartsWith("c") && "cat".EndsWith("t"));
+    Expect(r, "x" != "y");
+    Expect(r, $"{(r.checks > 0 ? 1 : 2)}" == "1");
+    Expect(r, $"{this}" == "Entity(1:1)");
+    Expect(r, Greet("cat") == "hi cat");
+    Expect(r, "".Length == 0);
+
+    mut var digits = "";
+    for (var i = 0; i < 5; i++) digits += i;
+    Expect(r, digits == "01234");
+
+    var name = "Bob";
+    var copy = name;
+    mut var grown = name;
+    grown += "by";
+    Expect(r, $"hi {name}!" == "hi Bob!" && copy == "Bob" && grown == "Bobby");
+
+    mut var many = "";
+    for (var i = 0; i < 2000; i++) many += "ab";
+    Expect(r, many.Length == 4000);
+}

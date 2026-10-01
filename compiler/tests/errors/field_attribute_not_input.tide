@@ -1,0 +1,8 @@
+// expect: [Clamp] only works on input and struct fields for now
+component Health
+{
+    [Clamp(0, 100)] int value;
+}
+scene Main { }
+
+event(Spawned) Setup(with Main) { Spawn(Health); }

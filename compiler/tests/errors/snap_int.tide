@@ -1,0 +1,7 @@
+// expect: views never blend int, so 'lives' snaps already
+component Body
+{
+    float2 position;
+    [Snap] int lives;
+}
+scene Main { }

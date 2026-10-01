@@ -1,0 +1,17 @@
+// expect: operator '==' is ambiguous for A and B
+struct A
+{
+    int value;
+    bool operator ==(A a, B b) { return a.value == b.value; }
+    bool operator !=(A a, B b) { return a.value != b.value; }
+}
+struct B
+{
+    int value;
+    bool operator ==(A a, B b) { return a.value == b.value; }
+    bool operator !=(A a, B b) { return a.value != b.value; }
+}
+singleton Pair { A a; B b; bool same; }
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Pair pair) { pair.same = pair.a == pair.b; }

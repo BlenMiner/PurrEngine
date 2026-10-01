@@ -1,0 +1,5 @@
+// expect: 'Bump' changes its 'counter', so pass it a variable or field
+void Bump(mut int counter) { counter += 1; }
+scene Main { }
+
+event(Spawned) Setup(with Main) { Bump(1); }

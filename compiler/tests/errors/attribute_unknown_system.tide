@@ -1,0 +1,6 @@
+// expect: did you mean 'Gravity'?
+singleton Log { int n; }
+scene Main { }
+system Gravity(mut Log log) { log.n += 1; }
+[After(Gravty)]
+system Move(mut Log log) { log.n += 1; }

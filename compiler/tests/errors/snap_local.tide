@@ -1,0 +1,6 @@
+// expect: local state is never blended: views see it as it is
+local component Spark
+{
+    [Snap] float2 position;
+}
+scene Main { }

@@ -1,0 +1,40 @@
+// Systems that write text into the match wait for each other: it's all in one
+// heap. Reading text, or writing everything else, doesn't wait for it.
+
+component Name
+{
+    string value;
+}
+
+component Title
+{
+    string value;
+}
+
+component Score
+{
+    int points;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Name, Score);
+    Spawn(Title);
+}
+
+system Rename(mut Name name)
+{
+    name.value = "cat";
+}
+
+system Retitle(mut Title title)
+{
+    title.value = "boss";
+}
+
+system Count(mut Score score, Name name)
+{
+    score.points = name.value.Length;
+}

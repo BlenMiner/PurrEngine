@@ -1,0 +1,7 @@
+// expect: an operator of 'Money' takes a 'Money'
+struct Money
+{
+    int cents;
+    int operator +(int a, int b) { return a + b; }
+}
+scene Main { }

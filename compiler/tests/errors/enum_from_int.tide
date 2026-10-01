@@ -1,0 +1,5 @@
+// expect: can't initialize Phase with int
+enum Phase { Warmup, Playing }
+singleton Match { Phase phase; }
+scene Main { }
+system S(mut Match match) { Phase p = 1; match.phase = p; }

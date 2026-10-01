@@ -1,0 +1,179 @@
+// Events: sent to an entity or to the world, handled at the end of the tick in
+// the order everything was recorded, and the events the engine sends.
+
+singleton Stats
+{
+    int hits;      // Every Hit handled, whatever it hit
+    int rounds;
+    int spawned;   // Every entity spawned
+    int destroyed; // Targets with Health destroyed
+    int pings;
+    int order;     // A digit from each of Order's handlers, in the order they ran
+    int joined;
+    PlayerID lastJoined;
+}
+
+component Health
+{
+    int value = 10;
+}
+
+component Target
+{
+    int id;
+}
+
+component Player
+{
+    int id;
+}
+
+component Weapon
+{
+    Entity owner;
+}
+
+component Loot
+{
+    int from;
+}
+
+component Mirror
+{
+    Entity other;
+}
+
+component Bomb
+{
+    Entity target;
+    int damage = 4;
+}
+
+component Vanisher
+{
+    Entity target;
+}
+
+event Hit
+{
+    Entity attacker;
+    int damage = 1;
+}
+
+event RoundOver
+{
+    int round;
+}
+
+event Ping { }
+
+event Order { }
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    var a = Spawn(Health, Target { id = 1 });
+    var b = Spawn(Target { id = 2 });
+    var c = Spawn(Health, Target { id = 3 });
+    Spawn(Vanisher { target = c });
+    Spawn(Bomb { target = a });
+    var player = Spawn(Player { id = 7 }, Health { value = 3 }, Target { id = 7 });
+    var mirror = Spawn(Mirror { other = a });
+
+    a.Send(Hit { damage = 1 });
+    b.Send(Hit);
+    mirror.Send(Hit { damage = 2 });
+    player.Send(Hit { damage = 3 });
+    Send(Ping);
+    Send(Order);
+}
+
+// The Hit comes before the bomb's own Destroy, so it's handled first.
+system Explode(Bomb bomb)
+{
+    bomb.target.Send(Hit { attacker = this, damage = bomb.damage });
+    this.Destroy();
+}
+
+// The Hit comes after the Destroy, so it's dropped.
+system Vanish(Vanisher vanisher)
+{
+    vanisher.target.Destroy();
+    vanisher.target.Send(Hit { damage = 100 });
+    this.Destroy();
+}
+
+system EndRound(Time time)
+{
+    if (time.tick == 2) Send(RoundOver { round = 1 });
+}
+
+// Health and this come from the entity the Hit was sent to.
+event(Hit hit) TakeHit(mut Health health)
+{
+    health.value -= hit.damage;
+    if (health.value <= 0) this.Destroy();
+}
+
+// Takes nothing from the entity, so it runs once per Hit, whatever it hit.
+event(Hit hit) CountHits(mut Stats stats)
+{
+    stats.hits += 1;
+}
+
+// A mirror passes each Hit on to its other entity.
+event(Hit hit) Reflect(Mirror mirror)
+{
+    mirror.other.Send(hit);
+}
+
+event(RoundOver over) CountRounds(mut Stats stats)
+{
+    stats.rounds += over.round;
+}
+
+event(Ping) Pong(mut Stats stats)
+{
+    stats.pings += 1;
+}
+
+event(Order) First(mut Stats stats)
+{
+    stats.order = stats.order * 10 + 1;
+}
+
+[Before(First)]
+event(Order) Zeroth(mut Stats stats)
+{
+    stats.order = stats.order * 10 + 2;
+}
+
+event(Order) Last(mut Stats stats)
+{
+    stats.order = stats.order * 10 + 3;
+}
+
+event(Spawned) CountSpawns(mut Stats stats)
+{
+    stats.spawned += 1;
+}
+
+// A player gets a weapon as it's spawned, within the same tick.
+event(Spawned) Arm(with Player)
+{
+    Spawn(Weapon { owner = this });
+}
+
+// Runs while the entity's components can still be read.
+event(Destroyed) DropLoot(Target target, with Health, mut Stats stats)
+{
+    stats.destroyed += 1;
+    Spawn(Loot { from = target.id });
+}
+
+event(PlayerJoined joined) Welcome(mut Stats stats)
+{
+    stats.joined += 1;
+    stats.lastJoined = joined.player;
+}

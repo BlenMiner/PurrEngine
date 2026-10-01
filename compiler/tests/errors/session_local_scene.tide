@@ -1,0 +1,7 @@
+// expect: 'Menu' is local, and a match starts in one of the match's scenes
+local scene Main { }
+local scene Menu { }
+view Start()
+{
+    if (GUILayout.Button("Play")) Session.Play(Menu);
+}

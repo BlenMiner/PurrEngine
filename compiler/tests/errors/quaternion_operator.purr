@@ -1,5 +1,0 @@
-// expect: operator '*' can't be used with quaternions
-system Main()
-{
-    var q = quaternion.identity * quaternion.identity;
-}

@@ -1,0 +1,3 @@
+// expect: Entity fields always start as the null entity
+component Target { Entity entity = 0; }
+scene Main { }

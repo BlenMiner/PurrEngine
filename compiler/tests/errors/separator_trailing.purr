@@ -1,5 +1,0 @@
-// expect: invalid number '1_'
-system Main()
-{
-    var x = 1_;
-}

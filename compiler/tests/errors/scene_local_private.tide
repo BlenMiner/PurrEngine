@@ -1,0 +1,4 @@
+// expect: 'Menu' is local, and only the match's scenes have a visibility
+local scene Menu { }
+local scene Main { }
+view Show() { Scene.Load(Menu, SceneVisibility.Private); }
