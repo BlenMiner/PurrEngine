@@ -39,15 +39,26 @@ static void add_conflict(system_wait *w, const conflict_kind kind)
     vec_push(w->conflicts, c);
 }
 
+bool system_splits(const decl *sys)
+{
+    if (sys->is_view || !sys->per_entity || sys->writes_text) return false;
+    for (int i = 0; i < sys->params.count; i++) {
+        if (sys->params.items[i].type.kind == TY_SINGLETON && sys->params.items[i].mode == PARAM_MUT) return false;
+    }
+    return true;
+}
+
 // The components and singletons two systems both use, where at least one of
 // them writes. Components only count if the systems can meet the same entity.
 // What's the whole world's counts whatever entities they meet: changing its
-// heap (reading it alongside is fine), and the entity IDs spawns hand out. C is
-// trusted, so calling it makes no system wait.
+// heap (reading it alongside is fine), and the entity IDs spawns hand out,
+// which a system hands out as it runs unless it splits (its spawns get theirs
+// once it's done, in the tick's order, without waiting). C is trusted, so
+// calling it makes no system wait.
 static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
     if (earlier->writes_text && later->writes_text) add_conflict(w, CONFLICT_TEXT);
-    if (earlier->spawns && later->spawns) add_conflict(w, CONFLICT_SPAWN);
+    if (earlier->spawns && later->spawns && !system_splits(later)) add_conflict(w, CONFLICT_SPAWN);
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
         const bool component = a->type.kind == TY_COMPONENT;

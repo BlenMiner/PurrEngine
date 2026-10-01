@@ -8,9 +8,12 @@
 #define SLOTS (1u << TIDE_ENTITY_PAGE_SHIFT)
 #define PAGE_BYTES (SLOTS * (uint32_t)sizeof(tide_entity_slot))
 
+// Read as one, since the system making entities may be growing the table or
+// copying a page meanwhile.
 static const tide_entity_slot *slot_of(const tide_entities *t, const uint32_t index)
 {
-    const tide_entity_slot *slots = tide_page_data(t->page[index >> TIDE_ENTITY_PAGE_SHIFT]);
+    tide_page *const *pages = __atomic_load_n(&t->page, __ATOMIC_ACQUIRE);
+    const tide_entity_slot *slots = tide_page_data(__atomic_load_n(&pages[index >> TIDE_ENTITY_PAGE_SHIFT], __ATOMIC_ACQUIRE));
     return &slots[index & (SLOTS - 1u)];
 }
 
@@ -25,20 +28,39 @@ static uint32_t used_on(const tide_entities *t, const uint32_t p)
 static tide_entity_slot *slot_to_change(tide_entities *t, const uint32_t index)
 {
     const uint32_t p = index >> TIDE_ENTITY_PAGE_SHIFT;
-    t->page[p] = tide_page_own(t->page[p], 1, used_on(t, p) * (uint32_t)sizeof(tide_entity_slot));
-    tide_entity_slot *slots = tide_page_data(t->page[p]);
+    tide_page *own = tide_page_own(t->page[p], 1, used_on(t, p) * (uint32_t)sizeof(tide_entity_slot));
+    if (own != t->page[p]) __atomic_store_n(&t->page[p], own, __ATOMIC_RELEASE); // Code reading the old page meanwhile reads the same slots
+    tide_entity_slot *slots = tide_page_data(own);
     return &slots[index & (SLOTS - 1u)];
 }
 
+// A bigger table of pages, which takes the old one's place as a whole. The
+// old one stays, linked from page[-1], for code on other threads still reading
+// it, until tide_entities_settle.
 static void make_room(tide_entities *t, const uint32_t pages)
 {
     if (pages <= t->room) return;
     uint32_t room = t->room ? t->room : 4u;
     while (room < pages) room *= 2u;
-    tide_page **grown = realloc(t->page, room * sizeof *grown);
-    if (!grown) tide_out_of_memory();
-    t->page = grown;
+    tide_page **base = malloc((room + 1u) * sizeof *base);
+    if (!base) tide_out_of_memory();
+    tide_page **grown = base + 1;
+    if (t->pages) memcpy(grown, t->page, t->pages * sizeof *grown);
+    base[0] = t->page ? (tide_page *)(void *)(t->page - 1) : NULL;
+    __atomic_store_n(&t->page, grown, __ATOMIC_RELEASE);
     t->room = room;
+}
+
+void tide_entities_settle(tide_entities *t)
+{
+    if (!t->page) return;
+    void *old = t->page[-1];
+    while (old) {
+        tide_page **base = old;
+        old = base[0];
+        free(base);
+    }
+    t->page[-1] = NULL;
 }
 
 tide_entity tide_entity_create(tide_entities *t)
@@ -51,7 +73,7 @@ tide_entity tide_entity_create(tide_entities *t)
         index = t->next_unused;
         if ((index & (SLOTS - 1u)) == 0) {
             make_room(t, t->pages + 1u);
-            t->page[t->pages++] = tide_page_new(PAGE_BYTES);
+            t->page[t->pages++] = tide_page_new(PAGE_BYTES); // Nothing reads past next_unused
         }
         t->next_unused++;
     }
@@ -71,6 +93,7 @@ bool tide_entity_destroy(tide_entities *t, const tide_entity e)
 
     tide_entity_slot *slot = slot_to_change(t, e.index);
     slot->generation++; // Odd (alive) -> even (free); stale handles stop matching.
+    if (slot->generation & TIDE_ENTITY_TEMPORARY) slot->generation = 2; // A slot reused 2^30 times: temporary handles have that bit
     slot->archetype = TIDE_ARCHETYPE_NONE;
     slot->row = t->free_head;
     slot->snaps = 0;
@@ -124,6 +147,7 @@ void tide_entities_copy(tide_entities *to, const tide_entities *from)
     for (uint32_t i = 0; i < from->pages; i++) tide_page_retain(from->page[i]);
     for (uint32_t i = 0; i < to->pages; i++) tide_page_release(to->page[i], 1);
     make_room(to, from->pages);
+    tide_entities_settle(to); // Snapshots are taken while nothing else runs on it
     if (from->pages) memcpy(to->page, from->page, from->pages * sizeof *to->page);
     to->pages = from->pages;
     to->next_unused = from->next_unused;
@@ -144,7 +168,8 @@ uint64_t tide_entities_hash(uint64_t h, const tide_entities *t)
 void tide_entities_free(tide_entities *t)
 {
     for (uint32_t i = 0; i < t->pages; i++) tide_page_release(t->page[i], 1);
-    free(t->page);
+    tide_entities_settle(t);
+    if (t->page) free(t->page - 1);
     memset(t, 0, sizeof *t);
 }
 
@@ -177,6 +202,7 @@ bool tide_entities_unpack(tide_entities *t, tide_reader *r)
         const uint32_t bytes = used_on(t, p) * (uint32_t)sizeof(tide_entity_slot);
         memcpy(tide_page_data(t->page[p]), tide_read_bytes(r, bytes), bytes);
     }
+    tide_entities_settle(t);
     // Free slots lead to free slots in the table, without going round
     uint32_t free = t->free_head;
     for (uint32_t n = 0; free && !r->failed; n++) {

@@ -65,7 +65,7 @@ Some things never make systems wait:
 Some things are the whole match's, so systems wait for each other over them whatever entities they run for:
 
 - **Text and lists.** Two systems that change the match's text or lists conflict, since they share its heap. Reading text alongside them is fine.
-- **Spawns.** `Spawn` gives the new entity its ID right away, and entities get their IDs in order, so two systems that spawn wait for each other.
+- **Spawns.** Entities get their IDs in order. A system that runs on one thread gives a new entity its ID as it spawns, so it waits for the systems before it that spawn. A system that splits its entities across threads doesn't wait: see below.
 
 ## Keeping it wide
 
@@ -75,7 +75,9 @@ Some things are the whole match's, so systems wait for each other over them what
 
 ## Splitting across threads
 
-The other kind of parallelism is a system splitting its entities across threads: each thread takes a chunk of them, up to 1,024. It doesn't change results either, and needs nothing from you, but a system only splits when nothing it does has to happen in order across its entities. One that spawns, changes text or lists, or changes a singleton runs on one thread, alongside the others. Everything a system records (adds, removes, destroys, events) is applied in the order one thread would have recorded it.
+The other kind of parallelism is a system splitting its entities across threads: each thread takes a chunk of them, up to 1,024. It doesn't change results either, and needs nothing from you, but a system only splits when nothing it does has to happen in order across its entities. One that changes text or lists, or changes a singleton, runs on one thread, alongside the others. Everything a system records (spawns, adds, removes, destroys, events) is applied in the order one thread would have recorded it.
+
+A system that splits can spawn. Its `Spawn` gives a temporary handle, which works like any other: store it in the entity's components, `Add` to it, `Send` to it or put it in an event. Once the system is done, its new entities get their IDs, in the order one thread would have given them, and every handle it kept (in the components it changes, the changes it recorded and its events) becomes the real one, before any system that waits for it starts. Only while the system runs does the difference show: text shows a temporary handle as `Entity(new)`, and C can tell with `tide_entity_is_temporary` (see [C functions](../language/c-functions.md)).
 
 ## In CMake builds
 

@@ -33,6 +33,28 @@ TIDE_TEST(jobs_threads_change_nothing)
     }
     TIDE_CHECK(one.Stats.hits > 100 && one.Stats.spawned == 80);
     TIDE_CHECK(tide_world_entity_count(&one) == tide_world_entity_count(&many));
+
+    // Entities spawned on many threads: every handle kept is the real one
+    TIDE_CHECK(many.Stats.chipped > 1000 && many.Stats.matched == many.Stats.chipped);
+    int trails = 0;
+    int shards = 0;
+    for (uint32_t i = 0; i < many.entities.next_unused; i++) {
+        const tide_entity e = tide_entity_in_slot(&many.entities, i);
+        const Trail *trail = tide_get_Trail(&many, e);
+        if (trail && trail->count) {
+            const Debris *debris = tide_get_Debris(&many, trail->last);
+            TIDE_CHECK(!tide_entity_is_temporary(trail->last) && tide_entity_equal(trail->last, trail->link.target));
+            TIDE_CHECK(debris && tide_entity_equal(debris->from, e) && tide_get_Size(&many, trail->last));
+            trails++;
+        }
+        const Shard *shard = tide_get_Shard(&many, e);
+        if (shard) {
+            TIDE_CHECK(!tide_entity_is_null(shard->of) && !tide_entity_is_temporary(shard->of));
+            if (shard->debris) TIDE_CHECK(tide_get_Debris(&many, shard->of)); // Rocks burn up, but debris stays
+            shards += shard->debris;
+        }
+    }
+    TIDE_CHECK(trails == 6000 && shards == many.Stats.chipped);
     tide_world_free(&one);
     tide_world_free(&many);
     tide_world_free(&snapshot);

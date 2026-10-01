@@ -75,6 +75,8 @@ e.Destroy();
 
 These are **structural changes**, and they don't happen right away. They're recorded, and applied together at the end of the tick, in the order they were made. The handle `Spawn` returns can be used at once, for example to store in a component, but the entity's data can only be read once the changes apply.
 
+In a system that splits its entities across threads, the handle is temporary until the system is done, when the entity gets its ID and every handle the system kept becomes the real one (see [The schedule](../engine/schedule.md#splitting-across-threads)). Text shows it as `Entity(new)` meanwhile.
+
 That's what lets systems run side by side: nothing they do changes which entities exist until they're all done.
 
 ## Entity handles

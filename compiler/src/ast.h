@@ -232,7 +232,7 @@ typedef struct decl {
     bool takes_block;    // A function whose last parameter is a Block: inlined where it's called
     bool calls_c;        // Code that calls an extern function, itself or through others: its calls run in order
     bool writes_text;    // A system that writes text into its world: its heap, which one system changes at a time
-    bool spawns;         // A system that spawns or loads scenes: entity IDs are handed out as it runs, in order
+    bool spawns;         // A system that spawns or loads scenes: entity IDs are handed out in order
     VEC(struct decl *) callees; // Functions it calls, once each
     VEC(loc) callee_at;         // ...and where it first calls each
     uint64_t device_uses[DEVICE_WORDS]; // Device values it reads through parameters, a bit per device leaf
@@ -547,6 +547,14 @@ program *program_new(void);
 // systems keep their order in the tick, and [Before]/[After] order them too.
 // Needs the archetypes.
 void analyze_parallelism(program *prog);
+
+// Whether a system's entities are split across threads, a task per chunk of
+// them: it runs per entity, and what it changes is its entities' own, in no
+// order across them. One system at a time changes the heap, and a singleton is
+// everyone's. Its spawns get temporary handles until it's done (tide/jobs.h).
+// C is trusted: what it does on several threads at once is the game's to get
+// right.
+bool system_splits(const decl *sys);
 
 // Why `sys` waits for `w->on`, like "both write Transform". `quote` wraps names
 // ("`" for Markdown).

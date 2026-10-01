@@ -1,12 +1,15 @@
-// What every system shares, whatever entities it runs for: systems that spawn
-// wait for each other, since entities get their IDs in order. C is trusted, so
-// systems that call it run alongside each other like any others.
+// What every system shares, whatever entities it runs for: entities get their
+// IDs in order, so a system that spawns as it runs on one thread waits for the
+// others that spawn. Systems that split their entities across threads don't:
+// their spawns get IDs once they're done. C is trusted, so systems that call it
+// run alongside each other like any others.
 
 extern int Roll();
 
 component Rock { int size; }
 component Spark { float life; }
 component Dice { int last; }
+singleton Wave { int number; }
 
 scene Main { }
 
@@ -23,6 +26,12 @@ system SpawnRocks(Rock rock)
 system SpawnSparks(Rock rock)
 {
     if (rock.size == 1) Spawn(Spark { life = 1 });
+}
+
+system SpawnWave(mut Wave wave)
+{
+    wave.number += 1;
+    Spawn(Rock { size = 8 });
 }
 
 system RollDice(mut Dice dice)

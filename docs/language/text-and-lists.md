@@ -23,7 +23,7 @@ system Greet(mut Nameplate plate, Stats stats)
 - `+` joins text with anything it can show: `"score " + score`, `1 + "st"`.
 - `$"score {score}"` puts values in text. After a value, a colon and a format, as in C#: `{x:F2}` for two decimals, `{n:D3}` for at least three digits (`007`), `{n:X}` for hex. `{{` and `}}` are braces, and `?:` in a value goes in parentheses: `{(won ? 1 : 0)}`.
 
-Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color`, `Rect`, entities (`Entity(3:1)`) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, exactly the same on every platform.
+Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color`, `Rect`, entities (`Entity(3:1)`, or `Entity(new)` for one a system splitting its entities across threads just spawned, whose ID comes once it's done) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, exactly the same on every platform.
 
 It shows whole values too, which is handy for debugging. Structs, components, singletons, events and inputs show every field, the way C# shows records, and lists show their elements. Text inside them is in quotes, so empty text still shows:
 

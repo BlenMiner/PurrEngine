@@ -381,8 +381,9 @@ static void note_text_write(const checker *c, const bool text)
     if (text && c->system && c->system->kind == DECL_SYSTEM && !c->method) c->system->writes_text = true;
 }
 
-// The system being checked spawns: it hands out entity IDs as it runs, so other
-// systems that do wait for it, and its entities aren't split across threads.
+// The system being checked spawns: it hands out entity IDs, which go in order,
+// so a later system that hands them out as it runs waits for it. One that
+// splits its entities across threads gives temporary handles instead.
 static void note_spawn(const checker *c)
 {
     if (c->system && c->system->kind == DECL_SYSTEM && !c->method) c->system->spawns = true;
