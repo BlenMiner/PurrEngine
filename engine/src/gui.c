@@ -40,6 +40,7 @@ static const tide_color FIELD = {0.12f, 0.12f, 0.15f, 1.0f};
 static const tide_color FIELD_HOT = {0.16f, 0.16f, 0.2f, 1.0f};
 static const tide_color ACCENT = {1.0f, 0.77f, 0.24f, 1.0f};
 static const tide_color DIM = {0.0f, 0.0f, 0.0f, 0.5f}; // Over the screen, under a modal
+static const float FADED = 0.5f; // How opaque a disabled widget is, as in Unity's IMGUI
 
 enum { VERTICAL, HORIZONTAL, AREA };
 
@@ -137,15 +138,34 @@ static bool contains(const tide_rect r, const tide_float2 p)
     return p.x >= r.x && p.y >= r.y && p.x < r.x + r.width && p.y < r.y + r.height;
 }
 
-static void fill(tide_gui *g, const tide_rect r, const tide_color color)
+// Whether widgets drawn now are in a Disabled block.
+static bool grayed(const tide_gui *g)
+{
+    return g->groups[g->depth].disabled;
+}
+
+// A widget's color: faded in a Disabled block.
+static tide_color shade(const tide_gui *g, tide_color color)
+{
+    if (grayed(g)) color.a *= FADED;
+    return color;
+}
+
+static void paint(tide_gui *g, const tide_rect r, const tide_color color)
 {
     tide_draw_rect(&g->list, tide_f2(r.x + r.width * 0.5f, r.y + r.height * 0.5f), tide_f2(r.width, r.height), color);
+}
+
+// Part of a widget.
+static void fill(tide_gui *g, const tide_rect r, const tide_color color)
+{
+    paint(g, r, shade(g, color));
 }
 
 // Text starting at `x`, centered on `middle` vertically.
 static void text_at(tide_gui *g, const char *text, const float x, const float middle, const tide_color color)
 {
-    if (text[0]) tide_draw_text(&g->list, text, tide_f2(x, middle - FONT * 0.5f), FONT, color);
+    if (text[0]) tide_draw_text(&g->list, text, tide_f2(x, middle - FONT * 0.5f), FONT, shade(g, color));
 }
 
 static void text_centered(tide_gui *g, const char *text, const tide_rect r, const tide_color color)
@@ -368,33 +388,41 @@ void tide_gui_hide(tide_gui *g, tide_devices *d)
 // ---------------------------------------------------------------------------
 // Interaction
 
-// Whether widgets drawn now work: always, unless a modal is up and they're
-// outside it.
+// Whether widgets drawn now are under the modal on top, outside it.
+static bool under_modal(const tide_gui *g)
+{
+    return g->modal != 0 && g->in_modal != g->modal;
+}
+
+// Whether widgets drawn now work: always, unless they're under a modal or in
+// a Disabled block.
 static bool live(const tide_gui *g)
 {
-    return g->modal == 0 || g->in_modal == g->modal;
+    return !under_modal(g) && !grayed(g);
 }
 
 // Whether the mouse is on the widget. Where widgets overlap, the one drawn
 // last is on top: it was under the mouse last frame, and hides the others
-// while the mouse stays on it.
+// while the mouse stays on it. A disabled widget does too, and keeps clicks on
+// it from the game, but it's never hovered itself.
 static bool hovered(tide_gui *g, const uint32_t id, const tide_rect r)
 {
-    if (!live(g) || !contains(r, g->mouse)) return false;
+    if (under_modal(g) || !contains(r, g->mouse)) return false;
     g->hot_next = id;
     g->hot_rect_next = r;
     g->over_next = true;
-    return g->hot == id || g->hot == 0 || !contains(g->hot_rect, g->mouse);
+    return !grayed(g) && (g->hot == id || g->hot == 0 || !contains(g->hot_rect, g->mouse));
 }
 
-// Whether the mouse is pressing the widget: from a press on it until it's let go.
+// Whether the mouse is pressing the widget: from a press on it until it's let
+// go, or until it's disabled.
 static bool held_down(tide_gui *g, const uint32_t id, const bool hover)
 {
     if (hover && g->mouse_pressed && !g->claimed) {
         g->active = id;
         g->claimed = true;
     }
-    if (g->active != id) return false;
+    if (g->active != id || grayed(g)) return false;
     g->active_seen = true;
     return true;
 }
@@ -416,12 +444,12 @@ static bool focusable(tide_gui *g, const uint32_t id)
 
 // A button's press: a click that starts and ends on it, or Enter, Space or
 // the south button while it has the focus.
-static bool clicked(tide_gui *g, const uint32_t id, const tide_rect r, bool *hover, bool *down)
+static bool clicked(tide_gui *g, const uint32_t id, const tide_rect r, bool *hover, bool *down, bool *focused)
 {
     *hover = hovered(g, id, r);
     *down = held_down(g, id, *hover);
-    const bool focused = focusable(g, id);
-    return (*down && g->mouse_released && *hover) || (focused && pressed(g, KEY_ENTER | KEY_SPACE | PAD_ACCEPT));
+    *focused = focusable(g, id);
+    return (*down && g->mouse_released && *hover) || (*focused && pressed(g, KEY_ENTER | KEY_SPACE | PAD_ACCEPT));
 }
 
 // ---------------------------------------------------------------------------
@@ -502,7 +530,7 @@ static int open_group(tide_gui *g, const uint32_t id, const uint32_t kind, const
     g->depth++;
     tide_gui_group *grp = top(g);
     *grp = (tide_gui_group){.id = id, .kind = kind, .origin = origin, .cursor = origin, .room = room, .anchor = -1,
-                            .panel = UINT32_MAX, .in_modal_before = g->in_modal};
+                            .panel = UINT32_MAX, .in_modal_before = g->in_modal, .disabled = around->disabled};
     if (last && kind != HORIZONTAL) grp->stretch = last->natural;
     if (last && kind == HORIZONTAL) grp->squeeze = squeeze(last->natural, last->least, room);
     return before;
@@ -530,11 +558,12 @@ static tide_float2 place(const tide_gui *g, int32_t anchor, const tide_float2 si
     return tide_f2(max_f(x, AREA_MARGIN), max_f(y, AREA_MARGIN));
 }
 
-// An area's background, sized when it closes.
+// An area's background, sized when it closes. It isn't a widget: in a
+// Disabled block, only its widgets fade.
 static uint32_t panel(tide_gui *g, const tide_rect r)
 {
     const uint32_t index = g->list.count;
-    fill(g, r, PANEL);
+    paint(g, r, PANEL);
     return g->list.count > index ? index : UINT32_MAX;
 }
 
@@ -578,11 +607,27 @@ int tide_gui_begin_modal(tide_gui *g, const uint32_t id, const int32_t anchor, b
         *open = false;
         return -1;
     }
-    fill(g, (tide_rect){0.0f, 0.0f, g->width, g->height}, DIM);
+    paint(g, (tide_rect){0.0f, 0.0f, g->width, g->height}, DIM);
     g->over_next = true; // The whole screen is the modal's
     g->modal_next = id;  // The last one drawn is on top
     const int before = tide_gui_begin_area_at(g, id, anchor);
     if (g->depth > before) g->in_modal = id;
+    return before;
+}
+
+// A copy of the container around it, which its widgets go on laying out, with
+// `disabled` added.
+int tide_gui_begin_disabled(tide_gui *g, const bool disabled)
+{
+    const int before = g->depth;
+    if (g->depth == TIDE_GUI_MAX_DEPTH) { // Too deep: the rest of the container around it is disabled too
+        top(g)->disabled = top(g)->disabled || disabled;
+        return before;
+    }
+    g->groups[g->depth + 1] = *top(g);
+    g->depth++;
+    top(g)->disabled = top(g)->disabled || disabled;
+    top(g)->scope = true;
     return before;
 }
 
@@ -623,6 +668,15 @@ void tide_gui_close(tide_gui *g, const int depth)
     while (g->depth > depth && g->depth > 0) {
         const tide_gui_group grp = *top(g);
         g->depth--;
+        if (grp.scope) { // A Disabled block hands the layout back to the container around it
+            tide_gui_group *around = top(g);
+            const bool disabled = around->disabled;
+            const bool scope = around->scope;
+            *around = grp;
+            around->disabled = disabled;
+            around->scope = scope;
+            continue;
+        }
         g->in_modal = grp.in_modal_before;
         if (grp.kind == AREA) {
             close_area(g, &grp); // Areas are on the screen, not in the container around them
@@ -708,9 +762,9 @@ void tide_gui_layout_label(tide_gui *g, const char *text)
 
 bool tide_gui_button(tide_gui *g, const uint32_t id, const tide_rect rect, const char *text)
 {
-    bool hover, down;
-    const bool pressed_now = clicked(g, id, rect, &hover, &down);
-    if (g->focus == id) fill(g, grow(rect, BORDER), ACCENT);
+    bool hover, down, focused;
+    const bool pressed_now = clicked(g, id, rect, &hover, &down, &focused);
+    if (focused) fill(g, grow(rect, BORDER), ACCENT);
     fill(g, rect, down && hover ? CONTROL_DOWN : hover ? CONTROL_HOT : CONTROL);
     text_centered(g, text, rect, TEXT);
     return pressed_now;
@@ -724,11 +778,11 @@ bool tide_gui_layout_button(tide_gui *g, const uint32_t id, const char *text)
 
 bool tide_gui_toggle(tide_gui *g, const uint32_t id, const tide_rect rect, const char *text, bool *value)
 {
-    bool hover, down;
-    const bool changed = clicked(g, id, rect, &hover, &down);
+    bool hover, down, focused;
+    const bool changed = clicked(g, id, rect, &hover, &down, &focused);
     if (changed) *value = !*value;
     const tide_rect box = {rect.x, rect.y + (rect.height - BOX) * 0.5f, BOX, BOX};
-    if (g->focus == id) fill(g, grow(box, BORDER), ACCENT);
+    if (focused) fill(g, grow(box, BORDER), ACCENT);
     fill(g, box, hover ? CONTROL_HOT : CONTROL);
     if (*value) fill(g, grow(box, -4.0f), ACCENT);
     text_at(g, text, rect.x + BOX + 8.0f, rect.y + rect.height * 0.5f, TEXT);
@@ -915,7 +969,9 @@ static bool number_box(tide_gui *g, const uint32_t id, const tide_rect box, doub
     bool changed = false;
     if (g->editing == id) {
         g->editing_seen = true;
-        if (!focused || pressed(g, KEY_ENTER | PAD_ACCEPT)) {
+        if (grayed(g)) {
+            g->editing = 0; // Disabled while typing: keeps the old value, as Escape does
+        } else if (!focused || pressed(g, KEY_ENTER | PAD_ACCEPT)) {
             double v;
             if (parse_number(g, kind, &v) && v != *value) {
                 *value = v;

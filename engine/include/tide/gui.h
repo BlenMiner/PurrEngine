@@ -45,13 +45,17 @@ typedef struct tide_textref tide_textref;
 // outside it stop working, the focus goes to its first widget, the game and
 // the views get nothing from the devices, and back (Escape, or the east
 // button) closes it.
+//
+// Widgets in a Disabled block (GUI.Disabled) are drawn faded and don't work,
+// as with Unity's GUI.enabled: a menu stays up, grayed out, while it waits.
+//
 // Widgets have IDs, which generated code derives from where they're called
 // (see tide_gui_id). Keyboard and gamepad navigation are built in: Tab, the
 // arrows or the d-pad move the focus between widgets, Enter, Space or the south
 // button press, Escape or the east button let go.
 
 #ifndef TIDE_GUI_MAX_DEPTH
-#define TIDE_GUI_MAX_DEPTH 32 // Containers open at once
+#define TIDE_GUI_MAX_DEPTH 32 // Containers and Disabled blocks open at once
 #endif
 #ifndef TIDE_GUI_MAX_NAV
 #define TIDE_GUI_MAX_NAV 512 // Widgets the focus can move between, per frame
@@ -103,6 +107,8 @@ typedef struct tide_gui_group {
     tide_rect rect;           // An area at a rect: the rect
     uint32_t hot_before;      // An area: what was under the mouse before its content
     uint32_t in_modal_before; // The modal it's in, back when it closes
+    bool disabled;            // Its widgets are grayed out and don't work: it's in a Disabled block
+    bool scope;               // A Disabled block: the container around it, carried on, and handed back when it closes
 } tide_gui_group;
 
 // A container's size last frame, which lays out the next.
@@ -236,4 +242,9 @@ int tide_gui_begin_area_at(tide_gui *g, uint32_t id, int32_t anchor);
 // Back closes it, setting `open` to false. Returns -1 when it isn't up: then
 // its content doesn't run, and there's nothing to close.
 int tide_gui_begin_modal(tide_gui *g, uint32_t id, int32_t anchor, bool *open);
+// Widgets until the matching close are grayed out and don't work while
+// `disabled` is true: they can't be hovered, pressed, focused or typed into,
+// and let go of what they had. It lays out nothing: its widgets go on in the
+// container around it. Inside another, it stays disabled whatever `disabled` is.
+int tide_gui_begin_disabled(tide_gui *g, bool disabled);
 void tide_gui_close(tide_gui *g, int depth);
