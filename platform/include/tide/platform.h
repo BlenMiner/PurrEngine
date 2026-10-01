@@ -102,7 +102,7 @@ bool tide_platform_resolve(const char *text, uint16_t default_port, tide_address
 // between them, on WebRTC: the browser's on the web, and our own on desktop
 // (platform/src/rtc), so web and desktop players meet in the same rooms. A
 // program is in one room at a time: opening one closes the last. Desktop
-// games reach the relay at wss://purrengine-relay.fly.dev, with the system's
+// games reach the relay at wss://relay.tide-engine.dev, with the system's
 // TLS (on Linux, OpenSSL's libssl), or at $TIDE_RELAY.
 //
 // A room this machine hosts: a transport that takes the players who join it.
