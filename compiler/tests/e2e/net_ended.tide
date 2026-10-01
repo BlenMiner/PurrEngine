@@ -24,7 +24,7 @@ view Start(mut Menu menu)
 {
     if (!menu.play) return;
     menu.play = false;
-    Session.Play(Arena);
+    Session.Start(Arena);
 }
 
 local event(Disconnected gone) Back(mut Menu menu)

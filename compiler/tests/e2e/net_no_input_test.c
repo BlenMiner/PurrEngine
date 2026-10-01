@@ -11,7 +11,7 @@ TIDE_TEST(net_no_input_single_player_keeps_to_the_server)
 {
     tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60});
     double t = 0.0;
-    tide_session_play(s, NULL, t);
+    tide_session_start(s, NULL, t);
     for (int frame = 0; frame < 180; frame++) {
         t += 1.0 / 60.0;
         tide_session_update(s, t);

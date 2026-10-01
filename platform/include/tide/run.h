@@ -12,16 +12,16 @@
 //     }
 //
 // The game runs in a session (tide/session.h). If its Main scene is the
-// match's, a match starts right away: on this machine alone, or with others:
+// match's, a match starts right away on this machine, or it joins another's:
 //
-//     game --host [port]      a match others can join (port 7777 by default)
+//     game --host [port]      the match opened, for others to join (port 7777 by default)
 //     game --join code        the match in the room with this code, like K7QF2M
 //     game --connect address  the match at "192.168.1.5", "localhost:7777" and the like
 //
-// A match others can join is in a room, whose code players join it with,
-// and on the desktop on a UDP port too. If Main is local, the program starts in it, with no match, and
-// local code starts one with Session.Play, Host, Join or Connect (--join and
-// --connect work too). This machine's
+// An open match is in a room, whose code players join it with, and on the
+// desktop on a UDP port too. If Main is local, the program starts in it, with
+// no match, and local code starts one with Session.Start (and Session.Open),
+// Join or Connect (--join and --connect work too). This machine's
 // player joins before the match's first tick. If the game has an input, the
 // devices are sampled once per tick this machine runs, minus what the GUI is
 // using. The views draw every frame, and their GUI over the world. Close the
@@ -59,9 +59,9 @@ static inline bool tide_run_take_request(void *local, tide_session_request *requ
 }
 
 static inline void tide_run_set_session(void *local, const uint32_t state, const tide_player_id player,
-                                        const uint32_t ping, const bool server, const char *room)
+                                        const uint32_t ping, const bool server, const bool open, const char *room)
 {
-    tide_local_set_session(local, state, player, ping, server, room);
+    tide_local_set_session(local, state, player, ping, server, open, room);
 }
 
 static inline void tide_run_connected(void *local)

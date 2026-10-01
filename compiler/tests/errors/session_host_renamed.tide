@@ -1,0 +1,7 @@
+// expect: Session.Host is Session.Start now
+scene Arena { }
+local scene Main { }
+view Menu()
+{
+    if (GUILayout.Button("Host")) Session.Host(Arena);
+}

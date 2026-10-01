@@ -35,7 +35,7 @@
 #define PROTOCOL 1u
 
 enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE };
-enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2 };
+enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2, REFUSE_CLOSED = 3 };
 enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
 enum { BYE_LEFT = 0, BYE_ENDED = 1 };
 
@@ -190,6 +190,7 @@ struct tide_server {
     uint32_t tick;
     bool started;
     bool ended; // The match ran out of scenes (tide_game.ended): no more ticks
+    bool closed; // Takes no one new, but the players on this machine (tide_session_close)
     double clock_start;
     uint32_t clock_base;
     double now;
@@ -332,6 +333,10 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
         for (uint32_t i = 0; i < s->w.inputs; i++) c->input_tick[i] = UINT32_MAX;
         c->newest_input = s->tick;
         start_snapshot(s, c);
+        return;
+    }
+    if (s->closed && !(s->desc.local_first && transport == 0)) {
+        refuse(s, transport, from, REFUSE_CLOSED);
         return;
     }
     // A player coming back gets their slot; a new one a slot never used, or
@@ -1381,6 +1386,7 @@ struct tide_session {
     tide_server *server;
     tide_client *client;
     tide_session_state last_state;
+    bool open; // Other machines can join its server (tide_session_open)
     tide_address joined;  // The server it last joined, and the cookie that makes it the same player there
     uint64_t cookie;
     tide_session_event events[SESSION_EVENTS];
@@ -1411,6 +1417,7 @@ static void tear_down(tide_session *s)
     s->server = NULL;
     s->loopback = NULL;
     s->last_state = TIDE_SESSION_OFFLINE;
+    s->open = false;
 }
 
 tide_session *tide_session_create(const tide_session_desc *desc)
@@ -1442,15 +1449,15 @@ void tide_session_leave(tide_session *s)
     push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
 }
 
-// A server with this machine's player on it, over loopback; `network` takes others.
+// A server with this machine's player on it, over loopback, and no one else
+// until it's opened.
 static void start_server(tide_session *s, const void *start, const void *world, const uint32_t players,
-                         const tide_transport network, const double now)
+                         const double now)
 {
     tide_session_leave(s);
     start_clock(s, now);
     s->loopback = tide_loopback_create(1);
     if (!s->loopback) {
-        if (network.close) network.close(network.self);
         tide_session_fail(s, TIDE_DISCONNECT_FAILED);
         return;
     }
@@ -1459,7 +1466,7 @@ static void start_server(tide_session *s, const void *start, const void *world, 
         .game = s->desc.game,
         .tick_rate = s->desc.tick_rate,
         .start = start,
-        .transports = {tide_loopback_endpoint(s->loopback, 1), network},
+        .transports = {tide_loopback_endpoint(s->loopback, 1)},
         .local_first = true,
         .wait_for_first = true,
         .world = world,
@@ -1483,19 +1490,32 @@ static void start_server(tide_session *s, const void *start, const void *world, 
     s->last_state = TIDE_SESSION_CONNECTING;
 }
 
-void tide_session_play(tide_session *s, const void *start, const double now)
+void tide_session_start(tide_session *s, const void *start, const double now)
 {
-    start_server(s, start, NULL, 0, (tide_transport){0}, now);
+    start_server(s, start, NULL, 0, now);
 }
 
-void tide_session_play_from(tide_session *s, const void *world, const uint32_t players, const double now)
+void tide_session_start_from(tide_session *s, const void *world, const uint32_t players, const double now)
 {
-    start_server(s, NULL, world, players, (tide_transport){0}, now);
+    start_server(s, NULL, world, players, now);
 }
 
-void tide_session_host(tide_session *s, const void *start, const tide_transport network, const double now)
+bool tide_session_open(tide_session *s, const tide_transport network)
 {
-    start_server(s, start, NULL, 0, network, now);
+    tide_transport *mine = s->server ? &s->server->desc.transports[1] : NULL;
+    const bool spare = network.send && (!mine || mine->send); // No match to take it, or it has one already
+    if (spare && network.close) network.close(network.self);
+    if (!mine || (!mine->send && !network.send)) return false;
+    if (!mine->send) *mine = network;
+    s->server->closed = false;
+    s->open = true;
+    return true;
+}
+
+void tide_session_close(tide_session *s)
+{
+    if (s->server) s->server->closed = true;
+    s->open = false;
 }
 
 void tide_session_join(tide_session *s, const tide_transport network, const tide_address server, const double now)
@@ -1573,6 +1593,7 @@ tide_session_status tide_session_status_of(const tide_session *s)
     tide_session_status status = {0};
     if (s->client) status.client = tide_client_status_of(s->client);
     status.server = s->server != NULL;
+    status.open = s->open;
     return status;
 }
 

@@ -1,6 +1,6 @@
-// expect: Session has no 'Start'; it has Play, Host, Join, Connect and Leave
+// expect: Session has no 'Begin'; it has Start, Open, Close, Join, Connect and Leave
 local scene Main { }
-view Start()
+view Menu()
 {
-    Session.Start("127.0.0.1");
+    Session.Begin("127.0.0.1");
 }

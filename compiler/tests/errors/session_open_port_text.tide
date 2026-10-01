@@ -1,0 +1,6 @@
+// expect: a port is an int, like 7777
+local scene Main { }
+view Menu()
+{
+    Session.Open("7777");
+}

@@ -70,16 +70,20 @@ system Roll(Time time, mut Ball ball)
 local singleton Menu
 {
     bool play;
+    bool host;  // Start and Open, in one frame
+    bool close;
     bool join;
     bool connect;
     bool inRoom; // Session.room, as the view read it
     int roomLength;
+    string shown; // Session, as text
 }
 
 view Start(mut Menu menu, Session session)
 {
     menu.inRoom = session.room == "K7QF2M";
     menu.roomLength = session.room.Length;
+    menu.shown = $"{session}";
     if (menu.join)
     {
         menu.join = false;
@@ -90,7 +94,19 @@ view Start(mut Menu menu, Session session)
         menu.connect = false;
         Session.Connect("192.168.1.5", 7000);
     }
+    if (menu.host)
+    {
+        menu.host = false;
+        Session.Open(); // For the match this machine is in now, which Start leaves
+        Session.Start(Arena { size = 4 });
+        Session.Open(7000);
+    }
+    if (menu.close)
+    {
+        menu.close = false;
+        Session.Close();
+    }
     if (!menu.play) return;
     menu.play = false;
-    Session.Play(Arena { size = 3 });
+    Session.Start(Arena { size = 3 });
 }

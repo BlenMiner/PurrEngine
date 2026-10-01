@@ -1192,7 +1192,7 @@ static bool names_builtin_owner(const checker *c, const expr *e)
 // Scene.Load(Arena { ... }), Scene.Load(Hand { ... }, SceneVisibility.Private),
 // Scene.Unload(scene), Scene.AddPlayer(scene, player) and
 // Scene.RemovePlayer(scene, player).
-// The scene Session.Play or Session.Host starts a match in: one of the
+// The scene Session.Start starts a match in: one of the
 // match's, named with its defaults or written with values.
 static decl *check_start_scene(checker *c, expr *arg, const char *call)
 {
@@ -1244,22 +1244,32 @@ static bool room_code(const str text)
     return n == 6;
 }
 
-// Session.Play(Arena), Session.Host(Arena, port), Session.Join(code),
-// Session.Connect(address, port) and Session.Leave(): which match this machine
-// is in. Only local code decides.
+// Session.Start(Arena), Session.Join(code), Session.Connect(address, port)
+// and Session.Leave(): which match this machine is in; and Session.Open(port)
+// and Session.Close(): whether others can join the one it runs. Only local
+// code decides.
 static type check_session_call(checker *c, expr *e)
 {
-    const bool play = str_eq_c(e->name, "Play");
-    const bool host = str_eq_c(e->name, "Host");
+    const bool start = str_eq_c(e->name, "Start");
     const bool join = str_eq_c(e->name, "Join");
     const bool connect = str_eq_c(e->name, "Connect");
     const bool leave = str_eq_c(e->name, "Leave");
-    if (!play && !host && !join && !connect && !leave) {
+    const bool open = str_eq_c(e->name, "Open");
+    const bool close = str_eq_c(e->name, "Close");
+    if (!start && !join && !connect && !leave && !open && !close) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
-        diag_error(e->at, "Session has no '" STR_FMT "'; it has Play, Host, Join, Connect and Leave", STR_ARG(e->name));
+        if (str_eq_c(e->name, "Play") || str_eq_c(e->name, "Host")) {
+            diag_error(e->at, "Session." STR_FMT " is Session.Start now", STR_ARG(e->name));
+            diag_note(str_eq_c(e->name, "Play") ? "'Session.Start(Arena)' starts a match on this machine"
+                                                : "'Session.Start(Arena); Session.Open();' starts a match others can join");
+            return T_ERR;
+        }
+        diag_error(e->at, "Session has no '" STR_FMT "'; it has Start, Open, Close, Join, Connect and Leave",
+                   STR_ARG(e->name));
         suggestion s = suggest_start(e->name);
-        suggest_consider_c(&s, "Play");
-        suggest_consider_c(&s, "Host");
+        suggest_consider_c(&s, "Start");
+        suggest_consider_c(&s, "Open");
+        suggest_consider_c(&s, "Close");
         suggest_consider_c(&s, "Join");
         suggest_consider_c(&s, "Connect");
         suggest_consider_c(&s, "Leave");
@@ -1269,12 +1279,12 @@ static type check_session_call(checker *c, expr *e)
     if (c->method || c->in_input || !local_code(c)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         if (c->method) {
-            diag_error(e->at, "%s can't start or leave matches yet; views and local handlers do", routines(c));
+            diag_error(e->at, "%s can't start, open or leave matches yet; views and local handlers do", routines(c));
             diag_note("call it in the view, and pass what the function decides back, like a 'mut bool' or its result");
         } else if (c->in_input) {
-            diag_error(e->at, "%s makes this machine's input, so it can't start or leave matches", input_code(c));
+            diag_error(e->at, "%s makes this machine's input, so it can't start, open or leave matches", input_code(c));
         } else {
-            diag_error(e->at, "the match runs the same on every machine, so it can't start or leave one");
+            diag_error(e->at, "the match runs the same on every machine, so it can't start, open or leave one");
             diag_note("call Session." STR_FMT " from a view or a local handler, like a menu's button", STR_ARG(e->name));
         }
         return T_ERR;
@@ -1283,17 +1293,19 @@ static type check_session_call(checker *c, expr *e)
         diag_error(e->at, "Session." STR_FMT " is a statement of its own", STR_ARG(e->name));
     }
     e->call = CALL_SESSION;
-    const int least = play || host || join || connect ? 1 : 0;
-    const int most = host || connect ? 2 : least;
+    const int least = start || join || connect ? 1 : 0;
+    const int most = connect ? 2 : open ? 1 : least;
     if (e->args.count < least || e->args.count > most) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
-        diag_error(e->at, "%s", play      ? "Session.Play takes the scene the match starts in: 'Session.Play(Arena)'"
-                               : host    ? "Session.Host takes the scene the match starts in, and maybe a port: "
-                                           "'Session.Host(Arena)' or 'Session.Host(Arena, 7777)'"
+        diag_error(e->at, "%s", start     ? "Session.Start takes the scene the match starts in: 'Session.Start(Arena)'"
+                               : open    ? "Session.Open takes nothing, or the port to take players on: "
+                                           "'Session.Open()' or 'Session.Open(7777)'"
                                : join    ? "Session.Join takes the room's code: 'Session.Join(\"K7QF2M\")'"
                                : connect ? "Session.Connect takes the server's address, and maybe a port: "
                                            "'Session.Connect(\"192.168.1.5\")' or 'Session.Connect(\"192.168.1.5\", 7777)'"
+                               : close   ? "Session.Close takes nothing: 'Session.Close()'"
                                          : "Session.Leave takes nothing: 'Session.Leave()'");
+        if (start && e->args.count == 2) diag_note("a match takes players once it's opened: 'Session.Open(7777)'");
         return T_ERR;
     }
     if (join || connect) {
@@ -1316,12 +1328,12 @@ static type check_session_call(checker *c, expr *e)
         }
         return T_VOID_;
     }
-    if (leave) return T_VOID_;
-    decl *scene = check_start_scene(c, e->args.items[0], play ? "Session.Play" : "Session.Host");
-    if (host && e->args.count == 2) {
-        const type t = check_expr(c, e->args.items[1]);
-        if (t.kind != TY_ERROR && t.kind != TY_INT) diag_error(e->args.items[1]->at, "a port is an int, like 7777");
+    if (open && e->args.count == 1) {
+        const type t = check_expr(c, e->args.items[0]);
+        if (t.kind != TY_ERROR && t.kind != TY_INT) diag_error(e->args.items[0]->at, "a port is an int, like 7777");
     }
+    if (!start) return T_VOID_;
+    decl *scene = check_start_scene(c, e->args.items[0], "Session.Start");
     if (!scene) return T_ERR;
     // The match's world starts with it: it needs an archetype there.
     e->type_decl = scene;
@@ -1772,8 +1784,8 @@ static void note_missing_operator(const tok_kind op, const type l, const type r,
     }
 }
 
-// What text can show: $"{x}", or "a" + x.
-static bool text_can_hold(const type t)
+// What text shows as it is: numbers, vectors and the like.
+static bool text_shows_value(const type t)
 {
     switch (t.kind) {
     case TY_STRING: case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_ENUM: case TY_ENTITY: case TY_LOCAL_ENTITY:
@@ -1783,6 +1795,67 @@ static bool text_can_hold(const type t)
     default:
         return false;
     }
+}
+
+// What text shows by what's in it: values with fields, as C# shows records
+// (`Name { a = 1, b = 2 }`), and lists (`[1, 2]`). Not the device records.
+static bool text_shows_inside(const type t)
+{
+    return t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_STRUCT
+        || t.kind == TY_EVENT || t.kind == TY_LIST;
+}
+
+#define TEXT_DEPTH 32
+
+// Whether text can show everything in a value of type `t`; if not, `why` gets
+// the type in it that it can't. `outer` holds the types being looked into, so
+// a struct with a list of itself ends.
+static bool text_shows_all(const type t, type *why, const decl **outer, const int depth)
+{
+    if (text_shows_value(t)) return true;
+    if (!text_shows_inside(t) || depth == TEXT_DEPTH) {
+        *why = t;
+        return false;
+    }
+    for (int i = 0; i < depth; i++) {
+        if (outer[i] == t.decl) return true;
+    }
+    outer[depth] = t.decl;
+    for (int i = 0; i < t.decl->fields.count; i++) {
+        const field *f = &t.decl->fields.items[i];
+        if (!f->hidden && !text_shows_all(f->type, why, outer, depth + 1)) return false;
+    }
+    return true;
+}
+
+// `t` and the types in it are shown: codegen writes their text helpers.
+static void mark_shown(const type t)
+{
+    if (!text_shows_inside(t) || t.decl->shown) return;
+    t.decl->shown = true;
+    for (int i = 0; i < t.decl->fields.count; i++) mark_shown(t.decl->fields.items[i].type);
+}
+
+// What text can show: $"{x}", or "a" + x.
+static bool text_can_hold(const type t)
+{
+    const decl *outer[TEXT_DEPTH];
+    type why;
+    if (!text_shows_all(t, &why, outer, 0)) return false;
+    mark_shown(t);
+    return true;
+}
+
+// Text can't show `t`: says what in it is why, and what to show instead.
+static void text_cant_show(const loc at, const type t)
+{
+    const decl *outer[TEXT_DEPTH];
+    type why = t;
+    text_shows_all(t, &why, outer, 0);
+    if (why.kind == t.kind && why.decl == t.decl) diag_error(at, "text can't show %s yet", type_name(t));
+    else diag_error(at, "text can't show %s yet: it holds a %s", type_name(t), type_name(why));
+    if (matrix_dim(why) > 0) diag_note("show its columns instead, like 'm.c0'");
+    else if (has_fields(why)) diag_note("show its fields instead, like 'value.field'");
 }
 
 // A value's format in text, "F2" in $"{x:F2}", as tide/text.h takes it: 0
@@ -1823,8 +1896,7 @@ static type binary_result(const tok_kind op, const type l, const type r, const l
         if (op == T_PLUS && text_can_hold(other)) return (type){TY_STRING, NULL};
         if ((op == T_EQ || op == T_NE) && l.kind == TY_STRING && r.kind == TY_STRING) return T_BOOL_;
         if (op == T_PLUS) {
-            diag_error(at, "text can't show %s yet", type_name(other));
-            diag_note("join its fields instead, like '\"at \" + body.position'");
+            text_cant_show(at, other);
         } else {
             diag_error(at, "operator %s can't be used with %s and %s", op_str(op), type_name(l), type_name(r));
             diag_note("text joins with '+' and compares with '==' and '!='");
@@ -2463,8 +2535,7 @@ static type check_expr(checker *c, expr *e)
             if (vt.kind == TY_VOID) {
                 diag_error(value->at, "this doesn't produce a value to show in the text");
             } else if (!text_can_hold(vt)) {
-                diag_error(value->at, "text can't show %s yet", type_name(vt));
-                if (vt.decl && vt.decl->fields.count > 0) diag_note("show its fields instead, like '{value.field}'");
+                text_cant_show(value->at, vt);
             }
             vec_push(e->format_codes, text_format(value, e->formats.items[i]));
         }
@@ -4132,8 +4203,8 @@ static void add_builtins(program *prog)
 
     // This machine's part in a match (see tide/session.h, whose enums have the
     // same values): local singleton Session { SessionState state; PlayerID
-    // player; int ping; bool server; }, its room (see check_member), and local
-    // events Connected and Disconnected { DisconnectReason reason; }.
+    // player; int ping; bool server; bool open; }, its room (see check_member),
+    // and local events Connected and Disconnected { DisconnectReason reason; }.
     static const char *const states[] = {"Offline", "Connecting", "Connected"};
     static const char *const reasons[] = {"Left", "TimedOut", "Refused", "ServerLeft", "Failed", "Ended"};
     decl *state = NEW(decl);
@@ -4157,9 +4228,9 @@ static void add_builtins(program *prog)
     session->name = str_from("Session");
     session->builtin = true;
     session->is_local = true;
-    static const char *const session_fields[][2] = {{"state", "SessionState"}, {"player", "PlayerID"}, {"ping", "int"},
-                                                    {"server", "bool"}};
-    for (int i = 0; i < 4; i++) {
+    static const char *const session_fields[][2] = {
+        {"state", "SessionState"}, {"player", "PlayerID"}, {"ping", "int"}, {"server", "bool"}, {"open", "bool"}};
+    for (int i = 0; i < (int)(sizeof session_fields / sizeof session_fields[0]); i++) {
         const field f = {str_from(session_fields[i][0]), str_from(session_fields[i][1]), {0, 0, 0}, {0}, NULL, {0, 0, 0},
                          {0}, {0, 0, 0}, false, 0};
         vec_push(session->fields, f);

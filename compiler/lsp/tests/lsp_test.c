@@ -1012,7 +1012,8 @@ TIDE_TEST(lsp_sessions)
     start();
     static const char game[] = "local scene Main { }\nscene Arena { int size = 20; }\n"
                                "view Menu(Session session)\n{\n"
-                               "    if (GUILayout.Button(\"Host\") && session.state == SessionState.Offline) Session.Host(Arena, 7777);\n"
+                               "    if (GUILayout.Button(\"Play\") && session.state == SessionState.Offline) Session.Start(Arena);\n"
+                               "    if (GUILayout.Button(\"Open\") && !session.open) Session.Open(7777);\n"
                                "    if (GUILayout.Button(\"Join\")) Session.Join(\"K7QF2M\");\n"
                                "    if (GUILayout.Button(\"Connect\")) Session.Connect(\"127.0.0.1\");\n}\n"
                                "local event(Disconnected gone) Lost() { }\n";
@@ -1029,13 +1030,16 @@ TIDE_TEST(lsp_sessions)
     TIDE_CHECK(!offers(complete("local scene Main { }\nview Menu()\n{\n    var x = $\n}\n"), "Session"));
 
     const char *calls = complete("local scene Main { }\nview Menu()\n{\n    Session.$\n}\n");
-    TIDE_CHECK(offers(calls, "Play"));
+    TIDE_CHECK(offers(calls, "Start"));
+    TIDE_CHECK(offers(calls, "Open"));
+    TIDE_CHECK(offers(calls, "Close"));
     TIDE_CHECK(offers(calls, "Join"));
     TIDE_CHECK(offers(calls, "Connect"));
     TIDE_CHECK(offers(calls, "Leave"));
     const char *fields = complete("local scene Main { }\nview Menu(Session session)\n{\n    var s = session.$\n}\n");
     TIDE_CHECK(offers(fields, "state"));
     TIDE_CHECK(offers(fields, "ping"));
+    TIDE_CHECK(offers(fields, "open"));
     TIDE_CHECK(offers(fields, "room"));
 
     open_document("local scene Main { }\nview Menu()\n{\n    Session.Le$ave();\n}\n");

@@ -1,0 +1,112 @@
+// Values with fields in text, as C# shows records: `Name { a = 1, b = 2 }`.
+// Lists show as `[1, 2]`, and text in them is in quotes, so "" shows too.
+
+enum Team
+{
+    Red,
+    Blue,
+}
+
+struct Stats
+{
+    int hp;
+    float speed;
+}
+
+struct Nothing { }
+
+struct Unit
+{
+    string name;
+    Team team;
+    Stats stats;
+    List<int> path;
+}
+
+component Results
+{
+    int checks;
+    int passed;
+    int firstFailure; // 1-based; 0 if every check passed
+    string main;      // Main, as Setup showed it
+}
+
+singleton Score
+{
+    int red;
+    int blue = 2;
+}
+
+component Card
+{
+    string title;
+    List<string> tags;
+}
+
+event Hit
+{
+    Entity by;
+    int damage;
+}
+
+input Controls
+{
+    float2 move;
+    bool jump;
+}
+
+scene Main
+{
+    int level = 4;
+}
+
+void Expect(mut Results r, bool ok)
+{
+    r.checks += 1;
+    if (ok) r.passed += 1;
+    else if (r.firstFailure == 0) r.firstFailure = r.checks;
+}
+
+// A scene shows its own fields, not the engine's.
+event(Spawned) Setup(Main main)
+{
+    Spawn(Results { main = $"{main}" }, Card { title = "Ace", tags = ["red", ""] });
+}
+
+system Check(mut Results r, Score score, Controls input)
+{
+    var stats = Stats { hp = 3, speed = 1.5 };
+    Expect(r, $"{stats}" == "Stats { hp = 3, speed = 1.5 }");
+    Expect(r, "is " + stats == "is Stats { hp = 3, speed = 1.5 }");
+    Expect(r, stats + "!" == "Stats { hp = 3, speed = 1.5 }!");
+
+    Nothing nothing = default;
+    Expect(r, $"{nothing}" == "Nothing { }");
+
+    var unit = Unit { name = "Bob", team = Team.Blue, stats = stats, path = [1, 2, 3] };
+    Expect(r, $"{unit}" == "Unit { name = \"Bob\", team = Blue, stats = Stats { hp = 3, speed = 1.5 }, path = [1, 2, 3] }");
+    Unit blank = default;
+    Expect(r, $"{blank}" == "Unit { name = \"\", team = Red, stats = Stats { hp = 0, speed = 0 }, path = [] }");
+
+    List<int> none = [];
+    Expect(r, $"{none}" == "[]");
+    Expect(r, $"{unit.path}" == "[1, 2, 3]");
+    List<Stats> history = [stats, Stats { hp = 1 }];
+    Expect(r, $"{history}" == "[Stats { hp = 3, speed = 1.5 }, Stats { hp = 1, speed = 0 }]");
+    Expect(r, r.main == "Main { level = 4 }");
+
+    Expect(r, $"{score}" == "Score { red = 0, blue = 2 }");
+    Expect(r, $"{input}" == "Controls { move = (0, 0), jump = false }");
+    Expect(r, $"{r}".StartsWith("Results { checks = "));
+    this.Send(Hit { damage = 5 });
+}
+
+system ShowCard(Card card, mut Results r)
+{
+    Expect(r, $"{card}" == "Card { title = \"Ace\", tags = [\"red\", \"\"] }");
+}
+
+event(Hit hit) Shown(mut Results r)
+{
+    Expect(r, $"{hit}" == "Hit { by = Entity(none), damage = 5 }");
+}

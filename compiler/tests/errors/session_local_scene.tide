@@ -3,5 +3,5 @@ local scene Main { }
 local scene Menu { }
 view Start()
 {
-    if (GUILayout.Button("Play")) Session.Play(Menu);
+    if (GUILayout.Button("Play")) Session.Start(Menu);
 }

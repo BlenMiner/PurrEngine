@@ -154,7 +154,8 @@ static int play(const bool host, const char *code)
     tide_address server;
     if (host) {
         if (!tide_platform_host_open(0, &network)) return printf("FAIL: no room to host\n"), 1;
-        tide_session_host(session, NULL, network, 0.0);
+        tide_session_start(session, NULL, 0.0);
+        tide_session_open(session, network);
     } else {
         if (!tide_platform_room_join(code, &network, &server)) return printf("FAIL: no room to join\n"), 1;
         tide_session_join(session, network, server, 0.0);
@@ -185,6 +186,7 @@ static int play(const bool host, const char *code)
         for (int i = 0; w && i < (int)TIDE_MAX_PLAYERS; i++) seen |= w->inputs[i] == other;
         if (!done && seen && w->joined == 2) {
             const tide_session_status status = tide_session_status_of(session);
+            if (status.open != host) return printf("FAIL: the match is%s open\n", status.open ? "" : "n't"), 1;
             printf("ok: tick %u, verified %u, %u resyncs\n", (unsigned)w->tick, (unsigned)status.client.verified_tick,
                    (unsigned)status.client.resyncs);
             done = true;

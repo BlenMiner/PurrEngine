@@ -1,0 +1,13 @@
+// expect: text can't show Pose yet: it holds a float3x3
+struct Pose
+{
+    float3x3 rotation;
+}
+
+scene Main { }
+
+view V()
+{
+    Pose pose = default;
+    Draw.Text($"{pose}", float2(0, 0), 10, Color.white);
+}

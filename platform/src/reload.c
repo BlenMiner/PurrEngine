@@ -152,7 +152,7 @@ static bool resume(void)
     tide_run_start = calloc(1, game->game->start_size);
     if (!tide_run_start) abort();
     tide_run_session = tide_run_new_session();
-    if (world) tide_session_play_from(tide_run_session, world, h.players, tide_run_now);
+    if (world) tide_session_start_from(tide_run_session, world, h.players, tide_run_now);
     if (h.gui_size == sizeof tide_run_gui) memcpy(&tide_run_gui, block + h.gui, sizeof tide_run_gui);
     if (h.hash == game->game->hash) printf("tide: reloaded\n");
     else say_carried(old, game->layout, local_done.entities_dropped + match_done.entities_dropped);

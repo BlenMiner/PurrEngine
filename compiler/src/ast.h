@@ -207,6 +207,7 @@ typedef struct decl {
     loc this_at;              // ...where it first does
     struct decl *interpolate; // Structs and components: their Interpolate, if they have one
     bool snapped;             // Singletons: something calls .Snap() on it, so it counts its snaps
+    bool shown;               // Values with fields, and lists: text shows one somewhere, so it has a text helper
     tok_kind op;              // An operator's: T_PLUS, T_EQ, ...; T_MINUS is negation with one parameter
     str return_type_name;     // "void" if it returns nothing
     loc return_type_at;       // Its last part, if it's qualified
@@ -282,7 +283,7 @@ typedef enum builtin_call {
     CALL_LOAD,      // Scene.Load(Arena { ... }): a spawn whose entity is its own scene; type_decl is the scene
     CALL_UNLOAD,    // Scene.Unload(scene)
     CALL_SCENE_PLAYER, // Scene.AddPlayer(scene, player) and Scene.RemovePlayer(scene, player)
-    CALL_SESSION,   // Session.Play, Host, Join and Leave: `name` says which; type_decl is Play's and Host's scene
+    CALL_SESSION,   // Session.Start, Open, Close, Join, Connect and Leave: `name` says which; type_decl is Start's scene
     CALL_SNAP,      // entity.Snap() or singleton.Snap(): views draw it as it is this tick; type_decl is a singleton's
     CALL_GUI,       // GUI.Button(...), GUILayout.Horizontal() { ... }: calls c_callee with the GUI first
     CALL_BLOCK,     // content(): runs the Block its function was given
@@ -489,7 +490,7 @@ typedef struct program {
     decl *session;       // The built-in local singleton Session: this machine's part in a match
     decl *connected;     // Built-in local events: this machine joined a match, and left it
     decl *disconnected;
-    VEC(decl *) start_scenes; // Scenes Session.Play and Session.Host start matches in
+    VEC(decl *) start_scenes; // Scenes Session.Start starts matches in
     bool uses_text;      // Some code makes text, in the scratch area the run functions clear
     bool uses_heap;      // Some field holds text or a list: the worlds have a heap
     VEC(decl *) lists;   // Every List<T> type the program uses, one per element type

@@ -568,6 +568,7 @@ system Advance(mut Match match)
 - Text is UTF-8. Literals can hold any UTF-8 character, and `\"`, `\\` and `\n`.
 - `$"score {score}"` puts values in text. After a value, a colon and a format, as in C#: `{x:F2}` for two decimals, `{n:D3}` for at least three digits (`007`), `{n:X}` for hex. Floats take F, and ints D, X and F. `{{` and `}}` are braces, and `?:` in a value goes in parentheses: `{(won ? 1 : 0)}`.
 - Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color` (`RGBA(1, 0, 0, 1)`), `Rect`, entities (`Entity(3:1)`) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, plainly from 1e-7 to 1e21 and with an exponent beyond (`1.5E+21`), the same on every platform: computed exactly, never with the platform's printf.
+- Text shows values with fields (structs, components, singletons, events and inputs) as C# shows records: `Stats { hp = 3, speed = 1.5 }`, `Nothing { }`, nested ones inside. Lists show as `[1, 2, 3]`. Text in them is in quotes, `name = "Bob"`, so `""` shows; it isn't escaped. Scenes show their own fields, not the engine's. `Session` shows its `room` last. The device records (`Devices` and the rest) don't show, nor does anything holding a matrix, which text can't show yet; the error names what's in the way.
 - `+` joins text with anything it can show: `"score " + score`, `1 + "st"`. `==` and `!=` compare text byte by byte. There's no `<` for text.
 - `Length`, and the methods `Contains`, `StartsWith`, `EndsWith`, `IndexOf` (-1 if it's not there), `Substring(start)` and `Substring(start, length)`, `ToUpper` and `ToLower` (ASCII letters only, for now), `Trim` and `Replace(from, to)`.
 - Text that code makes, joining and formatting, lives in a scratch area that's cleared once the system, view or handler that made it is done, for each entity. It's only ever copied into a world's heap.
@@ -989,7 +990,8 @@ system Collapse(Arena arena)
 ### Decided
 
 - Single-player and multiplayer are the same: every match runs on a server, and this machine's player connects to it, over a loopback transport when the server is on this machine. The engine assumes nothing about what a game does with it, like pausing; games build that from inputs and state.
-- Local code decides which match this machine is in: `Session.Play(scene)` starts one on this machine alone, `Session.Host(scene)` one others can join, `Session.Join(code)` joins the match in a room by its code, `Session.Connect(address, port)` joins another machine's by its address, and `Session.Leave()` leaves. `Play` and `Host` name the scene the match starts in, with its values like `Scene.Load`'s: `Session.Host(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs.
+- Local code decides which match this machine is in: `Session.Start(scene)` starts one on this machine, `Session.Join(code)` joins the match in a room by its code, `Session.Connect(address, port)` joins another machine's by its address, and `Session.Leave()` leaves. `Start` names the scene the match starts in, with its values like `Scene.Load`'s: `Session.Start(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs.
+- There's one kind of match. Whether others can join it is a switch on it, not another way to start one: a match starts closed, `Session.Open()` lets others join the match this machine runs, and `Session.Close()` stops letting them, at any time. Single-player is a match nobody else was let into.
 - Players find each other's matches in rooms, by a code. The hosting machine picks its room's code itself, so local code has it at once, with nothing to wait for: `Session.room`.
 - Local code sees where this machine stands through a built-in local singleton, `Session` (taken as a parameter like any singleton), and the built-in local events `Connected` and `Disconnected`.
 - Clients have no input delay: their own input applies at once, and they run ahead of the server so it arrives in time. Only other players' inputs are ever guessed.
@@ -1008,8 +1010,12 @@ view Menu(Session session)
     if (session.state != SessionState.Offline) return;
     GUILayout.Area(Anchor.MiddleCenter)
     {
-        if (GUILayout.Button("Play")) Session.Play(Arena);
-        if (GUILayout.Button("Host")) Session.Host(Arena { size = 40 });
+        if (GUILayout.Button("Play")) Session.Start(Arena);
+        if (GUILayout.Button("Host"))
+        {
+            Session.Start(Arena { size = 40 });
+            Session.Open();
+        }
         if (GUILayout.Button("Join")) Session.Join("K7QF2M");
         if (GUILayout.Button("Connect")) Session.Connect("192.168.1.5");
     }
@@ -1025,19 +1031,20 @@ local event(Disconnected gone) BackToMenu()
 
 Implemented, awaiting approval:
 
-- `Session` has `state` (`SessionState.Offline`, `Connecting` or `Connected`), `player` (this machine's `PlayerID`, once connected), `ping` (the round trip to the server, in milliseconds), `server` (whether this machine runs it) and `room` (the code of the room the match is in, or `""`). It's read-only.
-- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, or no room), `ServerLeft` (the server's machine left, which ended the match), `Failed` (it couldn't start: no network, a port in use, an address that isn't one, a room nobody has) or `Ended` (the match's last scene unloaded, and `Main` is local; see Scenes).
-- `Session.Host(scene, port)` takes players in a room, and on `port` too, 7777 without one, except on the web, which has no ports. `Session.Connect(address, port)` takes `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"`, and the port is 7777 without one.
+- `Session` has `state` (`SessionState.Offline`, `Connecting` or `Connected`), `player` (this machine's `PlayerID`, once connected), `ping` (the round trip to the server, in milliseconds), `server` (whether this machine runs it), `open` (whether others can join it, which only the server's machine knows) and `room` (the code of the room the match is in, or `""`, as it is while the match is closed). It's read-only. A single-player match is `Connected` too, with `server` true and `open` false.
+- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, no room left, or a closed match), `ServerLeft` (the server's machine left, which ended the match), `Failed` (it couldn't start: no network, a port in use, an address that isn't one, a room nobody has) or `Ended` (the match's last scene unloaded, and `Main` is local; see Scenes).
+- `Session.Open(port)` takes players in a room, and on `port` too, 7777 without one, except on the web, which has no ports. A closed match turns away anyone who isn't in it, coming back or not; the players in it stay. Opened again, it takes players in the same room and on the same port. `Open` and `Close` only change a match this machine runs: on a client, or offline, they do nothing. When it can take players neither in a room nor on the port, the match stays closed. Opens and Closes before a `Start`, `Join`, `Connect` or `Leave` in the same frame were for the match it ends, so they're dropped. `Session.Play` and `Session.Host` are errors that point to `Start` and `Open`.
+- `Session.Connect(address, port)` takes `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"`, and the port is 7777 without one.
 - A room's code is 6 letters and digits, without look-alikes (no `0`, `O`, `1` or `I`), like `K7QF2M`: about a billion codes. Case and spaces don't matter when joining. `Session.Join` with text that can't be a code is an error, which points to `Connect` for an address.
 - A code another room already has is refused by the relay, and the host picks another at once, before anyone could have read it: `Session.room` changes. It's `""` while the relay can't be reached; the host keeps trying, and the room opens again under the same code if it's still free. Players already in keep playing: only joining needs the relay.
 - Joining a room that doesn't exist, or whose host can't be reached, ends with `Failed` at once. A room's host gets 15 seconds to answer for the first time, rather than 5, since WebRTC can take a while to find a way through routers.
 - Desktop and web players meet in the same rooms: desktop games speak WebRTC too, with an implementation of our own (no third-party code, so games carry no license terms for it). Everyone reaches the relay over `wss://`: desktop games with their system's TLS (on Linux, OpenSSL's libssl, which they load if it's there).
-- Under `tide run --web`, a reload plays on alone: the room closes, and the other players drop out.
+- Under `tide run --web`, a reload goes on with the match closed: the room closes, and the other players drop out.
 - Session calls are statements, in views and local handlers. Functions can't make them yet, nor can match code, which runs the same on every machine, nor `Sample`.
 - A match can't start in a scene that holds text or lists yet.
 - Starting a match leaves the one this machine is in first, which sends `Disconnected` with `Left` before the new one's `Connected`.
 - The server's player joins before the match's first tick, as `PlayerJoined` handled at the end of it; the server only starts ticking then.
-- When `Main` is the match's, `tide/run.h` plays it at once, or hosts or joins with `--host [port]`, `--join code` and `--connect address` on the command line (and `tide run --host`, `--join` and `--connect`).
+- When `Main` is the match's, `tide/run.h` starts it at once, and opens it with `--host [port]`, or joins another with `--join code` and `--connect address` on the command line (and `tide run --host`, `--join` and `--connect`).
 - Up to 16 players.
 - A client predicts at most a second ahead of the last tick the server confirmed, however many ticks that is at the match's tick rate; beyond it, it waits for the server. The server keeps four seconds of ticks to send again; a player further behind gets the whole world again.
 - **Coming back:** joining a server gives this machine a cookie, and joining the same server again (the same room, or the same address) presents it, so the player gets their `PlayerID` back, and with it whatever the game kept for them. If the server still has them connected (their old connection went quiet), the new one takes over with no events at all; if they'd left, `PlayerJoined` comes again with the same `PlayerID`. A server keeps a slot for a player who left until it has no slot that was never used; then it gives away the one away longest, and that player's cookie stops working.

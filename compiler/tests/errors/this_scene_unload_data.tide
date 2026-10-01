@@ -10,7 +10,7 @@ view Menu(mut Main main)
     {
         if (GUILayout.Button("Host"))
         {
-            Session.Host(Game);
+            Session.Start(Game);
             Scene.Unload(main);
         }
     }

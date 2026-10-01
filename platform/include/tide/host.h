@@ -43,7 +43,7 @@ typedef struct tide_host_game {
                   tide_gui *gui);
     bool (*take_request)(void *local, tide_session_request *request, void *start);
     // `room`: the code of the room the match is in, "" if none
-    void (*set_session)(void *local, uint32_t state, tide_player_id player, uint32_t ping, bool server,
+    void (*set_session)(void *local, uint32_t state, tide_player_id player, uint32_t ping, bool server, bool open,
                         const char *room);
     void (*connected)(void *local);
     void (*disconnected)(void *local, uint32_t reason);
@@ -118,18 +118,21 @@ static inline void tide_run_request(const tide_session_request *request, const v
     const bool port_ok = request->port <= 65535u;
     const uint16_t port = port_ok ? (uint16_t)request->port : 0u;
     switch (request->kind) {
-    case TIDE_REQUEST_PLAY:
-        tide_session_play(s, start, tide_run_now);
+    case TIDE_REQUEST_START:
+        tide_session_start(s, start, tide_run_now);
         break;
-    case TIDE_REQUEST_HOST:
-        // Players join on a UDP port (not on the web), and in a room
+    case TIDE_REQUEST_OPEN:
+        // Players join on a UDP port (not on the web), and in a room. A match
+        // opened before opens again where it was.
+        if (!tide_session_status_of(s).server || tide_session_open(s, (tide_transport){0})) break;
         if (port_ok && tide_platform_host_open(port, &network)) {
-            tide_session_host(s, start, network, tide_run_now);
+            tide_session_open(s, network);
             break;
         }
         fprintf(stderr, "tide: can't take players on port %u\n", (unsigned)request->port);
-        tide_session_leave(s);
-        tide_session_fail(s, TIDE_DISCONNECT_FAILED);
+        break;
+    case TIDE_REQUEST_CLOSE:
+        tide_session_close(s);
         break;
     case TIDE_REQUEST_JOIN:
         if (!tide_platform_room_join(request->address, &network, &server)) {
@@ -158,13 +161,14 @@ static inline void tide_run_request(const tide_session_request *request, const v
 }
 
 // --host [port], --join code or --connect address, from the command line.
+// --host is an Open, for Main's match.
 static inline bool tide_run_arguments(tide_session_request *request)
 {
     for (int i = 1; i < tide_run_settings.argc; i++) {
         const char *arg = tide_run_settings.argv[i];
         const char *next = i + 1 < tide_run_settings.argc ? tide_run_settings.argv[i + 1] : NULL;
         if (strcmp(arg, "--host") == 0) {
-            *request = (tide_session_request){.kind = TIDE_REQUEST_HOST, .port = TIDE_DEFAULT_PORT};
+            *request = (tide_session_request){.kind = TIDE_REQUEST_OPEN, .port = TIDE_DEFAULT_PORT};
             if (next && next[0] >= '0' && next[0] <= '9') request->port = (uint32_t)strtoul(next, NULL, 10);
             return true;
         }
@@ -214,16 +218,16 @@ static inline void tide_run_begin(void)
     game->local_init(tide_run_local);
     tide_run_session = tide_run_new_session();
     tide_session_request request = {0};
-    if (tide_run_arguments(&request)) {
-        if (game->main_is_local && request.kind == TIDE_REQUEST_HOST) {
-            fprintf(stderr, "tide: --host starts a match in Main, and Main is local: host from the game instead\n");
-            request.kind = TIDE_REQUEST_NONE;
-        }
-        tide_run_request(&request, NULL);
+    const bool asked = tide_run_arguments(&request);
+    const bool open = asked && request.kind == TIDE_REQUEST_OPEN;
+    if (asked && !open) {
+        tide_run_request(&request, NULL); // --join or --connect
     } else if (!game->main_is_local) {
-        // Main is the match's: a match on this machine alone starts right away.
-        request.kind = TIDE_REQUEST_PLAY;
-        tide_run_request(&request, NULL);
+        // Main is the match's: it starts right away, opened with --host
+        tide_run_request(&(tide_session_request){.kind = TIDE_REQUEST_START}, NULL);
+        if (open) tide_run_request(&request, NULL);
+    } else if (open) {
+        fprintf(stderr, "tide: --host opens Main's match, and Main is local: open one from the game instead\n");
     }
 }
 
@@ -261,10 +265,10 @@ static inline int tide_run_frame(void *user, const float seconds)
         else game->disconnected(tide_run_local, event.reason);
     }
     const tide_session_status status = tide_session_status_of(s);
-    char room[TIDE_ROOM_CODE_LENGTH + 1];
-    tide_platform_room_code(room, sizeof room);
-    game->set_session(tide_run_local, status.client.state, status.client.player, status.client.ping_ms,
-                      status.server, room);
+    char room[TIDE_ROOM_CODE_LENGTH + 1] = "";
+    if (status.open || !status.server) tide_platform_room_code(room, sizeof room); // A closed room isn't one to join
+    game->set_session(tide_run_local, status.client.state, status.client.player, status.client.ping_ms, status.server,
+                      status.open, room);
 
     // Views draw at the frame rate, the match blended between its last two ticks
     const tide_view_worlds view = tide_session_view(s);

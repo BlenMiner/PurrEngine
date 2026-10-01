@@ -61,10 +61,10 @@ static tide_view_worlds update(void)
         else tide_local_disconnected(&local, event.reason);
     }
     const tide_session_status status = tide_session_status_of(session);
-    char room[TIDE_ROOM_CODE_LENGTH + 1];
-    tide_platform_room_code(room, sizeof room);
+    char room[TIDE_ROOM_CODE_LENGTH + 1] = "";
+    if (status.open || !status.server) tide_platform_room_code(room, sizeof room);
     tide_local_set_session(&local, status.client.state, status.client.player, status.client.ping_ms, status.server,
-                           room);
+                           status.open, room);
     return tide_session_view(session);
 }
 
@@ -215,7 +215,8 @@ int main(const int argc, char **argv)
         char room[TIDE_ROOM_CODE_LENGTH + 1];
         tide_platform_room_code(room, sizeof room);
         printf("demo: hosting on port %lu (not on the web), and in room %s\n", port, room);
-        tide_session_host(session, NULL, network, now);
+        tide_session_start(session, NULL, now);
+        tide_session_open(session, network);
     } else if (join) {
         if (!tide_platform_room_join(join, &network, &server)) {
             fprintf(stderr, "demo: can't join room '%s'\n", join);
@@ -229,7 +230,7 @@ int main(const int argc, char **argv)
         }
         tide_session_join(session, network, server, now);
     } else {
-        tide_session_play(session, NULL, now);
+        tide_session_start(session, NULL, now);
     }
     tide_platform_run(frame, NULL);
 }

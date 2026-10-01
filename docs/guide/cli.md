@@ -48,7 +48,7 @@ Carrying the game over works like this:
 
 `tide` says what happened after each reload, like `reloaded, and carried the game over to its new data layout; 1 field reset; 2 entities dropped`.
 
-When the game gets into a state you don't want, type `r` and press Enter in `tide`'s terminal to start it over. With a match on several windows (`--host` in one, `--connect localhost` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over. On the web, a reload plays on alone for now: the room closes, and the other players drop out.
+When the game gets into a state you don't want, type `r` and press Enter in `tide`'s terminal to start it over. With a match on several windows (`--host` in one, `--connect localhost` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over. On the web, a reload goes on with the match closed for now: the room closes, and the other players drop out.
 
 `tide run --web` reloads too. `tide` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console. VS Code and JetBrains IDEs can play it beside your code instead (see [Editors](editors.md)).
 
@@ -60,7 +60,7 @@ Hot reload is only for `tide run`: `tide build` makes a plain program, or a page
 
 | Option | What it does |
 |---|---|
-| `--host [port]` | A match others can join: in a room, whose code the game can show, and on UDP port 7777 by default (not on the web) |
+| `--host [port]` | Opens the match for others to join: in a room, whose code the game can show, and on UDP port 7777 by default (not on the web) |
 | `--join <code>` | The match in the room with this code, like `K7QF2M` |
 | `--connect <address>` | The match at an address, like `192.168.1.5` or `localhost:7777` |
 

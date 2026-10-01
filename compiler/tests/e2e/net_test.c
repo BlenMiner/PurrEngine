@@ -321,11 +321,11 @@ TIDE_TEST(net_local_code_starts_a_match)
     tide_session_request request;
     tide_start start;
     TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
-    TIDE_CHECK(request.kind == TIDE_REQUEST_PLAY);
+    TIDE_CHECK(request.kind == TIDE_REQUEST_START);
     TIDE_CHECK(start.scene == 0 && start.value.Arena.size == 3);
     TIDE_CHECK(!tide_local_take_request(&local, &request, &start)); // Taken
 
-    tide_session_play(s, &start, t);
+    tide_session_start(s, &start, t);
     bool connected = false;
     for (int frame = 0; frame < 120; frame++) {
         t += 1.0 / 60.0;
@@ -336,6 +336,7 @@ TIDE_TEST(net_local_code_starts_a_match)
     TIDE_CHECK(connected);
     const tide_session_status status = tide_session_status_of(s);
     TIDE_CHECK(status.server && status.client.state == TIDE_SESSION_CONNECTED);
+    TIDE_CHECK(!status.open); // No one else joins until it's opened
     TIDE_CHECK(status.client.player.id == 1u);
     // On one machine the server ticks right after this player's input: nothing to predict
     TIDE_CHECK(status.client.predicted_tick == status.client.verified_tick);
@@ -363,6 +364,13 @@ TIDE_TEST(net_local_code_starts_a_match)
     tide_session_destroy(s);
 }
 
+// Whether the local text `t` is `expected`.
+static bool shows(const tide_text t, const char *expected)
+{
+    const tide_str s = tide_text_read(&local.heap, t);
+    return s.bytes == (int32_t)strlen(expected) && memcmp(s.ptr, expected, (size_t)s.bytes) == 0;
+}
+
 static void run_views(void)
 {
     tide_devices devices = {0};
@@ -372,17 +380,21 @@ static void run_views(void)
     tide_gui_end(&gui, &draw);
 }
 
-// Session.Join takes a room's code, Session.Connect an address, and local
-// code reads the room the match is in from Session.room.
+// Session.Join takes a room's code, Session.Connect an address, Session.Open
+// a port, and local code reads the room the match is in from Session.room.
 TIDE_TEST(net_local_code_joins_rooms_and_connects_to_addresses)
 {
     tide_local_init(&local);
-    tide_local_set_session(&local, TIDE_SESSION_CONNECTED, (tide_player_id){1}, 20, true, "K7QF2M");
+    tide_local_set_session(&local, TIDE_SESSION_CONNECTED, (tide_player_id){1}, 20, true, true, "K7QF2M");
     run_views();
     TIDE_CHECK(local.Menu.inRoom && local.Menu.roomLength == 6);
-    tide_local_set_session(&local, TIDE_SESSION_OFFLINE, (tide_player_id){0}, 0, false, "");
+    TIDE_CHECK(shows(local.Menu.shown, "Session { state = Connected, player = PlayerID(0), ping = 20, server = true, "
+                                       "open = true, room = \"K7QF2M\" }"));
+    tide_local_set_session(&local, TIDE_SESSION_OFFLINE, (tide_player_id){0}, 0, false, false, "");
     run_views();
     TIDE_CHECK(!local.Menu.inRoom && local.Menu.roomLength == 0);
+    TIDE_CHECK(shows(local.Menu.shown, "Session { state = Offline, player = PlayerID(none), ping = 0, server = false, "
+                                       "open = false, room = \"\" }"));
 
     tide_session_request request;
     tide_start start;
@@ -396,6 +408,22 @@ TIDE_TEST(net_local_code_joins_rooms_and_connects_to_addresses)
     TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
     TIDE_CHECK(request.kind == TIDE_REQUEST_CONNECT && strcmp(request.address, "192.168.1.5") == 0);
     TIDE_CHECK(request.port == 7000u);
+
+    // Start, then Open, in one frame: the host takes them in that order. The
+    // Open before Start was for the match Start leaves.
+    local.Menu.host = true;
+    run_views();
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_START && start.value.Arena.size == 4);
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_OPEN && request.port == 7000u);
+    TIDE_CHECK(!tide_local_take_request(&local, &request, &start));
+
+    local.Menu.close = true;
+    run_views();
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_CLOSE);
+    TIDE_CHECK(!tide_local_take_request(&local, &request, &start));
 }
 
 // This machine stops for a while (a browser tab in the background, a
@@ -404,7 +432,7 @@ TIDE_TEST(net_a_session_survives_a_pause)
 {
     tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
     double t = 0.0;
-    tide_session_play(s, NULL, t);
+    tide_session_start(s, NULL, t);
     for (int frame = 0; frame < 60; frame++) {
         t += 1.0 / 60.0;
         tide_session_update(s, t);
@@ -450,7 +478,7 @@ TIDE_TEST(net_a_session_takes_a_new_build_of_its_game)
     new_build.tick = new_build_tick;
     tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
     double t = 0.0;
-    tide_session_play(s, NULL, t);
+    tide_session_start(s, NULL, t);
     for (int frame = 0; frame < 60; frame++) {
         t += 1.0 / 60.0;
         tide_session_update(s, t);
@@ -498,7 +526,7 @@ TIDE_TEST(net_a_session_carries_its_match_over_to_another_layout)
     new_build.hash ^= 1u;
     tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
     double t = 0.0;
-    tide_session_play(s, NULL, t);
+    tide_session_start(s, NULL, t);
     for (int frame = 0; frame < 60; frame++) {
         t += 1.0 / 60.0;
         tide_session_update(s, t);
@@ -538,6 +566,69 @@ static void run_sessions(tide_loopback *network, tide_session *a, tide_session *
     }
 }
 
+// Whether `s` is in a match, and the reason it last went offline otherwise.
+static bool in_match(tide_session *s, tide_disconnect_reason *reason)
+{
+    tide_session_event e;
+    while (tide_session_next_event(s, &e)) {
+        if (e.kind == TIDE_SESSION_DISCONNECTED_EVENT) *reason = e.reason;
+    }
+    return tide_session_status_of(s).client.state == TIDE_SESSION_CONNECTED;
+}
+
+// Three machines' sessions on one network, until `until`.
+static void run_three(tide_loopback *network, tide_session *const s[3], double *t, const double until)
+{
+    while (*t < until) {
+        *t += 1.0 / 60.0;
+        tide_loopback_set_time(network, *t);
+        for (int i = 0; i < 3; i++) tide_session_update(s[i], *t);
+    }
+}
+
+// Other machines join a match once it's opened. Closed, it takes no one new,
+// and the players in it stay; opened again, it takes them on the network it had.
+TIDE_TEST(net_a_match_takes_players_while_it_is_open)
+{
+    tide_loopback *network = tide_loopback_create(77);
+    tide_session *host = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
+    tide_session *guest = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = guest_sample});
+    tide_session *late = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = guest_sample});
+    tide_session *const all[3] = {host, guest, late};
+    tide_disconnect_reason reason = TIDE_DISCONNECT_LEFT;
+    double t = 0.0;
+    TIDE_CHECK(!tide_session_open(host, (tide_transport){0})); // No match to open
+    tide_session_start(host, NULL, t);
+    TIDE_CHECK(!tide_session_open(host, (tide_transport){0})); // No network to open it on yet
+    TIDE_CHECK(!tide_session_status_of(host).open);
+
+    TIDE_REQUIRE(tide_session_open(host, tide_loopback_endpoint(network, 1)));
+    TIDE_CHECK(tide_session_status_of(host).open);
+    tide_session_join(guest, tide_loopback_endpoint(network, 2), tide_loopback_address(1), t);
+    run_three(network, all, &t, 1.0);
+    TIDE_CHECK(in_match(guest, &reason));
+
+    tide_session_close(host);
+    TIDE_CHECK(!tide_session_status_of(host).open);
+    tide_session_join(late, tide_loopback_endpoint(network, 3), tide_loopback_address(1), t);
+    run_three(network, all, &t, 1.5);
+    TIDE_CHECK(!in_match(late, &reason) && reason == TIDE_DISCONNECT_REFUSED);
+    TIDE_CHECK(in_match(guest, &reason)); // Still in
+    TIDE_CHECK(players_in(tide_session_server_world(host))->joined == 2);
+
+    TIDE_CHECK(tide_session_open(host, (tide_transport){0})); // Where it was
+    tide_session_join(late, tide_loopback_endpoint(network, 3), tide_loopback_address(1), t);
+    run_three(network, all, &t, 2.5);
+    TIDE_CHECK(in_match(late, &reason));
+    TIDE_CHECK(players_in(tide_session_server_world(host))->joined == 3);
+    TIDE_CHECK(!tide_session_open(guest, (tide_transport){0})); // Only the server's machine opens its match
+
+    tide_session_destroy(late);
+    tide_session_destroy(guest);
+    tide_session_destroy(host);
+    tide_loopback_destroy(network);
+}
+
 // A server and a player on another machine: the server's machine reloads
 // first, and the other one a moment later.
 TIDE_TEST(net_a_client_carries_its_match_over_to_another_layout)
@@ -549,7 +640,8 @@ TIDE_TEST(net_a_client_carries_its_match_over_to_another_layout)
     tide_session *host = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
     tide_session *guest = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = guest_sample});
     double t = 0.0;
-    tide_session_host(host, NULL, tide_loopback_endpoint(network, 1), t);
+    tide_session_start(host, NULL, t);
+    TIDE_REQUIRE(tide_session_open(host, tide_loopback_endpoint(network, 1)));
     tide_session_join(guest, tide_loopback_endpoint(network, 2), tide_loopback_address(1), t);
     run_sessions(network, host, guest, &t, 2.0);
     const tide_session_status before = tide_session_status_of(guest);
@@ -582,7 +674,7 @@ TIDE_TEST(net_a_session_goes_on_from_a_world)
 {
     tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
     double t = 0.0;
-    tide_session_play(s, NULL, t);
+    tide_session_start(s, NULL, t);
     for (int frame = 0; frame < 60; frame++) {
         t += 1.0 / 60.0;
         tide_session_update(s, t);
@@ -598,7 +690,7 @@ TIDE_TEST(net_a_session_goes_on_from_a_world)
 
     tide_session *next = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
     t = 0.0;
-    tide_session_play_from(next, left, 1u << player, t);
+    tide_session_start_from(next, left, 1u << player, t);
     for (int frame = 0; frame < 60; frame++) {
         t += 1.0 / 60.0;
         tide_session_update(next, t);

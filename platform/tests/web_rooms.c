@@ -162,7 +162,8 @@ int main(const int argc, char **argv)
     tide_address server;
     if (host) {
         if (!tide_platform_room_host(&network)) return fail("no room to host");
-        tide_session_host(session, NULL, network, now);
+        tide_session_start(session, NULL, now);
+        tide_session_open(session, network);
     } else {
         if (!tide_platform_room_join(argv[2], &network, &server)) return fail("no room to join");
         tide_session_join(session, network, server, now);

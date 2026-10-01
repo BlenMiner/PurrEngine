@@ -35,8 +35,8 @@ TIDE_TEST(net_ended_a_session_goes_back_to_main)
     tide_session_request request;
     tide_start start;
     TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
-    TIDE_CHECK(request.kind == TIDE_REQUEST_PLAY && start.value.Arena.rounds == 30);
-    tide_session_play(s, &start, t);
+    TIDE_CHECK(request.kind == TIDE_REQUEST_START && start.value.Arena.rounds == 30);
+    tide_session_start(s, &start, t);
     bool connected = false;
     bool ended = false;
     for (int frame = 0; frame < 120; frame++) {

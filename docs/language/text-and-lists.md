@@ -25,6 +25,17 @@ system Greet(mut Nameplate plate, Stats stats)
 
 Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color`, `Rect`, entities (`Entity(3:1)`) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, exactly the same on every platform.
 
+It shows whole values too, which is handy for debugging. Structs, components, singletons, events and inputs show every field, the way C# shows records, and lists show their elements. Text inside them is in quotes, so empty text still shows:
+
+```csharp
+GUILayout.Label($"{session}");
+// Session { state = Connected, player = PlayerID(0), ping = 0, server = true, open = false, room = "" }
+GUILayout.Label($"{scores}");
+// [3, 1, 2]
+```
+
+Matrices can't be shown yet, so neither can a value that holds one.
+
 ### Members
 
 - `Length` counts characters (Unicode code points), not bytes.

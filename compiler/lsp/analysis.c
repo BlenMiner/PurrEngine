@@ -946,10 +946,13 @@ static const struct {
     const char *form;
     const char *doc;
 } session_calls[] = {
-    {"Play", "Session.Play(scene)", "Starts a match on this machine alone, in `scene`. It leaves the match it's in first."},
-    {"Host", "Session.Host(scene, int port)",
-     "Starts a match others can join, in `scene`: in a room, whose code is `Session.room`, and on `port` too (7777 "
-     "unless it says), except on the web. It leaves the match it's in first."},
+    {"Start", "Session.Start(scene)",
+     "Starts a match on this machine, in `scene`: it runs the server, and no one else joins until it's opened. It leaves "
+     "the match it's in first."},
+    {"Open", "Session.Open(int port)",
+     "Lets others join the match this machine runs: in a room, whose code is `Session.room`, and on `port` too (7777 "
+     "unless it says), except on the web."},
+    {"Close", "Session.Close()", "No one else joins the match this machine runs from now on; the players in it stay."},
     {"Join", "Session.Join(string code)",
      "Joins the match in the room with `code`, like \"K7QF2M\": its host's `Session.room`. It leaves the match it's in first."},
     {"Connect", "Session.Connect(string address, int port)",
@@ -2382,7 +2385,7 @@ static void list_members(completion *c, const type t, const bool edges, const sc
     }
 }
 
-// Whether code here can call Session.Play and the like: views and local
+// Whether code here can call Session.Start and the like: views and local
 // handlers, as the checker allows.
 static bool decides_session(const scope *sc)
 {
@@ -2686,7 +2689,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         complete_events_of(c, local);
         item(c, "Scene", CK_MODULE, "Loads and unloads scenes", NULL, NULL);
     }
-    // Session.Play and the like are statements of their own.
+    // Session.Start and the like are statements of their own.
     if (statement && decides_session(&sc)) {
         item(c, "Session", CK_MODULE, "Starts, joins and leaves matches", NULL, NULL);
     }

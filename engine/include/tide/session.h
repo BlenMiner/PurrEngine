@@ -71,7 +71,7 @@ typedef enum tide_session_state {
 typedef enum tide_disconnect_reason {
     TIDE_DISCONNECT_LEFT,        // This machine left
     TIDE_DISCONNECT_TIMED_OUT,   // The server stopped answering, or never did
-    TIDE_DISCONNECT_REFUSED,     // The server turned it away: another build of the game, or no room
+    TIDE_DISCONNECT_REFUSED,     // The server turned it away: another build of the game, no room left, or not open
     TIDE_DISCONNECT_SERVER_LEFT, // The server's machine left, which ended the match
     TIDE_DISCONNECT_FAILED,      // It couldn't start: no network, a port in use, an address that isn't one, a room nobody has
     TIDE_DISCONNECT_ENDED,       // The match ended: its last scene unloaded (see tide_game.ended)
@@ -159,8 +159,9 @@ const void *tide_client_verified_world(const tide_client *c);
 tide_view_worlds tide_client_view(const tide_client *c);
 
 // ---------------------------------------------------------------------------
-// Session: what a host program uses. Play and Host run a server with this
-// machine's player on it; Join is a client of another machine's server.
+// Session: what a host program uses. Start runs a server with this machine's
+// player on it, which Open lets other machines join; Join is a client of
+// another machine's server.
 
 typedef struct tide_session tide_session;
 
@@ -184,19 +185,26 @@ typedef struct tide_session_event {
 typedef struct tide_session_status {
     tide_client_status client;
     bool server; // This machine runs the server
+    bool open;   // ...and other machines can join it (tide_session_open)
 } tide_session_status;
 
 tide_session *tide_session_create(const tide_session_desc *desc);
 void tide_session_destroy(tide_session *s);
-// A match on this machine alone. Leaves the one it's in first.
-void tide_session_play(tide_session *s, const void *start, double now);
+// A match on this machine, which runs its server; closed until it's opened.
+// Leaves the one it's in first.
+void tide_session_start(tide_session *s, const void *start, double now);
 // The same, going on from `world` (the game's tide_world), for hot reloading
 // where a new build is a new program, as on the web. `players`, a bit per
 // player, are in it already: this machine's player is the first of them, with
 // no PlayerJoined.
-void tide_session_play_from(tide_session *s, const void *world, uint32_t players, double now);
-// A match others can join through `network` (its owner closes it on leaving).
-void tide_session_host(tide_session *s, const void *start, tide_transport network, double now);
+void tide_session_start_from(tide_session *s, const void *world, uint32_t players, double now);
+// Lets other machines join the match this machine runs, through `network`
+// (the session closes it as the match ends). A match opened before opens
+// again on the network it had, so pass a zeroed transport first: false if it
+// had none, and also if this machine runs no match (closing `network`).
+bool tide_session_open(tide_session *s, tide_transport network);
+// No one else joins the match from now on; the players in it stay.
+void tide_session_close(tide_session *s);
 // Joining the server it joined last, it's the same player again, if the server
 // still has room for them.
 void tide_session_join(tide_session *s, tide_transport network, tide_address server, double now);
@@ -233,20 +241,22 @@ typedef bool (*tide_migrate_fn)(void *user, const void *from, void *to);
 // changing nothing, if `migrate` fails or there isn't the memory.
 bool tide_session_migrate(tide_session *s, const tide_game *game, tide_migrate_fn migrate, void *user);
 
-// What local code asked for, with Session.Play, Host, Join, Connect and Leave.
+// What local code asked for, with Session.Start, Join, Connect, Leave, Open
+// and Close.
 typedef enum tide_session_request_kind {
     TIDE_REQUEST_NONE,
-    TIDE_REQUEST_PLAY,
-    TIDE_REQUEST_HOST,
+    TIDE_REQUEST_START,
     TIDE_REQUEST_JOIN,    // A room, by its code
     TIDE_REQUEST_CONNECT, // A machine, by its address
     TIDE_REQUEST_LEAVE,
+    TIDE_REQUEST_OPEN,    // Other machines can join the match this machine runs
+    TIDE_REQUEST_CLOSE,   // ...and no longer
 } tide_session_request_kind;
 
 #define TIDE_DEFAULT_PORT 7777u
 
 typedef struct tide_session_request {
     uint32_t kind;
-    uint32_t port;     // Host: the port to take players on. Connect: the server's, unless `address` has one
+    uint32_t port;     // Open: the port to take players on. Connect: the server's, unless `address` has one
     char address[256]; // Join: the room's code. Connect: the server's address, "host" or "host:port"
 } tide_session_request;

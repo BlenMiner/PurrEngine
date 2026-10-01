@@ -4,7 +4,7 @@ Every match runs on a server, and this machine's player connects to it. When the
 
 ## Starting a match from `tide run`
 
-A game whose `Main` scene is the match's starts playing at once. `tide run` can host it or join one instead:
+A game whose `Main` scene is the match's starts playing at once. `tide run` can open it to others, or join one instead:
 
 ```sh
 tide run --host                 # others can join: in a room, and on UDP port 7777
@@ -20,15 +20,18 @@ A game that starts in a menu has a local `Main`, and its local code decides whic
 
 | Call | What it does |
 |---|---|
-| `Session.Play(scene)` | Starts a match on this machine alone |
-| `Session.Host(scene)` | Starts a match others can join: in a [room](#rooms), and on port 7777 too (not on the web) |
-| `Session.Host(scene, port)` | The same, on another port |
+| `Session.Start(scene)` | Starts a match on this machine, which runs its server |
+| `Session.Open()` | Lets others join the match this machine runs: in a [room](#rooms), and on port 7777 too (not on the web) |
+| `Session.Open(port)` | The same, on another port |
+| `Session.Close()` | Lets no one else join; the players in the match stay |
 | `Session.Join(code)` | Joins the match in the room with this code, like `"K7QF2M"` |
 | `Session.Connect(address)` | Joins another machine's match by its address: `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"` |
 | `Session.Connect(address, port)` | The same, on another port than 7777 |
 | `Session.Leave()` | Leaves the match |
 
-`Play` and `Host` name the scene the match starts in, with its values as for `Scene.Load`: `Session.Host(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs. Starting a match leaves the one this machine is in first.
+`Start` names the scene the match starts in, with its values as for `Scene.Load`: `Session.Start(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs. Starting or joining a match leaves the one this machine is in first.
+
+There's one kind of match. It starts closed, so single-player is just a match nobody else was let into. `Open` and `Close` change that at any time: a game can start alone and open its match to friends later, then close it once the party's full. Closing turns away anyone who isn't in the match, and opening it again uses the same room and port.
 
 ```csharp
 local scene Main { }
@@ -43,8 +46,12 @@ view Menu(Session session)
     if (session.state != SessionState.Offline) return;
     GUILayout.Area(Anchor.MiddleCenter)
     {
-        if (GUILayout.Button("Play")) Session.Play(Arena);
-        if (GUILayout.Button("Host")) Session.Host(Arena { size = 40 });
+        if (GUILayout.Button("Play")) Session.Start(Arena);
+        if (GUILayout.Button("Host"))
+        {
+            Session.Start(Arena { size = 40 });
+            Session.Open();
+        }
         if (GUILayout.Button("Join")) Session.Join("K7QF2M");
         if (GUILayout.Button("Connect")) Session.Connect("192.168.1.5");
     }
@@ -55,7 +62,7 @@ Session calls are statements, in views and local event handlers. Match code can'
 
 ## Rooms
 
-Players find each other's matches by a room's code, like `K7QF2M`: 6 letters and digits, without look-alikes like `0` and `O`. A machine that hosts opens a room, and `Session.room` is its code at once, for the game to show; other players join it with `Session.Join(code)`, from a browser or a desktop game alike.
+Players find each other's matches by a room's code, like `K7QF2M`: 6 letters and digits, without look-alikes like `0` and `O`. Opening a match opens a room, and `Session.room` is its code at once, for the game to show; other players join it with `Session.Join(code)`, from a browser or a desktop game alike.
 
 ```csharp
 view RoomCode(Session session)
@@ -80,7 +87,10 @@ The relay, a server of ours, only introduces players to each other. Their packet
 | `player` | This machine's `PlayerID`, once connected |
 | `ping` | The round trip to the server, in milliseconds |
 | `server` | Whether this machine runs the server |
-| `room` | The code of the room the match is in, or `""` if it's in none |
+| `open` | Whether others can join it (only the server's machine knows) |
+| `room` | The code of the room the match is in, or `""` if it's in none, as when it's closed |
+
+A single-player match is a match too, so `state` is `Connected` there as well: this machine runs the server, and its player connects to it without going through the network. That's `server` true and `open` false. `$"{session}"` shows all of it at once.
 
 The built-in local events `Connected` and `Disconnected` say when that changes. `Connected` is sent once the match's world has arrived and this machine plays in it. `Disconnected` has a `reason`:
 
@@ -88,7 +98,7 @@ The built-in local events `Connected` and `Disconnected` say when that changes. 
 |---|---|
 | `Left` | This machine called `Leave`, or started another match |
 | `TimedOut` | The server stopped answering, or never did |
-| `Refused` | The server runs another build of the game, or has no room |
+| `Refused` | The server runs another build of the game, has no room left, or its match is closed |
 | `ServerLeft` | The server's machine left, which ended the match |
 | `Failed` | It couldn't start: no network, a port in use, an address that isn't one, or a room nobody has |
 | `Ended` | The match's last scene unloaded (see [Scenes](./scenes.md#loading-and-unloading)) |

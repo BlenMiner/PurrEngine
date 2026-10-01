@@ -28,7 +28,7 @@ int main(int argc, char **argv)
 }
 ```
 
-It opens a window and runs the game in a session (`tide/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]`, `--join code` and `--connect address` from the command line. `--host` opens a room (see [Multiplayer](../language/multiplayer.md#rooms)), and a UDP port too, except on the web. `tide_run_desc` also has `width` and `height` (960 by 540 by default), `tick_rate` (60 by default) and `stats`.
+It opens a window and runs the game in a session (`tide/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]`, `--join code` and `--connect address` from the command line. `--host` opens the match, in a room (see [Multiplayer](../language/multiplayer.md#rooms)), and a UDP port too, except on the web. `tide_run_desc` also has `width` and `height` (960 by 540 by default), `tick_rate` (60 by default) and `stats`.
 
 Hosts include `tide/platform.h`, never raylib: the generated header names types after the game's components, and raylib defines many of the same names.
 
@@ -62,7 +62,7 @@ The generated header is the API between the game and its host. Namespaced declar
 **Sessions**
 
 - `tide_game_api` is the game as a session runs it (`tide_game` in `tide/session.h`).
-- `tide_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Play`. `tide_local_set_session`, `tide_local_connected` and `tide_local_disconnected` tell local code where it stands; `tide_local_set_session` takes the code of the room the match is in too (`tide_platform_room_code`), or `""`.
+- `tide_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Start`, in order: call it until it's false. `tide_local_set_session`, `tide_local_connected` and `tide_local_disconnected` tell local code where it stands; `tide_local_set_session` takes whether the match is open too (`tide_session_status`'s `open`), and the code of the room the match is in (`tide_platform_room_code`), or `""` while it's closed.
 
 ## A frame
 
