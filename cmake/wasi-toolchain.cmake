@@ -11,9 +11,12 @@
 # library; newer releases need a newer wasm-ld than many systems have.
 #
 # The target has threads (wasi-threads): memory the page shares between its
-# workers, which clang's `-threads` targets build for. Pages that can't share
-# memory (not cross-origin isolated) run the same program on one thread
-# (platform/web/tide.js).
+# workers. Pages that can't share memory (not cross-origin isolated) run the
+# same program on one thread (platform/web/tide.js). Newer clang builds for
+# threads from the `-threads` target alone, but older clang (18 and 20 among
+# them) needs -pthread when compiling (CMakeLists.txt) and --shared-memory
+# when linking (TideFlags.cmake): without them, programs build without
+# threads and nothing says so.
 
 set(TIDE_WASI_SDK_VERSION 24)
 set(TIDE_WASI_TARGET wasm32-wasip1-threads)

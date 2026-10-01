@@ -30,7 +30,8 @@ if(TIDE_WEB)
     # Web builds: a 1 MB stack like native threads' smallest, and memory that
     # grows as needed (wasi-libc's malloc), up to wasm32's 4 GiB. The page
     # makes the memory, shared between its threads' workers when it can
-    # (platform/web/tide.js), so the program imports it.
+    # (platform/web/tide.js), so the program imports it, marked shared
+    # (cmake/wasi-toolchain.cmake says why that's spelled out).
     target_link_options(tide_flags INTERFACE -Wl,-z,stack-size=1048576
-        -Wl,--import-memory -Wl,--export-memory -Wl,--max-memory=4294967296)
+        -Wl,--import-memory -Wl,--export-memory -Wl,--shared-memory -Wl,--max-memory=4294967296)
 endif()

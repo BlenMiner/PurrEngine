@@ -224,9 +224,11 @@ static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-
 // wasi-libc (as in cmake/wasi-toolchain.cmake and TideFlags.cmake). The page's
 // JavaScript implements the GL functions the platform imports, allocates with
 // malloc, and makes the memory, which it shares with workers when it can.
+// Threads are spelled out (-pthread, --shared-memory) for an installed clang
+// older than tide's, which doesn't take them from the target's name.
 static const char *const web_link_flags[] = {"-Wl,--allow-undefined", "-Wl,--export=malloc", "-Wl,--export=free",
                                              "-Wl,-z,stack-size=1048576", "-Wl,--import-memory", "-Wl,--export-memory",
-                                             "-Wl,--max-memory=4294967296", NULL};
+                                             "-Wl,--shared-memory", "-Wl,--max-memory=4294967296", NULL};
 
 // The target, when it isn't the system's: its C library comes with tide, in
 // <root>/<runtime>/sysroot, and its compiler runtime is passed by path, since
@@ -291,6 +293,7 @@ static void config_flags(args *a, const build *b)
         arg(a, build_target.flag);
         arg(a, build_target.sysroot_flag);
     }
+    if (b->opts->web) arg(a, "-pthread");
     arg_list(a, common_flags);
     arg_list(a, b->opts->release ? release_flags : debug_flags);
 #if !defined(_WIN32) && !defined(__APPLE__)
