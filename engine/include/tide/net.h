@@ -29,6 +29,9 @@ typedef enum tide_address_kind {
 // 1 and I).
 #define TIDE_ROOM_CODE_LETTERS "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 #define TIDE_ROOM_CODE_LENGTH 6
+// A room's key, as many characters at most: what lets the players of its match
+// meet there again when its host goes (see tide_session_set_room).
+#define TIDE_ROOM_KEY_LENGTH 32
 
 typedef struct tide_address {
     uint32_t kind;

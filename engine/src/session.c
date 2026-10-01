@@ -1,7 +1,10 @@
 #include "tide/session.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "tide/sha256.h"
 
 // See tide/session.h.
 //
@@ -19,7 +22,11 @@
 //            first the server lacks
 //   SERVER   server: times, its tick, how early the player's inputs arrive, the
 //            newest input it has, and pieces of the ticks the player lacks
-//   BYE      either: leaving; the server's says whether the match ended
+//   BYE      either: leaving; the server's says whether the match ended, or
+//            goes on with another machine as its server
+//   HANDOVER server, with host migration: its room's code and key, its own
+//            player, whether it's open, the players in the match and their
+//            cookies' digests, numbered so a client keeps the newest
 //
 // Nothing is sent reliably as such: each side says what it has, and the other
 // sends what's missing again until it does.
@@ -32,12 +39,14 @@
 // which ones were late, so a client knows whether its prediction held.
 
 #define MAGIC 0x5449u // "TI"
-#define PROTOCOL 2u
+#define PROTOCOL 3u
 
-enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE };
+enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE, MSG_HANDOVER };
 enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2, REFUSE_CLOSED = 3 };
 enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
-enum { BYE_LEFT = 0, BYE_ENDED = 1, BYE_KICKED = 2 }; // KICKED: then the message's length and bytes
+// KICKED: then the message's length and bytes. HANDOVER: the server left, and
+// the match goes on with another machine as its server.
+enum { BYE_LEFT = 0, BYE_ENDED = 1, BYE_KICKED = 2, BYE_HANDOVER = 3 };
 
 #define SERVER_SLOT TIDE_MAX_PLAYERS // The server's input, after the players'
 #define PREDICTION_SECONDS 1.0 // How far a client runs ahead of the last tick it knows, at most
@@ -54,6 +63,8 @@ enum { BYE_LEFT = 0, BYE_ENDED = 1, BYE_KICKED = 2 }; // KICKED: then the messag
 #define HELLO_EVERY 0.2 // Seconds between HELLOs until the server answers
 #define MAX_TICKS 8u    // Ticks a server runs in one update at most: after a stall it drops the time instead
 #define KICK_SECONDS 2.0 // How long a kicked player is told so, in case a goodbye is lost
+#define PRESENT_SECONDS 20.0  // How long players of a world a server went on from have to come back
+#define HANDOVER_EVERY 1.0    // Seconds between HANDOVERs, once it's been the same that long
 
 // How far each side looks, in ticks at the match's tick rate.
 typedef struct windows {
@@ -73,6 +84,20 @@ static windows windows_for(const uint32_t rate)
 static void free_world(const tide_game *g, void *world)
 {
     if (world && g->free_world) g->free_world(world);
+}
+
+// What players share of a cookie for host migration: the first bytes of its
+// SHA-256, which nobody can work the cookie back from. 0 for none.
+static uint64_t cookie_digest(const uint64_t cookie)
+{
+    if (!cookie) return 0;
+    uint8_t bytes[8];
+    for (int i = 0; i < 8; i++) bytes[i] = (uint8_t)(cookie >> (8 * i));
+    uint8_t hash[32];
+    tide_sha256_of(bytes, sizeof bytes, hash);
+    uint64_t digest = 0;
+    for (int i = 0; i < 8; i++) digest |= (uint64_t)hash[i] << (8 * i);
+    return digest ? digest : 1u;
 }
 
 static uint32_t millis(const double t)
@@ -244,10 +269,20 @@ struct tide_server {
     // Each player's cookie, kept after they leave so they can come back, and
     // since when they're away (0: here, or never was)
     uint64_t cookies[TIDE_MAX_PLAYERS];
+    uint64_t digests[TIDE_MAX_PLAYERS]; // ...and each one's digest: all a server it went on from passed on
     double away_since[TIDE_MAX_PLAYERS];
     uint64_t random;
     uint32_t present; // Players in the world it went on from, who haven't joined it yet (tide_server_desc.players)
+    double present_until; // ...who leave then
     kicked kicks[TIDE_MAX_PLAYERS]; // Players sent away, told so every update for a while
+    // Host migration: the room its players meet in again when it goes, and
+    // what it last told them (see send_handover)
+    char room_code[TIDE_ROOM_CODE_LENGTH + 1];
+    char room_key[TIDE_ROOM_KEY_LENGTH + 1];
+    uint64_t handover_hash;
+    uint32_t handover_version;
+    double handover_changed;
+    double handover_sent;
 };
 
 static double resend_after(const uint32_t rtt_ms)
@@ -320,12 +355,18 @@ static void drop_connection(tide_server *s, connection *c)
     free_connection(c);
 }
 
+// Whether its players take the match over when it goes (see tide_session_take_over).
+static bool hands_over(const tide_server *s)
+{
+    return s->game->host_migration && s->room_key[0] && s->room_code[0];
+}
+
 static void send_bye(const tide_server *s, const uint32_t transport, const tide_address to)
 {
     uint8_t data[8];
     tide_writer w = {data, sizeof data, 0, false};
     header(&w, MSG_BYE);
-    tide_write_u8(&w, s->ended ? BYE_ENDED : BYE_LEFT);
+    tide_write_u8(&w, s->ended ? BYE_ENDED : hands_over(s) ? BYE_HANDOVER : BYE_LEFT);
     send_packet(&s->desc.transports[transport], to, &w);
 }
 
@@ -380,10 +421,13 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
         refuse(s, transport, from, REFUSE_OTHER_GAME);
         return;
     }
+    // Its cookie's digest: the player's, from this server or the one it went on from
     int32_t player = -1;
+    const uint64_t digest = cookie_digest(cookie);
     for (uint32_t i = 0; cookie && i < TIDE_MAX_PLAYERS; i++) {
-        if (s->cookies[i] == cookie) player = (int32_t)i;
+        if (s->digests[i] == digest) player = (int32_t)i;
     }
+    if (player >= 0 && !s->cookies[player]) s->cookies[player] = cookie;
     if (c && (int32_t)(c - s->connections) != player) drop_connection(s, c); // The same machine, starting over
 
     // The player is still here, on another connection: this one takes over,
@@ -401,20 +445,23 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
         start_snapshot(s, c);
         return;
     }
-    if (s->closed && !(s->desc.local_first && transport == 0)) {
+    // A closed match takes only the players in it: those of the world it went on from too
+    const bool in_world = player >= 0 && (s->present >> player & 1u);
+    if (s->closed && !(s->desc.local_first && transport == 0) && !in_world) {
         refuse(s, transport, from, REFUSE_CLOSED);
         return;
     }
     // A player coming back gets their slot; a new one a slot never used, or
     // failing that, the one away the longest, whose cookie stops working.
     for (uint32_t i = 0; player < 0 && i < TIDE_MAX_PLAYERS; i++) {
-        if (!s->connections[i].used && s->cookies[i] == 0) player = (int32_t)i;
+        if (!s->connections[i].used && s->digests[i] == 0) player = (int32_t)i;
     }
     if (player < 0) {
         for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
-            if (!s->connections[i].used && (player < 0 || s->away_since[i] < s->away_since[player])) player = (int32_t)i;
+            if (s->connections[i].used || (s->present >> i & 1u)) continue; // In the match
+            if (player < 0 || s->away_since[i] < s->away_since[player]) player = (int32_t)i;
         }
-        if (player >= 0) s->cookies[player] = 0; // Given away
+        if (player >= 0) s->cookies[player] = s->digests[player] = 0; // Given away
     }
     if (player < 0) {
         refuse(s, transport, from, REFUSE_FULL);
@@ -424,6 +471,7 @@ static void on_hello(tide_server *s, const uint32_t transport, const tide_addres
         s->random ^= (uint64_t)from.host << 16 ^ from.port ^ (uint64_t)nonce << 32;
         do s->cookies[player] = next_random(&s->random);
         while (s->cookies[player] == 0);
+        s->digests[player] = cookie_digest(s->cookies[player]);
     }
     s->away_since[player] = 0.0;
     c = &s->connections[player];
@@ -728,6 +776,15 @@ tide_server *tide_server_create(const tide_server_desc *desc, const double now)
     if (desc->world) g->copy_world(s->world, desc->world);
     else g->start(s->world, dt, desc->start);
     s->present = desc->world ? desc->players : 0u;
+    s->present_until = now + PRESENT_SECONDS;
+    for (uint32_t i = 0; desc->world && i < TIDE_MAX_PLAYERS; i++) {
+        if (desc->leaving >> i & 1u) { // Gone with the last server
+            add_event(s, EVENT_LEAVE, i);
+            s->away_since[i] = now > 0.0 ? now : 1e-9;
+        }
+        if (desc->digests) s->digests[i] = desc->digests[i];
+    }
+    s->closed = desc->closed;
     s->now = now;
     s->started = !desc->wait_for_first;
     s->clock_start = now;
@@ -759,6 +816,48 @@ void tide_server_destroy(tide_server *s)
     free(s);
 }
 
+// Host migration: what a player needs to take the match over when the server
+// goes, or to join the one who did, every update while it's new, and every
+// HANDOVER_EVERY after.
+static void send_handover(tide_server *s)
+{
+    if (!hands_over(s)) return;
+    uint32_t in_match = s->present;
+    uint8_t own = 0xFFu; // This machine's player, who leaves with it
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+        if (!s->connections[i].used) continue;
+        in_match |= 1u << i;
+        if (s->connections[i].local) own = (uint8_t)i;
+    }
+    const bool open = !s->closed && s->desc.transports[1].send;
+    uint8_t data[256];
+    tide_writer w = {data, sizeof data, 0, false};
+    header(&w, MSG_HANDOVER);
+    const uint32_t version_at = w.size;
+    tide_write_u32(&w, 0);
+    tide_write_u8(&w, own);
+    tide_write_u8(&w, open ? 1u : 0u);
+    tide_write_bytes(&w, s->room_code, TIDE_ROOM_CODE_LENGTH);
+    const uint32_t key = (uint32_t)strlen(s->room_key);
+    tide_write_u8(&w, (uint8_t)key);
+    tide_write_bytes(&w, s->room_key, key);
+    tide_write_u32(&w, in_match);
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) tide_write_u64(&w, in_match >> i & 1u ? s->digests[i] : 0u);
+    const uint64_t hash = tide_hash(data + version_at + 4u, w.size - version_at - 4u);
+    if (hash != s->handover_hash || !s->handover_version) {
+        s->handover_hash = hash;
+        s->handover_version++;
+        s->handover_changed = s->now;
+    }
+    if (s->now - s->handover_changed > HANDOVER_EVERY && s->now - s->handover_sent < HANDOVER_EVERY) return;
+    patch_u32(data + version_at, s->handover_version);
+    s->handover_sent = s->now;
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+        const connection *c = &s->connections[i];
+        if (c->used && !c->local) send_packet(&s->desc.transports[c->transport], c->address, &w);
+    }
+}
+
 void tide_server_update(tide_server *s, const double now)
 {
     s->now = now;
@@ -766,6 +865,15 @@ void tide_server_update(tide_server *s, const double now)
     for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (c->used && now - c->last_heard > TIMEOUT) drop_connection(s, c);
+    }
+    // Players of the world it went on from who didn't come back in time left
+    if (s->present && now >= s->present_until) {
+        for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+            if (!(s->present >> i & 1u)) continue;
+            add_event(s, EVENT_LEAVE, i);
+            s->away_since[i] = now > 0.0 ? now : 1e-9;
+        }
+        s->present = 0;
     }
     if (s->started && !s->ended) {
         const uint64_t due = (uint64_t)s->clock_base + ticks_in(now - s->clock_start, s->desc.tick_rate);
@@ -792,6 +900,7 @@ void tide_server_update(tide_server *s, const double now)
         if (k->used && now > k->until) k->used = false;
         if (k->used) send_kicked(s, k);
     }
+    if (!s->ended) send_handover(s);
 }
 
 const void *tide_server_world(const tide_server *s)
@@ -828,6 +937,18 @@ bool tide_server_kick(tide_server *s, const tide_player_id player, const char *m
 
 // ---------------------------------------------------------------------------
 // Client
+
+// Host migration: what the server last said a player needs to take the match
+// over when it goes, or to join the one who did (see send_handover).
+typedef struct handover {
+    uint32_t version; // 0: none yet
+    uint8_t own;      // The server's own player, 0xFF for none
+    bool open;
+    char code[TIDE_ROOM_CODE_LENGTH + 1];
+    char key[TIDE_ROOM_KEY_LENGTH + 1];
+    uint32_t in_match;
+    uint64_t digests[TIDE_MAX_PLAYERS];
+} handover;
 
 typedef struct pending_frame {
     uint32_t tick;
@@ -895,6 +1016,9 @@ struct tide_client {
 
     uint8_t *packet;
     uint8_t *input; // input_size
+
+    handover handover;
+    bool handed_over; // The server left saying the match goes on elsewhere
 };
 
 static void go_offline(tide_client *c, const tide_disconnect_reason reason)
@@ -1018,6 +1142,31 @@ static void on_server(tide_client *c, tide_reader *r)
     }
 }
 
+static void on_handover(tide_client *c, tide_reader *r)
+{
+    handover h = {0};
+    h.version = tide_read_u32(r);
+    h.own = tide_read_u8(r);
+    h.open = tide_read_u8(r) != 0;
+    const uint8_t *code = tide_read_bytes(r, TIDE_ROOM_CODE_LENGTH);
+    const uint8_t key = tide_read_u8(r);
+    const uint8_t *key_bytes = key <= TIDE_ROOM_KEY_LENGTH ? tide_read_bytes(r, key) : NULL;
+    h.in_match = tide_read_u32(r);
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) h.digests[i] = tide_read_u64(r);
+    if (r->failed || !code || !key_bytes || h.version <= c->handover.version) return;
+    // A room's code and key are letters and digits, as the platform layer makes them
+    for (uint32_t i = 0; i < TIDE_ROOM_CODE_LENGTH; i++) {
+        if (!strchr(TIDE_ROOM_CODE_LETTERS, code[i]) || !code[i]) return;
+        h.code[i] = (char)code[i];
+    }
+    for (uint32_t i = 0; i < key; i++) {
+        const char k = (char)key_bytes[i];
+        if (!((k >= '0' && k <= '9') || (k >= 'a' && k <= 'z') || (k >= 'A' && k <= 'Z'))) return;
+        h.key[i] = k;
+    }
+    c->handover = h;
+}
+
 static void client_receive(tide_client *c)
 {
     uint8_t data[TIDE_NET_MTU];
@@ -1033,6 +1182,7 @@ static void client_receive(tide_client *c)
         case MSG_WELCOME: on_welcome(c, &r); break;
         case MSG_CHUNK: on_chunk(c, &r); break;
         case MSG_SERVER: on_server(c, &r); break;
+        case MSG_HANDOVER: on_handover(c, &r); break;
         case MSG_REFUSE: go_offline(c, TIDE_DISCONNECT_REFUSED); break;
         case MSG_BYE: {
             const uint8_t why = tide_read_u8(&r);
@@ -1043,6 +1193,7 @@ static void client_receive(tide_client *c)
                 go_offline(c, TIDE_DISCONNECT_KICKED);
                 break;
             }
+            if (why == BYE_HANDOVER && !r.failed) c->handed_over = c->state != TIDE_SESSION_OFFLINE;
             go_offline(c, why == BYE_ENDED && !r.failed ? TIDE_DISCONNECT_ENDED : TIDE_DISCONNECT_SERVER_LEFT);
             break;
         }
@@ -1499,6 +1650,15 @@ struct tide_session {
     uint32_t event_count;
     double last_now; // The host's time at the last update
     double paused;   // Host time that didn't pass for this machine's own match (see tide_session_update)
+
+    // Host migration: the client that lost its server, offline, whose last
+    // world views see until the match is back. `migrating` while no other
+    // machine took it over yet, or this machine joined the one that did.
+    tide_client *stale;
+    bool migrating;
+    // A match it ended, whose server tells the others so for a moment
+    tide_server *ending;
+    double ending_until;
 };
 
 // The session's own time starts over with each match.
@@ -1513,17 +1673,31 @@ static void push_event(tide_session *s, const tide_session_event e)
     if (s->event_count < SESSION_EVENTS) s->events[s->event_count++] = e;
 }
 
+static void drop_stale(tide_session *s)
+{
+    tide_client_destroy(s->stale);
+    s->stale = NULL;
+    s->migrating = false;
+}
+
 // Ends whatever it's in, without a word to local code.
 static void tear_down(tide_session *s)
 {
     tide_client_destroy(s->client);
     tide_server_destroy(s->server);
     tide_loopback_destroy(s->loopback);
+    drop_stale(s);
     s->client = NULL;
     s->server = NULL;
     s->loopback = NULL;
     s->last_state = TIDE_SESSION_OFFLINE;
     s->open = false;
+}
+
+static void drop_ending(tide_session *s)
+{
+    tide_server_destroy(s->ending);
+    s->ending = NULL;
 }
 
 tide_session *tide_session_create(const tide_session_desc *desc)
@@ -1538,6 +1712,7 @@ void tide_session_destroy(tide_session *s)
 {
     if (!s) return;
     tear_down(s);
+    drop_ending(s);
     free(s);
 }
 
@@ -1549,7 +1724,7 @@ void tide_session_fail(tide_session *s, const tide_disconnect_reason reason)
 
 void tide_session_leave(tide_session *s)
 {
-    if (!s->client && !s->server) return;
+    if (!s->client && !s->server && !s->migrating) return;
     tear_down(s);
     push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
 }
@@ -1639,9 +1814,12 @@ void tide_session_kick_all(tide_session *s, const char *message)
 
 void tide_session_join(tide_session *s, const tide_transport network, const tide_address server, const double now)
 {
-    tide_session_leave(s);
+    // Joining the match's next server, it's the same player, whatever the address
+    const bool migrating = s->migrating;
+    if (migrating) s->migrating = false; // Views see the last world until this one arrives
+    else tide_session_leave(s);
     start_clock(s, now);
-    if (!tide_address_equal(server, s->joined)) s->cookie = 0;
+    if (!migrating && !tide_address_equal(server, s->joined)) s->cookie = 0;
     s->joined = server;
     const tide_client_desc client = {
         .game = s->desc.game,
@@ -1662,8 +1840,33 @@ void tide_session_join(tide_session *s, const tide_transport network, const tide
     s->last_state = TIDE_SESSION_CONNECTING;
 }
 
+// Whether `c`, offline now, lost a server whose match another machine can take
+// over: the server said where to meet, and it went, or stopped answering.
+static bool can_migrate(const tide_client *c)
+{
+    return c->loaded && c->handover.version && c->handover.key[0]
+        && (c->reason == TIDE_DISCONNECT_TIMED_OUT || (c->reason == TIDE_DISCONNECT_SERVER_LEFT && c->handed_over));
+}
+
+// The match waits to change hands: this machine's client keeps its last world
+// for views, and its room goes, to be found again (see tide_session_migrating).
+static void begin_migration(tide_session *s)
+{
+    tide_client *c = s->client;
+    if (c->desc.transport.close) c->desc.transport.close(c->desc.transport.self);
+    c->desc.transport = (tide_transport){0};
+    drop_stale(s);
+    s->stale = c;
+    s->client = NULL;
+    s->migrating = true;
+}
+
 void tide_session_update(tide_session *s, const double now)
 {
+    if (s->ending) {
+        tide_server_update(s->ending, now - s->paused);
+        if (s->ending->now >= s->ending_until || s->ending->now < s->ending_until - KICK_SECONDS) drop_ending(s);
+    }
     if (!s->client) return;
     // This machine's server stops whenever the machine does (a browser tab in
     // the background, a breakpoint), and its player with it. Beyond the ticks
@@ -1683,7 +1886,13 @@ void tide_session_update(tide_session *s, const double now)
     const tide_client_status status = tide_client_status_of(s->client);
     if (!s->server && status.cookie) s->cookie = status.cookie;
     if (status.state == TIDE_SESSION_CONNECTED && s->last_state != TIDE_SESSION_CONNECTED) {
-        push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
+        // Back in a match that changed hands, it was never out of it
+        if (!s->stale) push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
+        drop_stale(s);
+    }
+    if (status.state == TIDE_SESSION_OFFLINE && !s->server && !s->stale && can_migrate(s->client)) {
+        begin_migration(s);
+        return;
     }
     if (status.state == TIDE_SESSION_OFFLINE) {
         tide_session_event gone = {TIDE_SESSION_DISCONNECTED_EVENT, status.reason};
@@ -1697,12 +1906,15 @@ void tide_session_update(tide_session *s, const double now)
 
 const void *tide_session_world(const tide_session *s)
 {
-    return s->client ? tide_client_world(s->client) : NULL;
+    const void *world = s->client ? tide_client_world(s->client) : NULL;
+    return world || !s->stale ? world : tide_client_world(s->stale); // The last one, while the match changes hands
 }
 
 tide_view_worlds tide_session_view(const tide_session *s)
 {
-    return s->client ? tide_client_view(s->client) : (tide_view_worlds){0};
+    if (s->client && s->client->loaded) return tide_client_view(s->client);
+    if (s->stale) return (tide_view_worlds){tide_client_world(s->stale), NULL, 1.0f};
+    return (tide_view_worlds){0};
 }
 
 const void *tide_session_server_world(const tide_session *s)
@@ -1714,6 +1926,10 @@ tide_session_status tide_session_status_of(const tide_session *s)
 {
     tide_session_status status = {0};
     if (s->client) status.client = tide_client_status_of(s->client);
+    if (s->stale && status.client.state != TIDE_SESSION_CONNECTED) { // Changing hands: the same player, connecting
+        status.client.state = TIDE_SESSION_CONNECTING;
+        status.client.player = tide_player_from_index(s->stale->player);
+    }
     status.server = s->server != NULL;
     status.open = s->open;
     return status;
@@ -1728,9 +1944,106 @@ bool tide_session_next_event(tide_session *s, tide_session_event *event)
     return true;
 }
 
+void tide_session_end(tide_session *s)
+{
+    if (!s->server) return;
+    // Its server tells everyone the match ended, every update for a moment,
+    // after this machine's player has gone
+    tide_server *server = s->server;
+    s->server = NULL;
+    server->ended = true;
+    server->desc.transports[0] = (tide_transport){0}; // This machine's player, on the loopback that goes now
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
+        if (server->connections[i].used && server->connections[i].local) free_connection(&server->connections[i]);
+    }
+    drop_ending(s);
+    s->ending = server;
+    s->ending_until = server->now + KICK_SECONDS;
+    tear_down(s);
+    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_ENDED});
+}
+
+void tide_session_set_room(tide_session *s, const char *code, const char *key)
+{
+    if (!s->server) return;
+    snprintf(s->server->room_code, sizeof s->server->room_code, "%s", code ? code : "");
+    snprintf(s->server->room_key, sizeof s->server->room_key, "%s", key ? key : "");
+}
+
+bool tide_session_migrating(const tide_session *s, char code[TIDE_ROOM_CODE_LENGTH + 1], char key[TIDE_ROOM_KEY_LENGTH + 1])
+{
+    if (!s->migrating) return false;
+    memcpy(code, s->stale->handover.code, TIDE_ROOM_CODE_LENGTH + 1);
+    memcpy(key, s->stale->handover.key, TIDE_ROOM_KEY_LENGTH + 1);
+    return true;
+}
+
+void tide_session_take_over(tide_session *s, const tide_transport network, const double now)
+{
+    if (!s->migrating) {
+        if (network.close) network.close(network.self);
+        return;
+    }
+    // The players in the match come back to it, but the last server's own
+    const tide_client *old = s->stale;
+    const handover *h = &old->handover;
+    uint32_t players = h->in_match;
+    uint32_t leaving = 0;
+    if (h->own < TIDE_MAX_PLAYERS && (players >> h->own & 1u)) {
+        players &= ~(1u << h->own);
+        leaving = 1u << h->own;
+    }
+    s->migrating = false; // Views see the last world until the server's arrives
+    start_clock(s, now);
+    s->loopback = tide_loopback_create(1);
+    if (!s->loopback) {
+        if (network.close) network.close(network.self);
+        tide_session_fail(s, TIDE_DISCONNECT_FAILED);
+        return;
+    }
+    tide_loopback_set_time(s->loopback, now);
+    const tide_server_desc server = {
+        .game = s->desc.game,
+        .tick_rate = old->tick_rate, // The match's, whatever this machine's build says
+        .transports = {tide_loopback_endpoint(s->loopback, 1), network},
+        .local_first = true,
+        .wait_for_first = true,
+        .world = world_at(old, old->verified),
+        .players = players,
+        .leaving = leaving,
+        .digests = h->digests,
+        .closed = !h->open,
+        .jobs = s->desc.jobs,
+    };
+    s->server = tide_server_create(&server, now); // Closes `network` if it can't be made
+    if (s->server) tide_session_set_room(s, h->code, h->key);
+    const tide_client_desc client = {
+        .game = s->desc.game,
+        .transport = tide_loopback_endpoint(s->loopback, 2),
+        .server = tide_loopback_address(1),
+        .sample = s->desc.sample,
+        .user = s->desc.user,
+        .lead = 0,
+        .cookie = s->cookie, // This machine's player, as it was
+        .jobs = s->desc.jobs,
+    };
+    s->client = s->server ? tide_client_create(&client, now) : NULL;
+    if (!s->client) {
+        tear_down(s);
+        tide_session_fail(s, TIDE_DISCONNECT_FAILED);
+        return;
+    }
+    s->open = h->open;
+    s->last_state = TIDE_SESSION_CONNECTING;
+}
+
 void tide_session_set_game(tide_session *s, const tide_game *game)
 {
     s->desc.game = game;
+    if (s->stale) {
+        s->stale->desc.game = game;
+        s->stale->game = game;
+    }
     if (s->server) {
         s->server->desc.game = game;
         s->server->game = game;

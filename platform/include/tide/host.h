@@ -101,6 +101,8 @@ static double tide_run_now; // Seconds since the program started
 // The server went away or turned this machine away: not because it left,
 // couldn't start, was kicked, or the match ran out of scenes
 static bool tide_run_dropped;
+// Host migration: when this machine went to its match's room again, or 0
+static double tide_run_migrating_since;
 
 // This machine's input for one tick.
 static inline void tide_run_sample(void *user, const uint32_t tick, void *input)
@@ -166,6 +168,9 @@ static inline void tide_run_request(const tide_session_request *request, const v
         break;
     case TIDE_REQUEST_LEAVE:
         tide_session_leave(s);
+        break;
+    case TIDE_REQUEST_END:
+        tide_session_end(s);
         break;
     default:
         break;
@@ -259,7 +264,44 @@ static inline void tide_run_end(void)
     tide_run_local = NULL;
     tide_run_start = NULL;
     tide_run_dropped = false;
+    tide_run_migrating_since = 0.0;
     memset(&tide_run_gui, 0, sizeof tide_run_gui);
+}
+
+// Host migration (see tide_session_take_over). The machine that runs a match
+// tells the server the room its players can meet in again; one whose match
+// lost its server goes there, to take the match over or to join whoever did.
+static inline void tide_run_migrate(void)
+{
+    tide_session *s = tide_run_session;
+    char code[TIDE_ROOM_CODE_LENGTH + 1] = "";
+    char key[TIDE_ROOM_KEY_LENGTH + 1] = "";
+    if (tide_session_status_of(s).server) {
+        tide_platform_room_code(code, sizeof code);
+        tide_platform_room_key(key, sizeof key);
+        tide_session_set_room(s, code, key);
+    }
+    if (!tide_session_migrating(s, code, key)) {
+        tide_run_migrating_since = 0.0;
+        return;
+    }
+    if (tide_run_migrating_since == 0.0) {
+        tide_run_migrating_since = tide_run_now > 0.0 ? tide_run_now : 1e-9;
+        fprintf(stderr, "tide: the match lost its host; to room %s again\n", code);
+        tide_platform_room_migrate(code, key);
+        return;
+    }
+    tide_transport network;
+    tide_address server;
+    const int moved = tide_platform_room_migrated(&network, &server);
+    if (moved == 1) {
+        fprintf(stderr, "tide: this machine hosts the match now, in room %s\n", code);
+        tide_session_take_over(s, network, tide_run_now);
+    } else if (moved == 2) {
+        tide_session_join(s, network, server, tide_run_now);
+    } else if (moved < 0 || tide_run_now - tide_run_migrating_since > 30.0) {
+        tide_session_fail(s, TIDE_DISCONNECT_TIMED_OUT);
+    }
 }
 
 static inline int tide_run_frame(void *user, const float seconds)
@@ -274,6 +316,7 @@ static inline int tide_run_frame(void *user, const float seconds)
     // rather than timing out.
     if (tide_platform_room_failed()) tide_session_fail(s, TIDE_DISCONNECT_FAILED);
     tide_session_update(s, tide_run_now);
+    tide_run_migrate();
     tide_session_event event;
     while (tide_session_next_event(s, &event)) {
         const bool connected = event.kind == TIDE_SESSION_CONNECTED_EVENT;

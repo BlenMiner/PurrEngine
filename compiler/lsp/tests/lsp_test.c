@@ -765,6 +765,8 @@ TIDE_TEST(lsp_settings)
     TIDE_CHECK(has(hover, "int tickRate"));
     TIDE_CHECK(has(hover, "Without it: 60."));
     TIDE_CHECK(has(request("textDocument/prepareRename"), "Settings are the engine's"));
+    open_document("settings\n{\n    hostMig$ration = true;\n}\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "bool hostMigration"));
 
     const char *empty = complete("settings\n{\n    $\n}\nscene Main { }\n");
     TIDE_CHECK(offers(empty, "tickRate"));
@@ -1119,6 +1121,7 @@ TIDE_TEST(lsp_sessions)
     TIDE_CHECK(offers(calls, "Close"));
     TIDE_CHECK(offers(calls, "Kick"));
     TIDE_CHECK(offers(calls, "KickAll"));
+    TIDE_CHECK(offers(calls, "End"));
     TIDE_CHECK(offers(calls, "Join"));
     TIDE_CHECK(offers(calls, "Connect"));
     TIDE_CHECK(offers(calls, "Leave"));

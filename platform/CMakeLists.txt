@@ -176,4 +176,11 @@ if(TIDE_WEB)
             "$<TARGET_FILE_DIR:tide_platform_web_rooms>/tide_platform_web_rooms.html"
             "${CMAKE_CURRENT_BINARY_DIR}/tide_platform_web_rooms-browser")
     set_tests_properties(tide_platform_web_rooms PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120)
+    # Host migration in the browser: the host's frame leaves, and the two
+    # others carry on in the room, one of them hosting it.
+    add_test(NAME tide_platform_web_rooms_handover
+        COMMAND "${TIDE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web_rooms.mjs" "${TIDE_BROWSER}"
+            "$<TARGET_FILE_DIR:tide_platform_web_rooms>/tide_platform_web_rooms.html"
+            "${CMAKE_CURRENT_BINARY_DIR}/tide_platform_web_rooms_handover-browser" handover)
+    set_tests_properties(tide_platform_web_rooms_handover PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120)
 endif()

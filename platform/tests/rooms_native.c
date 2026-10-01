@@ -3,6 +3,8 @@
 //
 //     tide_platform_rooms host              hosts a match in a room, says its code
 //     tide_platform_rooms join <code>       joins it
+//     tide_platform_rooms handover-host     hosts a match with host migration, and leaves it
+//     tide_platform_rooms handover-join <code> <n>  plays in it, as player n, until it changed hands
 //     tide_platform_rooms echo-host         hosts a room, for a browser that echoes
 //     tide_platform_rooms echo-join <code>  joins a browser's room that echoes
 //
@@ -16,6 +18,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tide/platform.h"
@@ -57,6 +60,7 @@ static double clock_seconds(void)
 typedef struct world {
     uint32_t tick;
     uint32_t joined;
+    uint32_t left;
     int32_t inputs[TIDE_MAX_PLAYERS + 1];
 } world;
 
@@ -91,8 +95,8 @@ static void joined(void *w, const tide_player_id player)
 
 static void left(void *w, const tide_player_id player)
 {
-    (void)w;
     (void)player;
+    ((world *)w)->left++;
 }
 
 static void set_input(void *w, const tide_player_id player, const void *input)
@@ -214,6 +218,114 @@ static int play(const bool host, const char *code)
 }
 
 // ---------------------------------------------------------------------------
+// Host migration: the host leaves once two players joined, and they go on
+
+// Drives host migration as tide/host.h does.
+static void migrate(tide_session *session, const double now, double *since)
+{
+    char code[TIDE_ROOM_CODE_LENGTH + 1] = "";
+    char key[TIDE_ROOM_KEY_LENGTH + 1] = "";
+    if (tide_session_status_of(session).server) {
+        tide_platform_room_code(code, sizeof code);
+        tide_platform_room_key(key, sizeof key);
+        tide_session_set_room(session, code, key);
+    }
+    if (!tide_session_migrating(session, code, key)) {
+        *since = 0.0;
+        return;
+    }
+    if (*since == 0.0) {
+        *since = now;
+        printf("migrating to room %s\n", code);
+        tide_platform_room_migrate(code, key);
+        return;
+    }
+    tide_transport network;
+    tide_address server;
+    const int moved = tide_platform_room_migrated(&network, &server);
+    if (moved == 1) {
+        printf("hosting now\n");
+        tide_session_take_over(session, network, now);
+    } else if (moved == 2) {
+        printf("joining the new host\n");
+        tide_session_join(session, network, server, now);
+    } else if (moved < 0) {
+        tide_session_fail(session, TIDE_DISCONNECT_TIMED_OUT);
+    }
+}
+
+// The host: says the room's code, and leaves a second after both players have
+// joined. A player: says "ok before" once in the match, and "ok after" once it
+// changed hands, with its player both times.
+static int handover(const bool host, const char *code, const int number)
+{
+    static tide_game migrating;
+    migrating = game;
+    migrating.hash = 8;
+    migrating.host_migration = true;
+    me = number;
+    tide_session *session = tide_session_create(&(tide_session_desc){.game = &migrating, .tick_rate = 60, .sample = sample});
+    const double begin = clock_seconds();
+    tide_transport network;
+    tide_address server;
+    if (host) {
+        if (!tide_platform_host_open(0, &network)) return printf("FAIL: no room to host\n"), 1;
+        tide_session_start(session, NULL, 0.0);
+        tide_session_open(session, network);
+    } else {
+        if (!tide_platform_room_join(code, &network, &server)) return printf("FAIL: no room to join\n"), 1;
+        tide_session_join(session, network, server, 0.0);
+    }
+    bool said_code = false, before = false, after = false, moved = false;
+    double all_in = 0.0, since = 0.0;
+    for (;;) {
+        const double now = clock_seconds() - begin;
+        if (now > 60.0) return printf("FAIL: not done within 60 seconds\n"), 1;
+        char migrating_code[TIDE_ROOM_CODE_LENGTH + 1], migrating_key[TIDE_ROOM_KEY_LENGTH + 1];
+        if (tide_platform_room_failed() && !tide_session_migrating(session, migrating_code, migrating_key)) {
+            tide_session_fail(session, TIDE_DISCONNECT_FAILED);
+        }
+        tide_session_update(session, now);
+        migrate(session, now, &since);
+        moved |= since > 0.0;
+        tide_session_event event;
+        while (tide_session_next_event(session, &event)) {
+            if (event.kind == TIDE_SESSION_DISCONNECTED_EVENT) {
+                printf("FAIL: the match ended, reason %d\n", (int)event.reason);
+                return 1;
+            }
+            printf("connected\n");
+        }
+        char room[TIDE_ROOM_CODE_LENGTH + 1];
+        tide_platform_room_code(room, sizeof room);
+        if (host && !said_code && room[0]) {
+            printf("room %s\n", room);
+            said_code = true;
+        }
+        const world *w = tide_session_world(session);
+        const tide_session_status status = tide_session_status_of(session);
+        const bool in = status.client.state == TIDE_SESSION_CONNECTED;
+        if (host && in && w && w->joined == 3 && all_in == 0.0) all_in = now;
+        if (host && all_in > 0.0 && now - all_in > 1.0) {
+            printf("leaving\n");
+            tide_session_leave(session);
+            tide_session_destroy(session);
+            return 0;
+        }
+        if (!host && in && w && w->joined == 3 && !before) {
+            printf("ok before: player %u\n", (unsigned)status.client.player.id);
+            before = true;
+        }
+        if (!host && in && w && moved && w->left == 1 && !after) {
+            printf("ok after: player %u%s\n", (unsigned)status.client.player.id, status.server ? ", hosting" : "");
+            after = true;
+        }
+        fflush(stdout);
+        nap();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Echoes: straight on the room's transport
 
 static int echo(const bool host, const char *code)
@@ -283,6 +395,8 @@ int main(const int argc, char **argv)
     const char *code = argc > 2 ? argv[2] : "";
     if (strcmp(mode, "host") == 0) return play(true, NULL);
     if (strcmp(mode, "join") == 0 && argc > 2) return play(false, code);
+    if (strcmp(mode, "handover-host") == 0) return handover(true, NULL, 1);
+    if (strcmp(mode, "handover-join") == 0 && argc > 3) return handover(false, code, atoi(argv[3]));
     if (strcmp(mode, "echo-host") == 0) return echo(true, NULL);
     if (strcmp(mode, "echo-join") == 0 && argc > 2) return echo(false, code);
     printf("FAIL: run it with host, join <code>, echo-host or echo-join <code>\n");

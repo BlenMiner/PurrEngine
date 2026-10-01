@@ -525,6 +525,7 @@ typedef struct program {
     VEC(decl *) settings;      // Each block written, though a game has one
     uint32_t tick_rate;        // tickRate, or 0 where it isn't set
     const expr *title;         // title, the text it's set to, or NULL
+    bool host_migration;       // hostMigration
 } program;
 
 // A change that fixes a diagnostic, which editors offer as a quick fix.

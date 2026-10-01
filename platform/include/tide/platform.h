@@ -117,6 +117,19 @@ bool tide_platform_room_join(const char *code, tide_transport *out, tide_address
 void tide_platform_room_code(char *out, size_t size);
 // The room joined turned out not to be one, or its host couldn't be reached.
 bool tide_platform_room_failed(void);
+// The key of the room this machine hosts into `out`, "" for none: what lets
+// the players of its match meet there again when it goes (see
+// tide_session_set_room). Up to TIDE_ROOM_KEY_LENGTH letters and digits.
+void tide_platform_room_key(char *out, size_t size);
+// Host migration (see tide_session_migrating): goes to room `code` again,
+// with its `key`. If its host is gone, the relay makes this machine the
+// room's host; if not, or another machine got there first, it introduces this
+// one to the host.
+void tide_platform_room_migrate(const char *code, const char *key);
+// ...and which it was, once the relay says: 1, this machine hosts the room
+// now, and `out` takes the players who join it; 2, it joins the room's host,
+// whom `out` reaches at `server`; -1, the room can't be reached; 0, not yet.
+int tide_platform_room_migrated(tide_transport *out, tide_address *server);
 
 // Takes the players who join a match this machine hosts: on UDP `port` (0 for
 // any), where there's UDP, and in a room, in one transport. False only if

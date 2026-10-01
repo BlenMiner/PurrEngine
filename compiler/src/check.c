@@ -1256,9 +1256,10 @@ static bool room_code(const str text)
 
 // Session.Start(Arena), Session.Join(code), Session.Connect(address, port)
 // and Session.Leave(): which match this machine is in; Session.Open(port)
-// and Session.Close(): whether others can join the one it runs; and
+// and Session.Close(): whether others can join the one it runs;
 // Session.Kick(player, message) and Session.KickAll(message): sending players
-// out of it. Only local code decides.
+// out of it; and Session.End(): ending it for everyone. Only local code
+// decides.
 static type check_session_call(checker *c, expr *e)
 {
     const bool start = str_eq_c(e->name, "Start");
@@ -1269,7 +1270,8 @@ static type check_session_call(checker *c, expr *e)
     const bool close = str_eq_c(e->name, "Close");
     const bool kick = str_eq_c(e->name, "Kick");
     const bool kick_all = str_eq_c(e->name, "KickAll");
-    if (!start && !join && !connect && !leave && !open && !close && !kick && !kick_all) {
+    const bool end = str_eq_c(e->name, "End");
+    if (!start && !join && !connect && !leave && !open && !close && !kick && !kick_all && !end) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         if (str_eq_c(e->name, "Play") || str_eq_c(e->name, "Host")) {
             diag_error(e->at, "Session." STR_FMT " is Session.Start now", STR_ARG(e->name));
@@ -1277,7 +1279,7 @@ static type check_session_call(checker *c, expr *e)
                                                 : "'Session.Start(Arena); Session.Open();' starts a match others can join");
             return T_ERR;
         }
-        diag_error(e->at, "Session has no '" STR_FMT "'; it has Start, Open, Close, Kick, KickAll, Join, Connect and Leave",
+        diag_error(e->at, "Session has no '" STR_FMT "'; it has Start, Open, Close, Kick, KickAll, End, Join, Connect and Leave",
                    STR_ARG(e->name));
         suggestion s = suggest_start(e->name);
         suggest_consider_c(&s, "Start");
@@ -1288,6 +1290,7 @@ static type check_session_call(checker *c, expr *e)
         suggest_consider_c(&s, "Join");
         suggest_consider_c(&s, "Connect");
         suggest_consider_c(&s, "Leave");
+        suggest_consider_c(&s, "End");
         suggest_note(&s);
         return T_ERR;
     }
@@ -1326,6 +1329,7 @@ static type check_session_call(checker *c, expr *e)
                                            "'Session.Kick(player)' or 'Session.Kick(player, \"Be nice\")'"
                                : kick_all ? "Session.KickAll takes nothing, or a message: "
                                             "'Session.KickAll()' or 'Session.KickAll(\"The party's over\")'"
+                               : end     ? "Session.End takes nothing: 'Session.End()'"
                                          : "Session.Leave takes nothing: 'Session.Leave()'");
         if (start && e->args.count == 2) diag_note("a match takes players once it's opened: 'Session.Open(7777)'");
         return T_ERR;
@@ -3497,6 +3501,11 @@ static void check_settings(checker *c)
                 } else {
                     prog->tick_rate = (uint32_t)rate;
                 }
+            } else if (str_eq_c(f->name, "hostMigration")) {
+                const expr *known = value;
+                while (known->bind == BIND_CONST && known->constant->index == 2) known = known->constant->value;
+                if (known->kind != E_BOOL) diag_error(value->at, "hostMigration is true or false, or a constant that is");
+                else prog->host_migration = known->bool_value;
             } else if (str_eq_c(f->name, "title")) {
                 prog->title = text_literal(value);
                 if (!prog->title) {

@@ -29,7 +29,8 @@ A game that starts in a menu has a local `Main`, and its local code decides whic
 | `Session.Join(code)` | Joins the match in the room with this code, like `"K7QF2M"` |
 | `Session.Connect(address)` | Joins another machine's match by its address: `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"` |
 | `Session.Connect(address, port)` | The same, on another port than 7777 |
-| `Session.Leave()` | Leaves the match |
+| `Session.Leave()` | Leaves the match. With [host migration](#host-migration), a match this machine runs goes on without it |
+| `Session.End()` | Ends the match this machine runs, for everyone |
 
 `Start` names the scene the match starts in, with its values as for `Scene.Load`: `Session.Start(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs. Starting or joining a match leaves the one this machine is in first.
 
@@ -110,7 +111,7 @@ The built-in local events `Connected` and `Disconnected` say when that changes. 
 | `Refused` | The server runs another build of the game, has no room left, or its match is closed |
 | `ServerLeft` | The server's machine left, which ended the match |
 | `Failed` | It couldn't start: no network, a port in use, an address that isn't one, or a room nobody has |
-| `Ended` | The match's last scene unloaded (see [Scenes](./scenes.md#loading-and-unloading)) |
+| `Ended` | The match's last scene unloaded (see [Scenes](./scenes.md#loading-and-unloading)), or the machine running it called `Session.End()` |
 | `Kicked` | The server's machine sent it away, saying why in `message` |
 
 ```csharp
@@ -119,6 +120,29 @@ local event(Disconnected gone) BackToMenu(mut Menu menu)
     menu.message = gone.reason == DisconnectReason.Kicked ? $"Kicked: {gone.message}" : $"Disconnected: {gone.reason}";
 }
 ```
+
+## Host migration
+
+When the machine running a match leaves, the match ends for everyone, unless the game turns on host migration in its [settings](./basics.md#settings):
+
+```csharp
+settings
+{
+    hostMigration = true;
+}
+```
+
+Then, when the machine running a room's match leaves or stops answering, another player's machine takes the match over, and the others join it again as the same players:
+
+- The match goes on from the last tick the new host had verified. Players' predictions after it are rolled back, as when any guess is wrong.
+- The last host's player leaves the match (`PlayerLeft`), and from then on entities without an owner read the new host's input.
+- Local code sees no `Connected` or `Disconnected` while the match changes hands: `Session.state` is `Connecting` meanwhile, and views keep showing the last world they had. On the new host, `Session.server` becomes true.
+- A player who doesn't come back to the new host within 20 seconds leaves the match.
+- A host that leaves says so, and the match changes hands at once. One that stops answering is noticed after a few seconds.
+- `Session.End()` ends the match for everyone instead: every player gets `Disconnected` with `Ended`.
+- Only matches in a room change hands, as the room is where the players meet again. A closed match stays closed: its players come back, but no one new joins.
+
+The new host only has what its machine could see: [private scenes](./scenes.md#private-scenes) it wasn't in are lost. A game that uses host migration shouldn't keep secrets. Players can't pass for each other: they only ever get each other's cookies hashed (see [Coming back](#players-in-the-match)).
 
 ## Players in the match
 

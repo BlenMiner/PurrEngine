@@ -1005,7 +1005,12 @@ static const struct {
     {"Connect", "Session.Connect(string address, int port)",
      "Joins the match at `address`, like \"192.168.1.5\" or \"localhost\", on `port` (7777 unless it says). It leaves the "
      "match it's in first."},
-    {"Leave", "Session.Leave()", "Leaves the match: `Disconnected` follows, and views stop seeing it."},
+    {"Leave", "Session.Leave()",
+     "Leaves the match: `Disconnected` follows, and views stop seeing it. With host migration, a match this machine "
+     "runs goes on, with another machine as its server."},
+    {"End", "Session.End()",
+     "Ends the match this machine runs, for everyone: every player goes offline with `Ended`, and no other machine "
+     "takes it over. On a client, it does nothing."},
 };
 
 // What `default` is for type `t`, in words.

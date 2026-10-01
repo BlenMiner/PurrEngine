@@ -1033,8 +1033,8 @@ system Collapse(Arena arena)
 - Local code decides which match this machine is in: `Session.Start(scene)` starts one on this machine, `Session.Join(code)` joins the match in a room by its code, `Session.Connect(address, port)` joins another machine's by its address, and `Session.Leave()` leaves. `Start` names the scene the match starts in, with its values like `Scene.Load`'s: `Session.Start(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs.
 - There's one kind of match. Whether others can join it is a switch on it, not another way to start one: a match starts closed, `Session.Open()` lets others join the match this machine runs, and `Session.Close()` stops letting them, at any time. Single-player is a match nobody else was let into.
 - The machine that runs a match sends players out of it with `Session.Kick(player, message)`, or every other machine's with `Session.KickAll(message)`. The message is text, so a game can say anything, and kicked players get it with their `Disconnected`. A kick isn't a ban.
-- The machine that runs a match says what it means by leaving it (not built yet): `Session.Leave()` leaves, and with host migration the match goes on without this machine; `Session.End()` ends the match for everyone, who go offline with `Ended`. A crash, or closing the window, is a `Leave`.
-- **Host migration** (not built yet) is a game's choice, off by default: `settings { hostMigration = true; }`. When the machine running a room's match leaves or stops answering, another player's machine takes the match over from the last tick it verified, and the other players join it again as the same players. The old host's player leaves the match (`PlayerLeft`), and from then on, entities without an owner read the new host's input.
+- The machine that runs a match says what it means by leaving it: `Session.Leave()` leaves, and with host migration the match goes on without this machine; `Session.End()` ends the match for everyone, who go offline with `Ended`. A crash, or closing the window, is a `Leave`.
+- **Host migration** is a game's choice, off by default: `settings { hostMigration = true; }`. When the machine running a room's match leaves or stops answering, another player's machine takes the match over from the last tick it verified, and the other players join it again as the same players. The old host's player leaves the match (`PlayerLeft`), and from then on, entities without an owner read the new host's input.
   - Only room matches change hands. A match joined by address (`Session.Connect`) has no relay to meet at again, so it ends, as it does without host migration.
   - A new host only has what its machine could see: private scenes it wasn't in are lost, whole. A game that uses host migration shouldn't keep secrets.
   - No player ever gets another's cookie. With host migration on, every player gets a hash of each player's cookie, so a new host can tell who's coming back and nobody can pass for someone else.
@@ -1098,6 +1098,12 @@ Implemented, awaiting approval:
 - A client predicts at most a second ahead of the last tick the server confirmed, however many ticks that is at the match's tick rate; beyond it, it waits for the server. The server keeps four seconds of ticks to send again; a player further behind gets the whole world again.
 - **Coming back:** joining a server gives this machine a cookie, and joining the same server again (the same room, or the same address) presents it, so the player gets their `PlayerID` back, and with it whatever the game kept for them. If the server still has them connected (their old connection went quiet), the new one takes over with no events at all; if they'd left, `PlayerJoined` comes again with the same `PlayerID`. A server keeps a slot for a player who left until it has no slot that was never used; then it gives away the one away longest, and that player's cookie stops working.
 - The cookie lives as long as the program: it doesn't survive a restart yet, and it's not safe against someone on the network guessing it.
+- **Host migration:** the first player's machine to reach the room takes the match over: the relay pings the room's host for 3 seconds, and if it doesn't answer, or it left, gives the room to the first player there and introduces the others to it. A host that answered keeps the room, and the players who came join it again.
+- While a match changes hands, local code sees no `Connected` or `Disconnected`: `Session.state` is `Connecting`, `Session.player` stays the same, and views see the last world this machine had. On the new host, `Session.server` becomes true.
+- The new host runs the match at its tick rate, and goes on from the last tick it verified. The last host's player gets `PlayerLeft` at the first tick. A player who doesn't come back within 20 seconds gets `PlayerLeft` too; one who comes back later is the same player, with `PlayerJoined` again.
+- A closed match changes hands closed: its players come back, but no one new joins. The room keeps its code, and its key (128 random bits) only goes to the match's players, so no one else can take the room over.
+- A host that's still running but doesn't answer the relay in time, like one stopped at a breakpoint, loses the room to its players. When it carries on, its match fails on its own machine (`Failed`).
+- `Session.End()` on a client does nothing. The server tells its players for two seconds, so a lost packet doesn't make it a time-out, which would hand the match over.
 
 ### Open
 
@@ -1106,7 +1112,6 @@ Implemented, awaiting approval:
 - Keeping a room open across reloads under `tide run --web`.
 - Lobbies, and finding matches without a code.
 - Telling predicted state from verified state in game code (see AGENTS.md, Networking).
-- Host migration: which machine takes a match over, and what local code sees while it changes hands.
 
 ## Settings
 
@@ -1133,7 +1138,7 @@ settings
 
 Implemented, awaiting approval:
 
-- `title` and `tickRate` are built; `hostMigration` comes with host migration.
+- `hostMigration` is true or false, or a constant that is.
 - `tickRate` is an int from 1 to 1000, known while compiling. The machine that runs a match decides its rate (its desc's, or its game's), and the players who join tick at it. A new `tickRate` under `tide run` takes effect when a match starts.
 - `title` is text written out, or a constant that is. `--title` and CMake's `TITLE` go over it, and without any of them, the window has the game's name: its folder's under `tide`, its target's under CMake. Under `tide run`, a new title shows the next time the game runs.
 - A setting that's set twice, a name that isn't a setting, and a type written before one are errors. The last two say that a game's own values are constants.

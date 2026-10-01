@@ -91,6 +91,7 @@ settings
 |---|---|---|
 | `title` | The window's title | The game's folder's name |
 | `tickRate` | How many times a second the match ticks, from 1 to 1000: `Time.dt` is 1 / `tickRate` | 60 |
+| `hostMigration` | When the machine running a room's match goes, another player's takes it over (see [Host migration](./multiplayer.md#host-migration)) | `false` |
 
 - Settings are set without a type, to constant expressions, which can name constants. A game's own values go in constants, not settings.
 - A game has one `settings` block. The editors complete the settings' names and show what each one does.

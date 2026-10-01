@@ -1,0 +1,47 @@
+// Host migration: when the machine running the match goes, another player's
+// machine takes it over, and the others come back to it as the same players.
+
+settings
+{
+    hostMigration = true;
+}
+
+component Mover
+{
+    int sum; // Its player's inputs, added up
+}
+
+input Controls
+{
+    int push;
+}
+
+singleton Match
+{
+    int ticks;
+    int joined;
+    int left;
+}
+
+scene Main { }
+
+event(PlayerJoined joined) Join(mut Match match)
+{
+    match.joined += 1;
+    Spawn(Mover { }, Owner { player = joined.player });
+}
+
+event(PlayerLeft left) Leave(mut Match match)
+{
+    match.left += 1;
+}
+
+system Count(mut Match match)
+{
+    match.ticks += 1;
+}
+
+system Push(Controls input, mut Mover mover, with Owner)
+{
+    mover.sum += input.push;
+}

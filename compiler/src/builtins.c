@@ -745,6 +745,10 @@ static const setting settings[] = {
     {"tickRate", TY_INT, "60",
      "How many times a second the match ticks, from 1 to 1000: `Time.dt` is 1 / tickRate. The machine that runs "
      "the match decides, and every player ticks at its rate. A new rate takes effect when a match starts."},
+    {"hostMigration", TY_BOOL, "false",
+     "When the machine running a room's match leaves or stops answering, another player's machine takes the match "
+     "over from the last tick it verified, and the others join it again as the same players. Private scenes the new "
+     "host wasn't in are lost, so a game with host migration keeps no secrets. `Session.End()` ends a match instead."},
 };
 
 #define SETTING_COUNT (sizeof settings / sizeof settings[0])

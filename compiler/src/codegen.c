@@ -1897,10 +1897,11 @@ static void hoist_unit(gen *g, expr *e, const char *name)
 static void gen_stmt(gen *g, const stmt *s);
 static void gen_body_stmt(gen *g, const stmt *s);
 
-// Session.Start(Arena { ... }), Join, Connect and Leave, Session.Open and
+// Session.Start(Arena { ... }), Join, Connect, Leave and End, Session.Open and
 // Close, and Session.Kick and KickAll: recorded in the local state, for the
-// host program to act on after the frame. A Start, Join, Connect or Leave ends
-// the match the Opens, Closes and Kicks before it were for, so it drops them.
+// host program to act on after the frame. A Start, Join, Connect, Leave or End
+// ends the match the Opens, Closes and Kicks before it were for, so it drops
+// them.
 static void gen_session_call(gen *g, const expr *e)
 {
     sb *o = &g->c;
@@ -1952,7 +1953,9 @@ static void gen_session_call(gen *g, const expr *e)
     }
     indent(g, o);
     sb_printf(o, "tide_l->tide_request = (tide_session_request){.kind = %s};\n",
-              str_eq_c(e->name, "Start") ? "TIDE_REQUEST_START" : "TIDE_REQUEST_LEAVE");
+              str_eq_c(e->name, "Start") ? "TIDE_REQUEST_START"
+              : str_eq_c(e->name, "End") ? "TIDE_REQUEST_END"
+                                         : "TIDE_REQUEST_LEAVE");
     if (!e->type_decl) return;
     int index = 0;
     while (g->prog->start_scenes.items[index] != e->type_decl) index++;
@@ -5236,6 +5239,7 @@ static void gen_game_api(gen *g)
     sb_put(o, "    .ended = tide_game_ended,\n");
     // Its settings: here rather than in the header, so they don't change the game's hash
     if (prog->tick_rate) sb_printf(o, "    .tick_rate = %uu,\n", (unsigned)prog->tick_rate);
+    if (prog->host_migration) sb_put(o, "    .host_migration = true,\n");
     if (prog->title) {
         sb_put(o, "    .title = ");
         gen_c_literal(o, prog->title->text, false);

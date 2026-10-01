@@ -61,6 +61,12 @@ TIDE_WEB_IMPORT(eval) void tide_web_eval(const char *script);
 // is player 0 to those who join, and they're 1 and up to it.
 TIDE_WEB_IMPORT(room_host) uint32_t tide_web_room_host(void);
 TIDE_WEB_IMPORT(room_join) uint32_t tide_web_room_join(const char *code);
+// Host migration: room `code` again, with its `key` (see tide_platform_room_migrate)
+TIDE_WEB_IMPORT(room_migrate) uint32_t tide_web_room_migrate(const char *code, const char *key);
+// 1 hosting it, 2 joining its host, -1 failed, 0 not known yet
+TIDE_WEB_IMPORT(room_migrated) int32_t tide_web_room_migrated(uint32_t number);
+// The key of the room this program hosts, into `out` (TIDE_ROOM_KEY_LENGTH + 1 bytes)
+TIDE_WEB_IMPORT(room_key) void tide_web_room_key(char *out);
 TIDE_WEB_IMPORT(room_close) void tide_web_room_close(uint32_t room);
 // The room's code into `out` (7 bytes), "" while it has none.
 TIDE_WEB_IMPORT(room_code) void tide_web_room_code(char *out);

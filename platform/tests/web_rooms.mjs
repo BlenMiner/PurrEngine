@@ -4,7 +4,11 @@
 // packets go over WebRTC, as between two players' browsers. Passes once both
 // say "ok".
 //
-//   node web_rooms.mjs <browser> <tide_platform_web_rooms.html> <scratch folder>
+//   node web_rooms.mjs <browser> <tide_platform_web_rooms.html> <scratch folder> [handover]
+//
+// With `handover`, three frames check host migration: the host leaves once
+// both players joined, and passes once both say "ok after", each the same
+// player as before, one of them hosting the room now.
 //
 // With TIDE_RELAY set, like wss://relay.tide-engine.dev, the players meet
 // through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
@@ -19,7 +23,8 @@ import { resolve } from 'node:path';
 
 import { createRelay } from '../../relay/relay.mjs';
 
-const [browser, gamePage, profile] = process.argv.slice(2);
+const [browser, gamePage, profile, mode] = process.argv.slice(2);
+const handover = mode === 'handover';
 if (!browser || !existsSync(browser)) {
     console.log('SKIPPED: no Chrome or Edge found. Set TIDE_BROWSER to run web tests.');
     process.exit(0);
@@ -38,6 +43,7 @@ const page = `<!doctype html>
 <body>
 <script>
   const relay = ${JSON.stringify(relayUrl)};
+  const handover = ${JSON.stringify(handover)};
   const policy = ${JSON.stringify(process.env.TIDE_ICE_POLICY || 'all')};
   function player(who, args) {
     const frame = document.createElement('iframe');
@@ -46,6 +52,7 @@ const page = `<!doctype html>
   }
   const log = [];
   const ok = new Set();
+  const before = {}, after = {};
   let reported = false;
   function report(passed) {
     if (reported) return;
@@ -54,18 +61,37 @@ const page = `<!doctype html>
   }
   addEventListener('message', ({ data }) => {
     log.push(data.who + ': ' + data.line);
+    fetch('say', { method: 'POST', body: data.who + ': ' + data.line }); // As it happens, in case the page hangs
     const room = /^room ([0-9A-Z]{6})$/.exec(data.line);
-    if (room && data.who === 'host') player('joiner', 'join,' + room[1]);
-    if (data.line.startsWith('ok')) {
+    if (room && data.who === 'host' && !handover) player('joiner', 'join,' + room[1]);
+    if (room && data.who === 'host' && handover) {
+      player('a', 'handover-join,' + room[1] + ',2');
+      player('b', 'handover-join,' + room[1] + ',3');
+    }
+    const number = /player ([0-9]+)/.exec(data.line);
+    if (handover && data.line.startsWith('ok before')) before[data.who] = number[1];
+    if (handover && data.line.startsWith('ok after')) {
+      after[data.who] = { player: number[1], hosting: data.line.endsWith('hosting') };
+      const done = Object.keys(after);
+      if (done.length === 2) {
+        const same = done.every(w => before[w] === after[w].player);
+        const hosts = done.filter(w => after[w].hosting).length;
+        if (!same) log.push('another player after the match changed hands');
+        if (hosts !== 1) log.push(hosts + ' of them host the room');
+        report(same && hosts === 1);
+      }
+    }
+    if (!handover && data.line.startsWith('ok')) {
       ok.add(data.who);
       if (ok.size === 2) report(true);
     }
     if (/^(FAIL|exit|abort)/.test(data.line)) report(false);
   });
-  player('host', 'host');
+  player('host', handover ? 'handover-host' : 'host');
 </script>
 `;
 
+const said = []; // Every line, as it came
 let finish;
 const result = new Promise(resolve => { finish = resolve; });
 const server = createServer((request, response) => {
@@ -75,6 +101,13 @@ const server = createServer((request, response) => {
     } else if (request.url.startsWith('/game.html')) {
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         response.end(game);
+    } else if (request.url === '/say' && request.method === 'POST') {
+        let body = '';
+        request.on('data', chunk => { body += chunk; });
+        request.on('end', () => {
+            response.end();
+            said.push(body);
+        });
     } else if (request.url === '/result' && request.method === 'POST') {
         let body = '';
         request.on('data', chunk => { body += chunk; });
@@ -107,11 +140,12 @@ const child = spawn(browser, [
     `http://127.0.0.1:${server.address().port}/`,
 ], { stdio: 'ignore' });
 child.on('error', error => finish({ passed: false, log: [`${browser}: ${error.message}`] }));
-const timeout = setTimeout(() => finish({ passed: false, log: ['the page said nothing more for 60 seconds'] }), 60000);
+const timeout = setTimeout(() => finish({ passed: false, log: [...said, 'the page said nothing more for 60 seconds'] }), 60000);
 
 const { passed, log } = await result;
 clearTimeout(timeout);
 child.kill();
 for (const line of log) console.log(line);
-console.log(passed ? 'Both players met in a room.' : 'The players didn\'t meet.');
+console.log(passed ? (handover ? 'The match changed hands.' : 'Both players met in a room.')
+    : (handover ? 'The match didn\'t change hands.' : 'The players didn\'t meet.'));
 process.exit(passed ? 0 : 1);
