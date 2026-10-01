@@ -236,6 +236,9 @@ typedef struct tide_session_status {
     tide_client_status client;
     bool server; // This machine runs the server
     bool open;   // ...and other machines can join it (tide_session_open)
+    // Seconds the match this machine runs skipped: updates further apart than
+    // the ticks its server runs in one, where the rest never happens.
+    double skipped;
 } tide_session_status;
 
 tide_session *tide_session_create(const tide_session_desc *desc);

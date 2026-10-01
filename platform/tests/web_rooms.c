@@ -135,13 +135,16 @@ static bool done;
 // The host's page hidden, as browsers hide it when another tab is in front:
 // no animation frames, and timers a second apart at the soonest. The event
 // comes after the frame, as browsers send it. Its frames come at the match's
-// ticks meanwhile, not the 60 a second frames come at by default.
+// ticks meanwhile, not the 60 a second frames come at by default, and often
+// enough that its match skips none of them. A slow machine's frames can run
+// two ticks at once, so it may have fewer frames than ticks.
 #define HIDDEN_SECONDS 7.0 // Past the session's 5 second timeout
 #define TICK_RATE 30
 
 static double met_at = -1.0;   // When the other's inputs first reached this one
 static uint32_t met_verified;  // ...and the verified tick then
 static int hidden_frames = -1; // Frames while the host's page was hidden
+static double hidden_skipped;  // The match's skipped time as the page was hidden
 static bool shown_again;
 
 static void set_hidden(const bool hidden)
@@ -334,13 +337,15 @@ static int frame(void *user, const float seconds)
         if (me == 1) {
             set_hidden(true);
             hidden_frames = 0;
+            hidden_skipped = status.skipped;
         }
     }
     if (me == 1 && hidden_frames >= 0 && !shown_again) {
         if (tide_web_hidden()) hidden_frames++;
         if (now - met_at > HIDDEN_SECONDS) {
-            printf("shown again: %d frames while hidden\n", hidden_frames);
-            if (hidden_frames < (int)(HIDDEN_SECONDS * TICK_RATE * 0.75)) return fail("frames slowed down while the page was hidden");
+            const double skipped = status.skipped - hidden_skipped;
+            printf("shown again: %d frames while hidden, %.3f seconds skipped\n", hidden_frames, skipped);
+            if (skipped > 0.0) return fail("the match skipped ticks while the page was hidden");
             if (hidden_frames > (int)(HIDDEN_SECONDS * TICK_RATE * 1.15)) return fail("hidden frames didn't follow the tick rate");
             set_hidden(false);
             shown_again = true;

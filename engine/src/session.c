@@ -1976,6 +1976,7 @@ tide_session_status tide_session_status_of(const tide_session *s)
     }
     status.server = s->server != NULL;
     status.open = s->open;
+    status.skipped = s->paused;
     return status;
 }
 
