@@ -1,0 +1,3 @@
+// expect: constant 'MAX' is int, not float
+const int MAX = 1.5;
+scene Main { }

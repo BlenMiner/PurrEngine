@@ -1,0 +1,100 @@
+// Constants: values code reads by name, worked out while compiling. They go
+// wherever a constant does: field defaults, bounds, case labels, enum members'
+// values and other constants.
+using Tuning;
+
+const int BASE = 10;
+const float BASE_SPEED = 1.5;
+const float HALF = 1 / 2;      // An int, 0, then a float
+const float THIRD = 1.0 / 3;
+const int BIG = 2147483647;
+const int WRAPPED = BIG + 1;   // Wraps, as it does at run time
+const int QUOTIENT = -7 / 2;   // -3: toward zero
+const bool ENABLED = !false;
+const string GREETING = "hello";
+const Color TINT = Color(1, 0.5, 0);
+const Stats START = Stats { armor = BASE / 2 };
+const Level FIRST = Level.Low;
+
+enum Level
+{
+    Low = BASE,
+    High,
+    Top = BASE * 10 + LIMIT,
+}
+
+struct Stats
+{
+    int armor = 1;
+    float speed = Tuning.SPEED;
+}
+
+singleton Totals
+{
+    int health = BASE * 2;
+    float speed = SPEED;
+    float2 origin = Tuning.ORIGIN;
+    float originY = ORIGIN.y;
+    Stats stats = START;
+    Level level = FIRST;
+    string greeting = GREETING;
+    bool enabled = ENABLED;
+    int switched;
+    int levelValue;
+    int wrapped;
+    int quotient;
+    float half;
+    float third;
+    float tintGreen;
+    float speedTimesLimit;
+}
+
+input Controls
+{
+    [Clamp(0, LIMIT)] int power;
+}
+
+scene Main { }
+
+system Count(mut Totals totals, Controls controls, Time time)
+{
+    totals.switched = Classify(time.tick + BASE);
+    totals.levelValue = LevelValue(totals.level);
+    totals.wrapped = BIG + 1 == WRAPPED ? 1 : 0;
+    totals.quotient = QUOTIENT;
+    totals.half = HALF;
+    totals.third = THIRD;
+    totals.tintGreen = TINT.g;
+    totals.speedTimesLimit = Tuning.SPEED * LIMIT;
+    totals.health += controls.power;
+}
+
+int Classify(int n)
+{
+    switch (n)
+    {
+        case BASE:
+            return 1;
+        case BASE + 1:
+            return 2;
+        case Tuning.LIMIT * 4:
+            return 3;
+        case WRAPPED:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+int LevelValue(Level level)
+{
+    switch (level)
+    {
+        case FIRST:
+            return 1;
+        case Level.High:
+            return 2;
+        default:
+            return 0;
+    }
+}

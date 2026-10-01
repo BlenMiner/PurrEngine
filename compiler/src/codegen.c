@@ -1405,6 +1405,14 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         sb_put(o, e->hoisted); // Already ran, before the statement: a unit, or an operator that calls C
         return;
     }
+    if (e->bind == BIND_CONST) {
+        // A constant is its value, as its own type, wherever it's read: C
+        // works it out while compiling, and it's in no header.
+        sb_put(o, "(");
+        gen_as(g, o, e->constant->value, e->constant->return_type);
+        sb_put(o, ")");
+        return;
+    }
     switch (e->kind) {
     case E_INT:
         // Hex and binary literals can be negative (0xFFFFFFFF is -1).
@@ -2156,9 +2164,19 @@ static void gen_stmt(gen *g, const stmt *s)
                     line(g, o, "default:");
                     continue;
                 }
+                // A literal or a member as it's written; anything else, as the
+                // checker worked it out, so it's a constant C can switch on.
+                const expr *label = section->labels.items[k];
+                const enum_member *member = label->enum_member;
+                for (int m = 0; !member && label->type.kind == TY_ENUM && m < label->type.decl->members.count; m++) {
+                    if (label->type.decl->members.items[m].number == label->int_value) member = &label->type.decl->members.items[m];
+                }
                 indent(g, o);
                 sb_put(o, "case ");
-                gen_expr(g, o, section->labels.items[k]);
+                if (member) sb_put(o, enum_member_cname(label->type.decl, member));
+                else if (label->kind == E_INT) gen_expr(g, o, label);
+                else if (label->int_value == INT32_MIN) sb_put(o, "(-2147483647 - 1)");
+                else sb_printf(o, "%lld", (long long)label->int_value);
                 sb_put(o, ":\n");
             }
             line(g, o, "{");

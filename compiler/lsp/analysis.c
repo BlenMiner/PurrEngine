@@ -37,6 +37,7 @@ typedef enum occ_kind {
     OCC_ENUM_MEMBER, // Title in Page.Title, and in `enum Page { Title }` (with `decl`, the enum)
     OCC_THIS,     // `this`, with `decl` the system, view, handler or method it's in
     OCC_DEFAULT,  // `default`, with the type it takes
+    OCC_CONST,    // A constant the game declares, MAX_HEALTH, with `decl`
 } occ_kind;
 
 typedef struct occurrence {
@@ -351,6 +352,10 @@ static void walk_expr(const expr *e)
             o.kind = OCC_OWNER;
             o.owner = e->name;
             break;
+        case BIND_CONST:
+            o.kind = OCC_CONST;
+            o.decl = e->constant;
+            break;
         case BIND_NONE:
             // The owner in Math.Dot(...) or quaternion.identity, which the checker doesn't bind.
             if (!builtin_owner(e->name)) return;
@@ -379,6 +384,9 @@ static void walk_expr(const expr *e)
         } else if (e->bind == BIND_NAMESPACE) { // Combat in Game.Combat.Health
             o.kind = OCC_NAMESPACE;
             o.name = namespace_path(e);
+        } else if (e->bind == BIND_CONST) { // MAX_HEALTH in Combat.MAX_HEALTH
+            o.kind = OCC_CONST;
+            o.decl = e->constant;
         } else if (e->c_constant) {
             o.kind = OCC_CONSTANT;
             o.owner = e->object->name;
@@ -631,6 +639,13 @@ static void index_program(void)
             walk_routine(d);
             continue;
         }
+        if (d->kind == DECL_CONST) {
+            add_occ((occurrence){.at = d->at, .len = d->name.len, .kind = OCC_CONST, .declaration = true, .decl = d,
+                                 .name = d->name, .type = d->return_type});
+            type_ref(d->return_type_qual_at, d->return_type_at, d->return_type_name, d->return_type);
+            walk_expr(d->value);
+            continue;
+        }
         add_occ((occurrence){.at = d->at, .len = d->name.len, .kind = OCC_TYPE, .declaration = true, .decl = d,
                              .name = d->name});
         for (int m = 0; m < d->members.count; m++) {
@@ -795,6 +810,7 @@ static const char *decl_keyword(const decl *d)
     case DECL_EVENT: return "event";
     case DECL_ENUM: return "enum";
     case DECL_LIST: return "list";
+    case DECL_CONST: return "const";
     case DECL_SYSTEM: return d->is_view ? "view" : d->is_handler ? "event" : "system";
     }
     return "";
@@ -866,22 +882,34 @@ static void format_routine(const decl *m, sb *out)
     sb_put(out, ")");
 }
 
-// The source text of a field's default value, from the tokens between '=' and ';'.
-static void format_default(const field *f, sb *out)
+// The source text of a value after a name, from the tokens between '=' and
+// ';': a field's default, or a constant's value.
+static void format_value_after(const loc name_at, sb *out)
 {
-    const int name = token_at(f->at);
+    const int name = token_at(name_at);
     if (name < 0) return;
-    const token *toks = A.files[f->at.file].toks;
+    const token *toks = A.files[name_at.file].toks;
     if (toks[name + 1].kind != T_ASSIGN) return;
     const int first = name + 2;
     int last = first;
-    while (toks[last].kind != T_SEMI && toks[last].kind != T_EOF && toks[last].kind != T_RBRACE) last++;
+    // To the ';', or the '}' that closes the type the field is in: not one of a
+    // value's own, like Stats { armor = 2 }.
+    for (int depth = 0; toks[last].kind != T_EOF; last++) {
+        if (depth == 0 && (toks[last].kind == T_SEMI || toks[last].kind == T_RBRACE)) break;
+        if (toks[last].kind == T_LBRACE) depth++;
+        else if (toks[last].kind == T_RBRACE) depth--;
+    }
     if (last == first) return;
     const char *start = toks[first].text.ptr - (toks[first].kind == T_STRING ? 1 : 0);
     const token *end_tok = &toks[last - 1];
     const char *end = end_tok->text.ptr + token_len(end_tok) - (end_tok->kind == T_STRING ? 1 : 0);
     sb_put(out, " = ");
     sb_putn(out, start, (size_t)(end - start));
+}
+
+static void format_default(const field *f, sb *out)
+{
+    format_value_after(f->at, out);
 }
 
 static void format_data_decl(const decl *d, sb *out)
@@ -1045,6 +1073,12 @@ static void describe(const occurrence *o, sb *out)
                                          : "\n\nRuns once per tick.");
         }
         describe_order(o->decl, out);
+        break;
+    case OCC_CONST:
+        sb_printf(&code, "const " STR_FMT " " STR_FMT, STR_ARG(o->decl->return_type_name), STR_ARG(o->decl->name));
+        format_value_after(o->decl->at, &code);
+        code_block(out, code.data);
+        sb_put(out, "\n\nConstant: the same on every machine. Any code can read it, and reading it makes no system wait.");
         break;
     case OCC_FIELD:
         sb_printf(&code, "%s " STR_FMT, type_name(o->field->type), STR_ARG(o->field->name));
@@ -1392,7 +1426,7 @@ static void move_to_file_action(const int line, jbuf *out, int *written)
 {
     for (int i = 0; can_create_files && i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (d->builtin || d->at.file != A.doc || d->kind == DECL_SYSTEM) continue;
+        if (d->builtin || d->at.file != A.doc || d->kind == DECL_SYSTEM || d->kind == DECL_CONST) continue;
         // Its lines: the attributes and comments just above it, to its closing brace.
         int first = d->at.line;
         for (int a = 0; a < d->attributes.count; a++) {
@@ -1690,8 +1724,9 @@ void analysis_definition(const char *uri, const int line, const int character, j
         if (o->kind == OCC_FIELD && o->decl && !o->decl->builtin) {
             target = o->field->at;
             len = o->field->name.len;
-        } else if ((o->kind == OCC_TYPE || o->kind == OCC_SYSTEM || (is_routine(o->decl) && o->kind != OCC_THIS)) && o->decl
-                   && !o->decl->builtin) {
+        } else if ((o->kind == OCC_TYPE || o->kind == OCC_SYSTEM || o->kind == OCC_CONST
+                    || (is_routine(o->decl) && o->kind != OCC_THIS))
+                   && o->decl && !o->decl->builtin) {
             target = o->decl->at;
             len = o->decl->name.len;
         } else if (o->kind == OCC_PARAM) {
@@ -1727,7 +1762,7 @@ void analysis_definition(const char *uri, const int line, const int character, j
 // Document symbols: the outline
 
 enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_FIELD = 8, SYMBOL_ENUM = 10, SYMBOL_INTERFACE = 11,
-       SYMBOL_FUNCTION = 12, SYMBOL_ENUM_MEMBER = 22, SYMBOL_STRUCT = 23, SYMBOL_EVENT = 24 };
+       SYMBOL_FUNCTION = 12, SYMBOL_CONSTANT = 14, SYMBOL_ENUM_MEMBER = 22, SYMBOL_STRUCT = 23, SYMBOL_EVENT = 24 };
 
 static int symbol_kind(const decl *d)
 {
@@ -1736,6 +1771,7 @@ static int symbol_kind(const decl *d)
          : d->kind == DECL_INPUT                                ? SYMBOL_INTERFACE
          : d->kind == DECL_EVENT                                ? SYMBOL_EVENT
          : d->kind == DECL_ENUM                                 ? SYMBOL_ENUM
+         : d->kind == DECL_CONST                                ? SYMBOL_CONSTANT
                                                                 : SYMBOL_FUNCTION;
 }
 
@@ -2036,6 +2072,7 @@ static void classify(const occurrence *o, int *type, int *mods)
         if (!is_routine(o->decl)) *mods |= SM_DEFAULT_LIBRARY | SM_STATIC;
         break;
     case OCC_CONSTANT: *type = ST_ENUM_MEMBER; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC | SM_READONLY; break;
+    case OCC_CONST: *type = ST_ENUM_MEMBER; *mods |= SM_STATIC | SM_READONLY; break; // Like Math.PI
     case OCC_METHOD:
         if (is_operator_decl(o->decl)) {
             *type = ST_KEYWORD;
@@ -2458,6 +2495,15 @@ static void complete_members(completion *c, const int dot, const loc at, const b
             }
             return;
         }
+        // ORIGIN. or Tuning.ORIGIN.: a constant's members
+        for (int i = 0; i < A.prog->decls.count; i++) {
+            const decl *d = A.prog->decls.items[i];
+            if (d->kind != DECL_CONST || (strcmp(name_for(d), written.data) != 0 && !str_eq_c(d->qualified, written.data))) {
+                continue;
+            }
+            list_members(c, d->return_type, false, &sc);
+            return;
+        }
         if (n == 1 && builtin_owner(base)) {
             const bool frame_owner = str_eq_c(base, "Draw") || str_eq_c(base, "GUI") || str_eq_c(base, "GUILayout")
                                   || str_eq_c(base, "Screen");
@@ -2562,6 +2608,18 @@ static void complete_structs(completion *c)
     }
 }
 
+// The game's constants, where a value goes.
+static void complete_constants(completion *c)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->kind != DECL_CONST) continue;
+        sb detail = {0};
+        sb_printf(&detail, "const " STR_FMT, STR_ARG(d->return_type_name));
+        item(c, name_for(d), CK_CONSTANT, detail.data, NULL, NULL);
+    }
+}
+
 // Systems or views, for [Before(...)] and [After(...)].
 static void complete_systems(completion *c, const bool views)
 {
@@ -2610,7 +2668,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
         if (systems != (d->kind == DECL_SYSTEM)) continue;
         const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
                        : d->kind == DECL_EVENT ? CK_EVENT : d->kind == DECL_ENUM ? CK_ENUM
-                       : d->kind == DECL_SYSTEM ? CK_FUNCTION : CK_CLASS;
+                       : d->kind == DECL_SYSTEM ? CK_FUNCTION : d->kind == DECL_CONST ? CK_CONSTANT : CK_CLASS;
         item(c, str_to_cstr(d->name), kind, decl_keyword(d), NULL, NULL);
     }
     return any;
@@ -2683,6 +2741,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         const decl *d = A.prog->decls.items[i];
         if (d->kind == DECL_FUNCTION) complete_routine(c, d, name_for(d));
     }
+    complete_constants(c);
 
     const bool routine = sc.decl && (sc.decl->kind == DECL_METHOD || sc.decl->kind == DECL_FUNCTION);
     if (sc.decl && !sc.in_input && !routine) {
@@ -2755,6 +2814,8 @@ static void complete_declarations(completion *c)
          "${1:void} ${2:Name}($3)\n{\n    $0\n}");
     item(c, "extern", CK_SNIPPET, "extern Type Name(parameters);",
          "A function written in C, which the game's C files or libraries define.", "extern ${1:void} ${2:Name}($3);");
+    item(c, "const", CK_SNIPPET, "const Type NAME = value;", "A value code reads by name, the same on every machine.",
+         "const ${1:int} ${2:NAME} = $0;");
     item(c, "namespace", CK_KEYWORD, "namespace Name;", "The namespace of everything in this file. Goes at the top.",
          "namespace ${1:Name};");
     item(c, "using", CK_KEYWORD, "using Name;", "Names from another namespace, without writing it. Goes at the top.",
@@ -3030,6 +3091,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             // A default value: constants only.
             complete_value_types(&c, true);
             complete_structs(&c);
+            complete_constants(&c);
             item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
         }
         break;
@@ -3096,7 +3158,8 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_NAMESPACE:
     case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
     case OCC_ENUM_MEMBER: return a->decl == b->decl && str_eq(a->name, b->name);
-    case OCC_THIS: return a->decl == b->decl;
+    case OCC_THIS:
+    case OCC_CONST: return a->decl == b->decl;
     case OCC_DEFAULT: return false; // A keyword, not a symbol
     }
     return false;
@@ -3159,6 +3222,7 @@ static const char *rename_target(const int line, const int character, const occu
     case OCC_LOCAL:
     case OCC_ENUM_MEMBER:
     case OCC_NAMESPACE:
+    case OCC_CONST:
         return NULL;
     case OCC_METHOD:
     case OCC_FUNCTION:
@@ -3285,6 +3349,7 @@ static const char *check_new_name(const occurrence *target, const str name)
         break;
     case OCC_METHOD:
     case OCC_FUNCTION:
+    case OCC_CONST:
         if (target->decl->owner) { // A method: its type's other methods and fields
             const decl *owner = target->decl->owner;
             for (int i = 0; i < owner->methods.count; i++) {

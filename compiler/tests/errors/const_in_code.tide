@@ -1,0 +1,8 @@
+// expect: constants go at the top of a file, outside any code
+singleton Match { int n; }
+scene Main { }
+system S(mut Match match)
+{
+    const int step = 2;
+    match.n += step;
+}

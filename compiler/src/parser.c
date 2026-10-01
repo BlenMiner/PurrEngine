@@ -424,7 +424,7 @@ static bool is_decl_word(const str text)
 {
     return str_eq_c(text, "input") || str_eq_c(text, "view") || str_eq_c(text, "struct") || str_eq_c(text, "event")
         || str_eq_c(text, "enum") || str_eq_c(text, "scene") || str_eq_c(text, "local") || str_eq_c(text, "namespace")
-        || str_eq_c(text, "using") || str_eq_c(text, "extern");
+        || str_eq_c(text, "using") || str_eq_c(text, "extern") || str_eq_c(text, "const");
 }
 
 // Keywords that only start declarations, and the contextual ones at the start
@@ -741,6 +741,13 @@ static stmt *parse_stmt(parser *p)
     default: {
         // `Type name = ...` declares a local: two identifiers in a row, the
         // first maybe qualified, as in `Combat.Stats stats = ...`.
+        if (t->kind == T_IDENT && str_eq_c(t->text, "const") && peek_at(p, 1)->kind == T_IDENT
+            && peek_at(p, 2)->kind == T_IDENT) {
+            diag_error(t->at, "constants go at the top of a file, outside any code");
+            diag_note("a local is read-only already: '" STR_FMT " " STR_FMT " = ...;'", STR_ARG(peek_at(p, 1)->text),
+                      STR_ARG(peek_at(p, 2)->text));
+            longjmp(p->fail, 1);
+        }
         int next = 1;
         while (t->kind == T_IDENT && peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
         if (t->kind == T_IDENT && peek_at(p, next)->kind == T_IDENT) return parse_var(p);
@@ -929,6 +936,31 @@ static decl *parse_extern(parser *p)
     return m;
 }
 
+// const int MAX_HEALTH = 100;: a constant, at the top of a file.
+static decl *parse_const(parser *p)
+{
+    if (peek(p)->kind == T_IDENT && peek_at(p, 1)->kind == T_ASSIGN) {
+        diag_error(peek(p)->at, "a constant's type is written out: 'const int " STR_FMT " = ...;'", STR_ARG(peek(p)->text));
+        longjmp(p->fail, 1);
+    }
+    const qname type = parse_type(p, "the constant's type");
+    const token *name = expect_ident(p, "constant name");
+    decl *d = new_decl(DECL_CONST, name);
+    d->unit = p->unit;
+    d->return_type_name = type.text;
+    d->return_type_at = type.name_at;
+    d->return_type_qual_at = type.at;
+    if (!at(p, T_ASSIGN)) {
+        diag_error(peek(p)->at, "a constant needs a value: 'const " STR_FMT " " STR_FMT " = ...;'", STR_ARG(type.text),
+                   STR_ARG(name->text));
+        longjmp(p->fail, 1);
+    }
+    advance(p);
+    d->value = parse_expr(p);
+    d->end = expect(p, T_SEMI, "';' after the constant")->at;
+    return d;
+}
+
 // [mut] ReturnType Name(Type name, ...) { ... }: a method of `owner`, or with
 // no owner, a function. The checker says where methods are allowed.
 static decl *parse_method(parser *p, decl *owner)
@@ -1034,6 +1066,13 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
         }
         if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "extern") && peek_at(p, 1)->kind == T_IDENT) {
             diag_error(peek(p)->at, "extern functions go at the top of a file, outside '" STR_FMT "'", STR_ARG(name->text));
+            if (!p->recover) longjmp(p->fail, 1);
+            skip_statement(p);
+            continue;
+        }
+        if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "const") && peek_at(p, 1)->kind == T_IDENT) {
+            diag_error(peek(p)->at, "constants go at the top of a file, outside '" STR_FMT "'", STR_ARG(name->text));
+            diag_note("for a field every value starts with, give it a default: 'int lives = 3;'");
             if (!p->recover) longjmp(p->fail, 1);
             skip_statement(p);
             continue;
@@ -1259,11 +1298,12 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         }
         else if (t->kind == T_IDENT && at(&p, T_LPAREN) && str_eq_c(t->text, "event")) d = parse_handler(&p);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "extern")) d = parse_extern(&p);
+        else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "const")) d = parse_const(&p);
         else if (t->kind == T_IDENT && followed_by_name && str_eq_c(t->text, "external")) {
             diag_error(t->at, "did you mean 'extern'? It declares a function written in C: 'extern float Noise(float x);'");
             longjmp(p.fail, 1);
         }
-        else fail_at(&p, t, "'component', 'scene', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view', 'extern' or a function"); // Consumed, so recovery skips it
+        else fail_at(&p, t, "'component', 'scene', 'singleton', 'struct', 'enum', 'event', 'input', 'system', 'view', 'extern', 'const' or a function"); // Consumed, so recovery skips it
         d->unit = p.unit;
         if (local) {
             d->is_local = true;

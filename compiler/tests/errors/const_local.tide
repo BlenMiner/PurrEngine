@@ -1,0 +1,3 @@
+// expect: constants belong to neither side: every machine has the same ones
+local const int MAX = 3;
+scene Main { }

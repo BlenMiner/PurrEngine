@@ -42,11 +42,13 @@ The language Tide games and the engine's built-in systems are written in. It tra
 - `local` in front of a declaration makes it belong to the machine instead of the match (see Local state).
 - A function, `ReturnType Name(parameters) { ... }` with no keyword, declares code that other code calls (see Functions).
 - `extern` declares a function written in C (see C functions).
+- `const` declares a constant (see Constants).
+- `settings` sets the engine's settings for the game (see Settings).
 
 ### Field defaults
 
 - Fields of components, singletons, inputs and structs can declare a default value: `int value = 100;`.
-- A default must be a constant expression: literals, constructors of built-in types, struct values of constants (`Range { hi = 5 }`), `Math` functions, built-in constants like `quaternion.identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
+- A default must be a constant expression: literals, constants, constructors of built-in types, struct values of constants (`Range { hi = 5 }`), `Math` functions, built-in constants like `quaternion.identity`, and operators, as in `float angle = Math.Radians(45);`. It can't read fields, singletons or `Time`.
 - Singletons start with their defaults when the world is created, before `Main` runs.
 - Components get their defaults whenever a value is created without setting that field: `Spawn(Health)`, `e.Add(Health)`, and fields left out of `Health { max = 200 }`.
 - Fields without a default start at zero. `Entity` fields always start as the null entity and can't have another default.
@@ -418,6 +420,44 @@ float2 flat = trs.position.xz;
 - Matrices: `Mul`, `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
 - Everything is deterministic (see AGENTS.md). The transcendental functions are Tide's own, accurate to about 1 ulp but not correctly rounded.
 
+## Constants
+
+### Decided
+
+- `const` declares a constant at the top level of a file: `const int STARTING_LIVES = 3;`. The type is written out, as a field's is, and the value is a constant expression, by the rules of field defaults, which can name other constants.
+- Constants are named in FULL_CASE, like `Math.PI`.
+- A file's namespace is its constants' too: `Combat.CRIT_MULTIPLIER` from outside it, or `CRIT_MULTIPLIER` with `using Combat;`.
+- Constants are part of the build, so every machine has the same values. Any code reads them (match code, local code, views and `Sample`), and reading one makes no system wait, as reading `Math.PI` doesn't.
+- They go wherever a constant does: field defaults, the bounds of `[Clamp]`, `[Min]` and `[Max]`, settings, and other constants.
+- Changing one under `tide run` reloads the game and keeps the match where it is: constants aren't part of its data layout.
+- A game's own values are constants. `settings` only holds the engine's (see Settings).
+
+```csharp
+const int MAX_HEALTH = 100;
+const float REGEN_PER_SECOND = MAX_HEALTH / 20.0;
+
+component Health
+{
+    float value = MAX_HEALTH;
+}
+
+system Regenerate(mut Health health, Time time)
+{
+    health.value = Math.Min(health.value + REGEN_PER_SECOND * time.dt, MAX_HEALTH);
+}
+```
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- `const` is a keyword only at the start of a top-level declaration. One inside code, or inside a type, is an error that points to the top of the file; a local is read-only already.
+- A constant is a number, vector, matrix, quaternion, `bool`, `Color`, `Rect`, `PlayerID`, text, struct or enum: not a list, nor a struct that holds one, yet, and not an entity, which could only ever be the null one.
+- `case` labels and enum members' values can use int constants and operators on them (`case MAX_LEVEL + 1:`). The compiler works them out as they would be at run time: wrapping on overflow, and 0 for a division by zero.
+- Constants can name each other in any order, across files, but not in a circle.
+- A local, parameter or field in scope hides a constant of the same name, and a constant's name can't be another declaration's in its namespace.
+- In generated C, a constant is its value, written wherever it's read: it has no C name, and nothing of it is in the header.
+
 ## Events
 
 ### Decided
@@ -521,12 +561,12 @@ system Advance(mut Match match)
 
 ### Provisional
 
-- `enum Name { A, B = 5, C }` declares an enum. A member without a value is one more than the one before it, and the first is 0. A value is an int literal, and a comma after the last member is fine. `enum` is only a keyword at the start of a declaration.
+- `enum Name { A, B = 5, C }` declares an enum. A member without a value is one more than the one before it, and the first is 0. A value is an int known while compiling: a literal, an int constant, or operators on them, worked out as they would be at run time. A comma after the last member is fine. `enum` is only a keyword at the start of a declaration.
 - Members are always written with their enum: `Phase.Playing`, or `Game.Phase.Playing` from another namespace. In generated C, `Phase.Playing` is `Phase_Playing`, a constant of the type `Phase`, an `int32_t`.
 - Enums are values, like structs: fields, locals, inputs, and functions' parameters and return values can hold them. A field without a default starts at 0, even if no member has that value, as in C#.
 - `==` and `!=` compare two values of the same enum. `int(phase)` gives a member's value; there's no way from an int to an enum yet.
 - An enum in an input that isn't one of its members, which only a bad client could send, becomes the field's default before `Sanitize`, like a NaN float.
-- `switch` works on ints and enums. A case is an int literal or one of the enum's members. Labels in a row share a section, `default` handles the rest, and each value appears once.
+- `switch` works on ints and enums. A case is an int known while compiling (a literal, an int constant, or operators on them), or one of the enum's members, maybe through a constant of the enum. Labels in a row share a section, `default` handles the rest, and each value appears once.
 - Every section ends with `break;` or `return;` on every path, so none runs into the next, as in C#. `break` anywhere else is an error, since there are no loops yet.
 - Each section has its own scope for locals.
 - A function returns on every path when a switch with a `default` returns in every section.
@@ -993,6 +1033,12 @@ system Collapse(Arena arena)
 - Local code decides which match this machine is in: `Session.Start(scene)` starts one on this machine, `Session.Join(code)` joins the match in a room by its code, `Session.Connect(address, port)` joins another machine's by its address, and `Session.Leave()` leaves. `Start` names the scene the match starts in, with its values like `Scene.Load`'s: `Session.Start(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs.
 - There's one kind of match. Whether others can join it is a switch on it, not another way to start one: a match starts closed, `Session.Open()` lets others join the match this machine runs, and `Session.Close()` stops letting them, at any time. Single-player is a match nobody else was let into.
 - The machine that runs a match sends players out of it with `Session.Kick(player, message)`, or every other machine's with `Session.KickAll(message)`. The message is text, so a game can say anything, and kicked players get it with their `Disconnected`. A kick isn't a ban.
+- The machine that runs a match says what it means by leaving it (not built yet): `Session.Leave()` leaves, and with host migration the match goes on without this machine; `Session.End()` ends the match for everyone, who go offline with `Ended`. A crash, or closing the window, is a `Leave`.
+- **Host migration** (not built yet) is a game's choice, off by default: `settings { hostMigration = true; }`. When the machine running a room's match leaves or stops answering, another player's machine takes the match over from the last tick it verified, and the other players join it again as the same players. The old host's player leaves the match (`PlayerLeft`), and from then on, entities without an owner read the new host's input.
+  - Only room matches change hands. A match joined by address (`Session.Connect`) has no relay to meet at again, so it ends, as it does without host migration.
+  - A new host only has what its machine could see: private scenes it wasn't in are lost, whole. A game that uses host migration shouldn't keep secrets.
+  - No player ever gets another's cookie. With host migration on, every player gets a hash of each player's cookie, so a new host can tell who's coming back and nobody can pass for someone else.
+  - A host that leaves says so, and the match changes hands at once. One that stops answering is only noticed after the time-out, so players wait a few seconds first.
 - Players find each other's matches in rooms, by a code. The hosting machine picks its room's code itself, so local code has it at once, with nothing to wait for: `Session.room`.
 - Local code sees where this machine stands through a built-in local singleton, `Session` (taken as a parameter like any singleton), and the built-in local events `Connected` and `Disconnected`.
 - Clients have no input delay: their own input applies at once, and they run ahead of the server so it arrives in time. Only other players' inputs are ever guessed.
@@ -1060,6 +1106,34 @@ Implemented, awaiting approval:
 - Keeping a room open across reloads under `tide run --web`.
 - Lobbies, and finding matches without a code.
 - Telling predicted state from verified state in game code (see AGENTS.md, Networking).
+- Host migration: which machine takes a match over, and what local code sees while it changes hands.
+
+## Settings
+
+Not built yet.
+
+### Decided
+
+- `settings { ... }` sets the engine's settings for the game. Each is set without a type: `tickRate = 30;`. The game's own values are constants (see Constants).
+- `settings` is a keyword only at the top level of a file, so it still works as a name everywhere else.
+- Every setting has a default, so the block only lists what it changes. A game has at most one block, in any of its files.
+- Values are constant expressions, and can name constants.
+- Settings are part of the build, so every machine in a match has the same ones.
+- The editor completes the settings' names and shows each one's default and what it does. A name that isn't a setting is an error that says which one was meant.
+- The first settings are `title` (the window's), `tickRate` (ticks per second, 60 by default) and `hostMigration` (see Sessions). The window's size, the most players and the default port can come later.
+
+```csharp
+settings
+{
+    title = "Asteroids";
+    tickRate = 30;
+    hostMigration = true;
+}
+```
+
+### Open
+
+- Changing settings when the game starts, from the command line or a file: the server would send its settings to the players who join.
 
 ## C functions
 

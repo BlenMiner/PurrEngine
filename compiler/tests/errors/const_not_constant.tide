@@ -1,0 +1,4 @@
+// expect: a constant's value must be a constant expression
+singleton Physics { int count = 3; }
+const int MAX = count;
+scene Main { }

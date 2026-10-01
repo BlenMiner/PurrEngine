@@ -114,13 +114,15 @@ typedef enum name_kind {
     NAME_TYPE,     // Components, singletons, inputs and structs
     NAME_SYSTEM,   // Systems and views, in [Before] and [After]
     NAME_FUNCTION,
+    NAME_CONST,
 } name_kind;
 
 static bool is_kind(const decl *d, const name_kind kind)
 {
     if (kind == NAME_SYSTEM) return d->kind == DECL_SYSTEM;
     if (kind == NAME_FUNCTION) return d->kind == DECL_FUNCTION;
-    return d->kind != DECL_SYSTEM && d->kind != DECL_FUNCTION;
+    if (kind == NAME_CONST) return d->kind == DECL_CONST;
+    return d->kind != DECL_SYSTEM && d->kind != DECL_FUNCTION && d->kind != DECL_CONST;
 }
 
 // A declaration of that kind named exactly `name` in `ns`.
@@ -2029,12 +2031,16 @@ static bool parse_swizzle(expr *e, const int dim)
     return true;
 }
 
+static type use_constant(checker *c, expr *e, decl *k);
+
 // Combat.Health or Game.Combat where a value belongs: says what the name is.
 static type check_namespace_member(checker *c, expr *e)
 {
     str text;
     qualified_text(e, &text);
     mark_namespaces(e->object);
+    decl *k = find_named(c, text, e->at, NAME_CONST);
+    if (k) return use_constant(c, e, k);
     decl *d = find_type(c, text, e->at);
     if (d) {
         e->bind = BIND_TYPE;
@@ -2115,12 +2121,16 @@ static type check_member(checker *c, expr *e)
     decl *const enum_decl = named_enum(c, e->object);
     if (enum_decl) return check_enum_member(e, enum_decl);
 
-    // Combat.Health: a namespace, not a variable, on the left
+    // Combat.Health: a namespace, not a variable, on the left. Combat.ORIGIN.x
+    // is a member of a constant, which checking Combat.ORIGIN finds.
     const expr *root = chain_root(e);
     str text;
+    str object_text;
+    decl *ignored;
     if (root->kind == E_NAME && !find_local(c, root->name) && !find_param(c, root->name)
         && !field_in_scope(c, root->name) && is_namespace(c->prog, root->name)
-        && qualified_text(e, &text)) {
+        && qualified_text(e, &text)
+        && !(qualified_text(e->object, &object_text) && lookup(c->prog, c->unit, object_text, NAME_CONST, &ignored))) {
         return check_namespace_member(c, e);
     }
 
@@ -2301,6 +2311,8 @@ static type check_name(checker *c, expr *e)
         e->field = f;
         return f->type;
     }
+    decl *k = find_named(c, e->name, e->at, NAME_CONST);
+    if (k) return use_constant(c, e, k);
     const decl *d = find_type(c, e->name, e->at);
     if (d) {
         diag_error(e->at, "'" STR_FMT "' is a type, not a value", STR_ARG(e->name));
@@ -2324,6 +2336,9 @@ static type check_name(checker *c, expr *e)
     for (int i = 0; c->system && i < c->system->params.count; i++) suggest_consider(&s, c->system->params.items[i].name);
     if (c->in_input) suggest_fields(&s, c->system);
     if (c->method && c->method->owner) suggest_fields(&s, c->method->owner);
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        if (c->prog->decls.items[i]->kind == DECL_CONST) suggest_consider(&s, c->prog->decls.items[i]->name);
+    }
     suggest_consider_c(&s, "Math");
     suggest_consider_c(&s, "Draw");
     suggest_builtin_types(&s);
@@ -2633,6 +2648,14 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         if (called) diag_note("store it in a 'mut var' first");
         return false;
     }
+    for (const expr *part = target;; part = part->object) {
+        if (part->bind == BIND_CONST) {
+            diag_error(target->at, "'" STR_FMT "' is a constant, so it can't change", STR_ARG(part->constant->name));
+            if (called) diag_note("copy it into a 'mut var' first");
+            return false;
+        }
+        if (part->kind != E_MEMBER && part->kind != E_INDEX) break;
+    }
     expr *root = assign_root(target);
     // Into a component or singleton: a write to the world's own memory. Text,
     // a list, or an element of one, is in its heap.
@@ -2782,15 +2805,57 @@ static void check_assign(checker *c, const stmt *s)
 
 static void check_stmt(checker *c, stmt *s);
 
-// A case's value, if it's one a switch can have: an int literal, maybe
-// negative, or an enum's member.
-static bool case_value(const expr *e, int64_t *out)
+// An int known while compiling, from a checked expression: a literal, an
+// enum's member, a constant whose value is one, and operators on them, which
+// give what they would at run time (tide/math.h). A case's value, and an enum
+// member's.
+static bool fold_int(const expr *e, int64_t *out)
 {
-    if (e->kind == E_INT) *out = e->int_value;
-    else if (e->kind == E_UNARY && e->op == T_MINUS && e->lhs->kind == E_INT) *out = -e->lhs->int_value;
-    else if (e->kind == E_MEMBER && e->enum_member) *out = e->enum_member->number;
-    else return false;
-    return true;
+    int64_t l;
+    int64_t r;
+    switch (e->kind) {
+    case E_INT:
+        *out = (int32_t)(uint32_t)e->int_value;
+        return true;
+    case E_NAME:
+    case E_MEMBER:
+        if (e->bind == BIND_CONST) {
+            const decl *k = e->constant;
+            return k->index == 2 && (k->return_type.kind == TY_INT || k->return_type.kind == TY_ENUM)
+                && fold_int(k->value, out);
+        }
+        if (e->kind == E_MEMBER && e->enum_member) {
+            *out = e->enum_member->number;
+            return true;
+        }
+        return false;
+    case E_UNARY:
+        if (e->method || e->type.kind != TY_INT || !fold_int(e->lhs, &l)) return false;
+        if (e->op == T_MINUS) *out = (int32_t)(0u - (uint32_t)l);
+        else if (e->op == T_TILDE) *out = ~(int32_t)l;
+        else return false;
+        return true;
+    case E_BINARY: {
+        if (e->method || e->type.kind != TY_INT || !fold_int(e->lhs, &l) || !fold_int(e->rhs, &r)) return false;
+        const int32_t a = (int32_t)l;
+        const int32_t b = (int32_t)r;
+        switch (e->op) {
+        case T_PLUS: *out = (int32_t)((uint32_t)a + (uint32_t)b); return true;
+        case T_MINUS: *out = (int32_t)((uint32_t)a - (uint32_t)b); return true;
+        case T_STAR: *out = (int32_t)((uint32_t)a * (uint32_t)b); return true;
+        case T_SLASH: *out = b == 0 ? 0 : b == -1 ? (int32_t)(0u - (uint32_t)a) : a / b; return true;
+        case T_PERCENT: *out = b == 0 || b == -1 ? 0 : a % b; return true;
+        case T_SHL: *out = (int32_t)((uint32_t)a << (b & 31)); return true;
+        case T_SHR: *out = a < 0 ? ~(~a >> (b & 31)) : a >> (b & 31); return true;
+        case T_AMP: *out = a & b; return true;
+        case T_PIPE: *out = a | b; return true;
+        case T_CARET: *out = a ^ b; return true;
+        default: return false;
+        }
+    }
+    default:
+        return false;
+    }
 }
 
 // Whether `s` has a `break` that ends the loop or switch it's in (depth 0),
@@ -2875,11 +2940,13 @@ static void check_switch(checker *c, stmt *s)
             const type t = check_expr(c, label);
             if (t.kind == TY_ERROR || !switchable) continue;
             int64_t number;
-            if (!case_value(label, &number)) {
+            if (!fold_int(label, &number)) {
                 diag_error(label->at, "a case is an int or one of an enum's members, like 'case %s:'",
                            value.kind == TY_ENUM ? "Page.Title" : "3");
+                diag_note("constants work too, and operators on them, like 'case MAX_LEVEL + 1:'");
                 continue;
             }
+            label->int_value = number; // What codegen writes, unless it's a literal or a member
             if (!same_type(value, t)) {
                 diag_error(label->at, "the switch is on %s, so its cases are too, not %s", type_name(value), type_name(t));
                 continue;
@@ -3188,7 +3255,7 @@ static void check_stmt(checker *c, stmt *s)
 // ---------------------------------------------------------------------------
 // Declarations
 
-static bool all_constant(const expr *e);
+static bool all_constant(const checker *c, const expr *e);
 
 // Whether `e` is only names and members, like Page.Title: maybe an enum's member.
 static bool names_only(const expr *e)
@@ -3197,13 +3264,14 @@ static bool names_only(const expr *e)
     return e->kind == E_NAME;
 }
 
-// Constant expressions: literals, constructors of built-in types, Math
-// functions, built-in constants like quaternion.identity, members of any of
-// these, and operators on them. Nothing that reads fields, singletons or Time,
-// so a default never depends on other state.
-static bool is_constant(const expr *e)
+// Constant expressions: literals, constants, constructors of built-in types,
+// Math functions, built-in constants like quaternion.identity, members of any
+// of these, and operators on them. Nothing that reads fields, singletons or
+// Time, so a default never depends on other state.
+static bool is_constant(const checker *c, const expr *e)
 {
     type ignored;
+    decl *other;
     switch (e->kind) {
     case E_INT:
     case E_FLOAT:
@@ -3211,36 +3279,169 @@ static bool is_constant(const expr *e)
     case E_STRING:
     case E_DEFAULT:
         return true;
+    case E_NAME:
+        return lookup(c->prog, c->unit, e->name, NAME_CONST, &other) != NULL;
     case E_UNARY:
-        return is_constant(e->lhs);
+        return is_constant(c, e->lhs);
     case E_BINARY:
-        return is_constant(e->lhs) && is_constant(e->rhs);
+        return is_constant(c, e->lhs) && is_constant(c, e->rhs);
     case E_CONDITIONAL:
-        return is_constant(e->cond) && is_constant(e->lhs) && is_constant(e->rhs);
+        return is_constant(c, e->cond) && is_constant(c, e->lhs) && is_constant(c, e->rhs);
     case E_CALL:
-        return builtin_type_named(e->name, &ignored) && all_constant(e);
+        return builtin_type_named(e->name, &ignored) && all_constant(c, e);
     case E_METHOD:
-        return e->object->kind == E_NAME && builtin_owner(e->object->name) && all_constant(e);
-    case E_MEMBER: // Checking tells a member of an enum from anything else
-        return (e->object->kind == E_NAME && builtin_owner(e->object->name)) || is_constant(e->object) || names_only(e);
+        return e->object->kind == E_NAME && builtin_owner(e->object->name) && all_constant(c, e);
+    case E_MEMBER: // Checking tells a member of an enum or a constant from anything else
+        return (e->object->kind == E_NAME && builtin_owner(e->object->name)) || is_constant(c, e->object) || names_only(e);
     case E_LITERAL:
         for (int i = 0; i < e->inits.count; i++) {
-            if (!is_constant(e->inits.items[i].value)) return false;
+            if (!is_constant(c, e->inits.items[i].value)) return false;
         }
         return true;
     case E_LIST:
-        return all_constant(e);
+        return all_constant(c, e);
     default:
         return false;
     }
 }
 
-static bool all_constant(const expr *e)
+static bool all_constant(const checker *c, const expr *e)
 {
     for (int i = 0; i < e->args.count; i++) {
-        if (!is_constant(e->args.items[i])) return false;
+        if (!is_constant(c, e->args.items[i])) return false;
     }
     return true;
+}
+
+// The first name in `e` that isn't a constant, or NULL. Chains of names like
+// Math.PI or Combat.MAX are left out: they're what they name.
+static const expr *first_variable(const checker *c, const expr *e)
+{
+    if (!e) return NULL;
+    decl *other;
+    if (e->kind == E_NAME) return lookup(c->prog, c->unit, e->name, NAME_CONST, &other) ? NULL : e;
+    const expr *found = (e->kind == E_MEMBER || e->kind == E_METHOD) && !names_only(e->object) ? first_variable(c, e->object) : NULL;
+    if (!found) found = first_variable(c, e->cond);
+    if (!found) found = first_variable(c, e->lhs);
+    if (!found) found = first_variable(c, e->rhs);
+    for (int i = 0; !found && i < e->args.count; i++) found = first_variable(c, e->args.items[i]);
+    for (int i = 0; !found && i < e->inits.count; i++) found = first_variable(c, e->inits.items[i].value);
+    return found;
+}
+
+// After saying a value isn't constant: the constant a name in it may have
+// meant, if one is spelled like it.
+static void suggest_constant(const checker *c, const expr *value)
+{
+    const expr *name = first_variable(c, value);
+    if (!name) return;
+    suggestion s = suggest_start(name->name);
+    for (int i = 0; i < c->prog->decls.count; i++) {
+        if (c->prog->decls.items[i]->kind == DECL_CONST) suggest_consider(&s, c->prog->decls.items[i]->name);
+    }
+    suggest_note(&s);
+}
+
+// A constant expression, where only constants are in scope, whatever code is
+// being checked: a field's default, a bound, a constant's value. With `typed`,
+// it's a value of `want`, which [a, b] and `default` take their type from.
+static type check_constant_expr(checker *c, expr *value, const bool typed, const type want)
+{
+    decl *const system = c->system;
+    decl *const method = c->method;
+    const bool in_input = c->in_input;
+    const bool in_sanitize = c->in_sanitize;
+    const int locals = c->locals.count;
+    c->system = c->method = NULL;
+    c->in_input = c->in_sanitize = false;
+    c->locals.count = 0;
+    const type t = typed ? check_expr_want(c, value, want) : check_expr(c, value);
+    c->system = system;
+    c->method = method;
+    c->in_input = in_input;
+    c->in_sanitize = in_sanitize;
+    c->locals.count = locals;
+    return t;
+}
+
+// A constant's type: a value with nothing in it a constant can't be.
+static type constant_type(const checker *c, const decl *k)
+{
+    const loc at = k->return_type_qual_at.line ? k->return_type_qual_at : k->return_type_at;
+    type t;
+    if (builtin_type_named(k->return_type_name, &t)) {
+        if (t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY) {
+            diag_error(at, "an %s constant would always be the null entity", type_name(t));
+            return T_ERR;
+        }
+        return t;
+    }
+    if (str_eq_c(k->return_type_name, "string")) return (type){TY_STRING, NULL};
+    if (str_starts_with_c(k->return_type_name, "List<")) {
+        diag_error(at, "a constant can't be a list yet");
+        return T_ERR;
+    }
+    decl *const d = find_type(c, k->return_type_name, at);
+    if (d && (d->kind == DECL_STRUCT || d->kind == DECL_ENUM)) {
+        if (holds_list(decl_type(d))) {
+            diag_error(at, "a constant can't hold a list yet, and '" STR_FMT "' has one", STR_ARG(d->name));
+            return T_ERR;
+        }
+        return decl_type(d);
+    }
+    if (d) {
+        diag_error(at, "a constant is a built-in type, text, a struct or an enum, not %s", decl_what(d));
+        diag_note("for the values a component starts with, give its fields defaults: 'int lives = 3;'");
+        return T_ERR;
+    }
+    diag_error(at, "unknown type '" STR_FMT "'", STR_ARG(k->return_type_name));
+    suggestion s = suggest_start(k->return_type_name);
+    suggest_builtin_types(&s);
+    suggest_consider_c(&s, "string");
+    suggest_structs(&s, c->prog);
+    suggest_note(&s);
+    return T_ERR;
+}
+
+// const int MAX_HEALTH = 100;: its type, and a value worked out from constants
+// alone. A constant is checked before anything reads it: one that names
+// another checks that one first (index: 0 not yet, 1 checking, 2 done).
+static void check_constant(checker *c, decl *k)
+{
+    if (k->index != 0) return;
+    k->index = 1;
+    const unit *const outer = c->unit;
+    c->unit = k->unit;
+    check_reserved(k->name, k->at);
+    k->return_type = constant_type(c, k);
+    if (!is_constant(c, k->value)) {
+        diag_error(k->value->at, "a constant's value must be a constant expression");
+        diag_note("use literals, other constants, constructors like float3(...), struct values of constants, Math "
+                  "functions and operators; a constant can't read fields, singletons or Time");
+        suggest_constant(c, k->value);
+    } else {
+        const type t = check_constant_expr(c, k->value, true, k->return_type);
+        if (k->return_type.kind != TY_ERROR && t.kind != TY_ERROR && !type_assignable(k->return_type, t)) {
+            diag_error(k->value->at, "constant '" STR_FMT "' is %s, not %s", STR_ARG(k->name), type_name(k->return_type),
+                       type_name(t));
+        }
+    }
+    c->unit = outer;
+    k->index = 2;
+}
+
+// MAX_HEALTH, or Combat.MAX_HEALTH: a constant, which stands for its value.
+static type use_constant(checker *c, expr *e, decl *k)
+{
+    e->bind = BIND_CONST;
+    e->constant = k;
+    check_constant(c, k);
+    if (k->index == 1) {
+        diag_error(e->at, "'" STR_FMT "' is worked out from itself", STR_ARG(k->name));
+        diag_note("a constant's value can name other constants, but not, through them, its own");
+        return T_ERR;
+    }
+    return k->return_type;
 }
 
 static void check_default(checker *c, const field *f)
@@ -3251,13 +3452,14 @@ static void check_default(checker *c, const field *f)
                    type_name(f->type));
         return;
     }
-    if (!is_constant(value)) {
+    if (!is_constant(c, value)) {
         diag_error(value->at, "default values must be constant expressions");
-        diag_note("use literals, constructors like float3(...), struct values of constants, Math functions and "
-                  "operators; defaults can't read fields, singletons or Time");
+        diag_note("use literals, constants, constructors like float3(...), struct values of constants, Math "
+                  "functions and operators; defaults can't read fields, singletons or Time");
+        suggest_constant(c, value);
         return;
     }
-    const type t = check_expr_want(c, value, f->type);
+    const type t = check_constant_expr(c, value, true, f->type);
     if (f->type.kind != TY_ERROR && !type_assignable(f->type, t)) {
         diag_error(value->at, "field '" STR_FMT "' is %s, not %s", STR_ARG(f->name), type_name(f->type), type_name(t));
     }
@@ -3267,12 +3469,13 @@ static void check_default(checker *c, const field *f)
 // type, or a number for every component of a vector.
 static void check_bound(checker *c, const field *f, expr *value)
 {
-    if (!is_constant(value)) {
+    if (!is_constant(c, value)) {
         diag_error(value->at, "attribute bounds must be constants");
-        diag_note("use literals, constructors like float2(...), Math constants and operators");
+        diag_note("use literals, constants, constructors like float2(...), Math constants and operators");
+        suggest_constant(c, value);
         return;
     }
-    const type t = check_expr(c, value);
+    const type t = check_constant_expr(c, value, false, T_ERR);
     if (t.kind == TY_ERROR || f->type.kind == TY_ERROR) return;
     const bool splat = type_dim(t) == 1 && type_is_numeric(t) && type_dim(f->type) > 1
                     && (type_is_float_based(f->type) || type_is_int_based(t));
@@ -3401,7 +3604,7 @@ static void resolve_field_types(const checker *c, const decl *d)
 // An enum's members: their names and values. A member without a value is one
 // more than the one before it, and the first is 0, as in C#. In generated C,
 // Page.Title is Page_Title.
-static void check_enum(const checker *c, decl *d)
+static void check_enum(checker *c, decl *d)
 {
     if (d->members.count == 0) diag_error(d->at, "enum '" STR_FMT "' needs at least one member", STR_ARG(d->name));
     int64_t next = 0;
@@ -3415,8 +3618,12 @@ static void check_enum(const checker *c, decl *d)
         }
         if (m->value) {
             int64_t number;
-            if (!case_value(m->value, &number) || m->value->kind == E_MEMBER) {
+            const type t = is_constant(c, m->value) ? check_constant_expr(c, m->value, false, T_ERR) : T_INT_;
+            if (t.kind == TY_ERROR) {
+                // Reported
+            } else if (t.kind != TY_INT || !fold_int(m->value, &number)) {
                 diag_error(m->value->at, "a member's value is an int, like '" STR_FMT " = 3'", STR_ARG(m->name));
+                diag_note("constants work too, and operators on them, like '" STR_FMT " = BASE + 1'", STR_ARG(m->name));
             } else {
                 next = number;
             }
@@ -4447,7 +4654,8 @@ static void collect_decls(program *prog)
                 const bool both_types = is_kind(d, NAME_TYPE) && is_kind(other, NAME_TYPE);
                 const bool both_systems = d->kind == DECL_SYSTEM && other->kind == DECL_SYSTEM;
                 const bool function = d->kind == DECL_FUNCTION || other->kind == DECL_FUNCTION;
-                if (!both_types && !both_systems && !function) continue;
+                const bool constant = d->kind == DECL_CONST || other->kind == DECL_CONST;
+                if (!both_types && !both_systems && !function && !constant) continue;
                 if (str_eq(d->name, other->name) && str_eq(ns, decl_ns(other))) {
                     if (other->builtin) {
                         diag_error(d->at, "'" STR_FMT "' is built into the engine", STR_ARG(d->name));
@@ -4483,6 +4691,9 @@ static void collect_decls(program *prog)
                 break;
             case DECL_INPUT:
                 diag_error(d->local_at, "the input is what players send to the match, so it can't be local");
+                break;
+            case DECL_CONST:
+                diag_error(d->local_at, "constants belong to neither side: every machine has the same ones");
                 break;
             default:
                 diag_error(d->local_at, "functions belong to neither side, so they can't be local");
@@ -4539,6 +4750,7 @@ static void collect_decls(program *prog)
         case DECL_METHOD: // Not in prog->decls
         case DECL_LIST:
         case DECL_FUNCTION:
+        case DECL_CONST:
             break;
         case DECL_SYSTEM:
             if (d->is_view) {
@@ -5136,6 +5348,9 @@ bool check(program *prog)
         const decl *d = prog->decls.items[i];
         c.unit = d->unit;
         if (d->kind != DECL_SYSTEM) resolve_field_types(&c, d);
+    }
+    for (int i = 0; i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->kind == DECL_CONST) check_constant(&c, prog->decls.items[i]);
     }
     for (int i = 0; i < prog->decls.count; i++) {
         if (prog->decls.items[i]->kind == DECL_STRUCT) order_struct(prog, prog->decls.items[i]);
