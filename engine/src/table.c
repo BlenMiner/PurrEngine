@@ -93,6 +93,21 @@ void tide_table_remove(tide_table *t, const tide_columns *c, const uint32_t row,
     }
 }
 
+void tide_table_remove_row(tide_table *t, const tide_columns *c, const uint32_t row)
+{
+    const uint32_t last = t->count - 1u;
+    if (row != last) {
+        for (uint32_t k = 0; k < c->count; k++) memcpy(tide_table_cell(t, c, row, k), tide_table_get(t, c, last, k), c->sizes[k]);
+    }
+    t->count = last;
+    // A last chunk left empty goes
+    if (t->count == (t->chunks - 1u) << c->shift) {
+        t->chunks--;
+        for (uint32_t k = 0; k < c->count; k++) tide_page_release(t->pages[t->chunks * c->count + k], 1);
+        t->last_room = t->chunks ? full_room(c) : 0u;
+    }
+}
+
 uint32_t tide_table_move(tide_table *from, const tide_columns *from_columns, const uint32_t row,
                          const uint32_t from_archetype, tide_table *to, const tide_columns *to_columns,
                          const uint32_t to_archetype, const int32_t *map, tide_entities *entities)

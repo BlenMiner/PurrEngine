@@ -57,6 +57,7 @@ TIDE_TEST(jobs_threads_change_nothing)
         TIDE_REQUIRE(tide_world_hash(&snapshot) == before); // Its pages stayed as they were
     }
     TIDE_CHECK(one.Stats.hits > 100 && one.Stats.spawned == 80);
+    TIDE_CHECK(one.Stats.wobbled > 1000); // Tasks went on, the same on threads
     TIDE_CHECK(tide_world_entity_count(&one) == tide_world_entity_count(&many));
 
     // Entities spawned on many threads: every handle kept is the real one

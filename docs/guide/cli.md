@@ -55,6 +55,7 @@ Carrying the game over works like this:
 - Renaming a field is removing it and adding a new one: its value is lost.
 - An entity keeps its ID. When you remove a component, entities that had it keep their other components. An entity whose remaining components can't exist together in the new code is dropped.
 - A changed default doesn't change existing entities, only new ones.
+- A waiting [task](../language/tasks.md) carries on when its async function's code is the same, and is dropped when it changed: where it was waiting is gone.
 - If the scene the game is in is gone, the game starts over.
 
 `tide` says what happened after each reload, like `reloaded, and carried the game over to its new data layout; 1 field reset; 2 entities dropped`.

@@ -1,0 +1,11 @@
+// expect: 'Mixed' uses local state here, and changes the match on line 9, but a task runs in one world
+component Ball { float x; }
+local component Spark { float x; }
+scene Main { }
+
+async void Mixed()
+{
+    await Wait.Seconds(1);
+    Spawn(Ball { });
+    Spawn(Spark { });
+}

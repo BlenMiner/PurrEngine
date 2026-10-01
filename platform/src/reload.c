@@ -21,12 +21,13 @@ static const char *plural(const uint32_t n)
 }
 
 // What carrying a game over to a new build did, after "tide: reloaded".
-static void say_carried(const tide_layout *from, const tide_layout *to, const uint32_t dropped)
+static void say_carried(const tide_layout *from, const tide_layout *to, const uint32_t dropped, const uint32_t tasks)
 {
     const uint32_t reset = tide_layout_fields_reset(from, to);
     printf("tide: reloaded, and carried the game over to its new data layout");
     if (reset) printf("; %u field%s reset", (unsigned)reset, plural(reset));
     if (dropped) printf("; %u entit%s dropped", (unsigned)dropped, dropped == 1 ? "y" : "ies");
+    if (tasks) printf("; %u waiting task%s dropped, as %s code changed", (unsigned)tasks, plural(tasks), tasks == 1 ? "its" : "their");
     printf("\n");
 }
 
@@ -175,7 +176,8 @@ static bool resume(void)
     if (world) tide_session_start_from(tide_run_session, world, h.players, tide_run_now);
     if (h.gui_size == sizeof tide_run_gui) memcpy(&tide_run_gui, block + h.gui, sizeof tide_run_gui);
     if (h.hash == game->game->hash) printf("tide: reloaded\n");
-    else say_carried(old, game->layout, local_done.entities_dropped + match_done.entities_dropped);
+    else say_carried(old, game->layout, local_done.entities_dropped + match_done.entities_dropped,
+                     local_done.tasks_dropped + match_done.tasks_dropped);
     if (world) game->game->free_world(world);
     free(world);
     free(block);
@@ -386,7 +388,8 @@ static bool carry_over(const tide_host_game *next)
     free(tide_run_start);
     tide_run_local = local;
     tide_run_start = start;
-    say_carried(old->layout, next->layout, local_done.entities_dropped + match.first.entities_dropped);
+    say_carried(old->layout, next->layout, local_done.entities_dropped + match.first.entities_dropped,
+                local_done.tasks_dropped + match.first.tasks_dropped);
     return true;
 }
 

@@ -1,0 +1,14 @@
+// expect: 'Sparkle' uses local state, on line 8, so the match can't start it
+local component Spark { float x; }
+scene Main { }
+
+async void Sparkle()
+{
+    await Wait.Seconds(1);
+    Spawn(Spark { });
+}
+
+system Start()
+{
+    Sparkle();
+}

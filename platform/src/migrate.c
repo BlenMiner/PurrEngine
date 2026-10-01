@@ -202,6 +202,8 @@ typedef struct old_world {
     tide_entities entities;
     const uint8_t **rows; // Each archetype's
     uint32_t *counts;
+    const uint8_t **task_rows; // Each table of tasks'
+    uint32_t *task_counts;
     const uint8_t *heap;  // Its heap's bytes, the rest of them
     uint32_t heap_size;
 } old_world;
@@ -211,6 +213,18 @@ static void free_old(old_world *w)
     tide_entities_free(&w->entities);
     free(w->rows);
     free(w->counts);
+    free(w->task_rows);
+    free(w->task_counts);
+}
+
+// The old table of tasks that `t` carries over from: one of the same name,
+// whose code and frame are the same, or -1.
+static int32_t old_tasks(const tide_layout_world *fw, const tide_layout_tasks *t)
+{
+    for (uint32_t i = 0; i < fw->task_count; i++) {
+        if (strcmp(fw->tasks[i].name, t->name) == 0 && fw->tasks[i].size == t->size) return (int32_t)i;
+    }
+    return -1;
 }
 
 static bool read_old(const tide_layout *l, const tide_layout_world *fw, const uint8_t *from, const uint32_t size,
@@ -218,7 +232,9 @@ static bool read_old(const tide_layout *l, const tide_layout_world *fw, const ui
 {
     w->rows = calloc(fw->archetype_count ? fw->archetype_count : 1u, sizeof *w->rows);
     w->counts = calloc(fw->archetype_count ? fw->archetype_count : 1u, sizeof *w->counts);
-    if (!w->rows || !w->counts) {
+    w->task_rows = calloc(fw->task_count ? fw->task_count : 1u, sizeof *w->task_rows);
+    w->task_counts = calloc(fw->task_count ? fw->task_count : 1u, sizeof *w->task_counts);
+    if (!w->rows || !w->counts || !w->task_rows || !w->task_counts) {
         snprintf(m->failed, sizeof m->failed, "there wasn't enough memory");
         return false;
     }
@@ -235,6 +251,12 @@ static bool read_old(const tide_layout *l, const tide_layout_world *fw, const ui
     if (ok && commands) {
         snprintf(m->failed, sizeof m->failed, "it had changes waiting to be applied");
         return false;
+    }
+    for (uint32_t t = 0; ok && t < fw->task_count; t++) {
+        w->task_counts[t] = tide_read_u32(&r);
+        const uint64_t bytes = (uint64_t)w->task_counts[t] * fw->tasks[t].size;
+        ok = !r.failed && bytes <= r.size - r.at;
+        if (ok) w->task_rows[t] = tide_read_bytes(&r, (uint32_t)bytes);
     }
     w->heap = from + r.at;
     w->heap_size = ok ? size - r.at : 0u;
@@ -288,11 +310,22 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
         }
     }
 
+    // Tasks carry over to tables of the same name; the rest are dropped
+    for (uint32_t t = 0; ok && t < fw->task_count; t++) {
+        bool kept = false;
+        for (uint32_t k = 0; k < tw->task_count && !kept; k++) kept = old_tasks(fw, &tw->tasks[k]) == (int32_t)t;
+        if (!kept) m->tasks_dropped += old.task_counts[t];
+    }
+
     // The new world's bytes (see tide_world_pack): its struct, the entities, the
-    // tables, an empty queue and the heap as it was
+    // tables, an empty queue, the tasks and the heap as it was
     const uint32_t empty_heap = (uint32_t)(sizeof(uint32_t) * (2u + TIDE_HEAP_CLASSES));
     uint64_t size = tw->size + (ok ? tide_entities_packed_size(&old.entities) : 0u) + 4u;
     for (uint32_t k = 0; k < tw->archetype_count; k++) size += 4u + (uint64_t)counts[k] * row_size(to_layout, &tw->archetypes[k]);
+    for (uint32_t k = 0; ok && k < tw->task_count; k++) {
+        const int32_t t = old_tasks(fw, &tw->tasks[k]);
+        size += 4u + (t >= 0 ? (uint64_t)old.task_counts[t] * tw->tasks[k].size : 0u);
+    }
     if (tw->heap) size += fw->heap ? old.heap_size : empty_heap;
     uint8_t *to = ok && size <= UINT32_MAX ? calloc(1, (size_t)size) : NULL;
     if (ok && !to) {
@@ -357,6 +390,16 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
         }
     }
     tide_write_u32(&w, 0); // No changes waiting
+    for (uint32_t k = 0; k < tw->task_count; k++) {
+        const int32_t t = old_tasks(fw, &tw->tasks[k]);
+        tide_write_u32(&w, t >= 0 ? old.task_counts[t] : 0u);
+        if (t >= 0) tide_write_bytes(&w, old.task_rows[t], old.task_counts[t] * tw->tasks[k].size);
+    }
+    // The tasks' order, and the frames local ones count, go on from where they were
+    if (tw->task_count && fw->task_count) {
+        memcpy(to + tw->task_order, from + fw->task_order, sizeof(uint32_t));
+        if (tw->frames && fw->frames) memcpy(to + tw->frames, from + fw->frames, sizeof(int32_t));
+    }
     if (tw->heap && fw->heap) tide_write_bytes(&w, old.heap, old.heap_size);
     else if (tw->heap) take(&w, empty_heap); // Zeros: an empty heap
 
@@ -454,6 +497,10 @@ static void pack_world(packer *p, const uint32_t at, const tide_layout_world *w)
         put_array(p, a + offsetof(tide_layout_archetype, components), w->archetypes[i].components,
                   w->archetypes[i].component_count, sizeof *w->archetypes[i].components);
     }
+    const uint32_t tasks = put_array(p, at + offsetof(tide_layout_world, tasks), w->tasks, w->task_count, sizeof *w->tasks);
+    for (uint32_t i = 0; i < w->task_count; i++) {
+        put_string(p, tasks + i * (uint32_t)sizeof(tide_layout_tasks) + offsetof(tide_layout_tasks, name), w->tasks[i].name);
+    }
 }
 
 void *tide_layout_pack(const tide_layout *l, uint32_t *size)
@@ -526,6 +573,11 @@ static bool unpack_world(uint8_t *b, const uint32_t size, tide_layout_world *w)
     for (uint32_t i = 0; i < w->archetype_count; i++) {
         tide_layout_archetype *a = &archetypes[i];
         if (!unpack_pointer(b, size, (void *)&a->components, a->component_count, sizeof *a->components)) return false;
+    }
+    if (!unpack_pointer(b, size, (void *)&w->tasks, w->task_count, sizeof *w->tasks)) return false;
+    tide_layout_tasks *tasks = (tide_layout_tasks *)w->tasks;
+    for (uint32_t i = 0; i < w->task_count; i++) {
+        if (!unpack_string(b, size, &tasks[i].name)) return false;
     }
     return true;
 }

@@ -46,6 +46,36 @@ typedef struct gen_target {
     bool next_used;
 } gen_target;
 
+// A slot of a task's frame: where a C local of its code stays while it waits.
+typedef struct task_slot {
+    const char *local; // The C local
+    type type;
+    const char *name;  // Its field, or for a T? or a failable call's result, its fields' prefix
+} task_slot;
+
+// An async function or handler as a task: its frame, a struct with a field
+// for each thing it keeps while it waits, made as its code is generated.
+typedef struct task_info {
+    decl *fn;
+    decl *frame;
+    VEC(task_slot) slots;
+    uint64_t fingerprint; // Of its source text: a waiting task carries over to a build where it's the same
+} task_info;
+
+// A C local in scope in a task's code: it goes in the frame while the task waits.
+typedef struct live_local {
+    const char *name;
+    type type;
+} live_local;
+
+// The task whose code is being generated.
+typedef struct gen_task {
+    task_info *info;
+    bool local;           // Its version for the local world
+    VEC(live_local) live; // The C locals in scope
+    int points;           // Places it waits, so far
+} gen_task;
+
 typedef struct gen {
     program *prog;
     const codegen_options *opts;
@@ -70,7 +100,13 @@ typedef struct gen {
     const expr *raw_place; // A text field being generated as the tide_text it is, not read as text
     uint64_t game_hash;    // Of the header: tells builds of different games apart
     const decl *blending;  // The view whose run function is being generated: its blended parameters are copies
+    VEC(task_info) tasks;  // Every async function and handler that runs, callees before what awaits them
+    gen_task *task;        // The task whose code is being generated, or NULL
+    const decl *code;      // The system, view or handler whose body is being generated, or NULL
 } gen;
+
+// A task's locals are written again as it goes on after a wait, so none is const.
+static bool mutable_locals;
 
 // ---------------------------------------------------------------------------
 // C names
@@ -168,7 +204,7 @@ static const char *c_type(const type t)
 static const char *const_decl(const type t, const char *name)
 {
     sb b = {0};
-    sb_printf(&b, "const %s %s", c_type(t), name);
+    sb_printf(&b, "%s%s %s", mutable_locals ? "" : "const ", c_type(t), name);
     return b.data;
 }
 
@@ -413,6 +449,7 @@ static const char *world_where(const bool local)
 // changes.
 static bool is_pointer_param(const param *p)
 {
+    if (p->task_ref) return true;
     if (p->function_param) return p->mode == PARAM_MUT || p->type.kind == TY_RECORD;
     const type_kind k = p->type.kind;
     return k == TY_COMPONENT || k == TY_SINGLETON || k == TY_INPUT || k == TY_RECORD || k == TY_EVENT;
@@ -830,6 +867,7 @@ static const char *place_where(const gen *g, const expr *e)
     if (e->bind == BIND_FIELD) return g->routine && g->routine->is_mut_method && !g->in_input ? "tide_self_where" : "TIDE_IN_SCRATCH";
     if (e->bind != BIND_PARAM) return "TIDE_IN_SCRATCH";
     const param *p = e->param;
+    if (p->task_ref) return world_where(p->type.decl->is_local);
     if (p->function_param) return p->mode == PARAM_MUT ? where_name(g, e->name) : "TIDE_IN_SCRATCH";
     if (p->type.kind == TY_COMPONENT || p->type.kind == TY_SINGLETON) return world_where(p->type.decl->is_local);
     return "TIDE_IN_SCRATCH";
@@ -839,7 +877,7 @@ static const char *place_where(const gen *g, const expr *e)
 // variable is: a mut one's, but text's, whose tide_textref says.
 static bool takes_where(const param *p)
 {
-    return p->function_param && p->mode == PARAM_MUT && p->type.kind != TY_STRING && p->type.kind != TY_RECORD;
+    return p->function_param && !p->task_ref && p->mode == PARAM_MUT && p->type.kind != TY_STRING && p->type.kind != TY_RECORD;
 }
 
 // Whether `e` makes a new value, rather than naming one that's somewhere: a
@@ -1514,7 +1552,8 @@ static void gen_expr(gen *g, sb *o, const expr *e)
     case E_IS:
     case E_TRY:
     case E_DEFAULTED:
-        sb_put(o, e->hoisted ? e->hoisted : "tide_not_hoisted"); // Ran before the statement (see hoist_unwrap)
+    case E_AWAIT:
+        sb_put(o, e->hoisted ? e->hoisted : "tide_not_hoisted"); // Ran before the statement (see hoist_unwrap and gen_await)
         break;
     case E_NAME:
         if (is_text_ref(e)) {
@@ -1747,6 +1786,414 @@ static void gen_send(gen *g, const expr *e)
 }
 
 // ---------------------------------------------------------------------------
+// Tasks: async functions and handlers
+//
+// A task's code is its function's, made a state machine, as C# does: it runs
+// from where it stopped until it waits, and returns. What it keeps while it
+// waits is in its frame, a struct in its world's table of tasks: its
+// parameters, its result, the frames of the async functions it awaits, and
+// the C locals in scope, which go in the frame before it waits and come back
+// after it goes on. Its components and singletons aren't kept: it gets them
+// again each time it goes on, as a world's pages move when its snapshots copy
+// them. Text and lists in a frame are its world's own, like a component's.
+
+static task_info *task_of(gen *g, const decl *fn)
+{
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (g->tasks.items[i].fn == fn) return &g->tasks.items[i];
+    }
+    return NULL;
+}
+
+// "function_Countdown" or "handler_Arm": a task's name in its C names.
+static const char *task_id(const decl *fn)
+{
+    sb b = {0};
+    sb_printf(&b, "%s_%s", fn->kind == DECL_FUNCTION ? "function" : "handler", decl_cname(fn));
+    return b.data;
+}
+
+static const char *task_resume_name(const decl *fn, const bool local)
+{
+    sb b = {0};
+    sb_printf(&b, "tide_%sresume_%s", local ? "local_" : "", task_id(fn));
+    return b.data;
+}
+
+static const char *task_start_name(const decl *fn, const bool local)
+{
+    sb b = {0};
+    sb_printf(&b, "tide_%sstart_%s", local ? "local_" : "", task_id(fn));
+    return b.data;
+}
+
+// A field of a frame.
+static void frame_field(decl *frame, const char *name, const type t)
+{
+    field f = {0};
+    f.name = str_from(name);
+    f.type = t;
+    vec_push(frame->fields, f);
+}
+
+// The fields of a frame for a value of type `t` named `name`. A T? or a
+// failable call's result has its value, its error and whether it has a value
+// as fields of their own, so its text is the world's like any other.
+static void frame_fields_for(decl *frame, const char *name, const type t)
+{
+    if (t.kind != TY_OPTIONAL && t.kind != TY_FAILABLE) {
+        frame_field(frame, name, t);
+        return;
+    }
+    const decl *r = t.decl;
+    if (r->fields.items[0].type.kind != TY_VOID) {
+        sb n = {0};
+        sb_printf(&n, "%s_value", name);
+        frame_field(frame, n.data, r->fields.items[0].type);
+    }
+    if (r->fields.count > 1) {
+        sb n = {0};
+        sb_printf(&n, "%s_error", name);
+        frame_field(frame, n.data, r->fields.items[1].type);
+    }
+    sb n = {0};
+    sb_printf(&n, "%s_ok", name);
+    frame_field(frame, n.data, (type){TY_BOOL, NULL});
+}
+
+// Whether a frame has a field `name`, or fields for a result named so.
+static bool frame_has(const decl *frame, const char *name)
+{
+    const size_t n = strlen(name);
+    for (int i = 0; i < frame->fields.count; i++) {
+        const str f = frame->fields.items[i].name;
+        if ((size_t)f.len == n && memcmp(f.ptr, name, n) == 0) return true;
+        if ((size_t)f.len > n && memcmp(f.ptr, name, n) == 0 && f.ptr[n] == '_') {
+            const str rest = {f.ptr + n + 1, f.len - (int)n - 1};
+            if (str_eq_c(rest, "value") || str_eq_c(rest, "error") || str_eq_c(rest, "ok")) return true;
+        }
+    }
+    return false;
+}
+
+// The frame's slot for the task's C local `local`, of type `t`, made the
+// first time it's needed. Locals of one name and type in different scopes
+// share one.
+static const char *task_slot_for(gen *g, const char *local, const type t)
+{
+    task_info *ti = g->task->info;
+    for (int i = 0; i < ti->slots.count; i++) {
+        const task_slot *s = &ti->slots.items[i];
+        if (strcmp(s->local, local) == 0 && s->type.kind == t.kind && s->type.decl == t.decl) return s->name;
+    }
+    sb name = {0};
+    sb_put(&name, local);
+    for (int n = 2; frame_has(ti->frame, name.data); n++) {
+        name = (sb){0};
+        sb_printf(&name, "%s_%d", local, n);
+    }
+    frame_fields_for(ti->frame, name.data, t);
+    const task_slot s = {local, t, name.data};
+    vec_push(ti->slots, s);
+    return name.data;
+}
+
+// Puts `value`, C of type `t`, in the frame's place `slot` (C, like
+// tide_f->x): text and lists as the world's own, `where` the task's world.
+static void gen_spill(gen *g, const char *slot, const char *value, const type t, const char *where)
+{
+    sb *o = &g->c;
+    switch (t.kind) {
+    case TY_STRING: line(g, o, "tide_text_set(&%s, %s, %s);", slot, value, where); return;
+    case TY_LIST: line(g, o, "tide_list%d_assign(&%s, %s, %s);", t.decl->index, slot, value, where); return;
+    case TY_OPTIONAL:
+    case TY_FAILABLE: {
+        const decl *r = t.decl;
+        for (int part = 0; part < 2; part++) {
+            if (part == 0 && r->fields.items[0].type.kind == TY_VOID) continue;
+            if (part == 1 && r->fields.count < 2) continue;
+            const char *suffix = part ? "error" : "value";
+            sb to = {0};
+            sb from = {0};
+            sb_printf(&to, "%s_%s", slot, suffix);
+            sb_printf(&from, "%s.%s", value, suffix);
+            gen_spill(g, to.data, from.data, r->fields.items[part].type, where);
+        }
+        line(g, o, "%s_ok = %s.ok;", slot, value);
+        return;
+    }
+    case TY_STRUCT:
+    case TY_COMPONENT:
+    case TY_SINGLETON:
+    case TY_EVENT:
+        if (decl_has_text(t.decl)) {
+            line(g, o, "tide_assign_%s(&%s, %s, %s);", type_cname(t.decl), slot, value, where);
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    line(g, o, "%s = %s;", slot, value);
+}
+
+// Takes the value in the frame's place `slot` back into C local `local`, of
+// type `t`. Lists come back as copies, so the task changes its own.
+static void gen_reload(gen *g, const char *local, const char *slot, const type t)
+{
+    sb *o = &g->c;
+    switch (t.kind) {
+    case TY_STRING: line(g, o, "%s = tide_text_view(%s);", local, slot); return;
+    case TY_LIST: line(g, o, "%s = tide_list%d_copy(%s);", local, t.decl->index, slot); return;
+    case TY_OPTIONAL:
+    case TY_FAILABLE: {
+        const decl *r = t.decl;
+        line(g, o, "%s = (%s){0};", local, c_type(t));
+        for (int part = 0; part < 2; part++) {
+            if (part == 0 && r->fields.items[0].type.kind == TY_VOID) continue;
+            if (part == 1 && r->fields.count < 2) continue;
+            const char *suffix = part ? "error" : "value";
+            sb to = {0};
+            sb from = {0};
+            sb_printf(&to, "%s.%s", local, suffix);
+            sb_printf(&from, "%s_%s", slot, suffix);
+            gen_reload(g, to.data, from.data, r->fields.items[part].type);
+        }
+        line(g, o, "%s.ok = %s_ok;", local, slot);
+        return;
+    }
+    case TY_STRUCT:
+    case TY_COMPONENT:
+    case TY_SINGLETON:
+    case TY_EVENT:
+        if (type_has_list(t)) {
+            line(g, o, "%s = tide_copy_%s(%s);", local, type_cname(t.decl), slot);
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    line(g, o, "%s = %s;", local, slot);
+}
+
+// A C local the task's code declared, in scope until task_pop.
+static void task_declare(gen *g, const char *name, const type t)
+{
+    if (!g->task || t.kind == TY_VOID || t.kind == TY_ERROR) return;
+    const live_local l = {name, t};
+    vec_push(g->task->live, l);
+}
+
+static int task_mark(const gen *g)
+{
+    return g->task ? g->task->live.count : 0;
+}
+
+static void task_pop(gen *g, const int mark)
+{
+    if (g->task) g->task->live.count = mark;
+}
+
+// Before the task waits: its C locals go in its frame.
+static void gen_spill_live(gen *g)
+{
+    const char *where = world_where(g->task->local);
+    for (int i = 0; i < g->task->live.count; i++) {
+        const live_local *l = &g->task->live.items[i];
+        sb slot = {0};
+        sb_printf(&slot, "tide_f->%s", task_slot_for(g, l->name, l->type));
+        gen_spill(g, slot.data, l->name, l->type, where);
+    }
+}
+
+// After it goes on: they come back.
+static void gen_reload_live(gen *g)
+{
+    for (int i = 0; i < g->task->live.count; i++) {
+        const live_local *l = &g->task->live.items[i];
+        sb slot = {0};
+        sb_printf(&slot, "tide_f->%s", task_slot_for(g, l->name, l->type));
+        gen_reload(g, l->name, slot.data, l->type);
+    }
+}
+
+// The world a task started here runs in: the task's own, or the code's.
+static bool starts_local(const gen *g)
+{
+    if (g->task) return g->task->local;
+    return g->code && (g->code->is_view || g->code->is_local);
+}
+
+// The worlds a task of `local`'s world takes, as C arguments: a local handler
+// has no match to give it.
+static const char *task_worlds(const gen *g, const bool local)
+{
+    if (!local) return "tide_w";
+    return !g->task && g->code && g->code->is_handler ? "NULL, tide_l" : "tide_w, tide_l";
+}
+
+static void gen_as(gen *g, sb *o, expr *e, type want);
+
+// await, before its statement: the task waits here, and goes on from here,
+// with its value in `name`. Wait.Ticks, Frames and Seconds wait for the
+// match's ticks, this machine's frames, or seconds (whole ticks in the
+// match); an async call runs in the task's frame until it's done.
+static void gen_await(gen *g, expr *e, const char *name)
+{
+    sb *o = &g->c;
+    gen_task *t = g->task;
+    const expr *call = e->lhs;
+    const int k = ++t->points;
+    const char *where = world_where(t->local);
+    if (call->call == CALL_WAIT) {
+        e->hoisted = "0";
+        sb amount = {0};
+        gen_as(g, &amount, call->args.items[0], call->arg_want.items[0]);
+        if (str_eq_c(call->name, "Seconds") && t->local) {
+            // This machine's seconds, counted down frame by frame. What's
+            // left under TIDE_TASK_SLACK is the rounding of the frames' lengths.
+            line(g, o, "tide_f->tide_left = %s;", amount.data);
+            line(g, o, "if (tide_f->tide_left > TIDE_TASK_SLACK) {");
+            g->indent++;
+            gen_spill_live(g);
+            line(g, o, "tide_f->tide_state = %d;", k);
+            line(g, o, "return tide_l->tide_frames + 1;");
+            g->indent--;
+            line(g, o, "}");
+            line(g, o, "if (0) {");
+            line(g, o, "tide_resume%d:;", k);
+            g->indent++;
+            gen_reload_live(g);
+            line(g, o, "tide_f->tide_left -= tide_l->tide_frame_seconds;");
+            line(g, o, "if (tide_f->tide_left > TIDE_TASK_SLACK) return tide_l->tide_frames + 1;");
+            g->indent--;
+            line(g, o, "}");
+            return;
+        }
+        const char *now = t->local ? "tide_l->tide_frames" : "tide_w->Time.tick";
+        if (str_eq_c(call->name, "Seconds")) {
+            line(g, o, "tide_f->tide_until = tide_task_after(%s, tide_ticks_for(%s, tide_w->Time.dt));", now, amount.data);
+        } else {
+            line(g, o, "tide_f->tide_until = tide_task_after(%s, %s);", now, amount.data);
+        }
+        line(g, o, "if (%s < tide_f->tide_until) {", now);
+        g->indent++;
+        gen_spill_live(g);
+        line(g, o, "tide_f->tide_state = %d;", k);
+        line(g, o, "return tide_f->tide_until;");
+        g->indent--;
+        line(g, o, "}");
+        line(g, o, "if (0) {");
+        line(g, o, "tide_resume%d:;", k);
+        g->indent++;
+        gen_reload_live(g);
+        line(g, o, "if (%s < tide_f->tide_until) return tide_f->tide_until;", now);
+        g->indent--;
+        line(g, o, "}");
+        return;
+    }
+
+    // An async call: its frame is a part of this one's
+    const decl *callee = call->method;
+    const task_info *ci = task_of(g, callee);
+    sb child = {0};
+    sb_printf(&child, "tide_f->tide_await_%s", task_id(callee));
+    line(g, o, "memset(&%s, 0, sizeof %s);", child.data, child.data);
+    for (int i = 0; i < call->args.count; i++) {
+        const param *p = &callee->params.items[i];
+        if (p->task_ref) continue;
+        sb slot = {0};
+        sb value = {0};
+        sb_printf(&slot, "%s.%s", child.data, mangle(p->name));
+        gen_as(g, &value, call->args.items[i], call->arg_want.items[i]);
+        gen_spill(g, slot.data, value.data, p->type, where);
+    }
+    const char *resume = task_resume_name(callee, t->local);
+    const char *worlds = task_worlds(g, t->local);
+    line(g, o, "{");
+    g->indent++;
+    line(g, o, "const int32_t tide_r = %s(%s, &%s, tide_this, tide_this_local, tide_scene);", resume, worlds, child.data);
+    line(g, o, "if (tide_r != TIDE_TASK_DONE) {");
+    g->indent++;
+    line(g, o, "if (tide_r == TIDE_TASK_GONE) return TIDE_TASK_GONE;");
+    gen_spill_live(g);
+    line(g, o, "tide_f->tide_state = %d;", k);
+    line(g, o, "return tide_r;");
+    g->indent--;
+    line(g, o, "}");
+    g->indent--;
+    line(g, o, "}");
+    line(g, o, "if (0) {");
+    line(g, o, "tide_resume%d:;", k);
+    g->indent++;
+    gen_reload_live(g);
+    line(g, o, "const int32_t tide_r = %s(%s, &%s, tide_this, tide_this_local, tide_scene);", resume, worlds, child.data);
+    line(g, o, "if (tide_r != TIDE_TASK_DONE) return tide_r;");
+    g->indent--;
+    line(g, o, "}");
+    e->hoisted = "0";
+    if (callee->result.kind != TY_VOID) {
+        line(g, o, "%s %s;", c_type(callee->result), name);
+        sb slot = {0};
+        sb_printf(&slot, "%s.tide_result", child.data);
+        gen_reload(g, name, slot.data, callee->result);
+        task_declare(g, name, callee->result);
+        e->hoisted = name;
+    }
+    // Its text and lists go: its value's have been read, and stay until the task is done
+    line(g, o, "tide_release_%s(&%s, %s);", type_cname(ci->frame), child.data, where);
+}
+
+// The call an async function's start is, as a statement: `Load(name);` or
+// `Load(name)!;`, which starts a task, or NULL.
+static const expr *task_start(const expr *e)
+{
+    if (!e) return NULL;
+    if (e->kind == E_DEFAULTED) e = e->lhs;
+    if ((e->kind == E_CALL || e->kind == E_METHOD) && e->call == CALL_FUNCTION && e->method->is_async) return e;
+    return NULL;
+}
+
+static void hoist_spawns(gen *g, expr *a, expr *b);
+
+// Starts a task: its frame, with the arguments, runs until it first waits,
+// then waits in its world's table. It belongs to the entity the code runs
+// for, or with a task, to the task's.
+static void gen_task_start(gen *g, const expr *call)
+{
+    sb *o = &g->c;
+    const decl *fn = call->method;
+    const bool local = starts_local(g);
+    for (int i = 0; i < call->args.count; i++) hoist_spawns(g, call->args.items[i], NULL);
+    line(g, o, "{ // " STR_FMT, STR_ARG(fn->qualified));
+    g->indent++;
+    line(g, o, "%s tide_start = {0};", type_cname(task_of(g, fn)->frame));
+    const char *where = world_where(local);
+    for (int i = 0; i < call->args.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (p->task_ref) continue;
+        sb slot = {0};
+        sb value = {0};
+        sb_printf(&slot, "tide_start.%s", mangle(p->name));
+        gen_as(g, &value, call->args.items[i], call->arg_want.items[i]);
+        gen_spill(g, slot.data, value.data, p->type, where);
+    }
+    const char *owner = "tide_this, tide_this_local, tide_scene";
+    if (!g->task) {
+        const decl *code = g->code;
+        sb b = {0};
+        if (code && code->per_entity) sb_printf(&b, "tide_this, %s, ", code->entity_local ? "true" : "false");
+        else sb_put(&b, "(tide_entity){0}, false, ");
+        sb_put(&b, g->has_scene && g->scene_local == local ? "tide_scene" : "(tide_entity){0}");
+        owner = b.data;
+    }
+    line(g, o, "%s(%s, &tide_start, %s);", task_start_name(fn, local), task_worlds(g, local), owner);
+    g->indent--;
+    line(g, o, "}");
+}
+
+// ---------------------------------------------------------------------------
 // Statements
 
 // Tide evaluates left to right, like C#, but C leaves the order of a call's
@@ -1837,6 +2284,10 @@ static void collect_ordered(expr *e, expr_list *out)
         collect_ordered(e->lhs, out);
         vec_push(*out, e);
         break;
+    case E_AWAIT: // The call's arguments first, then the wait
+        for (int i = 0; i < e->lhs->args.count; i++) collect_ordered(e->lhs->args.items[i], out);
+        vec_push(*out, e);
+        break;
     default:
         break;
     }
@@ -1866,7 +2317,7 @@ static bool must_hoist(const expr_list *ordered)
     if (ordered->count > 1) return true;
     for (int i = 0; i < ordered->count; i++) {
         expr *e = ordered->items[i];
-        if (is_spawn(e) || is_unwrap(e)) return true;
+        if (is_spawn(e) || is_unwrap(e) || e->kind == E_AWAIT) return true;
         if (!is_unit(e)) continue;
         if (e->kind == E_BINARY ? part_must_hoist(e->rhs) : part_must_hoist(e->lhs) || part_must_hoist(e->rhs)) {
             return true;
@@ -1903,15 +2354,21 @@ static void hoist_spawns(gen *g, expr *a, expr *b)
         if (is_spawn(e)) {
             sb_printf(&name, "tide_spawned%d", g->spawn_temps++);
             indent(g, &g->c);
-            sb_printf(&g->c, "const tide_entity %s = ", name.data);
+            sb_printf(&g->c, "%stide_entity %s = ", mutable_locals ? "" : "const ", name.data);
             gen_spawn(g, &g->c, e);
             sb_put(&g->c, ";\n");
             line(g, &g->c, "(void)%s;", name.data);
+            task_declare(g, name.data, (type){e->local_world ? TY_LOCAL_ENTITY : TY_ENTITY, NULL});
         } else if (is_unit(e)) {
             sb_printf(&name, "tide_called%d", g->call_temps++);
             hoist_unit(g, e, name.data);
+            task_declare(g, name.data, e->kind == E_BINARY ? (type){TY_BOOL, NULL} : e->type);
         } else if (is_unwrap(e)) {
             hoist_unwrap(g, e); // Sets e->hoisted
+            continue;
+        } else if (e->kind == E_AWAIT) {
+            sb_printf(&name, "tide_called%d", g->call_temps++);
+            gen_await(g, e, name.data); // Sets e->hoisted
             continue;
         } else {
             sb_printf(&name, "tide_called%d", g->call_temps++);
@@ -1919,6 +2376,7 @@ static void hoist_spawns(gen *g, expr *a, expr *b)
             sb_printf(&g->c, "%s = ", const_decl(e->type, name.data));
             gen_expr(g, &g->c, e);
             sb_put(&g->c, ";\n");
+            task_declare(g, name.data, e->type);
         }
         e->hoisted = name.data;
     }
@@ -1937,7 +2395,10 @@ static void hoist_unit(gen *g, expr *e, const char *name)
         sb_put(o, ";\n");
         line(g, o, "if (%s%s) {", e->op == T_AND ? "" : "!", name);
         g->indent++;
+        const int mark = task_mark(g);
+        task_declare(g, name, (type){TY_BOOL, NULL}); // Its own, while the right side waits
         hoist_spawns(g, e->rhs, NULL);
+        task_pop(g, mark);
         indent(g, o);
         sb_printf(o, "%s = ", name);
         gen_expr(g, o, e->rhs);
@@ -1954,7 +2415,9 @@ static void hoist_unit(gen *g, expr *e, const char *name)
     for (int side = 0; side < 2; side++) {
         expr *value = side == 0 ? e->lhs : e->rhs;
         g->indent++;
+        const int mark = task_mark(g);
         hoist_spawns(g, value, NULL);
+        task_pop(g, mark);
         indent(g, o);
         sb_printf(o, "%s = ", name);
         gen_as(g, o, value, e->type);
@@ -1989,6 +2452,7 @@ static const char *unwrapped_place(gen *g, expr *e)
     sb_printf(&g->c, "%s = ", const_decl(e->type, name.data));
     gen_expr(g, &g->c, e);
     sb_put(&g->c, ";\n");
+    task_declare(g, name.data, e->type);
     return name.data;
 }
 
@@ -2020,9 +2484,16 @@ static void hoist_unwrap(gen *g, expr *e)
     if (e->kind == E_TRY) { // Its error goes to the caller, which fails with the same
         line(g, o, "if (!%s.ok) {", r);
         g->indent++;
-        sb leave = {0};
-        sb_printf(&leave, "(%s){.error = %s.error}", c_type(g->routine->result), r);
-        gen_leave(g, leave.data);
+        if (g->task) { // A task's ends, with the error for what awaits it
+            sb error = {0};
+            sb_printf(&error, "%s.error", r);
+            gen_spill(g, "tide_f->tide_result_error", error.data, g->routine->fails, world_where(g->task->local));
+            line(g, o, "return TIDE_TASK_DONE;");
+        } else {
+            sb leave = {0};
+            sb_printf(&leave, "(%s){.error = %s.error}", c_type(g->routine->result), r);
+            gen_leave(g, leave.data);
+        }
         g->indent--;
         line(g, o, "}");
         sb text = {0};
@@ -2043,14 +2514,17 @@ static void hoist_unwrap(gen *g, expr *e)
         sb_printf(o, "%s = %s.ok ? %s.value : ", const_decl(value, name.data), r, r);
         gen_default(g, o, value);
         sb_put(o, ";\n");
+        task_declare(g, name.data, value);
         return;
     }
 
     if (e->kind == E_IS) {
         indent(g, o);
-        if (e->looks_for == IS_VALUE) sb_printf(o, "const bool %s = %s.ok;\n", name.data, r);
-        else if (e->looks_for == IS_ERROR) sb_printf(o, "const bool %s = !%s.ok;\n", name.data, r);
-        else sb_printf(o, "const bool %s = !%s.ok && %s.error == %s;\n", name.data, r, r, enum_member_cname(e->type_decl, e->enum_member));
+        const char *is_const = mutable_locals ? "" : "const ";
+        if (e->looks_for == IS_VALUE) sb_printf(o, "%sbool %s = %s.ok;\n", is_const, name.data, r);
+        else if (e->looks_for == IS_ERROR) sb_printf(o, "%sbool %s = !%s.ok;\n", is_const, name.data, r);
+        else sb_printf(o, "%sbool %s = !%s.ok && %s.error == %s;\n", is_const, name.data, r, r, enum_member_cname(e->type_decl, e->enum_member));
+        task_declare(g, name.data, (type){TY_BOOL, NULL});
         if (e->binding) {
             line(g, o, "if (%s) %s = %s.%s;", name.data, local_cname(g, e->binding->name), r,
                  e->looks_for == IS_VALUE ? "value" : "error");
@@ -2076,13 +2550,16 @@ static void hoist_unwrap(gen *g, expr *e)
     g->indent--;
     line(g, o, "} else {");
     g->indent++;
+    const int mark = task_mark(g); // Its value isn't set until the right side is done
     hoist_spawns(g, e->rhs, NULL);
+    task_pop(g, mark);
     indent(g, o);
     sb_printf(o, "%s = ", name.data);
     gen_as(g, o, e->rhs, result);
     sb_put(o, ";\n");
     g->indent--;
     line(g, o, "}");
+    task_declare(g, name.data, result);
 }
 
 // Whether an if's or loop's condition has `is` tests that give names: in it,
@@ -2106,6 +2583,7 @@ static void declare_bindings(gen *g, const expr *cond)
         gen_default(g, &g->c, b->type);
         sb_put(&g->c, ";\n");
         line(g, &g->c, "(void)%s;", name);
+        task_declare(g, name, b->type);
     }
     if (cond->kind != E_BINARY || cond->op != T_AND) return;
     declare_bindings(g, cond->lhs);
@@ -2207,11 +2685,13 @@ static bool wrapped_in_parens(const char *text)
 // Statements under if/else always get braces.
 static void gen_body_stmt(gen *g, const stmt *s)
 {
+    const int mark = task_mark(g);
     if (s->kind == S_BLOCK) {
         for (int i = 0; i < s->stmts.count; i++) gen_stmt(g, s->stmts.items[i]);
     } else {
         gen_stmt(g, s);
     }
+    task_pop(g, mark);
 }
 
 // GUILayout.Vertical() { ... }: opens the container, runs the block, and
@@ -2331,14 +2811,17 @@ static void gen_stmt(gen *g, const stmt *s)
 
     // Names `is` gives in an if's condition, in a block of their own.
     const bool bindings = s->kind == S_IF && has_bindings(s->cond);
+    const int bindings_mark = task_mark(g);
     if (bindings) {
         line(g, o, "{");
         g->indent++;
         declare_bindings(g, s->cond);
     }
     switch (s->kind) {
-    case S_VAR:
-    case S_EXPR: hoist_spawns(g, s->value, NULL); break;
+    case S_VAR: hoist_spawns(g, s->value, NULL); break;
+    case S_EXPR:
+        if (!task_start(s->value)) hoist_spawns(g, s->value, NULL);
+        break;
     case S_ASSIGN: hoist_spawns(g, s->target, s->value); break;
     case S_IF:
     case S_SWITCH: hoist_spawns(g, s->cond, NULL); break;
@@ -2349,13 +2832,16 @@ static void gen_stmt(gen *g, const stmt *s)
     }
 
     switch (s->kind) {
-    case S_BLOCK:
+    case S_BLOCK: {
         line(g, o, "{");
         g->indent++;
+        const int mark = task_mark(g);
         for (int i = 0; i < s->stmts.count; i++) gen_stmt(g, s->stmts.items[i]);
+        task_pop(g, mark);
         g->indent--;
         line(g, o, "}");
         break;
+    }
 
     case S_IF: {
         // A condition already in parentheses, like (a == b), gets no second
@@ -2377,6 +2863,7 @@ static void gen_stmt(gen *g, const stmt *s)
         if (bindings) {
             g->indent--;
             line(g, o, "}");
+            task_pop(g, bindings_mark);
         }
         break;
     }
@@ -2414,7 +2901,9 @@ static void gen_stmt(gen *g, const stmt *s)
             }
             line(g, o, "{");
             g->indent++;
+            const int mark = task_mark(g);
             for (int k = 0; k < section->body.count; k++) gen_stmt(g, section->body.items[k]);
+            task_pop(g, mark);
             g->indent--;
             line(g, o, "}");
         }
@@ -2427,11 +2916,13 @@ static void gen_stmt(gen *g, const stmt *s)
     case S_WHILE:
     case S_FOR: {
         // A for is its start, then a while that runs its step at the end of each round.
+        const int for_mark = task_mark(g);
         if (s->kind == S_FOR) {
             line(g, o, "{");
             g->indent++;
             if (s->init) gen_stmt(g, s->init);
         }
+        const int round_mark = task_mark(g);
         if (s->cond && needs_hoisting(s->cond)) {
             // What runs in order goes before the condition, each round.
             line(g, o, "while (true) {");
@@ -2453,6 +2944,7 @@ static void gen_stmt(gen *g, const stmt *s)
         const gen_target done = g->targets.items[--g->targets.count];
         if (done.next_used) line(g, o, "%s:;", done.next);
         if (s->step) gen_stmt(g, s->step);
+        task_pop(g, round_mark);
         g->indent--;
         line(g, o, "}");
         if (done.end_used) line(g, o, "%s:;", done.end);
@@ -2460,6 +2952,7 @@ static void gen_stmt(gen *g, const stmt *s)
             g->indent--;
             line(g, o, "}");
         }
+        task_pop(g, for_mark);
         break;
     }
 
@@ -2467,6 +2960,42 @@ static void gen_stmt(gen *g, const stmt *s)
         // The list's Count is read each round, so changes to it while it's gone
         // through count; each element is a copy.
         const int k = s->value->type.decl->index;
+        if (g->task) {
+            // In a task, a list that's somewhere is read where it is each
+            // round, so it's found again after a wait, and a list made here is
+            // a local, which waits in the frame.
+            const int mark = task_mark(g);
+            line(g, o, "{");
+            g->indent++;
+            const char *list = expr_text(g, s->value);
+            if (is_fresh(s->value)) {
+                list = made_up(g, "list");
+                line(g, o, "tide_list %s = %s;", list, expr_text(g, s->value));
+                task_declare(g, list, s->value->type);
+            }
+            const char *index = made_up(g, "i");
+            line(g, o, "int32_t %s = 0;", index);
+            task_declare(g, index, (type){TY_INT, NULL});
+            line(g, o, "for (; %s < tide_list_count(%s); %s++) {", index, list, index);
+            g->indent++;
+            const int round = task_mark(g);
+            line(g, o, "%s %s = tide_list%d_get(%s, %s);", elem_vtype(s->type), local_cname(g, s->name), k, list, index);
+            line(g, o, "(void)%s;", local_cname(g, s->name));
+            task_declare(g, local_cname(g, s->name), s->type);
+            const gen_target loop = {g->frame, g->containers.count, true, true, made_up(g, "loop_end"), false, made_up(g, "next"), false};
+            vec_push(g->targets, loop);
+            gen_body_stmt(g, s->then_stmt);
+            const gen_target done = g->targets.items[--g->targets.count];
+            if (done.next_used) line(g, o, "%s:;", done.next);
+            task_pop(g, round);
+            g->indent--;
+            line(g, o, "}");
+            if (done.end_used) line(g, o, "%s:;", done.end);
+            g->indent--;
+            line(g, o, "}");
+            task_pop(g, mark);
+            break;
+        }
         const char *list = made_up(g, "list");
         const char *index = made_up(g, "i");
         line(g, o, "{");
@@ -2529,6 +3058,19 @@ static void gen_stmt(gen *g, const stmt *s)
     }
 
     case S_RETURN: {
+        if (g->task && !g->frame) { // A task ends, with its value in its frame
+            const decl *fn = g->task->info->fn;
+            const bool failable = fn->kind == DECL_FUNCTION && fn->result.kind == TY_FAILABLE;
+            if (s->value) {
+                sb value = {0};
+                gen_value_of(g, &value, s->value, fn->return_type);
+                gen_spill(g, failable ? "tide_f->tide_result_value" : "tide_f->tide_result", value.data, fn->return_type,
+                          world_where(g->task->local));
+            }
+            if (failable) line(g, o, "tide_f->tide_result_ok = true;");
+            line(g, o, "return TIDE_TASK_DONE;");
+            break;
+        }
         // Containers the code opened close first. In copied code, return goes
         // to the end of the copy.
         const int base = g->frame ? g->frame->containers : 0;
@@ -2557,6 +3099,13 @@ static void gen_stmt(gen *g, const stmt *s)
     }
 
     case S_FAIL: { // Only in a function that can fail, or a block written in one
+        if (g->task && !g->frame) {
+            sb error = {0};
+            gen_value_of(g, &error, s->value, g->routine->fails);
+            gen_spill(g, "tide_f->tide_result_error", error.data, g->routine->fails, world_where(g->task->local));
+            line(g, o, "return TIDE_TASK_DONE;");
+            break;
+        }
         const char *close = g->containers.count > 0 ? g->containers.items[0] : NULL;
         indent(g, o);
         if (close) sb_printf(o, "{ %s = ", const_decl(g->routine->result, "tide_result"));
@@ -2577,6 +3126,7 @@ static void gen_stmt(gen *g, const stmt *s)
         gen_value_of(g, o, s->value, s->type);
         sb_printf(o, ";\n");
         line(g, o, "(void)%s;", name);
+        task_declare(g, name, s->type);
         break;
     }
 
@@ -2650,7 +3200,9 @@ static void gen_stmt(gen *g, const stmt *s)
     }
 
     case S_EXPR:
-        if (s->value->call == CALL_SEND) {
+        if (task_start(s->value)) {
+            gen_task_start(g, task_start(s->value));
+        } else if (s->value->call == CALL_SEND) {
             gen_send(g, s->value);
         } else if (s->value->call == CALL_LOAD) {
             line(g, o, "(void)%s;", s->value->hoisted);
@@ -2692,6 +3244,113 @@ static void gen_stmt(gen *g, const stmt *s)
 }
 
 // ---------------------------------------------------------------------------
+// Tasks' frames and code
+
+// Whether `fn`'s tasks have a table in the local world (or the match's): an
+// async handler's world, or an async function something starts there.
+static bool task_table_in(const decl *fn, const bool local)
+{
+    if (fn->kind == DECL_SYSTEM) return fn->is_local == local;
+    return fn->task_root && fn->runs_in[local ? 1 : 0];
+}
+
+// Whether a world keeps tasks.
+static bool world_has_tasks(const gen *g, const bool local)
+{
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (task_table_in(g->tasks.items[i].fn, local)) return true;
+    }
+    return false;
+}
+
+// The worlds an async function or handler runs in.
+static bool task_runs_in(const decl *fn, const bool local)
+{
+    if (fn->kind == DECL_SYSTEM) return fn->is_local == local;
+    return fn->runs_in[local ? 1 : 0];
+}
+
+// Where a declaration's source text is: the offset of line `at.line`, column `at.col`.
+static size_t source_offset(const source *src, const loc at)
+{
+    size_t i = 0;
+    for (int line_no = 1; line_no < at.line && i < src->len; i++) {
+        if (src->text[i] == '\n') line_no++;
+    }
+    return i + (size_t)(at.col > 0 ? at.col - 1 : 0) < src->len ? i + (size_t)(at.col > 0 ? at.col - 1 : 0) : src->len;
+}
+
+// A task's frame as far as its signature says: where it stopped and what it
+// waits for, its parameters (but components and singletons, which it gets
+// again), its value, and the frames of the async functions it awaits. Its
+// fingerprint covers its source text and theirs: a waiting task only carries
+// over to a build where its code is the same (see tide/migrate.h).
+static void add_task(gen *g, decl *fn)
+{
+    task_info ti = {0};
+    ti.fn = fn;
+    decl *frame = NEW(decl);
+    frame->kind = DECL_STRUCT;
+    sb name = {0};
+    sb_printf(&name, "tide_frame_%s", task_id(fn));
+    frame->name = frame->qualified = str_from(name.data);
+    const type int_t = {TY_INT, NULL};
+    frame_field(frame, "tide_state", int_t); // Where it stopped: 0 before it starts
+    frame_field(frame, "tide_until", int_t); // The tick or frame it waits for
+    frame_field(frame, "tide_left", (type){TY_FLOAT, NULL}); // Or the seconds it has left to wait, on this machine
+    if (fn->kind == DECL_SYSTEM) frame_field(frame, "tide_event", (type){TY_EVENT, fn->event});
+    for (int i = 0; i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (fn->kind == DECL_SYSTEM || p->task_ref) continue;
+        frame_fields_for(frame, str_to_cstr(p->name), p->type);
+    }
+    if (fn->kind == DECL_FUNCTION && fn->result.kind != TY_VOID) frame_fields_for(frame, "tide_result", fn->result);
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (int i = 0; i < fn->awaits.count; i++) {
+        const task_info *callee = task_of(g, fn->awaits.items[i]);
+        sb field = {0};
+        sb_printf(&field, "tide_await_%s", task_id(callee->fn));
+        frame_field(frame, field.data, (type){TY_STRUCT, callee->frame});
+        h = (h ^ callee->fingerprint) * 0x100000001B3ull;
+    }
+    ti.frame = frame;
+    if (fn->unit && fn->unit->src) {
+        const source *src = fn->unit->src;
+        const size_t from = source_offset(src, (loc){fn->at.line, 1, fn->at.file});
+        const size_t to = source_offset(src, fn->end);
+        for (size_t i = from; i < to; i++) {
+            if (src->text[i] != '\r') h = (h ^ (uint8_t)src->text[i]) * 0x100000001B3ull;
+        }
+    }
+    ti.fingerprint = h;
+    vec_push(g->tasks, ti);
+}
+
+// Every async function and handler that runs, each after the async functions
+// it awaits, whose frames are part of its own.
+static void collect_tasks(gen *g)
+{
+    const program *prog = g->prog;
+    VEC(decl *) todo = {0};
+    for (int i = 0; i < prog->decls.count; i++) {
+        decl *d = prog->decls.items[i];
+        if (d->is_async && (d->kind == DECL_SYSTEM || d->runs_in[0] || d->runs_in[1])) vec_push(todo, d);
+    }
+    while (todo.count > 0) {
+        const int before = todo.count;
+        for (int i = 0; i < todo.count; i++) {
+            decl *d = todo.items[i];
+            bool ready = true;
+            for (int k = 0; k < d->awaits.count; k++) ready &= task_of(g, d->awaits.items[k]) != NULL;
+            if (!ready) continue;
+            add_task(g, d);
+            todo.items[i--] = todo.items[--todo.count];
+        }
+        if (todo.count == before) break; // The checker rejects a function that awaits itself
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Header: types, world layout, public API
 
 // Generated types have no padding the compiler adds: tidec writes it out as
@@ -2710,7 +3369,7 @@ static layout decl_layout(const decl *d);
 static layout type_layout(const type t)
 {
     if (t.kind == TY_BOOL) return (layout){1, 1};
-    if (t.kind == TY_STRUCT) return decl_layout(t.decl);
+    if (t.kind == TY_STRUCT || t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_EVENT) return decl_layout(t.decl);
     if (t.kind == TY_RECORD) return (layout){(int)sizeof(tide_devices), 4}; // The input's devices
     if (type_dim(t) > 0) return (layout){4 * type_dim(t), 4};
     if (matrix_dim(t) > 0) return (layout){4 * matrix_dim(t) * matrix_dim(t), 4};
@@ -2849,6 +3508,24 @@ static int arch_shift(const gen *g, const int a)
     return shift;
 }
 
+// A world's tables of tasks: those of each async function and handler that
+// runs there, which wait in them in the order they started. Each says its
+// code's fingerprint, so a build where a task's code changed has another
+// layout (see Hot reloading).
+static void gen_task_tables(gen *g, const bool local)
+{
+    sb *o = &g->h;
+    if (!world_has_tasks(g, local)) return;
+    sb_put(o, "    // Tasks waiting, a table for each async function and handler that has them\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        if (!task_table_in(ti->fn, local)) continue;
+        sb_printf(o, "    tide_table tide_tasks_%s; // " STR_FMT ", code %016llX\n", task_id(ti->fn), STR_ARG(ti->fn->qualified),
+                  (unsigned long long)ti->fingerprint);
+    }
+    sb_put(o, "    uint32_t tide_task_order; // Tasks started so far\n");
+}
+
 static void gen_header(gen *g)
 {
     const program *prog = g->prog;
@@ -2967,6 +3644,7 @@ static void gen_header(gen *g)
     }
     sb_put(o, "    tide_queue commands; // Of tide_command\n");
     sb_put(o, "    uint32_t tide_chain; // While changes apply: how far down a chain of events what's recorded now is\n");
+    gen_task_tables(g, false);
     if (prog->input) {
         const char *name = type_cname(prog->input);
         sb_put(o, "    // Each player's input for this tick and the last, then the server's (TIDE_SERVER_INPUT).\n");
@@ -3001,6 +3679,11 @@ static void gen_header(gen *g)
     }
     sb_put(o, "    tide_queue commands; // Of tide_command\n");
     sb_put(o, "    uint32_t tide_chain; // While changes apply: how far down a chain of events what's recorded now is\n");
+    gen_task_tables(g, true);
+    if (world_has_tasks(g, true)) {
+        sb_put(o, "    int32_t tide_frames;       // Frames so far, which local tasks count\n");
+        sb_put(o, "    float tide_frame_seconds;  // This frame's length, which they count down (tide_local_frame_time)\n");
+    }
     if (prog->uses_heap) sb_put(o, "    tide_heap heap;\n");
     sb_put(o, "    tide_session_request tide_request; // What local code asked of the session: Session.Start and the like\n");
     sb_put(o, "    tide_start tide_request_start;\n");
@@ -3077,6 +3760,9 @@ static void gen_header(gen *g)
     sb_put(o, "// and `message` a kick's, or NULL), handled at the end of the next tide_frame.\n");
     sb_put(o, "void tide_local_connected(tide_local *local);\n");
     sb_put(o, "void tide_local_disconnected(tide_local *local, uint32_t reason, const char *message);\n\n");
+    sb_put(o, "// How long this frame is, in seconds, which local tasks' Wait.Seconds counts down.\n");
+    sb_put(o, "// Call it before tide_frame.\n");
+    sb_put(o, "void tide_local_frame_time(tide_local *local, float seconds);\n\n");
     sb_put(o, "// The game, as sessions run it (tide/session.h).\n");
     sb_put(o, "extern const tide_game tide_game_api;\n\n");
     sb_put(o, "uint32_t tide_world_entity_count(const tide_world *w);\n");
@@ -3758,8 +4444,9 @@ static const char *dispatch_signature(const decl *event, const bool local)
 static void gen_dispatch_prototypes(gen *g)
 {
     const program *prog = g->prog;
-    if (prog->handlers.count == 0) return;
     sb *o = &g->c;
+    if (world_has_tasks(g, false)) sb_put(o, "// The match's tasks go on, at the end of the tick\nstatic void tide_run_tasks(tide_world *w);\n\n");
+    if (prog->handlers.count == 0) return;
     sb_put(o, "// Event dispatchers, defined after the handlers they call\n\n");
     for (int i = 0; i < prog->events.count; i++) {
         for (int side = 0; side < 2; side++) {
@@ -4007,6 +4694,10 @@ static void gen_apply(gen *g, const bool local)
         p, world, local ? "frame" : "tick", p, p, p, p, p, p,
         local ? "" : "        case TIDE_CMD_SCENE_PLAYER: tide_apply_scene_player(w, c); break;\n");
     sb_printf(o, "static void %sapply_commands(%s *w)\n{\n    %sapply_from(w, 0);\n", p, world, p);
+    // The match's tasks go on once the tick's changes are in, and what they do applies after
+    if (!local && world_has_tasks(g, false)) {
+        sb_put(o, "    const uint32_t tide_tasks_from = w->commands.count;\n    tide_run_tasks(w);\n    tide_apply_from(w, tide_tasks_from);\n");
+    }
     // Once nothing is left, a world that's Main's and has no scene loads Main
     // again, with what its Spawned handlers make. Only once, so a Main that
     // unloads itself as it loads doesn't load forever.
@@ -4094,6 +4785,7 @@ static void gen_system_body(gen *g, const decl *sys)
     g->spawn_temps = 0;
     g->call_temps = 0;
     g->routine = NULL;
+    g->code = sys;
     if (g->has_scene) line(g, o, "(void)tide_scene;");
     if (sys->per_entity) line(g, o, "(void)tide_this;");
     if (sys->is_view || !sys->is_local) line(g, o, "(void)tide_w;");
@@ -4107,6 +4799,7 @@ static void gen_system_body(gen *g, const decl *sys)
     }
     for (int i = 0; i < sys->body->stmts.count; i++) gen_stmt(g, sys->body->stmts.items[i]);
     g->has_scene = false;
+    g->code = NULL;
     g->indent = 0;
     sb_put(o, "}\n");
     line_reset(g);
@@ -4262,6 +4955,30 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
         if (prog->uses_text) sb_put(&clear_text, " tide_scratch_reset(tide_mark);");
         if (prog->uses_heap) sb_printf(&clear_text, " tide_heap_flush(&%s->heap);", world);
         const char *clear = clear_text.data ? clear_text.data : "";
+        if (h->is_async) { // A task: its frame has the event, and it gets its components itself
+            const task_info *ti = task_of(g, h);
+            sb start = {0};
+            sb_printf(&start, "{ %s tide_f = {0}; tide_f.tide_event = *tide_event; ", type_cname(ti->frame));
+            if (decl_has_text(h->event)) sb_printf(&start, "tide_own_%s(&tide_f.tide_event, %s); ", type_cname(h->event), world_where(local));
+            sb_printf(&start, "%s(%s, &tide_f, ", task_start_name(h, local), local ? "NULL, tide_l" : "tide_w");
+            if (!h->per_entity) {
+                sb_printf(o, "    %s(tide_entity){0}, false, (tide_entity){0}); }%s\n", start.data, clear);
+                continue;
+            }
+            sb_put(o, "    switch (tide_loc.archetype) {\n");
+            for (int a = 0; a < prog->archetypes.count; a++) {
+                if (!handler_runs_for(prog, h, a)) continue;
+                sb_printf(o, "    case %d: %stide_target, %s, ", a, start.data, local ? "true" : "false");
+                if (arch_scene_column(g, a)) {
+                    sb_printf(o, "*(const tide_entity *)tide_table_get(&%s->%s, %s, tide_loc.row, 1)); }%s break;\n", world,
+                              arch_name(g, a), arch_columns(g, a), clear);
+                } else {
+                    sb_printf(o, "(tide_entity){0}); }%s break;\n", clear);
+                }
+            }
+            sb_put(o, "    default: break;\n    }\n");
+            continue;
+        }
         if (!h->per_entity) {
             sb_printf(o, "    %s", call.data);
             gen_system_args(g, h, -1);
@@ -4376,6 +5093,322 @@ static void gen_routine(gen *g, const decl *m)
     sb_put(o, "\n");
 }
 
+// A task's code for one world (gen_task_resume) as a function: from where it
+// stopped until it waits, or ends. It returns TIDE_TASK_DONE when it ended,
+// with its value in its frame, TIDE_TASK_GONE when what it needs is gone, or
+// the tick (or frame) it looks again.
+static void gen_task_resume(gen *g, task_info *ti, const bool local)
+{
+    sb *o = &g->c;
+    const decl *fn = ti->fn;
+    gen_task task = {ti, local, {0}, 0};
+    g->task = &task;
+    mutable_locals = true;
+    g->routine = fn->kind == DECL_FUNCTION ? fn : NULL;
+    g->code = NULL;
+    g->spawn_temps = 0;
+    g->call_temps = 0;
+    const int labels = g->labels;
+    g->labels = 0; // Its own names, the same each time it's generated
+    g->has_scene = true;
+    g->scene_local = local;
+    sb_printf(o, "// " STR_FMT ", as a task in %s: it goes on from where it stopped, until it waits or ends\n",
+              STR_ARG(fn->qualified), local ? "the local world" : "the match");
+    sb_printf(o, "TIDE_HELPER int32_t %s(%s, %s *tide_f, const tide_entity tide_this, const bool tide_this_local, "
+                 "const tide_entity tide_scene)\n{\n",
+              task_resume_name(fn, local), local ? "const tide_world *tide_w, tide_local *tide_l" : "tide_world *tide_w",
+              type_cname(ti->frame));
+    g->indent = 1;
+    line(g, o, "(void)tide_w;");
+    if (local) line(g, o, "(void)tide_l;");
+    line(g, o, "(void)tide_this;");
+    line(g, o, "(void)tide_this_local;");
+    line(g, o, "(void)tide_scene;");
+    // Its parameters: values from the frame, and components and singletons
+    // got again; when they're gone, so is the task.
+    for (int i = 0; i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (p->mode == PARAM_WITH || p->mode == PARAM_WITHOUT) continue;
+        if (p->mode == PARAM_EVENT) {
+            const char *name = trigger_cname(g, fn);
+            line(g, o, "const %s *%s = &tide_f->tide_event;", c_type(p->type), name);
+            line(g, o, "(void)%s;", name);
+            continue;
+        }
+        const char *name = local_cname(g, p->name);
+        if (p->type.kind == TY_COMPONENT || p->type.kind == TY_SINGLETON) {
+            const decl *d = p->type.decl;
+            const bool mut = p->mode == PARAM_MUT;
+            const char *world = d->is_local ? "tide_l" : "tide_w";
+            const char *ct = c_type(p->type);
+            if (!d->is_local && local) line(g, o, "if (!tide_w) return TIDE_TASK_GONE;");
+            if (p->type.kind == TY_SINGLETON) {
+                line(g, o, "%s%s *%s = &%s->%s;", mut ? "" : "const ", ct, name, world, ct);
+            } else {
+                line(g, o, "%s%s *%s = tide_%s_%s(%s, tide_this);", mut ? "" : "const ", ct, name, mut ? "get" : "read", ct, world);
+                line(g, o, "if (!%s) return TIDE_TASK_GONE;", name);
+            }
+            line(g, o, "(void)%s;", name);
+            continue;
+        }
+        line(g, o, "%s %s;", c_type(p->type), name);
+        sb slot = {0};
+        sb_printf(&slot, "tide_f->%s", mangle(p->name));
+        gen_reload(g, name, slot.data, p->type);
+        line(g, o, "(void)%s;", name);
+    }
+    line(g, o, "goto tide_dispatch;");
+    line(g, o, "tide_start:;");
+    for (int i = 0; i < fn->body->stmts.count; i++) gen_stmt(g, fn->body->stmts.items[i]);
+    // Its end: a function that can fail and returns nothing succeeds there
+    if (fn->kind == DECL_FUNCTION && fn->result.kind == TY_FAILABLE && fn->return_type.kind == TY_VOID) {
+        line(g, o, "tide_f->tide_result_ok = true;");
+    }
+    line(g, o, "return TIDE_TASK_DONE;");
+    line(g, o, "tide_dispatch:");
+    line(g, o, "switch (tide_f->tide_state) {");
+    line(g, o, "case 0: goto tide_start;");
+    for (int k = 1; k <= task.points; k++) line(g, o, "case %d: goto tide_resume%d;", k, k);
+    line(g, o, "default: return TIDE_TASK_DONE; // Nowhere it stops: no code of this build");
+    line(g, o, "}");
+    g->indent = 0;
+    sb_put(o, "}\n");
+    line_reset(g);
+    sb_put(o, "\n");
+    g->labels = labels;
+    g->task = NULL;
+    mutable_locals = false;
+    g->routine = NULL;
+    g->has_scene = false;
+}
+
+// Whether a frame type is one of the tasks'.
+static bool is_frame(const gen *g, const decl *d)
+{
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (g->tasks.items[i].frame == d) return true;
+    }
+    return false;
+}
+
+// A frame's text and lists, and its awaited frames', go as its task ends or
+// stops waiting for one.
+static void gen_frame_release(gen *g, const decl *frame)
+{
+    sb *o = &g->c;
+    const char *name = type_cname(frame);
+    sb_printf(o, "TIDE_HELPER void tide_release_%s(%s *v, const uint32_t where)\n{\n    (void)v;\n    (void)where;\n", name, name);
+    for (int i = 0; i < frame->fields.count; i++) {
+        const field *f = &frame->fields.items[i];
+        const char *fc = field_cname(f);
+        const type t = f->type;
+        if (t.kind == TY_STRING) sb_printf(o, "    tide_text_release(&v->%s, where);\n", fc);
+        else if (t.kind == TY_LIST) sb_printf(o, "    tide_list%d_release(&v->%s, where);\n", t.decl->index, fc);
+        else if (t.kind == TY_STRUCT && is_frame(g, t.decl)) sb_printf(o, "    tide_release_%s(&v->%s, where);\n", type_cname(t.decl), fc);
+        else if ((t.kind == TY_STRUCT || t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_EVENT)
+                 && decl_has_text(t.decl)) {
+            sb_printf(o, "    tide_release_%s(&v->%s, where);\n", type_cname(t.decl), fc);
+        }
+    }
+    sb_put(o, "}\n\n");
+}
+
+// Rows in each chunk of a table of tasks: 1 << this, as for archetypes.
+static int task_shift(const task_info *ti)
+{
+    const int widest = 28 + decl_layout(ti->frame).size;
+    int shift = 4;
+    while (shift < 10 && (16384 >> (shift + 1)) >= widest) shift++;
+    return shift;
+}
+
+// A world's task pass, at the end of its tick (or frame): the tasks whose time
+// has come go on, in the order they started. A task whose owner is gone ends
+// with it, whether its time has come or not. Ended tasks leave their tables
+// once all have gone on, each table's from its last row, so rows still to go
+// stay where they are.
+static void gen_task_pass(gen *g, const bool local)
+{
+    sb *o = &g->c;
+    const char *w = local ? "tide_l" : "tide_w";
+    sb_printf(o, "static void tide_%srun_tasks(%s)\n{\n", local ? "local_" : "",
+              local ? "const tide_world *tide_w, tide_local *tide_l" : "tide_world *tide_w");
+    sb_printf(o, "    const int32_t tide_now = %s;\n", local ? "tide_l->tide_frames" : "tide_w->Time.tick");
+    sb_put(o, "    uint32_t tide_n = 0;\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (task_table_in(g->tasks.items[i].fn, local)) sb_printf(o, "    tide_n += %s->tide_tasks_%s.count;\n", w, task_id(g->tasks.items[i].fn));
+    }
+    sb_put(o, "    if (tide_n == 0) return;\n");
+    sb_put(o, "    tide_due *tide_due_list = malloc(sizeof(tide_due) * tide_n);\n    if (!tide_due_list) tide_out_of_memory();\n");
+    sb_put(o, "    uint32_t tide_count = 0;\n");
+    const char *where = world_where(local);
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        if (!task_table_in(ti->fn, local)) continue;
+        const char *id = task_id(ti->fn);
+        sb_printf(o, "    for (uint32_t tide_i = 0; tide_i < %s->tide_tasks_%s.count; tide_i++) {\n", w, id);
+        sb_printf(o, "        const tide_task_%s *tide_t = tide_table_get(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_i, 0);\n", id, w, id, id);
+        sb_put(o, "        const tide_entity tide_owner = tide_t->task.owner;\n");
+        if (local) {
+            sb_put(o, "        const bool tide_alive = tide_entity_is_null(tide_owner) || (tide_t->task.owner_local ? "
+                      "tide_entity_alive(&tide_l->entities, tide_owner) : tide_w && tide_entity_alive(&tide_w->entities, tide_owner));\n");
+        } else {
+            sb_put(o, "        const bool tide_alive = tide_entity_is_null(tide_owner) || tide_entity_alive(&tide_w->entities, tide_owner);\n");
+        }
+        sb_put(o, "        if (!tide_alive) { // It ends with its owner\n");
+        sb_printf(o, "            tide_task_%s *tide_gone = tide_table_cell(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_i, 0);\n", id, w, id, id);
+        sb_printf(o, "            tide_release_%s(&tide_gone->frame, %s);\n", type_cname(ti->frame), where);
+        sb_put(o, "            tide_gone->task.wake = TIDE_TASK_DONE;\n");
+        sb_put(o, "        } else if (tide_t->task.wake >= 0 && tide_t->task.wake <= tide_now) {\n");
+        sb_printf(o, "            tide_due_list[tide_count++] = (tide_due){tide_t->task.order, %du, tide_i};\n", i);
+        sb_put(o, "        }\n    }\n");
+    }
+    sb_put(o, "    qsort(tide_due_list, tide_count, sizeof(tide_due), tide_due_compare);\n");
+    sb_put(o, "    const uint32_t tide_mark = tide_scratch_mark();\n");
+    sb_put(o, "    for (uint32_t tide_d = 0; tide_d < tide_count; tide_d++) {\n");
+    sb_put(o, "        const tide_due tide_due_v = tide_due_list[tide_d];\n        switch (tide_due_v.kind) {\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        if (!task_table_in(ti->fn, local)) continue;
+        const char *id = task_id(ti->fn);
+        sb_printf(o, "        case %du: { // " STR_FMT "\n", i, STR_ARG(ti->fn->qualified));
+        // A copy goes on, as tasks it starts may move the table's rows
+        sb_printf(o, "            const tide_task_%s *tide_t = tide_table_get(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_due_v.row, 0);\n",
+                  id, w, id, id);
+        sb_put(o, "            const tide_task tide_task_v = tide_t->task;\n");
+        sb_printf(o, "            %s tide_f = tide_t->frame;\n", type_cname(ti->frame));
+        sb_printf(o, "            const int32_t tide_r = %s(%s, &tide_f, tide_task_v.owner, tide_task_v.owner_local != 0, tide_task_v.scene);\n",
+                  task_resume_name(ti->fn, local), local ? "tide_w, tide_l" : "tide_w");
+        sb_printf(o, "            if (tide_r < 0) tide_release_%s(&tide_f, %s);\n", type_cname(ti->frame), where);
+        sb_printf(o, "            tide_task_%s *tide_back = tide_table_cell(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_due_v.row, 0);\n",
+                  id, w, id, id);
+        sb_put(o, "            tide_back->frame = tide_f;\n");
+        sb_put(o, "            tide_back->task.wake = tide_r < 0 ? TIDE_TASK_DONE : tide_r;\n");
+        sb_put(o, "            break;\n        }\n");
+    }
+    sb_put(o, "        default: break;\n        }\n");
+    sb_printf(o, "        tide_scratch_reset(tide_mark);\n        tide_heap_flush(&%s->heap);\n    }\n", w);
+    sb_put(o, "    free(tide_due_list);\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        if (!task_table_in(ti->fn, local)) continue;
+        const char *id = task_id(ti->fn);
+        sb_printf(o, "    for (uint32_t tide_i = %s->tide_tasks_%s.count; tide_i-- > 0;) {\n", w, id);
+        sb_printf(o, "        const tide_task_%s *tide_t = tide_table_get(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_i, 0);\n", id, w, id, id);
+        sb_printf(o, "        if (tide_t->task.wake < 0) tide_table_remove_row(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_i);\n", w, id, id);
+        sb_put(o, "    }\n");
+    }
+    sb_put(o, "}\n\n");
+}
+
+// Every task: frames, tables, and their code for each world they run in.
+static void gen_tasks(gen *g)
+{
+    sb *o = &g->c;
+    if (g->tasks.count == 0) return;
+    // Their frames' fields, from their code: generated once to find them
+    for (int i = 0; i < g->tasks.count; i++) {
+        for (int side = 0; side < 2; side++) {
+            if (!task_runs_in(g->tasks.items[i].fn, side == 1)) continue;
+            const sb kept = g->c;
+            g->c = (sb){0};
+            gen_task_resume(g, &g->tasks.items[i], side == 1);
+            g->c = kept;
+        }
+    }
+    sb_put(o, "// Tasks: async functions and handlers, waiting in their world's tables\n\n");
+    sb_put(o, "#define TIDE_TASK_DONE (-1) // It ended\n#define TIDE_TASK_GONE (-2) // What it needs is gone: it ends\n");
+    sb_put(o, "#define TIDE_TASK_SLACK 0.0001f // Seconds a local wait can be short by: frames' lengths add up with rounding\n\n");
+    sb_put(o, "// A task's row in its world's table, before its frame: when it started, and the\n");
+    sb_put(o, "// tick (or frame) it looks again whether it can go on.\n");
+    sb_put(o, "typedef struct tide_task {\n    uint32_t order;       // When it started: tasks that go on together go in this order\n"
+              "    int32_t wake;         // When it looks again; TIDE_TASK_DONE once it's done\n"
+              "    tide_entity owner;    // What started it, which it ends with; null for its world\n"
+              "    tide_entity scene;    // The scene what it spawns joins\n"
+              "    uint32_t owner_local; // Its owner is a local entity, not the match's\n} tide_task;\n");
+    sb_put(o, "_Static_assert(sizeof(tide_task) == 28, \"tide_task has padding tidec didn't write out\");\n\n");
+    sb_put(o, "// n ticks or frames after `now`, and never past the last one there is.\n");
+    sb_put(o, "TIDE_HELPER int32_t tide_task_after(const int32_t now, const int32_t n)\n{\n"
+              "    if (n <= 0) return now;\n    return n > INT32_MAX - now ? INT32_MAX : now + n;\n}\n\n");
+    sb_put(o, "// Seconds in the match: the nearest whole number of ticks of `dt` seconds, at least\n");
+    sb_put(o, "// one for any wait at all.\n");
+    sb_put(o, "TIDE_HELPER int32_t tide_ticks_for(const float seconds, const float dt)\n{\n"
+              "    if (!(seconds > 0.0f)) return 0;\n    const float ticks = seconds / dt;\n"
+              "    if (!(ticks < 2147483520.0f)) return INT32_MAX;\n    const int32_t n = (int32_t)tide_floor_f(ticks + 0.5f);\n"
+              "    return n < 1 ? 1 : n;\n}\n\n");
+    sb_put(o, "// A task whose time has come, in its world's task pass.\n");
+    sb_put(o, "typedef struct tide_due {\n    uint32_t order;\n    uint32_t kind;\n    uint32_t row;\n} tide_due;\n\n");
+    sb_put(o, "TIDE_HELPER int tide_due_compare(const void *a, const void *b)\n{\n"
+              "    const uint32_t x = ((const tide_due *)a)->order;\n    const uint32_t y = ((const tide_due *)b)->order;\n"
+              "    return x < y ? -1 : x > y ? 1 : 0;\n}\n\n");
+    sb_put(o, "// Frames: what each task keeps while it waits\n\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        gen_type(g, o, g->tasks.items[i].frame);
+        gen_frame_release(g, g->tasks.items[i].frame);
+    }
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        if (!task_table_in(ti->fn, false) && !task_table_in(ti->fn, true)) continue;
+        const char *id = task_id(ti->fn);
+        const char *frame = type_cname(ti->frame);
+        sb_printf(o, "// " STR_FMT "'s tasks, as they wait\n", STR_ARG(ti->fn->qualified));
+        sb_printf(o, "typedef struct tide_task_%s {\n    tide_task task;\n    %s frame;\n} tide_task_%s;\n", id, frame, id);
+        sb_printf(o, "_Static_assert(sizeof(tide_task_%s) == sizeof(tide_task) + sizeof(%s), \"tide_task_%s has padding\");\n", id, frame, id);
+        sb_printf(o, "static const uint32_t tide_sizes_tasks_%s[] = {sizeof(tide_task_%s)};\n", id, id);
+        sb_printf(o, "static const tide_columns tide_columns_tasks_%s = {1, %d, tide_sizes_tasks_%s};\n\n", id, task_shift(ti), id);
+    }
+    // Declared first: a task's code starts other tasks
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        for (int side = 0; side < 2; side++) {
+            const bool local = side == 1;
+            const char *worlds = local ? "const tide_world *tide_w, tide_local *tide_l" : "tide_world *tide_w";
+            const char *frame = type_cname(ti->frame);
+            if (task_runs_in(ti->fn, local)) {
+                sb_printf(o, "TIDE_HELPER int32_t %s(%s, %s *tide_f, tide_entity tide_this, bool tide_this_local, "
+                             "tide_entity tide_scene);\n", task_resume_name(ti->fn, local), worlds, frame);
+            }
+            if (task_table_in(ti->fn, local)) {
+                sb_printf(o, "TIDE_HELPER void %s(%s, %s *tide_f, tide_entity tide_this, bool tide_this_local, "
+                             "tide_entity tide_scene);\n", task_start_name(ti->fn, local), worlds, frame);
+            }
+        }
+    }
+    sb_put(o, "\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        for (int side = 0; side < 2; side++) {
+            if (task_runs_in(g->tasks.items[i].fn, side == 1)) gen_task_resume(g, &g->tasks.items[i], side == 1);
+        }
+    }
+    // Starting one: it runs until it first waits, then waits in its world's table
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        for (int side = 0; side < 2; side++) {
+            const bool local = side == 1;
+            if (!task_table_in(ti->fn, local)) continue;
+            const char *id = task_id(ti->fn);
+            const char *w = local ? "tide_l" : "tide_w";
+            sb_printf(o, "// Starts a task of " STR_FMT " in %s\n", STR_ARG(ti->fn->qualified), local ? "the local world" : "the match");
+            sb_printf(o, "TIDE_HELPER void %s(%s, %s *tide_f, const tide_entity tide_this, const bool tide_this_local, "
+                         "const tide_entity tide_scene)\n{\n",
+                      task_start_name(ti->fn, local), local ? "const tide_world *tide_w, tide_local *tide_l" : "tide_world *tide_w",
+                      type_cname(ti->frame));
+            sb_printf(o, "    const uint32_t tide_order = %s->tide_task_order++;\n", w);
+            sb_printf(o, "    const int32_t tide_r = %s(%s, tide_f, tide_this, tide_this_local, tide_scene);\n",
+                      task_resume_name(ti->fn, local), local ? "tide_w, tide_l" : "tide_w");
+            sb_printf(o, "    if (tide_r < 0) {\n        tide_release_%s(tide_f, %s);\n        return;\n    }\n", type_cname(ti->frame),
+                      world_where(local));
+            sb_printf(o, "    const uint32_t tide_row = tide_table_add(&%s->tide_tasks_%s, &tide_columns_tasks_%s);\n", w, id, id);
+            sb_printf(o, "    tide_task_%s *tide_t = tide_table_cell(&%s->tide_tasks_%s, &tide_columns_tasks_%s, tide_row, 0);\n", id, w, id, id);
+            sb_put(o, "    tide_t->task = (tide_task){tide_order, tide_r, tide_this, tide_scene, tide_this_local ? 1u : 0u};\n");
+            sb_put(o, "    tide_t->frame = *tide_f;\n}\n\n");
+        }
+    }
+    for (int side = 0; side < 2; side++) {
+        if (world_has_tasks(g, side == 1)) gen_task_pass(g, side == 1);
+    }
+}
+
 // Every method and function, declared first so they can call each other.
 // Extern functions are only declared: their code is in C, which the game's C
 // files or libraries define. The declaration comes from the extern alone, so
@@ -4397,7 +5430,7 @@ static void gen_routines(gen *g)
     VEC(const decl *) all = {0};
     for (int i = 0; i < g->prog->decls.count; i++) {
         const decl *d = g->prog->decls.items[i];
-        if (d->kind == DECL_FUNCTION && !d->takes_block && !d->is_extern) vec_push(all, d); // Those are copied into each call
+        if (d->kind == DECL_FUNCTION && !d->takes_block && !d->is_extern && !d->is_async) vec_push(all, d); // Those are copied into each call
         for (int k = 0; k < d->methods.count; k++) vec_push(all, d->methods.items[k]);
     }
     if (all.count == 0) return;
@@ -5257,7 +6290,14 @@ static void gen_api(gen *g)
         sb_printf(o, "    tide_run_view_%s(w, previous, alpha, local, draw, gui);\n", decl_cname(prog->views.items[i]));
     }
     if (prog->views.count == 0) sb_put(o, "    (void)w;\n    (void)draw;\n    (void)gui;\n");
-    sb_put(o, "    tide_local_apply_commands(local);\n}\n\n");
+    sb_put(o, "    tide_local_apply_commands(local);\n");
+    if (world_has_tasks(g, true)) {
+        sb_put(o, "    tide_local_run_tasks(w, local);\n    tide_local_apply_commands(local);\n    local->tide_frames++;\n");
+    }
+    sb_put(o, "}\n\n");
+    sb_put(o, "void tide_local_frame_time(tide_local *local, float seconds)\n{\n");
+    if (world_has_tasks(g, true)) sb_put(o, "    local->tide_frame_seconds = seconds == seconds && seconds > 0.0f ? seconds : 0.0f;\n}\n\n");
+    else sb_put(o, "    (void)local;\n    (void)seconds;\n}\n\n");
 
     const char *joined = type_cname(prog->player_joined);
     const char *left = type_cname(prog->player_left);
@@ -5452,6 +6492,11 @@ static void gen_world_bytes(gen *g, const bool local)
         if (arch_local(g, a) == local) sb_printf(o, "    tide_table_free(&w->%s, %s);\n", arch_name(g, a), arch_columns(g, a));
     }
     sb_put(o, "    tide_queue_free(&w->commands);\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, local)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    tide_table_free(&w->tide_tasks_%s, &tide_columns_tasks_%s);\n", id, id);
+    }
     if (prog->uses_heap) sb_put(o, "    tide_heap_free(&w->heap);\n");
     sb_put(o, "    memset(w, 0, sizeof *w);\n}\n\n");
 
@@ -5461,6 +6506,11 @@ static void gen_world_bytes(gen *g, const bool local)
         if (arch_local(g, a) == local) sb_printf(o, "    size += tide_table_packed_size(&w->%s, %s);\n", arch_name(g, a), arch_columns(g, a));
     }
     sb_put(o, "    size += tide_queue_packed_size(&w->commands, sizeof(tide_command));\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, local)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    size += tide_table_packed_size(&w->tide_tasks_%s, &tide_columns_tasks_%s);\n", id, id);
+    }
     if (prog->uses_heap) sb_put(o, "    size += tide_heap_packed_size(&w->heap);\n");
     sb_put(o, "    if (size > UINT32_MAX) tide_out_of_memory();\n");
     sb_put(o, "    if (!out || size > capacity) return (uint32_t)size;\n");
@@ -5470,6 +6520,11 @@ static void gen_world_bytes(gen *g, const bool local)
         if (arch_local(g, a) == local) sb_printf(o, "    memset(&header.%s, 0, sizeof header.%s);\n", arch_name(g, a), arch_name(g, a));
     }
     sb_put(o, "    memset(&header.commands, 0, sizeof header.commands);\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, local)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    memset(&header.tide_tasks_%s, 0, sizeof header.tide_tasks_%s);\n", id, id);
+    }
     if (prog->uses_heap) sb_put(o, "    memset(&header.heap, 0, sizeof header.heap);\n");
     sb_put(o, "    tide_writer bytes = {out, capacity, 0, false};\n");
     sb_put(o, "    tide_write_bytes(&bytes, &header, sizeof header);\n");
@@ -5478,6 +6533,11 @@ static void gen_world_bytes(gen *g, const bool local)
         if (arch_local(g, a) == local) sb_printf(o, "    tide_table_pack(&w->%s, %s, &bytes);\n", arch_name(g, a), arch_columns(g, a));
     }
     sb_put(o, "    tide_queue_pack(&w->commands, sizeof(tide_command), &bytes);\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, local)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    tide_table_pack(&w->tide_tasks_%s, &tide_columns_tasks_%s, &bytes);\n", id, id);
+    }
     if (prog->uses_heap) sb_put(o, "    tide_heap_pack(&w->heap, &bytes);\n");
     sb_put(o, "    return bytes.size;\n}\n\n");
 
@@ -5492,6 +6552,11 @@ static void gen_world_bytes(gen *g, const bool local)
         if (arch_local(g, a) == local) sb_printf(o, "    memset(&w->%s, 0, sizeof w->%s);\n", arch_name(g, a), arch_name(g, a));
     }
     sb_put(o, "    memset(&w->commands, 0, sizeof w->commands);\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, local)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    memset(&w->tide_tasks_%s, 0, sizeof w->tide_tasks_%s);\n", id, id);
+    }
     if (prog->uses_heap) sb_put(o, "    memset(&w->heap, 0, sizeof w->heap);\n");
     sb_put(o, "    tide_reader bytes = {data, size, sizeof *w, false};\n");
     sb_put(o, "    bool ok = tide_entities_unpack(&w->entities, &bytes);\n");
@@ -5499,6 +6564,11 @@ static void gen_world_bytes(gen *g, const bool local)
         if (arch_local(g, a) == local) sb_printf(o, "    ok = ok && tide_table_unpack(&w->%s, %s, &bytes);\n", arch_name(g, a), arch_columns(g, a));
     }
     sb_put(o, "    ok = ok && tide_queue_unpack(&w->commands, sizeof(tide_command), &bytes);\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, local)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    ok = ok && tide_table_unpack(&w->tide_tasks_%s, &tide_columns_tasks_%s, &bytes);\n", id, id);
+    }
     if (prog->uses_heap) sb_put(o, "    ok = ok && tide_heap_unpack(&w->heap, &bytes);\n");
     sb_put(o, "    ok = ok && bytes.at == size;\n");
     sb_put(o, "    // Each row's entity is alive and there, and as many are there as are alive somewhere\n");
@@ -5535,6 +6605,12 @@ static void gen_world_copy(gen *g)
         if (!arch_local(g, a)) sb_printf(o, "    tide_table_copy(&to->%s, &from->%s, %s);\n", arch_name(g, a), arch_name(g, a), arch_columns(g, a));
     }
     sb_put(o, "    tide_queue_copy(&to->commands, &from->commands, sizeof(tide_command));\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, false)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    tide_table_copy(&to->tide_tasks_%s, &from->tide_tasks_%s, &tide_columns_tasks_%s);\n", id, id, id);
+    }
+    if (world_has_tasks(g, false)) sb_put(o, "    to->tide_task_order = from->tide_task_order;\n");
     if (prog->input) {
         sb_put(o, "    memcpy(to->inputs, from->inputs, sizeof to->inputs);\n");
         sb_put(o, "    memcpy(to->previous_inputs, from->previous_inputs, sizeof to->previous_inputs);\n");
@@ -5553,6 +6629,12 @@ static void gen_world_copy(gen *g)
         if (!arch_local(g, a)) sb_printf(o, "    h = tide_table_hash(h, &w->%s, %s);\n", arch_name(g, a), arch_columns(g, a));
     }
     sb_put(o, "    h = tide_queue_hash(h, &w->commands, sizeof(tide_command));\n");
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (!task_table_in(g->tasks.items[i].fn, false)) continue;
+        const char *id = task_id(g->tasks.items[i].fn);
+        sb_printf(o, "    h = tide_table_hash(h, &w->tide_tasks_%s, &tide_columns_tasks_%s);\n", id, id);
+    }
+    if (world_has_tasks(g, false)) sb_put(o, "    h = tide_hash_more(h, &w->tide_task_order, sizeof w->tide_task_order);\n");
     if (prog->input) {
         sb_put(o, "    h = tide_hash_more(h, w->inputs, sizeof w->inputs);\n");
         sb_put(o, "    h = tide_hash_more(h, w->previous_inputs, sizeof w->previous_inputs);\n");
@@ -5731,6 +6813,25 @@ static const char *layout_kind(const type t)
     return "TIDE_LAYOUT_PLAIN";
 }
 
+// A task's code and its frame's layout: a waiting task only carries over to a
+// build where they're the same (tide/migrate.h). The frames of what it awaits
+// are fields of its own, so theirs count too.
+static uint64_t frame_fingerprint(gen *g, const task_info *ti)
+{
+    uint64_t h = (0xCBF29CE484222325ull ^ ti->fingerprint) * 0x100000001B3ull;
+    const decl *frame = ti->frame;
+    for (int i = 0; i < frame->fields.count; i++) {
+        const field *f = &frame->fields.items[i];
+        sb part = {0};
+        sb_printf(&part, "%s %s %d;", field_cname(f), c_type(f->type), type_layout(f->type).size);
+        for (const char *p = part.data; *p; p++) h = (h ^ (uint8_t)*p) * 0x100000001B3ull;
+        for (int k = 0; f->type.kind == TY_STRUCT && k < g->tasks.count; k++) {
+            if (g->tasks.items[k].frame == f->type.decl) h = (h ^ frame_fingerprint(g, &g->tasks.items[k])) * 0x100000001B3ull;
+        }
+    }
+    return h;
+}
+
 static void gen_layout_world(gen *g, const layout_decls *types, const bool local)
 {
     const program *prog = g->prog;
@@ -5775,6 +6876,17 @@ static void gen_layout_world(gen *g, const layout_decls *types, const bool local
         sb_put(o, "};\n\n");
     }
 
+    // Its tables of tasks, named for their code and their frames' layout
+    int tasks = 0;
+    for (int i = 0; i < g->tasks.count; i++) {
+        const task_info *ti = &g->tasks.items[i];
+        if (!task_table_in(ti->fn, local)) continue;
+        if (tasks++ == 0) sb_printf(o, "static const tide_layout_tasks tide_layout_%s_tasks[] = {\n", side);
+        sb_printf(o, "    {\"" STR_FMT " %016llX\", sizeof(tide_task_%s)},\n", STR_ARG(ti->fn->qualified),
+                  (unsigned long long)frame_fingerprint(g, ti), task_id(ti->fn));
+    }
+    if (tasks) sb_put(o, "};\n\n");
+
     sb_printf(o, "#define TIDE_LAYOUT_%s {sizeof(%s), %d, ", local ? "LOCAL" : "MATCH", world, singletons);
     if (singletons) sb_printf(o, "tide_layout_%s_singletons, ", side);
     else sb_put(o, "NULL, ");
@@ -5787,7 +6899,13 @@ static void gen_layout_world(gen *g, const layout_decls *types, const bool local
     } else {
         sb_put(o, "-1, 0, 0, 0, ");
     }
-    sb_printf(o, "%s}\n\n", prog->uses_heap ? "true" : "false");
+    sb_printf(o, "%s, ", prog->uses_heap ? "true" : "false");
+    if (tasks) {
+        sb_printf(o, "%d, tide_layout_%s_tasks, offsetof(%s, tide_task_order), %s}\n\n", tasks, side, world,
+                  local ? "offsetof(tide_local, tide_frames)" : "0");
+    } else {
+        sb_put(o, "0, NULL, 0, 0}\n\n");
+    }
 }
 
 static void gen_layout(gen *g)
@@ -5890,6 +7008,7 @@ bool codegen(program *prog, const codegen_options *opts)
         if (prog->decls.items[i]->is_extern) sb_printf(opts->externs, "%s\n", prog->decls.items[i]->c_name);
     }
 
+    collect_tasks(&g);
     gen_header(&g);
     // The game's hash: its header, but for the first line, which names files.
     const char *types = strchr(g.h.data, '\n');
@@ -5913,9 +7032,12 @@ bool codegen(program *prog, const codegen_options *opts)
     if (prog->input) gen_sample(&g);
     if (prog->input && prog->input->sanitize) gen_sanitize(&g);
     if (prog->input && input_needs_repair(prog->input)) gen_repair(&g);
+    gen_tasks(&g);
     for (int i = 0; i < prog->systems.count; i++) gen_system_body(&g, prog->systems.items[i]);
     for (int i = 0; i < prog->views.count; i++) gen_system_body(&g, prog->views.items[i]);
-    for (int i = 0; i < prog->handlers.count; i++) gen_system_body(&g, prog->handlers.items[i]);
+    for (int i = 0; i < prog->handlers.count; i++) {
+        if (!prog->handlers.items[i]->is_async) gen_system_body(&g, prog->handlers.items[i]); // Those are tasks
+    }
     for (int i = 0; i < prog->events.count; i++) {
         for (int side = 0; side < 2; side++) {
             if (has_handlers(prog->events.items[i], side == 1)) gen_dispatcher(&g, prog->events.items[i], side == 1);

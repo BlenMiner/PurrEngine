@@ -1,0 +1,4 @@
+// expect: C functions can't be async: C runs to its end
+scene Main { }
+
+async extern float Noise(float x);

@@ -1,0 +1,130 @@
+// Tasks: async functions and handlers wait for ticks and for each other, and
+// keep what they need in the match while they wait.
+
+singleton Log
+{
+    int countdown;
+    int counted;
+    int started;
+    int doubled;
+    string said;
+    int failures;
+    string trail;
+}
+
+component Body
+{
+    float speed = 1;
+    int dashes;
+}
+
+scene Main { }
+
+event RoundStarted
+{
+    int from = 3;
+}
+
+enum GreetError
+{
+    Empty,
+}
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Body { });
+    Send(RoundStarted { from = 3 });
+}
+
+// A handler that waits: counts down a tick at a time.
+async event(RoundStarted round) Countdown(mut Log log)
+{
+    for (var i = round.from; i > 0; i--)
+    {
+        log.countdown = i;
+        await Wait.Ticks(1);
+    }
+    log.countdown = 0;
+    log.counted += 1;
+}
+
+// Its component, got again after the wait.
+async void Dash(mut Body body)
+{
+    body.speed = 10;
+    await Wait.Ticks(2);
+    body.speed = 1;
+    body.dashes += 1;
+}
+
+system StartDash(mut Body body)
+{
+    if (body.dashes == 0 && body.speed == 1) Dash(body);
+}
+
+async int Doubled(int x)
+{
+    await Wait.Ticks(1);
+    return x * 2;
+}
+
+async string Greet(string name) fails GreetError
+{
+    if (name == "") fail GreetError.Empty;
+    await Wait.Seconds(0.5);
+    return $"hi {name}";
+}
+
+// Awaits other async functions, for their values and their errors.
+async void Chain(mut Log log)
+{
+    var a = await Doubled(3);
+    var b = await Doubled(a) + 1;
+    log.doubled = b;
+    log.said = await Greet("ana") ?? "nobody";
+    if (await Greet("") is GreetError.Empty) log.failures += 1;
+    List<string> names = ["x", "y", "z"];
+    foreach (var n in names)
+    {
+        await Wait.Ticks(1);
+        log.trail = $"{log.trail}{n}";
+    }
+}
+
+system StartChain(mut Log log)
+{
+    if (log.started == 0)
+    {
+        log.started = 1;
+        Chain(log);
+    }
+}
+
+// A task ends with the entity whose code started it.
+component Doomed
+{
+    int age;
+}
+
+singleton Lingered
+{
+    int times;
+}
+
+event(Spawned) SetupDoomed(with Main)
+{
+    Spawn(Doomed { });
+}
+
+async void Linger(Doomed doomed, mut Lingered lingered)
+{
+    await Wait.Ticks(5);
+    lingered.times += doomed.age;
+}
+
+system Age(mut Doomed doomed, mut Lingered lingered)
+{
+    doomed.age += 1;
+    if (doomed.age == 1) Linger(doomed, lingered);
+    if (doomed.age == 3) this.Destroy();
+}

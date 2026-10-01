@@ -118,7 +118,7 @@ static const tide_layout_place old_singletons[] = {{OLD_RULES, offsetof(old_worl
 static const tide_layout old_layout = {
     5, old_types, 1, old_enums,
     {sizeof(old_world), 1, old_singletons, 4, old_archetypes, OLD_IN, offsetof(old_world, inputs),
-     offsetof(old_world, previous), 3, false},
+     offsetof(old_world, previous), 3, false, 0, NULL, 0, 0},
     {0},
 };
 
@@ -218,7 +218,7 @@ static const tide_layout_place new_singletons[] = {{NEW_RULES, offsetof(new_worl
 
 #define NEW_MATCH(archetypes, count)                                                                                \
     {sizeof(new_world), 1, new_singletons, count, archetypes, NEW_IN, offsetof(new_world, inputs),                  \
-     offsetof(new_world, previous), 3, false}
+     offsetof(new_world, previous), 3, false, 0, NULL, 0, 0}
 
 static const tide_layout new_layout = {4, new_types, 1, new_enums, NEW_MATCH(new_archetypes, 2), {0}};
 
@@ -503,6 +503,74 @@ TIDE_TEST(migrate_a_game_to_its_own_layout_changes_nothing)
     free(copy);
     free(local);
     free(local_copy);
+}
+
+// A waiting task carries over to a build where its code and its frame are the
+// same, and is dropped where they aren't.
+TIDE_TEST(migrate_carries_waiting_tasks_whose_code_is_the_same)
+{
+    const tide_layout *l = &tide_game_layout;
+    TIDE_REQUIRE(l->match.task_count == 1 && l->local.task_count == 1);
+    tide_world *w = calloc(1, sizeof *w);
+    tide_world *copy = calloc(1, sizeof *copy);
+    tide_world_init(w, 1.0f / 60.0f);
+    tide_world_tick(w);
+    TIDE_REQUIRE(w->tide_tasks_handler_Wander.count == 2);
+    tide_migration m;
+    TIDE_REQUIRE(carry(l, w, copy, &m));
+    TIDE_CHECK(m.tasks_dropped == 0);
+    TIDE_CHECK(same(w, copy));
+    // They go on the same in both
+    for (int i = 0; i < 40; i++) {
+        tide_world_tick(w);
+        tide_world_tick(copy);
+    }
+    TIDE_CHECK(same(w, copy));
+    TIDE_CHECK(unit_named(copy, "first!") != NULL);
+
+    // From a build where Wander's code was different
+    tide_world_init(w, 1.0f / 60.0f);
+    tide_world_tick(w);
+    tide_layout_tasks other = l->match.tasks[0];
+    other.name = "Wander 0000000000000000";
+    tide_layout changed = *l;
+    changed.match.tasks = &other;
+    TIDE_REQUIRE(carry(&changed, w, copy, &m));
+    TIDE_CHECK(m.tasks_dropped == 2);
+    TIDE_CHECK(copy->tide_tasks_handler_Wander.count == 0);
+    TIDE_CHECK(copy->tide_task_order == w->tide_task_order); // The order goes on all the same
+
+    // Local tasks, and the frames they count
+    static tide_draw_list draw;
+    static tide_gui gui;
+    tide_local *local = calloc(1, sizeof *local);
+    tide_local *local_copy = calloc(1, sizeof *local_copy);
+    tide_local_init(local);
+    for (int i = 0; i < 3; i++) tide_frame(NULL, NULL, 1.0f, local, &draw, &gui);
+    TIDE_REQUIRE(local->tide_tasks_function_Blink.count == 1);
+    const uint32_t size = tide_local_pack(local, NULL, 0);
+    uint8_t *bytes = malloc(size);
+    tide_local_pack(local, bytes, size);
+    void *carried = NULL;
+    uint32_t carried_size = 0;
+    TIDE_REQUIRE(tide_migrate_world(l, &l->local, bytes, size, l, &l->local, &carried, &carried_size, &m));
+    TIDE_CHECK(m.tasks_dropped == 0);
+    TIDE_REQUIRE(tide_local_unpack(local_copy, carried, carried_size));
+    TIDE_CHECK(local_copy->tide_frames == 3 && local_copy->tide_tasks_function_Blink.count == 1);
+    for (int i = 0; i < 7; i++) tide_frame(NULL, NULL, 1.0f, local_copy, &draw, &gui);
+    TIDE_CHECK(local_copy->Menu.shown == 0);
+    tide_frame(NULL, NULL, 1.0f, local_copy, &draw, &gui); // Frame 10: it started in frame 0
+    TIDE_CHECK(local_copy->Menu.shown == 1);
+    free(bytes);
+    free(carried);
+    tide_local_free(local);
+    tide_local_free(local_copy);
+    free(local);
+    free(local_copy);
+    tide_world_free(w);
+    tide_world_free(copy);
+    free(w);
+    free(copy);
 }
 
 TIDE_TEST(migrate_a_games_defaults_are_its_declared_ones)

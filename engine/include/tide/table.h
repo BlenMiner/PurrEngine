@@ -69,6 +69,10 @@ uint32_t tide_table_add(tide_table *t, const tide_columns *c);
 // table where the moved one went. Release its text and lists first.
 void tide_table_remove(tide_table *t, const tide_columns *c, uint32_t row, tide_entities *entities, uint32_t archetype);
 
+// Takes a row out of a table with no entities, like a world's tasks, moving
+// the last row into its place.
+void tide_table_remove_row(tide_table *t, const tide_columns *c, uint32_t row);
+
 // Moves a row to another table, as an entity gains or loses a component:
 // `map` gives, for each of `to`'s columns, `from`'s column with its values, or
 // -1 to leave it zero. Returns its row in `to`, where the entity table finds it.

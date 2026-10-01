@@ -959,6 +959,43 @@ TIDE_TEST(lsp_format_errors_as_values)
     TIDE_CHECK(has(format_reply(expected), "\"result\":[]"));
 }
 
+TIDE_TEST(lsp_async)
+{
+    start();
+    // Formatted already, with no diagnostics
+    static const char game[] =
+        "singleton Log { int n; }\n\n"
+        "async int Doubled(int x)\n{\n    await Wait.Ticks(1);\n    return x * 2;\n}\n\n"
+        "async event(Spawned) Count(mut Log log)\n{\n    log.n = await Doubled(2) + 1;\n}\n\n"
+        "scene Main { }\nsystem S(Log log)\n{\n    if (log.n == 0) Doubled(1);\n}\n";
+    open_document(game);
+    TIDE_CHECK(!has(last_sent(), "\"severity\""));
+    if (has(last_sent(), "\"severity\"")) printf("%s\n", last_sent());
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]"));
+    // A messy one: `async` stays where it is
+    static const char messy[] = "async void F( )\n{\nawait Wait.Frames( 2 );\n}\nscene Main { }\n";
+    static const char expected[] = "async void F()\n{\n    await Wait.Frames(2);\n}\nscene Main { }\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    TIDE_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+
+    // await and Wait in async code, and only there
+    const char *in_async = complete("async void F()\n{\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(in_async, "await"));
+    TIDE_CHECK(offers(in_async, "Wait"));
+    TIDE_CHECK(!offers(complete("scene Main { }\nsystem S()\n{\n    $\n}\n"), "await"));
+    const char *waits = complete("async void F()\n{\n    await Wait.$\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(waits, "Ticks") && offers(waits, "Frames") && offers(waits, "Seconds"));
+    TIDE_CHECK(offers(complete("$"), "async function"));
+
+    // Hovers: an async function's signature, and what Wait waits for
+    open_document("async int D() { await Wait.Ticks(1); return 1; }\nscene Main { }\nsystem S()\n{\n    D$();\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "async int D()"));
+    open_document("async void F()\n{\n    await Wait.Sec$onds(1);\n}\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "await Wait.Seconds(float seconds)"));
+}
+
 TIDE_TEST(lsp_format_loops)
 {
     start();

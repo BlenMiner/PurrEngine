@@ -1,0 +1,14 @@
+// expect: 'Push' gets its 'body' again each time it goes on, so it takes the caller's own: a parameter
+component Body { float speed; }
+scene Main { }
+
+async void Push(Body body)
+{
+    await Wait.Ticks(1);
+}
+
+system Start(Body body)
+{
+    var copy = body;
+    Push(copy);
+}

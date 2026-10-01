@@ -1,0 +1,11 @@
+// expect: methods can't be async yet; functions can
+struct Timer
+{
+    int left;
+
+    async void Run()
+    {
+    }
+}
+
+scene Main { }

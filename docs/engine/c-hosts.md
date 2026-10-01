@@ -41,7 +41,7 @@ The generated header is the API between the game and its host. Namespaced declar
 
 - `tide_world` is the whole match. Its data is in pages it shares with its snapshots, so a world starts zeroed (`{0}`, static or `calloc`), copying the struct isn't a snapshot (`tide_world_copy` is), and `tide_world_free(w)` lets it go.
 - `tide_world_init(w, dt)` clears it (what it had goes), sets `Time.dt` and the singletons' defaults, and loads `Main` if it's the match's. `tide_world_start(w, dt, start)` starts in another scene.
-- `tide_world_tick(w)` runs every system once, then applies structural changes and events. `tide_world_tick_on(w, jobs)` does the same on threads, with the same results: `tide_platform_jobs()` gives a pool with one per core (on the web, only in a cross-origin isolated page: NULL elsewhere), and sessions take it as `jobs` in their desc, as the standard host does. If that leaves no scene loaded, it loads `Main` again when it's the match's (`tide_frame` does the same for a local `Main`).
+- `tide_world_tick(w)` runs every system once, then applies structural changes and events, and the tasks whose time has come go on. `tide_world_tick_on(w, jobs)` does the same on threads, with the same results: `tide_platform_jobs()` gives a pool with one per core (on the web, only in a cross-origin isolated page: NULL elsewhere), and sessions take it as `jobs` in their desc, as the standard host does. If that leaves no scene loaded, it loads `Main` again when it's the match's (`tide_frame` does the same for a local `Main`).
 - `tide_world_ended(w)` says whether the match is over: its last scene unloaded and `Main` is local. A server stops there and tells every player, who go offline with `TIDE_DISCONNECT_ENDED`.
 - `tide_get_<Component>(w, entity)` gives an entity's component to change, or `NULL`. `tide_read_<Component>(w, entity)` gives it only to read, which leaves the pages the world shares with its snapshots shared.
 - `TIDE_AT(w, arch0_Body, Body, row)` reads a row's component in an archetype's storage, and `TIDE_ENTITY_AT(w, arch0_Body, row)` its entity: for tests and tools that go through every entity.
@@ -54,7 +54,8 @@ The generated header is the API between the game and its host. Namespaced declar
 **Local state**
 
 - `tide_local` is this machine's local state, outside every world. `tide_local_init(local)` clears it and sets its defaults, and `tide_local_free(local)` lets it go. `TIDE_MAIN_IS_LOCAL` is defined when `Main` is local.
-- `tide_frame(w, previous, alpha, local, draw, gui)` runs every view once, blending the match between `previous` and `w` by `alpha`, then applies the local changes they made. Pass `NULL` and 1 to draw `w` as it is, and `NULL` for `w` outside a match.
+- `tide_frame(w, previous, alpha, local, draw, gui)` runs every view once, blending the match between `previous` and `w` by `alpha`, then applies the local changes they made, and local tasks whose time has come go on. Pass `NULL` and 1 to draw `w` as it is, and `NULL` for `w` outside a match.
+- `tide_local_frame_time(local, seconds)` says how long this frame is, before `tide_frame`: local tasks' `Wait.Seconds` counts it down. Without it, they wait forever.
 
 **Input**
 
@@ -73,6 +74,7 @@ The generated header is the API between the game and its host. Namespaced declar
 ```c
 tide_draw_reset(&draw);
 tide_gui_begin(&gui, &devices, tide_platform_screen_size(), tide_platform_measure_text);
+tide_local_frame_time(&local, seconds);
 tide_frame(w, previous, alpha, &local, &draw, &gui);
 tide_gui_end(&gui, &draw);
 tide_platform_draw(&draw);

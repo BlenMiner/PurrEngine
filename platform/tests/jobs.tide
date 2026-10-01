@@ -72,6 +72,7 @@ singleton Stats
     int hits;
     int chipped;
     int matched;
+    int wobbled;
 }
 
 event Hit
@@ -192,4 +193,22 @@ system Rename(mut Name name, Body body)
 system Measure(Label label, mut Size size)
 {
     size.letters = label.text.Length;
+}
+
+// Tasks, started from a system that runs alongside others, many waiting at
+// once, which change components and text and spawn as they go on
+async void Wobble(mut Wheel wheel, mut Label label, mut Stats stats)
+{
+    await Wait.Ticks(3);
+    wheel.angle += 1;
+    label.text = $"{label.text}~";
+    stats.wobbled += 1;
+    await Wait.Seconds(0.05);
+    Spawn(Body { id = 300000 + stats.wobbled }, Rock, Label { text = "wobble" }, Size);
+    stats.wobbled += 1;
+}
+
+system Wobbly(Time time, mut Wheel wheel, mut Label label, Body body, mut Stats stats)
+{
+    if ((body.id + time.tick) % 300 == 0) Wobble(wheel, label, stats);
 }

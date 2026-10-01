@@ -30,6 +30,7 @@ static const struct {
     {"this", T_THIS},
     {"fail", T_FAIL},
     {"try", T_TRY},
+    {"await", T_AWAIT},
     {"is", T_IS},
     {"null", T_NULL},
 };
@@ -489,6 +490,7 @@ const char *tok_kind_name(const tok_kind kind)
     case T_THIS: return "'this'";
     case T_FAIL: return "'fail'";
     case T_TRY: return "'try'";
+    case T_AWAIT: return "'await'";
     case T_IS: return "'is'";
     case T_NULL: return "'null'";
     case T_COALESCE: return "'?\?'";

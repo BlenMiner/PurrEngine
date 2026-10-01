@@ -123,6 +123,7 @@ typedef struct param {
     bool read;    // The body names it
     bool written; // The body assigns through it
     bool function_param; // A method's or function's: a copy, or with mut, the caller's variable itself
+    bool task_ref;       // An async function's component or singleton: its task gets it again each time it goes on
 } param;
 
 // Why a system waits for one that runs before it in the tick (see parallel.c).
@@ -132,12 +133,20 @@ typedef enum conflict_kind {
     CONFLICT_EARLIER_WRITES, // The earlier system writes what this one reads
     CONFLICT_TEXT,           // Both write text or lists, which the match keeps in one heap
     CONFLICT_SPAWN,          // Both spawn: entities get their IDs in order
+    CONFLICT_TASKS,          // Both start tasks: the match keeps them in the order they start
 } conflict_kind;
 
 typedef struct conflict {
     struct decl *data; // A component or singleton
     conflict_kind kind;
 } conflict;
+
+// An async function's world (decl.task_side): what it does decides where it can run.
+enum {
+    TASK_EITHER, // Neither changes the match nor uses local state: it runs in whichever world starts it
+    TASK_MATCH,
+    TASK_LOCAL,
+};
 
 typedef struct system_wait {
     struct decl *on;         // A system earlier in the tick
@@ -247,6 +256,18 @@ typedef struct decl {
     bool calls_c;        // Code that calls an extern function, itself or through others: its calls run in order
     bool writes_text;    // A system that writes text into its world: its heap, which one system changes at a time
     bool spawns;         // A system that spawns or loads scenes: entity IDs are handed out in order
+    bool starts_tasks;   // Code that starts tasks, calling an async function without await: they're the world's, in order
+    loc starts_at;       // ...where it first does
+
+    // Async functions and handlers: they run as tasks, which can wait
+    bool is_async;       // `async`
+    loc async_at;        // The `async` keyword
+    int task_side;       // An async function's world, from what it does: TASK_EITHER, TASK_MATCH or TASK_LOCAL
+    loc task_side_at;    // ...where it first decides
+    bool task_root;      // Something starts it without await: its tasks have a table of their own
+    bool runs_in[2];     // Worlds it runs in, the match's ([0]) and the local one ([1]): codegen makes each
+    VEC(struct decl *) awaits;  // Async functions it awaits, once each: their frames are in its own
+    VEC(loc) await_at;          // ...and where it first awaits each
     VEC(struct decl *) callees; // Functions it calls, once each
     VEC(loc) callee_at;         // ...and where it first calls each
     uint64_t device_uses[DEVICE_WORDS]; // Device values it reads through parameters, a bit per device leaf
@@ -287,6 +308,7 @@ typedef enum expr_kind {
     E_IS,        // lhs is Type name: whether lhs holds a value (or error) of that type, which `binding` names
     E_TRY,       // try lhs: lhs's value, or its error passed on to the caller
     E_DEFAULTED, // lhs!: lhs's value, or its type's default when it failed or is nothing
+    E_AWAIT,     // await lhs: an async call's value once it's done, or Wait.Ticks(n) and the like
 } expr_kind;
 
 // What `x is ...` looks for.
@@ -317,6 +339,7 @@ typedef enum builtin_call {
     CALL_BLOCK,     // content(): runs the Block its function was given
     CALL_TEXT,      // name.Contains(...), text's methods: calls c_callee with the text first
     CALL_LIST,      // items.Add(...), a list's methods: `name` says which
+    CALL_WAIT,      // Wait.Ticks(n), Wait.Seconds(s) and Wait.Frames(n), awaited: `name` says which
 } builtin_call;
 
 // What a GUI call needs besides its arguments (expr.gui).

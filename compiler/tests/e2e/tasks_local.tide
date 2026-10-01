@@ -1,0 +1,99 @@
+// Local tasks: started from views and local handlers, they wait for this
+// machine's frames and seconds, and never touch the match.
+
+local singleton Account
+{
+    int state;      // 0 signed out, 1 signing in, 2 signed in, 3 failed
+    string name;
+    bool go;        // Sign in, as a button would
+    int frames;
+    int tries;
+    string token;
+}
+
+local component Toast
+{
+    string text;
+    bool shown;
+}
+
+component Ball
+{
+    float2 position;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Ball { position = float2(1, 2) });
+}
+
+enum SignInError
+{
+    NoName,
+}
+
+// A stand-in for a service: answers after half a second of this machine's time.
+async string Fetch(string name) fails SignInError
+{
+    if (name == "") fail SignInError.NoName;
+    await Wait.Seconds(0.5);
+    return $"token-{name}";
+}
+
+async void SignIn(mut Account account)
+{
+    account.state = 1;
+    account.tries += 1;
+    if (await Fetch(account.name) is string token)
+    {
+        account.token = token;
+        account.state = 2;
+        Spawn(Toast { text = $"welcome, {account.name}" });
+    }
+    else
+    {
+        account.state = 3;
+    }
+}
+
+view Login(mut Account account)
+{
+    if (!account.go) return;
+    account.go = false;
+    SignIn(account);
+}
+
+// Counts frames on its own, for each ball the match has.
+async void Watch(Ball ball, mut Account account)
+{
+    await Wait.Frames(2);
+    account.frames = int(ball.position.x) + 10;
+}
+
+view Balls(Ball ball, mut Account account)
+{
+    if (account.frames == 0)
+    {
+        account.frames = -1;
+        Watch(ball, account);
+    }
+}
+
+// A local handler that waits, for the toasts it's sent to.
+local event Shown { }
+
+async local event(Shown) Fade(mut Toast toast)
+{
+    await Wait.Frames(1);
+    toast.text = "";
+    this.Destroy();
+}
+
+view Toasts(mut Toast toast)
+{
+    if (toast.shown) return;
+    toast.shown = true;
+    this.Send(Shown { });
+}

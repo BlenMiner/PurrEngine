@@ -1,0 +1,10 @@
+// expect: ticks are the match's, and local code counts frames: 'await Wait.Frames(n);'
+local singleton Menu { int open; }
+local event Opened { }
+scene Main { }
+
+async local event(Opened) Animate(mut Menu menu)
+{
+    await Wait.Ticks(2);
+    menu.open = 1;
+}

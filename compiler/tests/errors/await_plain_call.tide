@@ -1,0 +1,15 @@
+// expect: 'await' waits for an async function's call, or for Wait, like 'await Wait.Ticks(30)'
+singleton Clock { int ticks; }
+scene Main { }
+
+int Twice(int x) { return x * 2; }
+
+async void Count(mut Clock clock)
+{
+    clock.ticks = await Twice(2);
+}
+
+system Start(mut Clock clock)
+{
+    if (clock.ticks == 0) Count(clock);
+}

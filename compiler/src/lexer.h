@@ -41,6 +41,7 @@ typedef enum tok_kind {
     T_THIS, // The entity the code runs for
     T_FAIL, // fail error;: ends a function that `fails`
     T_TRY,  // try call: its value, or its error passed on
+    T_AWAIT, // await call: an async call's value, once it's done
     T_IS,   // x is Type name
     T_NULL, // The nothing of a T?
 

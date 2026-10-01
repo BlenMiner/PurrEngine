@@ -42,3 +42,31 @@ event(Spawned) Setup(with Main)
     Spawn(Unit { position = float2(1, 2), name = "first" });
     Spawn(Unit { stats = Stats { level = 7 } }, Marker { });
 }
+
+// Tasks waiting in the match and in the local world as the game carries over
+async event(Spawned) Wander(mut Unit unit)
+{
+    var label = $"{unit.name}!";
+    await Wait.Ticks(30);
+    unit.position.x += 1;
+    unit.name = label;
+}
+
+local singleton Menu
+{
+    int shown;
+    bool started;
+}
+
+async void Blink(mut Menu menu)
+{
+    await Wait.Frames(10);
+    menu.shown += 1;
+}
+
+view Show(mut Menu menu)
+{
+    if (menu.started) return;
+    menu.started = true;
+    Blink(menu);
+}

@@ -17,6 +17,8 @@
 //   entities with the rest of its components go, and is dropped when no such
 //   storage exists in the new build.
 // - The inputs carry over like singletons, and the heap as it is.
+// - A waiting task carries over to a build where its code and its frame are
+//   the same (its table has the same name); the others are dropped.
 //
 // A world whose scene is gone can't be carried over.
 //
@@ -25,6 +27,7 @@
 
 typedef struct tide_migration {
     uint32_t entities_dropped;
+    uint32_t tasks_dropped;
     char failed[160]; // Why the world couldn't be carried over, or empty
 } tide_migration;
 

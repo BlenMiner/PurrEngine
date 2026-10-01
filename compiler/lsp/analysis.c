@@ -340,6 +340,7 @@ static void walk_expr(const expr *e)
     case E_COALESCE:
     case E_TRY:
     case E_DEFAULTED:
+    case E_AWAIT:
         walk_expr(e->lhs);
         walk_expr(e->rhs);
         break;
@@ -488,6 +489,12 @@ static void walk_expr(const expr *e)
                                  .name = str_from("Session")});
             o.kind = OCC_FUNCTION;
             o.owner = str_from("Session");
+            add_occ(o);
+        } else if (e->call == CALL_WAIT) {
+            add_occ((occurrence){.at = e->object->at, .len = 4, .kind = OCC_OWNER, .owner = str_from("Wait"),
+                                 .name = str_from("Wait")});
+            o.kind = OCC_FUNCTION;
+            o.owner = str_from("Wait");
             add_occ(o);
         } else if (e->call == CALL_METHOD || e->call == CALL_FUNCTION) { // stats.IsDead(), Combat.Heal(...)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
@@ -899,6 +906,7 @@ static void format_header(const decl *d, sb *out)
 {
     int first = 0;
     if (d->is_local) sb_put(out, "local ");
+    if (d->is_async) sb_put(out, "async ");
     if (d->is_handler && d->params.count > 0) {
         sb_put(out, "event(");
         format_param(&d->params.items[0], out);
@@ -927,8 +935,8 @@ static const char *builtin_event_doc(const program *prog, const decl *d)
 // `mut void Damage(float amount)`: a method's or function's signature.
 static void format_routine(const decl *m, sb *out)
 {
-    sb_printf(out, "%s%s" STR_FMT " " STR_FMT "(", m->is_extern ? "extern " : "", m->is_mut_method ? "mut " : "",
-              STR_ARG(m->return_type_name), STR_ARG(m->name));
+    sb_printf(out, "%s%s%s" STR_FMT " " STR_FMT "(", m->is_extern ? "extern " : "", m->is_async ? "async " : "",
+              m->is_mut_method ? "mut " : "", STR_ARG(m->return_type_name), STR_ARG(m->name));
     for (int i = 0; i < m->params.count; i++) {
         if (i) sb_put(out, ", ");
         format_param(&m->params.items[i], out);
@@ -1052,6 +1060,22 @@ static const struct {
     {"End", "Session.End()",
      "Ends the match this machine runs, for everyone: every player goes offline with `Ended`, and no other machine "
      "takes it over. On a client, it does nothing."},
+};
+
+// What async code waits for, after `await`.
+static const struct {
+    const char *name;
+    const char *form;
+    const char *doc;
+} wait_calls[] = {
+    {"Ticks", "await Wait.Ticks(int ticks)",
+     "Waits for the match's ticks: the task goes on `ticks` ticks later, in the task pass at the end of the tick. "
+     "Match code only."},
+    {"Frames", "await Wait.Frames(int frames)",
+     "Waits for this machine's frames: the task goes on `frames` frames later, at the end of the frame. Local code only."},
+    {"Seconds", "await Wait.Seconds(float seconds)",
+     "Waits for `seconds`: in the match, the nearest whole number of ticks, the same on every machine; in local code, "
+     "this machine's time, frame by frame."},
 };
 
 // What `default` is for type `t`, in words.
@@ -1201,6 +1225,8 @@ static void describe(const occurrence *o, sb *out)
                   : str_eq_c(o->name, "Scene")     ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
                   : str_eq_c(o->name, "Session")   ? "\n\nWhich match this machine is in: Play, Host, Join, Connect and Leave, from views "
                                                      "and local handlers. Take `Session session` to read where it stands."
+                  : str_eq_c(o->name, "Wait")      ? "\n\nWhat async code waits for, after `await`: the match's ticks, this "
+                                                     "machine's frames, or seconds."
                                                    : "\n\nMath functions and constants, deterministic on every platform.");
         break;
     case OCC_FUNCTION:
@@ -1213,6 +1239,9 @@ static void describe(const occurrence *o, sb *out)
             if (m->is_extern) {
                 sb_printf(out, "\n\nC function `%s`, which the game's C files or libraries define.",
                           o->decl->c_name ? o->decl->c_name : "?");
+            } else if (m->is_async) {
+                sb_put(out, "\n\nAsync function: `await` it for its value, or call it as a statement to start it as a "
+                            "task, which goes on by itself.");
             } else {
                 sb_put(out, "\n\nFunction: runs when it's called.");
             }
@@ -1229,6 +1258,12 @@ static void describe(const occurrence *o, sb *out)
                 if (!str_eq_c(o->name, session_calls[i].name)) continue;
                 code_block(out, session_calls[i].form);
                 sb_printf(out, "\n\n%s", session_calls[i].doc);
+            }
+        } else if (o->kind == OCC_FUNCTION && str_eq_c(o->owner, "Wait")) {
+            for (size_t i = 0; i < sizeof wait_calls / sizeof wait_calls[0]; i++) {
+                if (!str_eq_c(o->name, wait_calls[i].name)) continue;
+                code_block(out, wait_calls[i].form);
+                sb_printf(out, "\n\n%s", wait_calls[i].doc);
             }
         } else if (o->kind == OCC_FUNCTION && o->owner.len == 0 && str_eq_c(o->name, "Send")) {
             code_block(out, "Send(event)");
@@ -2584,6 +2619,15 @@ static void complete_members(completion *c, const int dot, const loc at, const b
             }
             return;
         }
+        // Wait.: what async code waits for
+        if (n == 1 && str_eq_c(base, "Wait") && sc.decl && sc.decl->is_async) {
+            for (size_t i = 0; i < sizeof wait_calls / sizeof wait_calls[0]; i++) {
+                sb snippet = {0};
+                sb_printf(&snippet, "%s($1)", wait_calls[i].name);
+                item(c, wait_calls[i].name, CK_FUNCTION, wait_calls[i].form, wait_calls[i].doc, snippet.data);
+            }
+            return;
+        }
         if (n == 1 && str_eq_c(base, "Scene") && sc.decl && !sc.in_input) {
             for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
                 sb snippet = {0};
@@ -2844,6 +2888,11 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     if (sc.decl && is_routine(sc.decl) && sc.decl->fails.kind != TY_VOID) {
         item(c, "try", CK_KEYWORD, NULL, "A call's value, or its error passed on to the caller.", NULL);
     }
+    // Async code waits
+    if (sc.decl && sc.decl->is_async) {
+        item(c, "await", CK_KEYWORD, NULL, "Waits for an async call's value, or for Wait: the task goes on from here.", NULL);
+        item(c, "Wait", CK_MODULE, "Ticks, frames and seconds to wait for", NULL, NULL);
+    }
     if (!statement) item(c, "default", CK_KEYWORD, NULL, NULL, NULL); // A statement's list has it, for switches
     // this: the entity the code runs for, or whose component a method is called on
     const type entity = this_type(&sc);
@@ -2950,6 +2999,12 @@ static void complete_declarations(completion *c)
          "Runs when the event is sent, at the end of the tick.", "event(${1:Event} ${2:e}) ${3:Name}($4)\n{\n    $0\n}");
     item(c, "function", CK_SNIPPET, "Type Name(parameters) { ... }", "Code other code calls, like 'float Heal(mut Stats stats)'.",
          "${1:void} ${2:Name}($3)\n{\n    $0\n}");
+    item(c, "async function", CK_SNIPPET, "async Type Name(parameters) { ... }",
+         "A function that can wait, with 'await': calling it starts a task that goes on by itself.",
+         "async ${1:void} ${2:Name}($3)\n{\n    $0\n}");
+    item(c, "async event handler", CK_SNIPPET, "async event(Event e) Name(parameters) { ... }",
+         "A handler that can wait, with 'await': each event starts a task.",
+         "async event(${1:Event} ${2:e}) ${3:Name}($4)\n{\n    $0\n}");
     item(c, "extern", CK_SNIPPET, "extern Type Name(parameters);",
          "A function written in C, which the game's C files or libraries define.", "extern ${1:void} ${2:Name}($3);");
     item(c, "const", CK_SNIPPET, "const Type NAME = value;", "A value code reads by name, the same on every machine.",
@@ -3023,6 +3078,9 @@ static bool starts_declaration(const int i)
     }
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_LPAREN && str_eq_c(t->text, "event")) {
         return true; // event(Hit hit) TakeHit(...)
+    }
+    if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_IDENT && str_eq_c(t->text, "async")) {
+        return true; // async void Countdown(), async event(...)
     }
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_LBRACE && str_eq_c(t->text, "settings")) {
         return true;
@@ -3484,7 +3542,7 @@ static const char *check_new_name(const occurrence *target, const str name)
 {
     static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with", "without", "if",
                                            "else", "return", "true", "false", "switch", "case", "default", "break",
-                                           "fail", "try", "is", "null"};
+                                           "fail", "try", "is", "null", "await"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
                                            "GUI", "GUILayout", "Screen", "Anchor", "Block", "Session", "SessionState",
@@ -3751,6 +3809,10 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
     } else if (method && str_eq_c(DOC->toks[open - 3].text, "Session")) {
         for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
             if (str_eq_c(name, session_calls[i].name)) add_signature(&s, session_calls[i].form, session_calls[i].doc);
+        }
+    } else if (method && str_eq_c(DOC->toks[open - 3].text, "Wait")) {
+        for (size_t i = 0; i < sizeof wait_calls / sizeof wait_calls[0]; i++) {
+            if (str_eq_c(name, wait_calls[i].name)) add_signature(&s, wait_calls[i].form, wait_calls[i].doc);
         }
     } else if (method && str_eq_c(name, "Send")) {
         add_signature(&s, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.");

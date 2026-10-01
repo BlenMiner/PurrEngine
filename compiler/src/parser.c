@@ -367,6 +367,20 @@ static expr *parse_unary(parser *p)
         e->lhs = parse_unary(p);
         return e;
     }
+    // await Load(name): binds like try. A `!` after the call is the awaited
+    // value's, as in `await Load(name)!`: its default when the task failed.
+    if (at(p, T_AWAIT)) {
+        const token *keyword = advance(p);
+        expr *e = new_expr(E_AWAIT, keyword->at);
+        e->lhs = parse_unary(p);
+        if (e->lhs->kind != E_DEFAULTED) return e;
+        expr *outer = e->lhs;
+        while (outer->lhs->kind == E_DEFAULTED) outer = outer->lhs;
+        expr *top = e->lhs;
+        e->lhs = outer->lhs;
+        outer->lhs = e;
+        return top;
+    }
     if (at(p, T_NOT) || at(p, T_MINUS) || at(p, T_TILDE)) {
         const token *op = advance(p);
         expr *e = new_expr(E_UNARY, op->at);
@@ -551,6 +565,7 @@ static bool at_decl_start_or_function(const parser *p, const bool functions)
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text)) return true;
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_LPAREN && str_eq_c(t->text, "event")) return true;
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_LBRACE && str_eq_c(t->text, "settings")) return true;
+    if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && str_eq_c(t->text, "async")) return true;
     if (t->kind == T_IDENT && t->at.col == 1 && str_eq_c(t->text, "local")
         && (peek_at(p, 1)->kind == T_COMPONENT || peek_at(p, 1)->kind == T_SINGLETON || peek_at(p, 1)->kind == T_SYSTEM)) {
         return true;
@@ -1229,6 +1244,14 @@ static decl *parse_data_decl(parser *p, const decl_kind kind)
             skip_statement(p);
             continue;
         }
+        if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "async") && (peek_at(p, 1)->kind == T_IDENT || peek_at(p, 1)->kind == T_MUT)) {
+            diag_error(peek(p)->at, "methods can't be async yet; functions can");
+            diag_note("write it as a function outside '" STR_FMT "' that takes the value: 'async void Name(...) { ... }'",
+                      STR_ARG(name->text));
+            if (!p->recover) longjmp(p->fail, 1);
+            advance(p);
+            continue;
+        }
         if (at_operator(p)) {
             if (p->recover) RECOVERING(p, vec_push(d->methods, parse_operator(p, d)));
             else vec_push(d->methods, parse_operator(p, d));
@@ -1412,11 +1435,19 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         }
         const token *t = peek(&p);
         // `local` before a declaration: it belongs to this machine, not the match.
+        // `async` before a function or an event handler: it runs as a task.
         const token *local = NULL;
-        const tok_kind after = peek_at(&p, 1)->kind;
-        if (t->kind == T_IDENT && str_eq_c(t->text, "local")
-            && (after == T_IDENT || after == T_COMPONENT || after == T_SINGLETON || after == T_SYSTEM)) {
-            local = advance(&p);
+        const token *async = NULL;
+        for (;;) {
+            const tok_kind after = peek_at(&p, 1)->kind;
+            if (!local && t->kind == T_IDENT && str_eq_c(t->text, "local")
+                && (after == T_IDENT || after == T_COMPONENT || after == T_SINGLETON || after == T_SYSTEM)) {
+                local = advance(&p);
+            } else if (!async && t->kind == T_IDENT && str_eq_c(t->text, "async") && (after == T_IDENT || after == T_MUT)) {
+                async = advance(&p);
+            } else {
+                break;
+            }
             t = peek(&p);
         }
         // Contextual keywords: only special at the start of a declaration or a
@@ -1472,6 +1503,14 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         if (local) {
             d->is_local = true;
             d->local_at = local->at;
+        }
+        if (async && (d->kind == DECL_FUNCTION || (d->kind == DECL_SYSTEM && d->is_handler))) {
+            d->is_async = true;
+            d->async_at = async->at;
+        } else if (async) {
+            diag_error(async->at, "'async' goes before a function or an event handler, like 'async void Countdown() { ... }'");
+            if (d->kind == DECL_SYSTEM) diag_note("%s runs again every %s, so it can't wait; it can start a task by calling an async function",
+                                                  d->is_view ? "a view" : "a system", d->is_view ? "frame" : "tick");
         }
         d->attributes.items = p.pending.items;
         d->attributes.count = p.pending.count;

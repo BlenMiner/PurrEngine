@@ -1,0 +1,16 @@
+// expect: a task can't wait inside a block written after a call: the function runs it
+scene Main { }
+
+void Twice(Block content)
+{
+    content();
+    content();
+}
+
+async void Blink()
+{
+    Twice()
+    {
+        await Wait.Ticks(1);
+    }
+}

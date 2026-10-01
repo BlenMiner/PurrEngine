@@ -34,7 +34,20 @@ typedef struct checker {
     VEC(expr *) sends;        // Send calls, checked against the handlers at the end.
     VEC(struct call_site) calls; // Calls of functions and methods: which draw, and which read devices.
     const expr *device_whole_ok; // A device record about to be checked that isn't read whole: a.b's a, or an argument
+    const expr *awaiting;     // The call an `await` is checking: an async call it waits for, not a task it starts
+    const expr *statement_call; // The call a statement makes: an async one starts a task
+    int block_depth;          // Inside a block written after a call, which runs where the function runs it
+    VEC(struct task_call) task_calls; // Calls of async functions: awaited, or starting tasks
 } checker;
+
+// A call of an async function: awaited, its frame part of the caller's, or
+// starting a task of its own.
+typedef struct task_call {
+    decl *from; // A system, view or handler, or an async function
+    decl *to;
+    const expr *call;
+    bool awaited;
+} task_call;
 
 // A call of a function, and the code it's in: a function, method, system,
 // view, handler or the input.
@@ -341,6 +354,49 @@ static void c_name_of(const decl *d, sb *out);
 static decl *reading_code(const checker *c)
 {
     return c->method ? c->method : c->system;
+}
+
+// An async function being checked: it runs as a task, in a world, so it can
+// spawn, send and change entities the way systems do. What it changes decides
+// which world (see note_task_side).
+static bool in_async_function(const checker *c)
+{
+    return c->method && c->method->is_async;
+}
+
+// A plain function or method being checked, which belongs to no world.
+static bool in_routine(const checker *c)
+{
+    return c->method && !c->method->is_async;
+}
+
+// Async code, which can wait: an async function, or an async handler.
+static bool async_code(const checker *c)
+{
+    return in_async_function(c) || (!c->method && c->system && c->system->is_async);
+}
+
+// The async function being checked changes the match (TASK_MATCH) or uses
+// local state (TASK_LOCAL) at `at`: that's its world. One that does both is an
+// error. Returns false after reporting it.
+static bool note_side(decl *fn, const int side, const loc at)
+{
+    if (fn->task_side == side) return true;
+    if (fn->task_side == TASK_EITHER) {
+        fn->task_side = side;
+        fn->task_side_at = at;
+        return true;
+    }
+    diag_error(at, "'" STR_FMT "' %s here, and %s on line %d, but a task runs in one world", STR_ARG(fn->name),
+               side == TASK_MATCH ? "changes the match" : "uses local state",
+               side == TASK_MATCH ? "uses local state" : "changes the match", fn->task_side_at.line);
+    diag_note("split it in two: the match's part, and a local one that reads the match");
+    return false;
+}
+
+static bool note_task_side(const checker *c, const int side, const loc at)
+{
+    return note_side(c->method, side, at);
 }
 
 // Code that uses a struct's operator calls it, so what the operator's code
@@ -1049,6 +1105,7 @@ static bool local_code(const checker *c)
 // code only changes local state; match code never touches it.
 static bool check_component_side(const checker *c, const expr *arg, const decl *d)
 {
+    if (in_async_function(c)) return note_task_side(c, d->is_local ? TASK_LOCAL : TASK_MATCH, arg->at);
     if (d->is_local == local_code(c)) return true;
     if (d->is_local) {
         diag_error(arg->at, "'" STR_FMT "' is local, and the match can't use local state", STR_ARG(d->name));
@@ -1068,6 +1125,13 @@ static const char *routines(const checker *c);
 // views and other functions can call it (see check_drawing_calls).
 static bool check_frame_use(checker *c, const loc at, const char *what)
 {
+    if (in_async_function(c)) {
+        const bool devices = strcmp(what, "Devices") == 0;
+        diag_error(at, "a task runs between frames, so it can't %s", devices ? "read this frame's Devices" : "draw");
+        diag_note(devices ? "read them in the view that starts it, and pass it what it needs"
+                          : "set what to show in local state, and draw that in a view");
+        return false;
+    }
     if (c->method && c->method->kind == DECL_FUNCTION) {
         if (!c->method->draws) {
             c->method->draws = true;
@@ -1132,6 +1196,7 @@ static bool check_entity_side(const checker *c, const expr *e)
 {
     const type_kind kind = e->object->type.kind;
     if (kind == TY_ERROR) return false;
+    if (in_async_function(c)) return note_task_side(c, kind == TY_LOCAL_ENTITY ? TASK_LOCAL : TASK_MATCH, e->at);
     if (local_code(c) && kind == TY_ENTITY) {
         diag_error(e->at, "%s can't change the match, and this entity belongs to it", local_code_what(c->system));
         diag_note("put what it wants in the input, and change the match in a system");
@@ -1150,7 +1215,7 @@ static bool check_entity_side(const checker *c, const expr *e)
 static type check_send(checker *c, expr *e)
 {
     const char *error = NULL;
-    if (c->method) error = "%s can't send events; systems and event handlers do";
+    if (in_routine(c)) error = "%s can't send events; systems and event handlers do";
     else if (c->in_input) error = "%s runs outside the simulation, so it can't send events";
     if (error) {
         diag_error(e->at, error, c->method ? routines(c) : input_code(c));
@@ -1177,6 +1242,10 @@ static type check_send(checker *c, expr *e)
         else if (event->is_local) diag_note("it's sent when this machine joins or leaves a match");
         else diag_note("it's sent when a player joins or leaves");
         return T_ERR;
+    }
+    if (in_async_function(c)) {
+        if (!note_task_side(c, event->is_local ? TASK_LOCAL : TASK_MATCH, e->args.items[0]->at)) return T_ERR;
+        e->local_world = event->is_local;
     }
     if (event->is_local != e->local_world) {
         if (event->is_local) {
@@ -1245,10 +1314,65 @@ static void check_method_args(checker *c, expr *e, decl *m)
     }
 }
 
+// A call of async function `fn`: awaited, its frame part of the caller's, or
+// as a statement, starting a task. A task belongs to a world, so plain
+// functions and methods can't start one. Its components and singletons are
+// looked up again each time it goes on, so they're the caller's own.
+static void check_task_call(checker *c, expr *e, decl *fn)
+{
+    const bool awaited = c->awaiting == e;
+    decl *from = reading_code(c);
+    if (!awaited && c->statement_call != e) {
+        diag_error(e->at, "'" STR_FMT "' is async: 'await' it for its %s, or call it as a statement to start it as a task",
+                   STR_ARG(fn->name), fn->return_type.kind == TY_VOID ? "end" : "value");
+        diag_note("a task goes on by itself, and a statement that starts one doesn't wait for it");
+        return;
+    }
+    if (!awaited && (in_routine(c) || c->in_input || !from)) {
+        diag_error(e->at, "'" STR_FMT "' is async, so calling it starts a task, which belongs to a world, and %s can't",
+                   STR_ARG(fn->name), in_routine(c) ? routines(c) : c->in_input ? input_code(c) : "this code");
+        if (in_routine(c) && c->method->kind == DECL_FUNCTION) {
+            diag_note("make '" STR_FMT "' async too, or start it from the system, view or handler that calls it",
+                      STR_ARG(c->method->name));
+        }
+        return;
+    }
+    // A system that starts tasks makes them in order, on one thread
+    if (!awaited && !c->method && from->kind == DECL_SYSTEM) {
+        if (!from->starts_tasks) from->starts_at = e->at;
+        from->starts_tasks = true;
+        note_text_write(c, true);
+        note_spawn(c);
+    }
+    for (int i = 0; i < e->args.count && i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        const expr *arg = e->args.items[i];
+        if (!p->task_ref || arg->type.kind == TY_ERROR) continue;
+        const bool own = arg->kind == E_NAME && arg->bind == BIND_PARAM && (!arg->param->function_param || arg->param->task_ref);
+        if (own) continue;
+        diag_error(arg->at, "'" STR_FMT "' gets its '" STR_FMT "' again each time it goes on, so it takes the caller's own: "
+                   "a parameter", STR_ARG(fn->name), STR_ARG(p->name));
+        diag_note("a task gets its components and singletons as they are: a copy would miss what changes while it waits");
+    }
+    if (awaited && from && from->kind == DECL_FUNCTION) {
+        bool known = false;
+        for (int i = 0; i < from->awaits.count; i++) known |= from->awaits.items[i] == fn;
+        if (!known) {
+            vec_push(from->awaits, fn);
+            vec_push(from->await_at, e->at);
+        }
+    }
+    if (from) {
+        const task_call call = {from, fn, e, awaited};
+        vec_push(c->task_calls, call);
+    }
+}
+
 // Heal(unit.stats, 5), or Combat.Heal(...) from elsewhere.
 static type check_function_call(checker *c, expr *e, decl *fn)
 {
     check_method_args(c, e, fn);
+    if (fn->is_async) check_task_call(c, e, fn);
     if (c->method && c->method->kind == DECL_FUNCTION) {
         bool known = false;
         for (int i = 0; i < c->method->callees.count; i++) known |= c->method->callees.items[i] == fn;
@@ -1308,7 +1432,7 @@ static type check_call(checker *c, expr *e)
     if (str_eq_c(e->name, "Send")) return check_send(c, e);
 
     if (str_eq_c(e->name, "Spawn")) {
-        if (c->method) {
+        if (in_routine(c)) {
             diag_error(e->at, "%s can't spawn entities; systems do", routines(c));
             return T_ERR;
         }
@@ -1332,6 +1456,7 @@ static type check_call(checker *c, expr *e)
         e->call = CALL_SPAWN;
         e->local_world = local_code(c);
         e->spawn_mask = check_component_list(c, e, "Spawn");
+        if (in_async_function(c)) e->local_world = c->method->task_side == TASK_LOCAL;
         for (int i = 0; i < c->prog->components.count; i++) {
             if (e->spawn_mask & bit(c->prog->components.items[i])) note_text_write(c, decl_holds_text(c->prog->components.items[i]));
         }
@@ -1469,9 +1594,13 @@ static type check_session_call(checker *c, expr *e)
         suggest_note(&s);
         return T_ERR;
     }
-    if (c->method || c->in_input || !local_code(c)) {
+    if (in_async_function(c) && !note_task_side(c, TASK_LOCAL, e->at)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
-        if (c->method) {
+        return T_ERR;
+    }
+    if (in_routine(c) || c->in_input || (!in_async_function(c) && !local_code(c))) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        if (in_routine(c)) {
             diag_error(e->at, "%s can't call Session." STR_FMT " yet; views and local handlers do", routines(c),
                        STR_ARG(e->name));
             diag_note("call it in the view, and pass what the function decides back, like a 'mut bool' or its result");
@@ -1578,14 +1707,14 @@ static type check_scene_call(checker *c, expr *e)
         return T_ERR;
     }
     const char *error = NULL;
-    if (c->method) error = "%s can't load or unload scenes; systems, views and event handlers do";
+    if (in_routine(c)) error = "%s can't load or unload scenes; systems, views and event handlers do";
     else if (c->in_input) error = "%s runs outside the simulation, so it can't load or unload scenes";
     if (error) {
         diag_error(e->at, error, c->method ? routines(c) : input_code(c));
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         return T_ERR;
     }
-    const bool local = local_code(c);
+    bool local = local_code(c);
     e->local_world = local;
 
     if (load) {
@@ -1634,6 +1763,10 @@ static type check_scene_call(checker *c, expr *e)
             }
         }
         if (!scene) return T_ERR;
+        if (in_async_function(c)) { // An async function's world is the scene's
+            if (!note_task_side(c, scene->is_local ? TASK_LOCAL : TASK_MATCH, arg->at)) return T_ERR;
+            local = e->local_world = scene->is_local;
+        }
         if (scene->is_local != local) {
             if (scene->is_local) {
                 diag_error(arg->at, "'" STR_FMT "' is local, and the match can't use local state", STR_ARG(scene->name));
@@ -1662,6 +1795,10 @@ static type check_scene_call(checker *c, expr *e)
         return T_ERR;
     }
     const type scene = e->args.items[0]->type;
+    if (in_async_function(c) && (scene.kind == TY_ENTITY || scene.kind == TY_LOCAL_ENTITY)) {
+        if (!note_task_side(c, scene.kind == TY_LOCAL_ENTITY ? TASK_LOCAL : TASK_MATCH, e->args.items[0]->at)) return T_ERR;
+        local = e->local_world = scene.kind == TY_LOCAL_ENTITY;
+    }
     const type_kind own = local ? TY_LOCAL_ENTITY : TY_ENTITY;
     if (scene.kind != TY_ERROR && scene.kind != own) {
         if (scene.kind == TY_ENTITY && local) {
@@ -1730,8 +1867,66 @@ static type check_gui_call(checker *c, expr *e, const type result)
 
 static type check_session_call(checker *c, expr *e);
 
+// Wait.Ticks(n), Wait.Frames(n) and Wait.Seconds(s), after `await`: the task
+// goes on n ticks or frames, or s seconds, later. Ticks are the match's, and
+// frames this machine's.
+static type check_wait(checker *c, expr *e)
+{
+    const bool ticks = str_eq_c(e->name, "Ticks");
+    const bool frames = str_eq_c(e->name, "Frames");
+    const bool seconds = str_eq_c(e->name, "Seconds");
+    for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+    if (!ticks && !frames && !seconds) {
+        diag_error(e->at, "Wait has no '" STR_FMT "'; it has Ticks, Frames and Seconds", STR_ARG(e->name));
+        suggestion s = suggest_start(e->name);
+        suggest_consider_c(&s, "Ticks");
+        suggest_consider_c(&s, "Frames");
+        suggest_consider_c(&s, "Seconds");
+        suggest_note(&s);
+        return T_ERR;
+    }
+    const type want = seconds ? T_FLOAT_ : T_INT_;
+    if (e->args.count != 1) {
+        diag_error(e->at, "Wait." STR_FMT " takes how many %s to wait: 'await Wait." STR_FMT "(%s);'", STR_ARG(e->name),
+                   ticks ? "ticks" : frames ? "frames" : "seconds", STR_ARG(e->name), seconds ? "0.5" : "30");
+        return T_ERR;
+    }
+    const expr *arg = e->args.items[0];
+    if (arg->type.kind != TY_ERROR && !type_assignable(want, arg->type)) {
+        diag_error(arg->at, "Wait." STR_FMT " takes %s, not %s", STR_ARG(e->name), seconds ? "seconds, a float" : "an int",
+                   type_name(arg->type));
+        return T_ERR;
+    }
+    // The match counts ticks, and this machine frames
+    if (ticks || frames) {
+        if (in_async_function(c)) {
+            if (!note_task_side(c, frames ? TASK_LOCAL : TASK_MATCH, e->at)) return T_ERR;
+        } else if (local_code(c) != frames) {
+            diag_error(e->at, frames ? "frames are this machine's, and the match counts ticks: 'await Wait.Ticks(n);'"
+                                     : "ticks are the match's, and local code counts frames: 'await Wait.Frames(n);'");
+            return T_ERR;
+        }
+    }
+    e->call = CALL_WAIT;
+    vec_push(e->arg_want, want);
+    return T_VOID_;
+}
+
+// Whether `e` names the built-in Wait, not a variable or a namespace.
+static bool names_wait(const checker *c, const expr *e)
+{
+    return e->kind == E_NAME && str_eq_c(e->name, "Wait") && !find_local(c, e->name) && !find_param(c, e->name)
+        && !is_namespace(c->prog, e->name);
+}
+
 static type check_method(checker *c, expr *e)
 {
+    if (names_wait(c, e->object)) {
+        if (c->awaiting == e) return check_wait(c, e);
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        diag_error(e->at, "Wait." STR_FMT " is waited for: 'await Wait." STR_FMT "(...);'", STR_ARG(e->name), STR_ARG(e->name));
+        return T_ERR;
+    }
     if (e->object->kind == E_NAME && str_eq_c(e->object->name, "Scene") && !find_local(c, e->object->name)
         && !find_param(c, e->object->name)) {
         return check_scene_call(c, e);
@@ -1830,7 +2025,7 @@ static type check_method(checker *c, expr *e)
         return T_ERR;
     }
     if (str_eq_c(e->name, "Send")) return check_send(c, e);
-    if (c->method) {
+    if (in_routine(c)) {
         diag_error(e->at, "%s can't change entities; systems do", routines(c));
         return T_ERR;
     }
@@ -1842,7 +2037,7 @@ static type check_method(checker *c, expr *e)
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
         return T_ERR;
     }
-    e->local_world = local_code(c);
+    e->local_world = in_async_function(c) ? obj.kind == TY_LOCAL_ENTITY : local_code(c);
 
     if (str_eq_c(e->name, "Add")) {
         e->call = CALL_ADD;
@@ -1902,7 +2097,7 @@ static type check_snap(checker *c, expr *e, decl *singleton)
 {
     for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
     if (e->args.count != 0) diag_error(e->at, "Snap takes no arguments");
-    if (c->method || c->in_input) {
+    if (in_routine(c) || c->in_input) {
         diag_error(e->at, "%s can't snap what views draw; systems and event handlers do",
                    c->method ? routines(c) : input_code(c));
         return T_ERR;
@@ -1912,7 +2107,9 @@ static type check_snap(checker *c, expr *e, decl *singleton)
         diag_error(e->at, "local state is never blended: views see it as it is");
         return T_ERR;
     }
-    if (local_code(c)) {
+    if (in_async_function(c)) {
+        if (!note_task_side(c, TASK_MATCH, e->at)) return T_ERR;
+    } else if (local_code(c)) {
         diag_error(e->at, "%s can't change the match, and snapping is part of it", local_code_what(c->system));
         diag_note("snap it in the system that moves it, so every machine draws the jump the same");
         return T_ERR;
@@ -2934,6 +3131,43 @@ static type check_is(checker *c, expr *e)
     return T_BOOL_;
 }
 
+// await call: waits for an async function's call to finish and gives its
+// value, or for Wait.Ticks(n) and the like. Only async code waits.
+static type check_await(checker *c, expr *e)
+{
+    expr *call = e->lhs;
+    const expr *outer = c->awaiting;
+    c->awaiting = call;
+    const type t = check_expr_any(c, call);
+    c->awaiting = outer;
+    if (!async_code(c)) {
+        diag_error(e->at, "'await' waits, and only async functions and handlers can");
+        if (in_routine(c) && c->method->kind == DECL_FUNCTION) {
+            diag_note("make it async: 'async " STR_FMT " " STR_FMT "(...)'", STR_ARG(c->method->return_type_name),
+                      STR_ARG(c->method->name));
+        } else if (!c->method && c->system && c->system->is_handler) {
+            diag_note("make the handler async: 'async event(...) " STR_FMT "(...)'", STR_ARG(c->system->name));
+        } else if (!c->method && c->system && c->system->kind == DECL_SYSTEM) {
+            diag_note("a %s runs again every %s; to wait, start a task: call an async function without 'await'",
+                      c->system->is_view ? "view" : "system", c->system->is_view ? "frame" : "tick");
+        }
+        return T_ERR;
+    }
+    if (c->block_depth > 0) {
+        diag_error(e->at, "a task can't wait inside a block written after a call: the function runs it");
+        return T_ERR;
+    }
+    if (t.kind == TY_ERROR) return T_ERR;
+    if (call->call == CALL_WAIT) return T_VOID_;
+    if ((call->kind == E_CALL || call->kind == E_METHOD) && call->call == CALL_FUNCTION && call->method->is_async) return t;
+    diag_error(e->at, "'await' waits for an async function's call, or for Wait, like 'await Wait.Ticks(30)'");
+    if ((call->kind == E_CALL || call->kind == E_METHOD) && call->call == CALL_FUNCTION) {
+        diag_note("'" STR_FMT "' isn't async: it runs to its end as it's called, so there's nothing to wait for",
+                  STR_ARG(call->method->name));
+    }
+    return T_ERR;
+}
+
 // An expression whose value is used: a failable call's or a T? has to be
 // unwrapped first.
 static type check_expr(checker *c, expr *e)
@@ -3040,6 +3274,7 @@ static type check_expr_any(checker *c, expr *e)
     case E_IS: t = check_is(c, e); break;
     case E_TRY: t = check_try(c, e); break;
     case E_DEFAULTED: t = check_defaulted(c, e); break;
+    case E_AWAIT: t = check_await(c, e); break;
     case E_UNARY: {
         const type operand = check_expr(c, e->lhs);
         if (operand.kind == TY_ERROR) break;
@@ -3726,7 +3961,11 @@ static void check_stmt(checker *c, stmt *s)
     }
     case S_EXPR: {
         expr *e = s->value;
+        // An async call alone starts a task: `Load(name);`, or `Load(name)!;`
+        const expr *outer_call = c->statement_call;
+        c->statement_call = e->kind == E_DEFAULTED ? e->lhs : e;
         check_expr_any(c, e);
+        c->statement_call = outer_call;
         // `Open()!` and `try Open()` are statements when what they unwrap is a call.
         const expr *called = e->kind == E_DEFAULTED || e->kind == E_TRY ? e->lhs : e;
         const builtin_call call = called->call;
@@ -3736,13 +3975,16 @@ static void check_stmt(checker *c, stmt *s)
                          || call == CALL_SEND || call == CALL_LOAD || call == CALL_UNLOAD || call == CALL_SCENE_PLAYER
                          || call == CALL_GUI || call == CALL_BLOCK || call == CALL_SESSION || call == CALL_SNAP
                          || (call == CALL_LIST && !str_eq_c(called->name, "Contains") && !str_eq_c(called->name, "IndexOf"))
-                         || e->kind == E_TRY; // Passes an error on, even from a variable
+                         || e->kind == E_TRY // Passes an error on, even from a variable
+                         || called->kind == E_AWAIT;
         if (!effect && e->type.kind != TY_ERROR) diag_error(e->at, "this expression does nothing on its own");
         // A call that can fail, whose error nothing looks at.
         if (e->type.kind == TY_FAILABLE && effect) {
-            diag_warning(e->at, "%s can fail, and nothing handles its error here", wrapped_what(e));
-            diag_note("handle it with 'is %s', pass it on with 'try', or carry on without it: '" STR_FMT "(...)!'",
-                      pattern_example(wrapped_error(e->type), true), STR_ARG(e->method ? e->method->name : e->name));
+            const expr *named = e->kind == E_AWAIT ? e->lhs : e;
+            diag_warning(e->at, "%s can fail, and nothing handles its error here", wrapped_what(named));
+            diag_note("handle it with 'is %s', pass it on with 'try', or carry on without it: '%s" STR_FMT "(...)!'",
+                      pattern_example(wrapped_error(e->type), true), e->kind == E_AWAIT ? "await " : "",
+                      STR_ARG(named->method ? named->method->name : named->name));
         }
         if (e->block) {
             // The block after a call: the caller's own code, run where the function runs it.
@@ -3756,7 +3998,9 @@ static void check_stmt(checker *c, stmt *s)
                 }
                 diag_note("is a ';' missing after the call?");
             }
+            c->block_depth++;
             check_stmt(c, e->block);
+            c->block_depth--;
         }
         break;
     }
@@ -4420,7 +4664,9 @@ static void check_signature(const checker *c, decl *m)
                 diag_error(p->name_at, "parameter '" STR_FMT "' is declared twice", STR_ARG(p->name));
             }
         }
-        p->type = method_type(c, p->type_name, p->type_qual_at, false);
+        decl *const singleton = m->is_async ? find_type(c, p->type_name, p->type_at) : NULL;
+        if (singleton && singleton->kind == DECL_SINGLETON) p->type = decl_type(singleton);
+        else p->type = method_type(c, p->type_name, p->type_qual_at, false);
         if (p->mode == PARAM_IN && !m->is_extern) {
             diag_error(p->at, "only extern functions take 'in' parameters: C gets a read-only pointer to the value");
             diag_note("a Tide %s's parameters are read-only already; drop 'in'", m->owner ? "method" : "function");
@@ -4729,6 +4975,39 @@ static void check_extern_decl(const checker *c, decl *fn)
     }
 }
 
+// An async function's parameters: copies of values, which its task keeps,
+// and components and singletons, which it gets again each time it goes on (a
+// world's pages move as its snapshots copy them), so a task never holds an
+// address. Local state and changing the match decide its world.
+static void check_async_decl(decl *fn)
+{
+    if (fn->is_extern) {
+        diag_error(fn->async_at, "C functions can't be async: C runs to its end");
+        fn->is_async = false;
+        return;
+    }
+    if (fn->takes_block) diag_error(fn->async_at, "a function that takes a Block can't be async yet");
+    for (int i = 0; i < fn->params.count; i++) {
+        param *p = &fn->params.items[i];
+        if (p->type.kind == TY_COMPONENT || p->type.kind == TY_SINGLETON) {
+            p->task_ref = true;
+            const decl *d = p->type.decl;
+            if (d->is_local) note_side(fn, TASK_LOCAL, p->type_at.line ? p->type_at : p->at);
+            else if (p->mode == PARAM_MUT) note_side(fn, TASK_MATCH, p->at);
+            continue;
+        }
+        if (p->type.kind == TY_RECORD) {
+            diag_error(p->at, "a task runs between frames, so it can't take the devices");
+            diag_note("pass it what it needs of them instead, like 'bool jumped'");
+        } else if (p->mode == PARAM_MUT && p->type.kind != TY_ERROR) {
+            diag_error(p->at, "a task can't keep the caller's '" STR_FMT "' while it waits, so it can't change it",
+                       STR_ARG(p->name));
+            diag_note("return the new value, or take the component or singleton it's in");
+            p->mode = PARAM_READ;
+        }
+    }
+}
+
 static void check_function_decl(const checker *c, decl *fn)
 {
     if (fn->is_mut_method) {
@@ -4737,6 +5016,7 @@ static void check_function_decl(const checker *c, decl *fn)
     }
     check_signature(c, fn);
     if (fn->is_extern) check_extern_decl(c, fn);
+    if (fn->is_async) check_async_decl(fn);
 }
 
 static void check_method_body(checker *c, decl *m)
@@ -5764,6 +6044,100 @@ static bool calls(const decl *from, const decl *target, const decl **seen, int *
     return false;
 }
 
+// Whether async function `from` awaits `target`, itself or through others.
+static bool awaits(const decl *from, const decl *target, const decl **seen, int *seen_count)
+{
+    for (int i = 0; i < from->awaits.count; i++) {
+        const decl *to = from->awaits.items[i];
+        if (to == target) return true;
+        bool visited = false;
+        for (int k = 0; k < *seen_count; k++) visited |= seen[k] == to;
+        if (visited) continue;
+        seen[(*seen_count)++] = to;
+        if (awaits(to, target, seen, seen_count)) return true;
+    }
+    return false;
+}
+
+// The world a call of an async function is made in: a system's or handler's,
+// a view's, or an async function's own (TASK_EITHER while nothing decides).
+static int caller_side(const decl *from)
+{
+    if (from->kind == DECL_FUNCTION) return from->task_side;
+    return is_local_code(from) ? TASK_LOCAL : TASK_MATCH;
+}
+
+// After every body: the world each async function runs in. What an async
+// function awaits or starts runs in its world too, so a callee's side is its
+// caller's; a function whose side nothing decides runs in whichever world
+// starts it, and codegen makes it for each. A function awaiting itself would
+// hold its own frame.
+static void resolve_tasks(checker *c)
+{
+    program *prog = c->prog;
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int i = 0; i < c->task_calls.count; i++) {
+            const task_call *t = &c->task_calls.items[i];
+            if (t->from->kind != DECL_FUNCTION || t->from->task_side != TASK_EITHER || t->to->task_side == TASK_EITHER) continue;
+            t->from->task_side = t->to->task_side;
+            t->from->task_side_at = t->call->at;
+            changed = true;
+        }
+    }
+    for (int i = 0; i < c->task_calls.count; i++) {
+        const task_call *t = &c->task_calls.items[i];
+        const int from = caller_side(t->from);
+        const int to = t->to->task_side;
+        if (from == TASK_EITHER || to == TASK_EITHER || from == to) continue;
+        const char *does = t->awaited ? "await" : "start";
+        if (to == TASK_LOCAL) {
+            diag_error(t->call->at, "'" STR_FMT "' uses local state, on line %d, so the match can't %s it",
+                       STR_ARG(t->to->name), t->to->task_side_at.line, does);
+            diag_note("local state belongs to one machine; %s it from local code, like a view", does);
+        } else {
+            diag_error(t->call->at, "'" STR_FMT "' changes the match, on line %d, so local code can't %s it",
+                       STR_ARG(t->to->name), t->to->task_side_at.line, does);
+            diag_note("put what it wants in the input, and %s it from a system", does);
+        }
+    }
+    for (int i = 0; i < prog->decls.count; i++) {
+        decl *h = prog->decls.items[i];
+        if (h->kind == DECL_SYSTEM && h->is_async) h->runs_in[h->is_local] = true;
+    }
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int i = 0; i < c->task_calls.count; i++) {
+            const task_call *t = &c->task_calls.items[i];
+            if (!t->awaited) t->to->task_root = true;
+            for (int w = 0; w < 2; w++) {
+                const bool runs = t->from->kind == DECL_FUNCTION ? t->from->runs_in[w] : is_local_code(t->from) == (w == 1);
+                if (!runs || t->to->runs_in[w]) continue;
+                t->to->runs_in[w] = true;
+                changed = true;
+            }
+        }
+    }
+    const decl **seen = arena_alloc(sizeof(decl *) * (size_t)(prog->decls.count + 1));
+    for (int i = 0; i < prog->decls.count; i++) {
+        decl *fn = prog->decls.items[i];
+        if (fn->kind != DECL_FUNCTION || !fn->is_async) continue;
+        int seen_count = 0;
+        if (awaits(fn, fn, seen, &seen_count)) {
+            diag_error(fn->at, "'" STR_FMT "' awaits itself, so its task would hold itself while it waits", STR_ARG(fn->name));
+            diag_note("loop instead, or start it again without 'await', as a task of its own");
+        }
+    }
+    // Tasks keep their text and lists in their world's heap, and make them in
+    // the scratch area as they go
+    for (int i = 0; i < prog->decls.count; i++) {
+        const decl *d = prog->decls.items[i];
+        if (!d->is_async || (d->kind == DECL_FUNCTION && !d->runs_in[0] && !d->runs_in[1])) continue;
+        prog->uses_heap = true;
+        prog->uses_text = true;
+    }
+}
+
 // Code that calls C, itself or through the functions and methods it calls,
 // may change what C keeps: its calls are side effects, which codegen runs in
 // source order like spawns (see hoist_spawns), whatever order C picks.
@@ -5790,7 +6164,7 @@ static void check_drawing_calls(checker *c)
         changed = false;
         for (int i = 0; i < prog->decls.count; i++) {
             decl *fn = prog->decls.items[i];
-            if (fn->kind != DECL_FUNCTION || fn->draws) continue;
+            if (fn->kind != DECL_FUNCTION || fn->draws || fn->is_async) continue;
             for (int k = 0; k < fn->callees.count && !fn->draws; k++) {
                 if (!fn->callees.items[k]->draws) continue;
                 fn->draws = true;
@@ -5802,9 +6176,15 @@ static void check_drawing_calls(checker *c)
     }
     for (int i = 0; i < c->calls.count; i++) {
         const call_site *site = &c->calls.items[i];
-        if (!site->to->draws || site->from->kind == DECL_FUNCTION) continue;
+        if (!site->to->draws || (site->from->kind == DECL_FUNCTION && !site->from->is_async)) continue;
         if (site->from->kind == DECL_SYSTEM && site->from->is_view) continue;
         const bool devices = site->to->frame_devices;
+        if (site->from->is_async) {
+            diag_error(site->call->at, "'" STR_FMT "' %s, and a task runs between frames", STR_ARG(site->to->name),
+                       devices ? "reads this frame's Devices" : "draws");
+            diag_note("set what to show in local state, and draw that in a view");
+            continue;
+        }
         diag_error(site->call->at, "'" STR_FMT "' %s, so only views and the functions they call can call it",
                    STR_ARG(site->to->name), devices ? "reads this frame's Devices" : "draws");
         diag_note("it %s on line %d, and %s", devices ? "reads them" : "draws", site->to->draws_at.line,
@@ -6052,6 +6432,7 @@ bool check(program *prog)
         if (diag_error_count() == errors) warn_unused_params(&c, d); // Errors hide uses
     }
     check_sends(&c);
+    resolve_tasks(&c);
     check_this_calls(&c);
     check_drawing_calls(&c);
     mark_c_callers(&c);

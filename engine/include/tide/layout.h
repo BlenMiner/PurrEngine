@@ -66,9 +66,19 @@ typedef struct tide_layout_archetype {
     const tide_layout_place *components; // Their columns, in order
 } tide_layout_archetype;
 
+// A world's table of tasks (tide/table.h, one column): those of an async
+// function or handler, named with a fingerprint of its code and its frame's
+// layout, so a waiting task only carries over to a build where both are the
+// same.
+typedef struct tide_layout_tasks {
+    const char *name;
+    uint32_t size; // A row's
+} tide_layout_tasks;
+
 // The match (tide_world) or the local world (tide_local), as its bytes are
 // (tide_world_pack): its struct with the storage zeroed, then its entity
-// table, its archetypes' tables in this order, its queue, and its heap.
+// table, its archetypes' tables in this order, its queue, its tables of tasks
+// in this order, and its heap.
 typedef struct tide_layout_world {
     uint32_t size; // Of its struct
     uint32_t singleton_count;
@@ -80,6 +90,10 @@ typedef struct tide_layout_world {
     uint32_t previous;     // ...and last tick's
     uint32_t input_count;
     bool heap;             // It has a heap
+    uint32_t task_count;
+    const tide_layout_tasks *tasks;
+    uint32_t task_order;   // With tasks: where its struct counts the tasks started so far
+    uint32_t frames;       // With tasks, the local world: where it counts its frames, which its tasks wait for
 } tide_layout_world;
 
 typedef struct tide_layout {

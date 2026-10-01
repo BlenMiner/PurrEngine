@@ -66,6 +66,7 @@ Some things are the whole match's, so systems wait for each other over them what
 
 - **Text and lists.** Two systems that change the match's text or lists conflict, since they share its heap. Reading text alongside them is fine.
 - **Spawns.** Entities get their IDs in order. A system that runs on one thread gives a new entity its ID as it spawns, so it waits for the systems before it that spawn. A system that splits its entities across threads doesn't wait: see below.
+- **Tasks.** A system that starts [tasks](../language/tasks.md) runs their code until they first wait, which can spawn and change text, and the match keeps its tasks in the order they start. So it runs on one thread, and waits for the systems before it that start tasks, spawn or change text. Tasks that go on later do so after the tick's changes, one at a time, in the order they started: `--schedule` says so at its end.
 
 ## Keeping it wide
 

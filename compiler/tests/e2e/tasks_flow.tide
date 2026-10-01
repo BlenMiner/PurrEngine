@@ -1,0 +1,161 @@
+// Tasks wait anywhere code goes: in loops' conditions, on the right of && and
+// ??, in switches, with try, and keep text, lists, structs and T? values
+// while they wait.
+
+enum Problem
+{
+    Empty,
+    Negative,
+}
+
+struct Note
+{
+    string text;
+    int n;
+}
+
+singleton Log
+{
+    string trail;
+    int sum;
+    int steps;
+    int ands;
+    int fallback;
+    int failed;
+    int children;
+    int either;
+}
+
+scene Main { }
+
+async int Later(int x)
+{
+    await Wait.Ticks(1);
+    return x;
+}
+
+async bool Yes()
+{
+    await Wait.Ticks(1);
+    return true;
+}
+
+async int Checked(int x) fails Problem
+{
+    await Wait.Ticks(1);
+    if (x == 0) fail Problem.Empty;
+    if (x < 0) fail Problem.Negative;
+    return x;
+}
+
+async int Sum(int a, int b) fails Problem
+{
+    var x = try await Checked(a);
+    var y = try await Checked(b);
+    return x + y;
+}
+
+async void Opened(bool ok) fails Problem
+{
+    await Wait.Ticks(1);
+    if (!ok) fail Problem.Empty;
+}
+
+int? Find(List<int> items, int wanted)
+{
+    for (var i = 0; i < items.Count; i++)
+    {
+        if (items[i] == wanted) return i;
+    }
+    return null;
+}
+
+// Neither world's: it runs in each that starts it.
+async int Either(int x)
+{
+    await Wait.Seconds(0.1);
+    return x + 1;
+}
+
+async void Child(mut Log log)
+{
+    await Wait.Ticks(2);
+    log.children += 1;
+}
+
+async void Flow(mut Log log)
+{
+    // A struct with text, a list and a T? wait with the task
+    mut var note = Note { text = "a", n = 1 };
+    mut List<int> items = [3, 4];
+    int? found = Find(items, 4);
+    await Wait.Ticks(1);
+    note.text = $"{note.text}b";
+    items.Add(5);
+    log.trail = $"{note.text}{items.Count}{found ?? -1}";
+
+    // In a loop's condition
+    mut var n = 0;
+    while (await Later(n) < 3)
+    {
+        n += 1;
+        log.steps += 1;
+    }
+
+    // On the right of && and ??
+    if (n == 3 && await Yes()) log.ands += 1;
+    log.fallback = await Checked(0) ?? 42;
+
+    // In a switch, and a for's step
+    for (var i = 0; i < 3; i = await Later(i + 1))
+    {
+        switch (i)
+        {
+        case 1:
+            log.sum += await Later(10);
+            break;
+        default:
+            log.sum += 1;
+            break;
+        }
+    }
+
+    // try in an async function, and errors of a failable void
+    if (await Sum(2, -1) is Problem.Negative) log.failed += 1;
+    log.sum += await Sum(2, 3) ?? 0;
+    if (await Opened(false) is Problem why) log.failed += 1;
+    await Opened(true)!;
+
+    // A task started by a task, which doesn't wait for it
+    Child(log);
+    log.either = await Either(1);
+    log.trail = $"{log.trail}|done";
+}
+
+system Start(mut Log log)
+{
+    if (log.steps == 0 && log.trail == "")
+    {
+        log.trail = "-";
+        Flow(log);
+    }
+}
+
+local singleton Seen
+{
+    int either;
+}
+
+view Show(mut Seen seen)
+{
+    if (seen.either == 0)
+    {
+        seen.either = -1;
+        Mark(seen);
+    }
+}
+
+async void Mark(mut Seen seen)
+{
+    seen.either = await Either(5);
+}

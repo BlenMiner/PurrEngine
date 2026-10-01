@@ -1,0 +1,7 @@
+// expect: Wait.Ticks is waited for: 'await Wait.Ticks(...);'
+scene Main { }
+
+async void Later()
+{
+    Wait.Ticks(1);
+}

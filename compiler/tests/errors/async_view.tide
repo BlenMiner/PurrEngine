@@ -1,0 +1,6 @@
+// expect: 'async' goes before a function or an event handler, like 'async void Countdown() { ... }'
+scene Main { }
+
+async view Menu()
+{
+}

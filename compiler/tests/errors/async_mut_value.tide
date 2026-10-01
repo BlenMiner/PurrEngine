@@ -1,0 +1,8 @@
+// expect: a task can't keep the caller's 'count' while it waits, so it can't change it
+scene Main { }
+
+async void Bump(mut int count)
+{
+    await Wait.Ticks(1);
+    count += 1;
+}

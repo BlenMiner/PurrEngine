@@ -729,6 +729,70 @@ system Score(mut Board board)
 - `T?` in fields, lists and inputs, and `??=`.
 - `switch` on an error, and functions that take a Block failing.
 
+## Tasks
+
+### Decided
+
+- `async` and `await`, as in C#. `async` before a function lets it wait with `await`, and pick up where it stopped. There's no `Task<T>`: the function's type is its value's, `async int Doubled(int x)`, and `await Doubled(3)` gives it.
+- A call of an async function that isn't awaited starts a task, which goes on by itself.
+- Tasks run in the match as well as in local code. A match task is part of the match: snapshots, hashes and rollback hold it, players who join get it, and it carries on when the match changes hands. Match code only waits for what's the same on every machine (ticks, time, events); a service's answer reaches the match through input.
+- A task ends when whatever started it does.
+
+```csharp
+singleton Round
+{
+    int count;
+}
+
+event RoundStarted { }
+
+async event(RoundStarted) Countdown(mut Round round)
+{
+    for (var i = 3; i > 0; i--)
+    {
+        round.count = i;
+        await Wait.Seconds(1);
+    }
+    round.count = 0;
+}
+
+async int Doubled(int x)
+{
+    await Wait.Ticks(1);
+    return x * 2;
+}
+
+system Start(mut Round round)
+{
+    if (round.count == 0) Doubled(2); // Starts a task; its value is dropped
+}
+```
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- `async` goes before a function or an event handler, after `local` if it has one (`local async event(...)`); before anything else it's an error that says where it goes. Methods can't be async yet, nor extern functions or functions that take a Block. `await` is a keyword, and binds like `try`: `await Doubled(3) + 1` adds 1 to the value. A `!` after an awaited call is the awaited value's: `await Fetch(name)!`.
+- An async call is awaited, from async code (async functions and handlers), or a statement of its own, which starts a task; using its value without `await` is an error that says which to write. A started task's value is dropped; one that can fail is warned about as a call that can fail is, and `Load(name)!;` starts it without the warning. Only systems, views, handlers and async code start tasks: a plain function or method can't, as a task belongs to a world.
+- `await` waits for an async call, or for `Wait.Ticks(n)` (the match's ticks; match code only), `Wait.Frames(n)` (this machine's frames; local code only) or `Wait.Seconds(s)`: in the match, the nearest whole number of ticks, at least one; in local code, this machine's time, which hosts give each frame (`tide_local_frame_time`) and a task counts down frame by frame, within a tenth of a millisecond. A wait of 0 or less doesn't wait. `Wait` only goes after `await`. `await` isn't allowed in a block written after a call.
+- Async code is a state machine, as in C#: a call of an async function runs until it first waits, inside the code that calls it. An awaited call's frame is part of the caller's, so a task is one frame however deep it awaits, and an async function can't await itself (it can start itself again, as a task of its own).
+- A task keeps its parameters and locals while it waits, copied, with their text and lists in its world's heap. An async function's component and singleton parameters aren't kept: it gets them again each time it goes on, as they are then, from the entity it belongs to, so the caller passes its own (a parameter), and a task whose entity lost one ends. Its `mut` parameters are only components and singletons; it can't keep the caller's other variables. Plain functions still take no singletons.
+- An async handler is a task per event: its event is copied into the task, and its components are the entity's, got again after each wait.
+- An async function's world comes from what it does: changing the match (spawning, `mut` match components and singletons, sending match events, entity changes, `Snap`, `Wait.Ticks`) makes it match code, and local state (local components and singletons, `Session` calls, `Wait.Frames`) makes it local. What it awaits or starts decides it too. One that does neither runs in whichever world starts it, and tidec makes it for each. Doing both is an error, as is starting or awaiting one from the other world. Tasks can't draw or read this frame's `Devices`.
+- A task belongs to the entity the code that started it runs for, or with a task, to that task's entity, and ends when it's destroyed; code that runs for no entity starts tasks that belong to their world. A local task can belong to a match entity (a view of the match's entities started it), and ends with it, or when there's no match.
+- Tasks go on at the end of the tick, after its changes and events, one after another in the order they started, those whose time has come; what they change applies after them, and their handlers can start more. Local tasks do the same at the end of the frame. A world keeps its waiting tasks in a table for each async function and handler, a row each: when it started, when it looks again, its owner and its frame.
+- A system that starts tasks runs on one thread, and waits for the systems before it that start tasks, spawn or change text, as the code its tasks run until they first wait can do those. `--schedule` names it.
+- Under `tide run`, a waiting task carries over to a build where its function's code, the code of what it awaits, and its frame's layout are the same; otherwise it's dropped, and tide says how many were.
+
+### Open
+
+- Awaiting an event: `await Hit` on an entity, which a task would wake for in the event's turn.
+- Async C functions, which C finishes later (a service's answer), for local code.
+- Holding a running call to await later, like C#'s `Task.WhenAll`: `var` could hold it without its type being written, as with errors.
+- Cancelling a task from code, through a handle.
+- Methods and functions that take a Block being async, and `await` inside a block written after a call.
+- Local handlers of match events (see Events), which a local task awaiting a match event would need too.
+
 ## Input
 
 ### Decided

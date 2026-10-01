@@ -64,6 +64,7 @@ export default defineConfig({
                     { text: 'Math', link: '/language/math' },
                     { text: 'Text and lists', link: '/language/text-and-lists' },
                     { text: 'Events', link: '/language/events' },
+                    { text: 'Async and tasks', link: '/language/tasks' },
                     { text: 'Scenes', link: '/language/scenes' },
                     { text: 'Input', link: '/language/input' },
                     { text: 'Views and drawing', link: '/language/views' },

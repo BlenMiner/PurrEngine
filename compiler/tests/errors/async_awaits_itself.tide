@@ -1,0 +1,13 @@
+// expect: 'Again' awaits itself, so its task would hold itself while it waits
+scene Main { }
+
+async void Again(int n)
+{
+    await Wait.Ticks(1);
+    if (n > 0) await Again(n - 1);
+}
+
+system Start()
+{
+    Again(3);
+}

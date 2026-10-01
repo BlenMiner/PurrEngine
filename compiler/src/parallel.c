@@ -57,8 +57,14 @@ bool system_splits(const decl *sys)
 // calling it makes no system wait.
 static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
-    if (earlier->writes_text && later->writes_text) add_conflict(w, CONFLICT_TEXT);
-    if (earlier->spawns && later->spawns && !system_splits(later)) add_conflict(w, CONFLICT_SPAWN);
+    // Starting a task runs its code until it first waits, which can spawn and
+    // change text, and the match keeps its tasks in the order they start.
+    if (earlier->starts_tasks || later->starts_tasks) {
+        if ((earlier->writes_text || earlier->spawns) && (later->writes_text || later->spawns)) add_conflict(w, CONFLICT_TASKS);
+    } else {
+        if (earlier->writes_text && later->writes_text) add_conflict(w, CONFLICT_TEXT);
+        if (earlier->spawns && later->spawns && !system_splits(later)) add_conflict(w, CONFLICT_SPAWN);
+    }
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
         const bool component = a->type.kind == TY_COMPONENT;
@@ -181,6 +187,7 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
     static const char *const shared[] = {
         [CONFLICT_TEXT] = "both change text or lists, which the match keeps in one heap",
         [CONFLICT_SPAWN] = "both spawn, and entities get their IDs in order",
+        [CONFLICT_TASKS] = "tasks start in order, and spawn and change text as they start",
     };
     bool first_part = true;
     for (int i = 0; i < w->conflicts.count; i++) {
@@ -293,8 +300,19 @@ void print_schedule(const program *prog, const char *game, sb *out)
             for (int k = 0; k < event->handlers.count; k++) {
                 if (k) sb_put(out, ", ");
                 put_decl_name(out, event->handlers.items[k], "", NULL);
+                if (event->handlers.items[k]->is_async) sb_put(out, " (async)");
             }
             sb_put(out, "\n");
         }
+    }
+
+    // Tasks go on in a pass of their own, once the tick's changes are in
+    bool tasks = false;
+    for (int i = 0; i < prog->decls.count && !tasks; i++) {
+        const decl *d = prog->decls.items[i];
+        tasks = d->is_async && (d->kind == DECL_SYSTEM ? !d->is_local : d->runs_in[0]);
+    }
+    if (tasks) {
+        sb_put(out, "\nTasks go on after the tick's changes, in the order they started; what they change applies after.\n");
     }
 }

@@ -1,0 +1,14 @@
+// expect: 'Drop' changes the match, on line 8, so local code can't start it
+component Ball { float x; }
+scene Main { }
+
+async void Drop()
+{
+    await Wait.Seconds(1);
+    Spawn(Ball { });
+}
+
+view Show()
+{
+    Drop();
+}

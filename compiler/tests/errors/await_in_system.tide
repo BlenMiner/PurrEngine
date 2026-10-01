@@ -1,0 +1,9 @@
+// expect: 'await' waits, and only async functions and handlers can
+singleton Clock { int ticks; }
+scene Main { }
+
+system Tick(mut Clock clock)
+{
+    await Wait.Ticks(1);
+    clock.ticks += 1;
+}

@@ -1,0 +1,17 @@
+// expect: 'Later' is async, so calling it starts a task, which belongs to a world, and functions can't
+scene Main { }
+
+async void Later()
+{
+    await Wait.Ticks(1);
+}
+
+void Now()
+{
+    Later();
+}
+
+system Start()
+{
+    Now();
+}

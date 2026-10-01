@@ -1,0 +1,14 @@
+// expect: 'Twice' is async: 'await' it for its value, or call it as a statement to start it as a task
+singleton Clock { int ticks; }
+scene Main { }
+
+async int Twice(int x)
+{
+    await Wait.Ticks(1);
+    return x * 2;
+}
+
+system Start(mut Clock clock)
+{
+    clock.ticks = Twice(2);
+}
