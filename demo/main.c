@@ -91,6 +91,7 @@ static int play_frame(const float seconds)
     snprintf(stats, sizeof stats, "tick %d   entities %u   ping %u ms   %d fps", match ? (int)match->Time.tick : 0,
              match ? (unsigned)tide_world_entity_count(match) : 0u, (unsigned)status.client.ping_ms, tide_platform_fps());
     tide_platform_draw_overlay(stats);
+    tide_platform_next_frame(tide_session_until_tick(session)); // While minimized: the next tick
     return TIDE_KEEP_RUNNING;
 }
 

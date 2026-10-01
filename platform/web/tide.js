@@ -246,11 +246,14 @@
     // timers to about one a second, which would stop this machine's part in a
     // match, a server its players time out of or a player its server drops. A
     // worker's timers keep their pace, so while the page is hidden, frames come
-    // from a worker's, 60 times a second, and draw nothing (tide_web_hidden).
+    // from a worker's, when the program says it next needs one (its match's
+    // next tick), and draw nothing (tide_web_hidden).
     let timerFrames = false;
     let looping = false;   // The program runs frames
     let scheduled = false; // A frame is scheduled, on the page's own clock
     let heartbeat = null;  // The worker, while the page is hidden
+    let beating = false;   // ...which has a frame coming
+    let nextFrame = 1000 / 60; // Milliseconds until the program needs a frame, as its last one said
     function scheduleFrame() {
         if (scheduled || heartbeat) return;
         scheduled = true;
@@ -261,20 +264,29 @@
         scheduled = false;
         if (looping) frame();
     }
+    function beat() {
+        if (beating) return; // One frame coming at a time, whatever else runs one
+        beating = true;
+        heartbeat.postMessage(nextFrame);
+    }
     function stopHeartbeat() {
         if (heartbeat) heartbeat.terminate();
         heartbeat = null;
+        beating = false;
     }
     function followVisibility() {
         if (document.hidden && !heartbeat && looping) {
             try {
-                const beat = 'setInterval(() => postMessage(0), 1000 / 60);';
-                heartbeat = new Worker(URL.createObjectURL(new Blob([beat], { type: 'text/javascript' })));
+                const wait = 'onmessage = event => setTimeout(() => postMessage(0), event.data);';
+                heartbeat = new Worker(URL.createObjectURL(new Blob([wait], { type: 'text/javascript' })));
                 heartbeat.onmessage = () => {
+                    beating = false;
                     if (!looping) stopHeartbeat(); // The program is over
                     else if (document.hidden) frame();
                 };
+                beat();
             } catch (error) { // Frames come as slowly as the browser lets them
+                heartbeat = null;
                 printErr('tide: no worker to keep frames going while the page is hidden: ' + error);
             }
         } else if (!document.hidden && heartbeat) {
@@ -290,13 +302,17 @@
         }
         fit();
         try {
-            exports.tide_web_frame();
+            // Timers take whole milliseconds, dropping the rest: one rounded
+            // down would come before the tick, for nothing
+            const seconds = exports.tide_web_frame();
+            nextFrame = seconds > 0 ? Math.ceil(seconds * 1000) : 0;
         } catch (error) {
             looping = false;
             if (!(error instanceof Exit)) fail(error);
             return;
         }
-        scheduleFrame();
+        if (heartbeat) beat();
+        else scheduleFrame();
     }
 
     const platform = {

@@ -466,6 +466,7 @@ static int reload_frame(void *user, const float seconds)
     }
     const int code = tide_run_frame(user, seconds);
     rejoin(seconds);
+    tide_platform_next_frame(0.1 - reload.since_check); // New builds, whatever the tick rate
     return code;
 }
 

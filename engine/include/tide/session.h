@@ -295,6 +295,11 @@ void tide_session_fail(tide_session *s, tide_disconnect_reason reason);
 // server, a long gap since the last update is a pause (a breakpoint, a
 // browser that froze the page): the match goes on from where it stopped.
 void tide_session_update(tide_session *s, double now);
+// Seconds from the last update until the match is due its next tick: when it
+// next needs an update, for a host with nothing else to do meanwhile, like one
+// whose window nobody sees (tide_platform_next_frame). Outside a match, or
+// while one starts, a tick at the rate it runs or would start at.
+double tide_session_until_tick(const tide_session *s);
 // What views read, or NULL outside a match.
 const void *tide_session_world(const tide_session *s);
 // What views draw, blended between ticks (see tide_view_worlds).

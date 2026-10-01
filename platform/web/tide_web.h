@@ -48,9 +48,10 @@ TIDE_WEB_IMPORT(gamepad_button) float tide_web_gamepad_button(int pad, int butto
 
 // Starts calling the exported tide_web_frame, on animation frames or, with
 // `timer_frames`, as fast as timers allow (headless pages have no animation
-// frames). While the page is hidden, frames come from a worker's timers, 60 a
-// second, since browsers slow the page's own. Doesn't return: it unwinds
-// main's stack back to the browser.
+// frames). While the page is hidden, frames come from a worker's timers, since
+// browsers slow the page's own, each when tide_web_frame said the next is
+// needed (tide_platform_next_frame). Doesn't return: it unwinds main's stack
+// back to the browser.
 TIDE_WEB_IMPORT(run) __attribute__((noreturn)) void tide_web_run(bool timer_frames);
 TIDE_WEB_IMPORT(stop) void tide_web_stop(void);
 

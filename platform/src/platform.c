@@ -118,6 +118,9 @@ static bool web_timer_frames; // Frames on timers instead of animation frames
 
 static tide_frame_fn run_frame;
 static void *run_user;
+static double frame_start; // When the frame running, or the last one, started (GetTime)
+static double frame_due;   // When the next one comes while nobody sees the window
+static bool due_asked;     // ...as the frame function asked (tide_platform_next_frame)
 
 void tide_platform_open(const tide_window_desc *desc)
 {
@@ -157,30 +160,42 @@ _Noreturn static void finish(const int code)
     exit(code);
 }
 
+void tide_platform_next_frame(const double seconds)
+{
+    const double due = frame_start + (seconds > 0.0 ? seconds : 0.0);
+    if (!due_asked || due < frame_due) frame_due = due;
+    due_asked = true;
+}
+
 static int step(void)
 {
+    const double start = GetTime();
+    const float seconds = (float)(start - frame_start);
+    frame_start = start;
+    frame_due = start + 1.0 / 60.0;
+    due_asked = false;
     BeginDrawing();
-    const int code = run_frame(run_user, GetFrameTime());
+    const int code = run_frame(run_user, seconds);
     EndDrawing(); // Also polls the OS for input
 #ifndef __wasm__
-    // A minimized window has no vsync to wait for: 60 frames a second, which
-    // draw nothing (see tide_platform_draw).
-    static double last;
+    // A minimized window has no vsync to wait for: the next frame comes when
+    // the frame function asked, and draws nothing (see tide_platform_draw).
     if (IsWindowMinimized()) {
-        const double left = last + 1.0 / 60.0 - GetTime();
+        const double left = frame_due - GetTime();
         if (left > 0.0) WaitTime(left);
     }
-    last = GetTime();
 #endif
     return code;
 }
 
 #ifdef __wasm__
-// The page calls it for every frame, once tide_platform_run starts the loop.
-__attribute__((export_name("tide_web_frame"))) void tide_web_frame(void)
+// The page calls it for every frame, once tide_platform_run starts the loop:
+// seconds until the next one, which the page waits while it's hidden.
+__attribute__((export_name("tide_web_frame"))) double tide_web_frame(void)
 {
     const int code = step();
     if (code != TIDE_KEEP_RUNNING) finish(code);
+    return frame_due - GetTime();
 }
 #endif
 
@@ -188,6 +203,7 @@ void tide_platform_run(const tide_frame_fn frame, void *user)
 {
     run_frame = frame;
     run_user = user;
+    frame_start = GetTime();
 #ifdef __wasm__
     // Frames on requestAnimationFrame, or as fast as timers allow when hidden.
     // Doesn't return: it unwinds main's stack back to the browser.

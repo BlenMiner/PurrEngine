@@ -40,16 +40,23 @@ void tide_platform_open(const tide_window_desc *desc);
 #define TIDE_KEEP_RUNNING (-1)
 
 // Runs once per display frame, between raylib's BeginDrawing and EndDrawing.
-// `seconds` is the time since the previous frame.
+// `seconds` is the time since the previous frame started.
 typedef int (*tide_frame_fn)(void *user, float seconds);
 
 // Runs frames until one returns an exit code or the window is closed (exit
 // code 0), then closes the window and ends the program. Never returns, because
 // on the web the browser drives the frames: main can't wait for the loop.
 // Frames go on while the window is minimized or, on the web, the page is in a
-// tab in the background, so a match goes on for the other players; on the web
-// they draw nothing then.
+// tab in the background, so a match goes on for the other players. They draw
+// nothing then, and come when the frame function asks (tide_platform_next_frame).
 _Noreturn void tide_platform_run(tide_frame_fn frame, void *user);
+
+// While nobody sees the window, the next frame comes `seconds` after this one
+// started: when the host next has work, such as its match's next tick
+// (tide_session_until_tick). Called from the frame function; the soonest of
+// several calls counts, and a frame that makes none has the next one in a
+// 60th of a second. Frames others see come at the display's pace.
+void tide_platform_next_frame(double seconds);
 
 // Updates the devices with the input since the previous frame. Call once per
 // frame, before sampling input. The characters typed are only the ones since

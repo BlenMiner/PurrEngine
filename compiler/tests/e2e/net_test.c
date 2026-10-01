@@ -496,6 +496,70 @@ TIDE_TEST(net_a_session_survives_a_pause)
     tide_session_destroy(s);
 }
 
+// A host whose window nobody sees updates its session only when the match is
+// due its next tick (tide_session_until_tick): each update runs one, at any
+// rate, though hosts add up their time in floats.
+TIDE_TEST(net_a_session_says_when_it_next_ticks)
+{
+    static const uint32_t rates[] = {1, 30, 60, 144, 1000};
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = rates[i], .sample = session_sample});
+        const double tick = 1.0 / (double)rates[i];
+        TIDE_CHECK(tide_session_until_tick(s) == tick); // No match yet: a tick at the rate one would start at
+        double t = 1000.0;
+        tide_session_start(s, NULL, t);
+        for (int frame = 0; frame < 10 && tide_session_status_of(s).client.state != TIDE_SESSION_CONNECTED; frame++) {
+            t += (double)(float)tide_session_until_tick(s);
+            tide_session_update(s, t);
+        }
+        TIDE_REQUIRE(tide_session_status_of(s).client.state == TIDE_SESSION_CONNECTED);
+        int32_t last = ((const tide_world *)tide_session_server_world(s))->Time.tick;
+        bool every_one = true;
+        for (int frame = 0; frame < 200; frame++) {
+            const double until = tide_session_until_tick(s);
+            TIDE_CHECK(until > 0.0 && until <= tick * (1.0 + 1e-6)); // A hair over when floats landed a hair before
+            t += (double)(float)until; // A frame's seconds, as the platform gives them
+            tide_session_update(s, t);
+            const int32_t ticked = ((const tide_world *)tide_session_server_world(s))->Time.tick;
+            every_one &= ticked == last + 1;
+            last = ticked;
+        }
+        TIDE_CHECK(every_one);
+        TIDE_CHECK(tide_session_status_of(s).client.verified_tick == (uint32_t)last); // Its player kept up
+        tide_session_destroy(s);
+    }
+
+    // A player in another machine's match goes by its own clock, at the
+    // match's rate rather than its own desc's, and keeps up updating once a tick.
+    start_at(30, (tide_net_conditions){.latency = 0.03, .jitter = 0.01}, 5);
+    tide_session *s = tide_session_create(&(tide_session_desc){.game = &tide_game_api, .tick_rate = 60, .sample = session_sample});
+    tide_session_join(s, tide_loopback_endpoint(net, 2), tide_loopback_address(1), now);
+    double session_at = now;
+    double server_at = now;
+    uint32_t updates = 0;
+    uint32_t predicted = 0;
+    while (now < 4.0) {
+        now = session_at < server_at ? session_at : server_at;
+        tide_loopback_set_time(net, now);
+        if (now == server_at) {
+            tide_server_update(server, now);
+            server_at += 0.016;
+        }
+        if (now == session_at) {
+            tide_session_update(s, now);
+            session_at = now + (double)(float)tide_session_until_tick(s);
+            if (now >= 2.0 && !updates++) predicted = tide_session_status_of(s).client.predicted_tick;
+        }
+    }
+    const tide_client_status status = tide_session_status_of(s).client;
+    TIDE_CHECK(status.state == TIDE_SESSION_CONNECTED && status.resyncs == 0);
+    TIDE_CHECK(updates >= 57u && updates <= 63u); // Two seconds at 30 ticks a second
+    TIDE_CHECK(status.predicted_tick - predicted >= 56u && status.predicted_tick - predicted <= 64u);
+    TIDE_CHECK(status.predicted_tick > tide_server_tick(server)); // Ahead of the server
+    tide_session_destroy(s);
+    finish();
+}
+
 // Hot reloading (tide/host.h): another build of the same game, new code with
 // the same layout, takes over the match where it is.
 static int new_build_ticks;

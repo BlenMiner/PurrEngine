@@ -134,8 +134,10 @@ static bool done;
 
 // The host's page hidden, as browsers hide it when another tab is in front:
 // no animation frames, and timers a second apart at the soonest. The event
-// comes after the frame, as browsers send it.
+// comes after the frame, as browsers send it. Its frames come at the match's
+// ticks meanwhile, not the 60 a second frames come at by default.
 #define HIDDEN_SECONDS 7.0 // Past the session's 5 second timeout
+#define TICK_RATE 30
 
 static double met_at = -1.0;   // When the other's inputs first reached this one
 static uint32_t met_verified;  // ...and the verified tick then
@@ -302,6 +304,7 @@ static int frame(void *user, const float seconds)
     if (now > 45.0) return fail(met_at < 0.0 ? "the players didn't meet within 45 seconds" : "the test didn't finish within 45 seconds");
     if (tide_platform_room_failed()) tide_session_fail(session, TIDE_DISCONNECT_FAILED);
     tide_session_update(session, now);
+    tide_platform_next_frame(tide_session_until_tick(session));
     tide_session_event event;
     while (tide_session_next_event(session, &event)) {
         if (event.kind == TIDE_SESSION_CONNECTED_EVENT) {
@@ -337,14 +340,15 @@ static int frame(void *user, const float seconds)
         if (tide_web_hidden()) hidden_frames++;
         if (now - met_at > HIDDEN_SECONDS) {
             printf("shown again: %d frames while hidden\n", hidden_frames);
-            if (hidden_frames < (int)(HIDDEN_SECONDS * 30.0)) return fail("frames slowed down while the page was hidden");
+            if (hidden_frames < (int)(HIDDEN_SECONDS * TICK_RATE * 0.75)) return fail("frames slowed down while the page was hidden");
+            if (hidden_frames > (int)(HIDDEN_SECONDS * TICK_RATE * 1.15)) return fail("hidden frames didn't follow the tick rate");
             set_hidden(false);
             shown_again = true;
         }
     }
     // The host's server kept ticking all along: the joiner's verified tick
     // went on through the time the host's page was hidden.
-    const uint32_t through_tick = met_verified + (uint32_t)(60.0 * (HIDDEN_SECONDS + 2.0));
+    const uint32_t through_tick = met_verified + (uint32_t)(TICK_RATE * (HIDDEN_SECONDS + 2.0));
     const bool through = me == 1 ? shown_again && !tide_web_hidden()
                                  : met_at >= 0.0 && status.client.verified_tick >= through_tick;
     if (!done && through && status.client.state == TIDE_SESSION_CONNECTED) {
@@ -374,7 +378,7 @@ int main(const int argc, char **argv)
     played.host_migration = handover;
     if (handover) played.hash = 8;
     tide_platform_open(&(tide_window_desc){.title = "web rooms", .width = 64, .height = 64, .hidden = true});
-    session = tide_session_create(&(tide_session_desc){.game = &played, .tick_rate = 60, .sample = sample});
+    session = tide_session_create(&(tide_session_desc){.game = &played, .tick_rate = TICK_RATE, .sample = sample});
     tide_transport network;
     tide_address server;
     if (host) {

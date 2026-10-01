@@ -1927,6 +1927,27 @@ void tide_session_update(tide_session *s, const double now)
     s->last_state = status.state;
 }
 
+// Seconds after `now` until a clock that started at `start`, at `rate`, counts
+// its next tick (ticks_in), aimed at the tick itself rather than ticks_in's
+// hair before it, so an update then always finds it due.
+static double until_next(const double start, const uint32_t rate, const double now)
+{
+    return start + (double)(ticks_in(now - start, rate) + 1u) / (double)rate - now;
+}
+
+double tide_session_until_tick(const tide_session *s)
+{
+    const double now = s->last_now - s->paused; // The match's time at the last update
+    const tide_server *server = s->server;
+    const tide_client *c = s->client;
+    // This machine's player ticks right after its server: the server's clock
+    if (server && server->started && !server->ended) return until_next(server->clock_start, server->desc.tick_rate, now);
+    if (!server && c && c->loaded) return until_next(c->clock_start, c->tick_rate, now);
+    uint32_t rate = server ? server->desc.tick_rate : c && c->tick_rate ? c->tick_rate : s->desc.tick_rate;
+    if (!rate) rate = s->desc.game->tick_rate ? s->desc.game->tick_rate : 60u;
+    return 1.0 / (double)rate;
+}
+
 const void *tide_session_world(const tide_session *s)
 {
     const void *world = s->client ? tide_client_world(s->client) : NULL;

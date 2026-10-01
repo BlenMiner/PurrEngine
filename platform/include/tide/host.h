@@ -351,6 +351,8 @@ static inline int tide_run_frame(void *user, const float seconds)
 
     tide_session_request request;
     while (game->take_request(tide_run_local, &request, tide_run_start)) tide_run_request(&request, tide_run_start);
+    // While nobody sees the window, the next frame is the match's next tick
+    tide_platform_next_frame(tide_session_until_tick(s));
     return TIDE_KEEP_RUNNING;
 }
 
