@@ -1,8 +1,9 @@
 // Two players in a room, in headless Chrome or Edge: a relay on this machine
 // (relay/relay.mjs), and a page with two frames running web_rooms.c's
 // program, one hosting and one joining with the code the host says. Their
-// packets go over WebRTC, as between two players' browsers. Passes once both
-// say "ok".
+// packets go over WebRTC, as between two players' browsers. Once they meet,
+// the host's page goes hidden for a while, as when its player switches tabs,
+// and the match goes on. Passes once both say "ok".
 //
 //   node web_rooms.mjs <browser> <tide_platform_web_rooms.html> <scratch folder>
 //
@@ -113,5 +114,6 @@ const { passed, log } = await result;
 clearTimeout(timeout);
 child.kill();
 for (const line of log) console.log(line);
-console.log(passed ? 'Both players met in a room.' : 'The players didn\'t meet.');
+console.log(passed ? 'Both players met in a room, and played on while the host\'s page was hidden.'
+                   : 'The players didn\'t meet, or the match didn\'t go on while the host\'s page was hidden.');
 process.exit(passed ? 0 : 1);

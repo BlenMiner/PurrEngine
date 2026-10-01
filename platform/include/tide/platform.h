@@ -28,8 +28,7 @@ typedef struct tide_window_desc {
     int width;
     int height;
     // For automated tests. On desktop, no visible window. On the web, frames
-    // run on timers, because browsers stop animation frames in headless and
-    // background pages.
+    // run on timers, because headless browsers have no animation frames.
     bool hidden;
 } tide_window_desc;
 
@@ -47,6 +46,9 @@ typedef int (*tide_frame_fn)(void *user, float seconds);
 // Runs frames until one returns an exit code or the window is closed (exit
 // code 0), then closes the window and ends the program. Never returns, because
 // on the web the browser drives the frames: main can't wait for the loop.
+// Frames go on while the window is minimized or, on the web, the page is in a
+// tab in the background, so a match goes on for the other players; on the web
+// they draw nothing then.
 _Noreturn void tide_platform_run(tide_frame_fn frame, void *user);
 
 // Updates the devices with the input since the previous frame. Call once per

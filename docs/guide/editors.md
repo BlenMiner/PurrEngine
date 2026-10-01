@@ -24,7 +24,7 @@ The extension runs `tidels` from your `PATH`, or from where `tide` is installed.
 The play button above a `.tide` file runs its game, which is the folder you opened:
 
 - **Tide: Run** plays it in a window of its own, as `tide run` does.
-- **Tide: Run on the Web** plays it in a browser tab beside your code: VS Code's integrated browser, or the Simple Browser in editors without it. A game only gets keys while its tab has focus, and it pauses while its tab is hidden, so keep it in a group of its own.
+- **Tide: Run on the Web** plays it in a browser tab beside your code: VS Code's integrated browser, or the Simple Browser in editors without it. A game only gets keys while its tab has focus, and the editor may pause it while its tab is hidden, so keep it in a group of its own.
 
 Either runs `tide` in a terminal of its own, so saving a file reloads the game, and typing `r` and Enter in that terminal starts it over. Running it again starts the game over. The `tide.path` setting runs another `tide`.
 

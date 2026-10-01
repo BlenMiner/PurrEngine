@@ -229,24 +229,62 @@
         event.preventDefault();
     }, { passive: false });
 
+    // Frames come on animation frames or, with `timerFrames`, as fast as
+    // timers allow (headless pages have no animation frames). A hidden page
+    // gets neither at its pace: browsers stop its animation frames and slow its
+    // timers to about one a second, which would stop this machine's part in a
+    // match, a server its players time out of or a player its server drops. A
+    // worker's timers keep their pace, so while the page is hidden, frames come
+    // from a worker's, 60 times a second, and draw nothing (tide_web_hidden).
     let timerFrames = false;
-    let looping = false; // Frames are scheduled
+    let looping = false;   // The program runs frames
+    let scheduled = false; // A frame is scheduled, on the page's own clock
+    let heartbeat = null;  // The worker, while the page is hidden
     function scheduleFrame() {
-        if (timerFrames) setTimeout(frame, 0);
-        else requestAnimationFrame(frame);
+        if (scheduled || heartbeat) return;
+        scheduled = true;
+        if (timerFrames || document.hidden) setTimeout(scheduledFrame, 0);
+        else requestAnimationFrame(scheduledFrame);
     }
+    function scheduledFrame() {
+        scheduled = false;
+        if (looping) frame();
+    }
+    function stopHeartbeat() {
+        if (heartbeat) heartbeat.terminate();
+        heartbeat = null;
+    }
+    function followVisibility() {
+        if (document.hidden && !heartbeat && looping) {
+            try {
+                const beat = 'setInterval(() => postMessage(0), 1000 / 60);';
+                heartbeat = new Worker(URL.createObjectURL(new Blob([beat], { type: 'text/javascript' })));
+                heartbeat.onmessage = () => {
+                    if (!looping) stopHeartbeat(); // The program is over
+                    else if (document.hidden) frame();
+                };
+            } catch (error) { // Frames come as slowly as the browser lets them
+                printErr('tide: no worker to keep frames going while the page is hidden: ' + error);
+            }
+        } else if (!document.hidden && heartbeat) {
+            stopHeartbeat();
+            if (looping) scheduleFrame();
+        }
+    }
+    document.addEventListener('visibilitychange', followVisibility);
     function frame() {
-        looping = false;
-        if (stopped) return;
+        if (stopped) {
+            looping = false;
+            return;
+        }
         fit();
         try {
             exports.tide_web_frame();
         } catch (error) {
-            if (error instanceof Exit) return;
-            fail(error);
+            looping = false;
+            if (!(error instanceof Exit)) fail(error);
             return;
         }
-        looping = true;
         scheduleFrame();
     }
 
@@ -302,9 +340,11 @@
             if (!looping) {
                 looping = true;
                 scheduleFrame();
+                followVisibility(); // It may start in a tab in the background
             }
             throw unwind;
         },
+        hidden: () => document.hidden ? 1 : 0,
         stop() { stopped = true; },
         eval(scriptPtr) { (0, eval)(string(scriptPtr)); },
     };
