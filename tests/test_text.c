@@ -107,6 +107,7 @@ TIDE_TEST(text_joining)
     TIDE_CHECK(is(tide_str_add_f2(TIDE_STR_EMPTY, tide_f2(1.0f, 0.5f), 0), "(1, 0.5)"));
     TIDE_CHECK(is(tide_str_add_color(TIDE_STR_EMPTY, TIDE_COLOR_RED, 0), "RGBA(1, 0, 0, 1)"));
     TIDE_CHECK(is(tide_str_add_entity(TIDE_STR_EMPTY, (tide_entity){3, 1}, false), "Entity(3:1)"));
+    TIDE_CHECK(is(tide_str_add_entity(TIDE_STR_EMPTY, (tide_entity){0, TIDE_ENTITY_TEMPORARY | 5u}, false), "Entity(new)"));
     TIDE_CHECK(is(tide_str_add_player(TIDE_STR_EMPTY, tide_player_from_index(0)), "PlayerID(0)"));
     tide_scratch_reset(mark);
 }

@@ -33,14 +33,32 @@ static bool share_archetypes(const arch_set *a, const arch_set *b)
     return false;
 }
 
+static void add_conflict(system_wait *w, const conflict_kind kind)
+{
+    const conflict c = {NULL, kind};
+    vec_push(w->conflicts, c);
+}
+
+bool system_splits(const decl *sys)
+{
+    if (sys->is_view || !sys->per_entity || sys->writes_text) return false;
+    for (int i = 0; i < sys->params.count; i++) {
+        if (sys->params.items[i].type.kind == TY_SINGLETON && sys->params.items[i].mode == PARAM_MUT) return false;
+    }
+    return true;
+}
+
 // The components and singletons two systems both use, where at least one of
 // them writes. Components only count if the systems can meet the same entity.
+// What's the whole world's counts whatever entities they meet: changing its
+// heap (reading it alongside is fine), and the entity IDs spawns hand out,
+// which a system hands out as it runs unless it splits (its spawns get theirs
+// once it's done, in the tick's order, without waiting). C is trusted, so
+// calling it makes no system wait.
 static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
-    if (earlier->writes_text && later->writes_text) {
-        const conflict c = {NULL, CONFLICT_TEXT};
-        vec_push(w->conflicts, c);
-    }
+    if (earlier->writes_text && later->writes_text) add_conflict(w, CONFLICT_TEXT);
+    if (earlier->spawns && later->spawns && !system_splits(later)) add_conflict(w, CONFLICT_SPAWN);
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
         const bool component = a->type.kind == TY_COMPONENT;
@@ -159,10 +177,17 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
         [CONFLICT_EARLIER_READS] = ", which this writes",
         [CONFLICT_EARLIER_WRITES] = ", which this reads",
     };
+    // What the whole world shares, said once each
+    static const char *const shared[] = {
+        [CONFLICT_TEXT] = "both change text or lists, which the match keeps in one heap",
+        [CONFLICT_SPAWN] = "both spawn, and entities get their IDs in order",
+    };
     bool first_part = true;
     for (int i = 0; i < w->conflicts.count; i++) {
-        if (w->conflicts.items[i].kind != CONFLICT_TEXT) continue;
-        sb_put(out, "both change text or lists, which the match keeps in one heap");
+        const conflict_kind kind = w->conflicts.items[i].kind;
+        if (kind < CONFLICT_TEXT) continue;
+        sb_put(out, first_part ? "" : "; ");
+        sb_put(out, shared[kind]);
         first_part = false;
     }
     for (int kind = CONFLICT_BOTH_WRITE; kind <= CONFLICT_EARLIER_WRITES; kind++) {

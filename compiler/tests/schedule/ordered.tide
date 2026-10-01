@@ -1,0 +1,50 @@
+// What every system shares, whatever entities it runs for: entities get their
+// IDs in order, so a system that spawns as it runs on one thread waits for the
+// others that spawn. Systems that split their entities across threads don't:
+// their spawns get IDs once they're done. C is trusted, so systems that call it
+// run alongside each other like any others.
+
+extern int Roll();
+
+component Rock { int size; }
+component Spark { float life; }
+component Dice { int last; }
+singleton Wave { int number; }
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Rock, Dice);
+}
+
+system SpawnRocks(Rock rock)
+{
+    if (rock.size > 3) Spawn(Rock { size = rock.size / 2 });
+}
+
+system SpawnSparks(Rock rock)
+{
+    if (rock.size == 1) Spawn(Spark { life = 1 });
+}
+
+system SpawnWave(mut Wave wave)
+{
+    wave.number += 1;
+    Spawn(Rock { size = 8 });
+}
+
+system RollDice(mut Dice dice)
+{
+    dice.last = Roll();
+}
+
+system RollAgain(Time time, with Rock)
+{
+    if (time.tick % 60 == 0 && Roll() == 6) this.Destroy();
+}
+
+system Fade(Time time, mut Spark spark)
+{
+    spark.life -= time.dt;
+}

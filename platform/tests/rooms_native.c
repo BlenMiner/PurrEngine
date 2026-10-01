@@ -77,8 +77,9 @@ static uint64_t hash(const void *w)
     return tide_hash(w, sizeof(world));
 }
 
-static void tick(void *w)
+static void tick(void *w, const tide_jobs *jobs)
 {
+    (void)jobs;
     ((world *)w)->tick++;
 }
 

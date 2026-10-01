@@ -67,6 +67,8 @@ Extern functions take and return plain data, by value:
 | an enum | `int32_t` |
 | a struct or component | a struct with the same fields, in the same order |
 
+A system that splits its entities across threads gives the entities it spawns temporary handles until it's done (see [The schedule](../engine/schedule.md#splitting-across-threads)), so an `Entity` C gets from one may be temporary: `tide_entity_is_temporary(e)`, from `tide/entity.h`, tells. Tide gives the real handle to what the system kept, but not to C, so C that keeps entities should keep real ones.
+
 C often takes pointers. Tide has none, and no pointer arithmetic: the parameter says how a value goes to C, and the call takes its address by itself. Every pointer is only good until C returns.
 
 | Parameter | C gets |

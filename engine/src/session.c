@@ -585,7 +585,7 @@ static void server_tick(tide_server *s)
     patch_u32(s->frame + mask_at, mask);
     patch_u32(s->frame + mask_at + 4u, late);
 
-    g->tick(s->world);
+    g->tick(s->world, s->desc.jobs);
     s->tick++;
     s->ended = g->ended && g->ended(s->world);
     patch_u64(s->frame + 4, g->hash_world(s->world));
@@ -1173,7 +1173,7 @@ static bool apply_frame(tide_client *c, void *world, const pending_frame *f)
         else g->set_input(world, tide_player_from_index((int32_t)slot), c->input);
     }
     if (r.failed) return false;
-    g->tick(world);
+    g->tick(world, c->desc.jobs);
     return g->hash_world(world) == hash;
 }
 
@@ -1191,7 +1191,7 @@ static void run_predicted(tide_client *c, const uint32_t tick)
         g->set_input(world, me, c->input);
         if (c->server_input_mine) g->set_server_input(world, c->input);
     }
-    g->tick(world);
+    g->tick(world, c->desc.jobs);
 }
 
 // From the verified world, the predicted ticks again.
@@ -1577,6 +1577,7 @@ static void start_server(tide_session *s, const void *start, const void *world, 
         .wait_for_first = true,
         .world = world,
         .players = players,
+        .jobs = s->desc.jobs,
     };
     s->server = tide_server_create(&server, now);
     const tide_client_desc client = {
@@ -1586,6 +1587,7 @@ static void start_server(tide_session *s, const void *start, const void *world, 
         .sample = s->desc.sample,
         .user = s->desc.user,
         .lead = 0, // Its inputs go straight in: the server ticks right after it
+        .jobs = s->desc.jobs,
     };
     s->client = s->server ? tide_client_create(&client, now) : NULL;
     if (!s->client) {
@@ -1650,6 +1652,7 @@ void tide_session_join(tide_session *s, const tide_transport network, const tide
         .user = s->desc.user,
         .lead = 2,
         .cookie = s->cookie,
+        .jobs = s->desc.jobs,
     };
     s->client = tide_client_create(&client, now);
     if (!s->client) {

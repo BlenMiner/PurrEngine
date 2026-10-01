@@ -22,15 +22,33 @@ static uint32_t in_use(const tide_heap *h, const tide_page *p)
     return left < p->size ? left : p->size;
 }
 
+// A bigger page table, which takes the old one's place as a whole. The old
+// one stays, linked from page[-1], for code on other threads still reading it,
+// until tide_heap_settle.
 static void make_room(tide_heap *h, const uint32_t pages)
 {
     if (pages <= h->room) return;
     uint32_t room = h->room ? h->room : 4u;
     while (room < pages) room *= 2u;
-    tide_page **grown = realloc(h->page, room * sizeof *grown);
-    if (!grown) tide_out_of_memory();
-    h->page = grown;
+    tide_page **base = malloc((room + 1u) * sizeof *base);
+    if (!base) tide_out_of_memory();
+    tide_page **grown = base + 1;
+    if (h->pages) memcpy(grown, h->page, h->pages * sizeof *grown);
+    base[0] = h->page ? (tide_page *)(void *)(h->page - 1) : NULL;
+    __atomic_store_n(&h->page, grown, __ATOMIC_RELEASE);
     h->room = room;
+}
+
+void tide_heap_settle(tide_heap *h)
+{
+    if (!h->page) return;
+    void *old = h->page[-1];
+    while (old) {
+        tide_page **base = old;
+        old = base[0];
+        free(base);
+    }
+    h->page[-1] = NULL;
 }
 
 // A page for the heap's next `count` places.
@@ -48,8 +66,8 @@ tide_block *tide_heap_write(tide_heap *h, const uint32_t block)
 {
     tide_page *p = h->page[block >> TIDE_HEAP_PAGE_SHIFT];
     tide_page *own = tide_page_own(p, places(p), in_use(h, p));
-    if (own != p) {
-        for (uint32_t k = 0; k < places(own); k++) h->page[own->first + k] = own;
+    if (own != p) { // Code reading the old page meanwhile reads the same bytes
+        for (uint32_t k = 0; k < places(own); k++) __atomic_store_n(&h->page[own->first + k], own, __ATOMIC_RELEASE);
     }
     return tide_heap_block(h, block);
 }
@@ -111,6 +129,7 @@ void tide_heap_copy(tide_heap *to, const tide_heap *from)
     for (uint32_t i = 0; i < from->pages; i++) tide_page_retain(from->page[i]);
     for (uint32_t i = 0; i < to->pages; i++) tide_page_release(to->page[i], 1);
     make_room(to, from->pages);
+    tide_heap_settle(to); // Snapshots are taken while nothing else runs on it
     if (from->pages) memcpy(to->page, from->page, from->pages * sizeof *to->page);
     to->pages = from->pages;
     to->used = from->used;
@@ -133,7 +152,8 @@ uint64_t tide_heap_hash(uint64_t h, const tide_heap *heap)
 void tide_heap_free(tide_heap *h)
 {
     for (uint32_t i = 0; i < h->pages; i++) tide_page_release(h->page[i], 1);
-    free(h->page);
+    tide_heap_settle(h);
+    if (h->page) free(h->page - 1);
     memset(h, 0, sizeof *h);
 }
 
@@ -180,5 +200,6 @@ bool tide_heap_unpack(tide_heap *h, tide_reader *r)
         const uint8_t *data = tide_read_bytes(r, bytes);
         if (data) memcpy(tide_page_data(p), data, bytes);
     }
+    tide_heap_settle(h);
     return !r->failed;
 }

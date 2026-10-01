@@ -33,8 +33,10 @@ void tide_page_release(tide_page *p, const uint32_t refs)
 
 tide_page *tide_page_own(tide_page *p, const uint32_t mine, const uint32_t keep)
 {
-    p->hashed = UINT32_MAX;
-    if (p->refs == mine) return p;
+    if (p->refs == mine) {
+        p->hashed = UINT32_MAX;
+        return p;
+    }
     tide_page *copy = malloc(sizeof *copy + p->size);
     if (!copy) tide_out_of_memory();
     const uint32_t kept = keep < p->size ? keep : p->size;

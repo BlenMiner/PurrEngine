@@ -500,10 +500,10 @@ TIDE_TEST(net_a_session_survives_a_pause)
 // the same layout, takes over the match where it is.
 static int new_build_ticks;
 
-static void new_build_tick(void *w)
+static void new_build_tick(void *w, const tide_jobs *jobs)
 {
     new_build_ticks++;
-    tide_game_api.tick(w);
+    tide_game_api.tick(w, jobs);
 }
 
 TIDE_TEST(net_a_session_takes_a_new_build_of_its_game)

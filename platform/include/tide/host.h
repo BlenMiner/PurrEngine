@@ -215,6 +215,7 @@ static inline tide_session *tide_run_new_session(void)
         .game = tide_run_game->game,
         .tick_rate = (uint32_t)tide_run_settings.tick_rate,
         .sample = tide_run_sample,
+        .jobs = tide_platform_jobs(), // Ticks on every core
     });
 }
 

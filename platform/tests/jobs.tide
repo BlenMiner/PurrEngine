@@ -1,0 +1,182 @@
+// A busy match for running ticks on threads: systems that split their
+// entities across threads and others alongside them, changes and events
+// recorded on many threads, spawns on one thread and on many, and text read
+// while other text changes.
+
+component Body
+{
+    float3 position;
+    float3 velocity;
+    int id;
+}
+
+component Rock { }
+
+component Ship { }
+
+component Label
+{
+    string text;
+}
+
+component Size
+{
+    int letters;
+}
+
+component Name
+{
+    string value;
+}
+
+component Fuse
+{
+    int left;
+}
+
+// Spawned on many threads: what each knows of the others
+component Debris
+{
+    Entity from;
+}
+
+component Shard
+{
+    Entity of;
+    bool debris;
+}
+
+struct Link
+{
+    Entity target;
+    int n;
+}
+
+component Trail
+{
+    Entity last;
+    Link link;
+    int count;
+}
+
+singleton Stats
+{
+    int spawned;
+    int hits;
+    int chipped;
+    int matched;
+}
+
+event Hit
+{
+    int damage;
+}
+
+event Chipped
+{
+    Entity ship;
+    Entity piece;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    for (var i = 0; i < 12000; i++)
+    {
+        Spawn(Body { position = float3(float(i), 0, 0), velocity = float3(1, float(i % 7), 0), id = i }, Rock,
+              Label { text = $"rock {i}" }, Size);
+    }
+    for (var i = 0; i < 6000; i++)
+    {
+        Spawn(Body { id = i }, Ship, Name { value = $"ship {i}" }, Trail);
+    }
+}
+
+// Split across threads, a chunk of rocks or ships each
+system Move(Time time, mut Body body)
+{
+    body.position += body.velocity * time.dt;
+    if (body.position.y > 50)
+        body.velocity.y = -body.velocity.y;
+}
+
+// Changes recorded on every thread: some rocks get a fuse
+system Light(Time time, Body body, with Rock, without Fuse)
+{
+    if ((body.id + time.tick) % 97 == 0)
+        this.Add(Fuse { left = body.id % 5 });
+}
+
+// ...and fuses that go off, with an event and a Destroy
+system Burn(mut Fuse fuse, Body body)
+{
+    fuse.left -= 1;
+    if (fuse.left < 0)
+    {
+        this.Send(Hit { damage = body.id % 3 + 1 });
+        this.Destroy();
+    }
+}
+
+event(Hit hit) Count(mut Stats stats)
+{
+    stats.hits += hit.damage;
+}
+
+// Spawns split across threads: their entities get IDs once it's done
+system Crumble(Time time, Body body, with Rock)
+{
+    if ((body.id + time.tick) % 500 == 0)
+        Spawn(Shard { of = this });
+}
+
+// Spawns: on one thread, in order
+system Launch(Time time, mut Stats stats)
+{
+    if (time.tick % 3 == 0)
+    {
+        Spawn(Body { id = 100000 + stats.spawned, velocity = float3(0, 1, 0) }, Rock, Label { text = "new" }, Size);
+        stats.spawned += 1;
+    }
+}
+
+// ...and split again, with the new entities' handles kept in its own data,
+// in the changes it records and in its events, each one theirs once it's done
+system Chip(Time time, Body body, mut Trail trail, with Ship)
+{
+    if ((body.id + time.tick) % 40 == 0)
+    {
+        var piece = Spawn(Body { id = 200000 + body.id }, Debris { from = this });
+        Spawn(Shard { of = piece, debris = true });
+        trail.last = piece;
+        trail.link.target = piece;
+        trail.count += 1;
+        piece.Add(Size { letters = 1 });
+        piece.Send(Chipped { ship = this, piece = piece });
+    }
+}
+
+event(Chipped chipped) Seen(mut Stats stats)
+{
+    stats.chipped += 1;
+}
+
+event(Chipped chipped) Matched(Debris debris, mut Stats stats)
+{
+    if (debris.from == chipped.ship && this == chipped.piece)
+        stats.matched += 1;
+}
+
+// Text changing in the ships' names...
+system Rename(mut Name name, Body body)
+{
+    if (body.id % 50 == 0)
+        name.value = $"ship {body.id} at {int(body.position.x)}";
+}
+
+// ...while the rocks' labels are read, on other threads
+system Measure(Label label, mut Size size)
+{
+    size.letters = label.text.Length;
+}

@@ -6,6 +6,7 @@
 #include "tide/devices.h"
 #include "tide/draw.h"
 #include "tide/gui.h"
+#include "tide/jobs.h"
 #include "tide/net.h"
 
 // The platform layer: a window, the frame loop and input devices, on raylib for
@@ -121,3 +122,8 @@ bool tide_platform_room_failed(void);
 // any), where there's UDP, and in a room, in one transport. False only if
 // there's neither.
 bool tide_platform_host_open(uint16_t port, tide_transport *out);
+
+// Threads to run ticks on (tide/jobs.h): a pool with one for each of the
+// CPU's cores, the caller's among them, made on first use. NULL with one core,
+// and on the web, which runs everything on one thread.
+const tide_jobs *tide_platform_jobs(void);
