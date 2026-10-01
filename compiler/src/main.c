@@ -7,14 +7,14 @@
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: purrc <file.purr>... -o <output-dir> [--name <name>] [--no-line] [--layout]\n"
-            "       purrc <file.purr>... --schedule [--name <name>]\n"
+            "usage: tidec <file.tide>... -o <output-dir> [--name <name>] [--no-line] [--layout]\n"
+            "       tidec <file.tide>... --schedule [--name <name>]\n"
             "\n"
-            "Transpiles a PurrLang program, made of one or more files, to\n"
+            "Transpiles a Tide program, made of one or more files, to\n"
             "<output-dir>/<name>.h and <name>.c.\n"
             "  --name <name>  base name of the generated files (default: the first file's name)\n"
-            "  --no-line      don't map generated code back to .purr lines for debuggers\n"
-            "  --layout       also describe the data layout, as purr run does for hot reloading\n"
+            "  --no-line      don't map generated code back to .tide lines for debuggers\n"
+            "  --layout       also describe the data layout, as tide run does for hot reloading\n"
             "  --schedule     print which systems can run at the same time and why the others\n"
             "                 wait, instead of generating code\n");
 }

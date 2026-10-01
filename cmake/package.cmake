@@ -1,12 +1,12 @@
-# Makes the purr package for this machine from the package build trees:
+# Makes the tide package for this machine from the package build trees:
 #
 #   cmake --preset package && cmake --build --preset package
 #   cmake --preset web-package && cmake --build --preset web-package
 #   cmake --preset mingw-release && cmake --build --preset mingw-release  (Windows)
-#   cmake -DNAME=purr-windows-x64 -P cmake/package.cmake
+#   cmake -DNAME=tide-windows-x64 -P cmake/package.cmake
 #
 # NAME is the archive's name: .zip for Windows, .tar.gz otherwise. It lands in
-# build/dist, next to the unpacked package (build/dist/purr) and a SHA256SUMS
+# build/dist, next to the unpacked package (build/dist/tide) and a SHA256SUMS
 # line. NATIVE, WEB and MINGW override the build trees (default build/package,
 # build/web-package and build/mingw-release). Without the web tree, the package
 # can't build web games; on Windows, without the MinGW tree, native ones.
@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.25)
 get_filename_component(source "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 if(NOT NAME)
-    message(FATAL_ERROR "Pass -DNAME=<archive name>, like purr-windows-x64")
+    message(FATAL_ERROR "Pass -DNAME=<archive name>, like tide-windows-x64")
 endif()
 if(NOT NATIVE)
     set(NATIVE "${source}/build/package")
@@ -26,11 +26,11 @@ if(NOT MINGW)
     set(MINGW "${source}/build/mingw-release")
 endif()
 set(dist "${source}/build/dist")
-set(stage "${dist}/purr")
+set(stage "${dist}/tide")
 
 # On Windows, games build for MinGW (see cmake/mingw-toolchain.cmake): the
 # MinGW tree brings their platform layer and C runtime. It goes first, so the
-# native tree's purr and purrls, built for Visual Studio's target, replace its.
+# native tree's tide and tidels, built for Visual Studio's target, replace its.
 set(trees "${NATIVE}" "${WEB}")
 if(CMAKE_HOST_WIN32)
     list(PREPEND trees "${MINGW}")
@@ -48,7 +48,7 @@ foreach(tree IN LISTS trees)
         endif()
         continue()
     endif()
-    execute_process(COMMAND "${CMAKE_COMMAND}" --install "${tree}" --prefix "${stage}" --component purr
+    execute_process(COMMAND "${CMAKE_COMMAND}" --install "${tree}" --prefix "${stage}" --component tide
         RESULT_VARIABLE result)
     if(NOT result EQUAL 0)
         message(FATAL_ERROR "Installing ${tree} failed")

@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// A small web server on this machine only (127.0.0.1), for purr run --web: it
+// A small web server on this machine only (127.0.0.1), for tide run --web: it
 // answers GET requests with what `answer` gives, and nothing else.
 
 typedef struct serve_reply {

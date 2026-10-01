@@ -922,7 +922,7 @@ static decl *parse_extern(parser *p)
     m->body_at = name->at;
     if (at(p, T_LBRACE)) {
         diag_error(peek(p)->at, "an extern function has no body: its code is in C");
-        diag_note("end it with ';', like 'extern float Noise(float x);', or remove 'extern' to write it in PurrLang");
+        diag_note("end it with ';', like 'extern float Noise(float x);', or remove 'extern' to write it in Tide");
         longjmp(p->fail, 1);
     }
     m->end = expect(p, T_SEMI, "';' after the extern function: its code is in C")->at;

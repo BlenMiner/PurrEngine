@@ -53,7 +53,7 @@ typedef struct occurrence {
     str name;
     type type;
     type object_type;   // Members: the type they're read from
-    const char *c_name; // Functions and constants: what they are in C, like purr_draw_circle
+    const char *c_name; // Functions and constants: what they are in C, like tide_draw_circle
 } occurrence;
 
 // One file of the game being analysed.
@@ -750,7 +750,7 @@ void analysis_diagnostics(const int file, jbuf *out)
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"range\":");
         write_range(out, at, t >= 0 ? token_len(&A.files[file].toks[t]) : 1);
-        jb_printf(out, ",\"severity\":%d,\"source\":\"purrc\",\"message\":", d->severity == DIAG_ERROR ? 1 : 2);
+        jb_printf(out, ",\"severity\":%d,\"source\":\"tidec\",\"message\":", d->severity == DIAG_ERROR ? 1 : 2);
         jb_string(out, d->message.data ? d->message.data : "");
         jb_put(out, "}");
     }
@@ -909,7 +909,7 @@ static void format_data_decl(const decl *d, sb *out)
 
 static void code_block(sb *out, const char *code)
 {
-    sb_printf(out, "```purrlang\n%s\n```", code);
+    sb_printf(out, "```tide\n%s\n```", code);
 }
 
 static void describe_order(const decl *d, sb *out);
@@ -1377,7 +1377,7 @@ void analysis_set_can_create_files(const bool can)
 }
 
 // Refactoring: moves a type or function into a file of its own, named after
-// it, next to this one. A game is every .purr file in its folder, so the
+// it, next to this one. A game is every .tide file in its folder, so the
 // program stays the same. Systems and views stay put: moving one would change
 // the order they run in, which follows the files.
 static void move_to_file_action(const int line, jbuf *out, int *written)
@@ -1394,12 +1394,12 @@ static void move_to_file_action(const int line, jbuf *out, int *written)
         const int last = d->end.line > 0 ? d->end.line : d->at.line;
         if (line + 1 < first || line + 1 > last) continue;
 
-        // Beside this file: file:///D:/game/main.purr -> file:///D:/game/Health.purr
+        // Beside this file: file:///D:/game/main.tide -> file:///D:/game/Health.tide
         const char *uri = DOC->uri;
         const char *slash = strrchr(uri, '/');
         if (!slash) return;
         sb target = {0};
-        sb_printf(&target, "%.*s/" STR_FMT ".purr", (int)(slash - uri), uri, STR_ARG(d->name));
+        sb_printf(&target, "%.*s/" STR_FMT ".tide", (int)(slash - uri), uri, STR_ARG(d->name));
         if (strcmp(target.data, uri) == 0) return; // Already in its own file
         for (int f = 0; f < A.file_count; f++) {
             if (A.files[f].uri && strcmp(A.files[f].uri, target.data) == 0) return; // Taken
@@ -1422,7 +1422,7 @@ static void move_to_file_action(const int line, jbuf *out, int *written)
 
         if ((*written)++) jb_put(out, ",");
         sb title = {0};
-        sb_printf(&title, "Move '" STR_FMT "' to " STR_FMT ".purr", STR_ARG(d->name), STR_ARG(d->name));
+        sb_printf(&title, "Move '" STR_FMT "' to " STR_FMT ".tide", STR_ARG(d->name), STR_ARG(d->name));
         jb_put(out, "{\"title\":");
         jb_string(out, title.data);
         jb_put(out, ",\"kind\":\"refactor.move\",\"edit\":{\"documentChanges\":[{\"kind\":\"create\",\"uri\":");
@@ -1640,19 +1640,19 @@ static bool write_c_definition(const occurrence *o, jbuf *out)
     switch (o->kind) {
     case OCC_TYPE:
         if (o->decl) return o->decl->kind == DECL_RECORD && cdefs_find(o->decl->c_name, out);
-        return strncmp(type_c_name(o->type), "purr_", 5) == 0
+        return strncmp(type_c_name(o->type), "tide_", 5) == 0
             && cdefs_find(type_c_name(o->type), out);
     case OCC_FUNCTION:
     case OCC_CONSTANT: {
         if (!o->c_name) return false;
         char name[128];
         snprintf(name, sizeof name, "%s", o->c_name);
-        char *call = strchr(name, '('); // purr_identity_q() for quaternion.identity
+        char *call = strchr(name, '('); // tide_identity_q() for quaternion.identity
         if (call) *call = '\0';
         return cdefs_find(name, out);
     }
     case OCC_OWNER:
-        if (str_eq_c(o->owner, "Devices")) return cdefs_find("purr_devices", out);
+        if (str_eq_c(o->owner, "Devices")) return cdefs_find("tide_devices", out);
         return cdefs_find_header(str_eq_c(o->owner, "Draw")                                         ? "draw.h"
                                  : str_eq_c(o->owner, "GUI") || str_eq_c(o->owner, "GUILayout")
                                        || str_eq_c(o->owner, "Screen")                              ? "gui.h"
@@ -3257,7 +3257,7 @@ static const char *check_new_name(const occurrence *target, const str name)
         if (str_eq_c(name, reserved[i])) return "That name is built into the language.";
     }
     if (builtin_type_named(name, &ignored)) return "That name is built into the language.";
-    if (str_starts_with_c(name, "purr_")) return "Names starting with 'purr_' are reserved for generated code.";
+    if (str_starts_with_c(name, "tide_")) return "Names starting with 'tide_' are reserved for generated code.";
 
     bool clash = false;
     switch (target->kind) {
@@ -3753,7 +3753,7 @@ static void write_edit(jbuf *out, int *count, const loc start, const loc end, co
 
 const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
 {
-    if (DOC->lex_errors > 0) return "The file has text PurrLang can't read. Fix that first.";
+    if (DOC->lex_errors > 0) return "The file has text Tide can't read. Fix that first.";
     if (tab_size <= 0) tab_size = 4;
 
     const bool final_newline = DOC->src.len > 0 && DOC->src.text[DOC->src.len - 1] == '\n';

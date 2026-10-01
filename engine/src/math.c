@@ -1,4 +1,4 @@
-#include "purr/math.h"
+#include "tide/math.h"
 
 // Transcendental functions for simulation code.
 //
@@ -84,7 +84,7 @@ static uint32_t two_over_pi_at(const int offset)
 // 24-bit mantissa and a 96-bit window of 2/pi's bits.
 static int reduce_large(const float ax, double *r)
 {
-    const uint32_t u = purr_f_bits(ax);
+    const uint32_t u = tide_f_bits(ax);
     const int e = (int)(u >> 23) - 150;                    // ax = m * 2^e
     const uint64_t m = (u & 0x7FFFFFu) | 0x800000u;       // 24-bit mantissa
 
@@ -115,7 +115,7 @@ static int reduce_large(const float ax, double *r)
 
 static int reduce_pio2(const float x, double *r)
 {
-    const float ax = purr_abs_f(x);
+    const float ax = tide_abs_f(x);
     int n;
     if (ax <= 0.785398f) {
         *r = x;
@@ -152,9 +152,9 @@ static double cos_kernel(const double r)
         + r2 * (1.0 / 20922789888000.0))))))));
 }
 
-float purr_sin_f(const float x)
+float tide_sin_f(const float x)
 {
-    if (!(purr_abs_f(x) <= 3.4028235e38f)) return x - x; // inf or NaN -> NaN
+    if (!(tide_abs_f(x) <= 3.4028235e38f)) return x - x; // inf or NaN -> NaN
     double r;
     const int n = reduce_pio2(x, &r);
     switch (n) {
@@ -165,9 +165,9 @@ float purr_sin_f(const float x)
     }
 }
 
-float purr_cos_f(const float x)
+float tide_cos_f(const float x)
 {
-    if (!(purr_abs_f(x) <= 3.4028235e38f)) return x - x;
+    if (!(tide_abs_f(x) <= 3.4028235e38f)) return x - x;
     double r;
     const int n = reduce_pio2(x, &r);
     switch (n) {
@@ -178,9 +178,9 @@ float purr_cos_f(const float x)
     }
 }
 
-float purr_tan_f(const float x)
+float tide_tan_f(const float x)
 {
-    if (!(purr_abs_f(x) <= 3.4028235e38f)) return x - x;
+    if (!(tide_abs_f(x) <= 3.4028235e38f)) return x - x;
     double r;
     const int n = reduce_pio2(x, &r);
     const double s = sin_kernel(r);
@@ -245,26 +245,26 @@ static double atan2_d(const double y, const double x)
     return y_neg ? -a : a;
 }
 
-float purr_atan_f(const float x)
+float tide_atan_f(const float x)
 {
     return (float)atan_d(x);
 }
 
-float purr_atan2_f(const float y, const float x)
+float tide_atan2_f(const float y, const float x)
 {
     return (float)atan2_d(y, x);
 }
 
-float purr_asin_f(const float x)
+float tide_asin_f(const float x)
 {
-    if (!(purr_abs_f(x) <= 1.0f)) return __builtin_nanf(""); // NaN
+    if (!(tide_abs_f(x) <= 1.0f)) return __builtin_nanf(""); // NaN
     const double d = x;
     return (float)atan2_d(d, __builtin_sqrt((1.0 - d) * (1.0 + d)));
 }
 
-float purr_acos_f(const float x)
+float tide_acos_f(const float x)
 {
-    if (!(purr_abs_f(x) <= 1.0f)) return __builtin_nanf("");
+    if (!(tide_abs_f(x) <= 1.0f)) return __builtin_nanf("");
     const double d = x;
     return (float)atan2_d(__builtin_sqrt((1.0 - d) * (1.0 + d)), d);
 }
@@ -351,12 +351,12 @@ static bool log_special(const float x, float *result)
     return false;
 }
 
-float purr_exp_f(const float x)
+float tide_exp_f(const float x)
 {
     return (float)exp_d(x);
 }
 
-float purr_exp2_f(const float x)
+float tide_exp2_f(const float x)
 {
     if (x != x) return x;
     if (x > 130.0f) return __builtin_inff();
@@ -366,14 +366,14 @@ float purr_exp2_f(const float x)
     return (float)(exp_kernel(r * LN2) * pow2i((int)k));
 }
 
-float purr_log_f(const float x)
+float tide_log_f(const float x)
 {
     float special;
     if (log_special(x, &special)) return special;
     return (float)log_d(x);
 }
 
-float purr_log2_f(const float x)
+float tide_log2_f(const float x)
 {
     float special;
     if (log_special(x, &special)) return special;
@@ -383,7 +383,7 @@ float purr_log2_f(const float x)
     return (float)((double)e + p * INV_LN2); // Exact for powers of two
 }
 
-float purr_log10_f(const float x)
+float tide_log10_f(const float x)
 {
     float special;
     if (log_special(x, &special)) return special;
@@ -393,14 +393,14 @@ float purr_log10_f(const float x)
 // Is y an integer, and if so, an odd one?
 static bool is_integer_f(const float y, bool *odd)
 {
-    if (purr_trunc_f(y) != y) return false;
+    if (tide_trunc_f(y) != y) return false;
     // Every float at or above 2^24 is an even integer.
-    *odd = purr_abs_f(y) < 16777216.0f && ((int32_t)y & 1) != 0;
+    *odd = tide_abs_f(y) < 16777216.0f && ((int32_t)y & 1) != 0;
     return true;
 }
 
 // pow with the C99 special cases.
-float purr_pow_f(const float x, const float y)
+float tide_pow_f(const float x, const float y)
 {
     if (y == 0.0f) return 1.0f;
     if (x == 1.0f) return 1.0f;
@@ -408,8 +408,8 @@ float purr_pow_f(const float x, const float y)
 
     bool odd = false;
     const bool y_integer = is_integer_f(y, &odd);
-    const float ax = purr_abs_f(x);
-    const bool y_inf = purr_abs_f(y) > 3.4028235e38f;
+    const float ax = tide_abs_f(x);
+    const bool y_inf = tide_abs_f(y) > 3.4028235e38f;
 
     if (y_inf) {
         if (ax == 1.0f) return 1.0f;
@@ -417,7 +417,7 @@ float purr_pow_f(const float x, const float y)
     }
     if (x == 0.0f) {
         const float magnitude = y < 0.0f ? __builtin_inff() : 0.0f;
-        return odd ? purr_copysign_f(magnitude, x) : magnitude;
+        return odd ? tide_copysign_f(magnitude, x) : magnitude;
     }
     if (ax > 3.4028235e38f) { // x is +-inf
         const float magnitude = y < 0.0f ? 0.0f : __builtin_inff();

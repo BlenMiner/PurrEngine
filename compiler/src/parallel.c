@@ -1,6 +1,6 @@
 // Which systems in the tick could run at the same time, and why the others
 // wait. The tick doesn't run on threads yet; this is the plan it will follow,
-// shown in editors (above each system, and on hover) and by `purrc --schedule`
+// shown in editors (above each system, and on hover) and by `tidec --schedule`
 // so game code can be written for it now.
 
 #include <string.h>

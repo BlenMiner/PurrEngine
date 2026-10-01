@@ -1,20 +1,20 @@
 #include "game.h"
-#include "purr_test.h"
+#include "tide_test.h"
 
-static purr_world world;
+static tide_world world;
 
-PURR_TEST(operators_do_arithmetic)
+TIDE_TEST(operators_do_arithmetic)
 {
-    purr_world_init(&world, 1.0f);
-    PURR_CHECK(world.Wallet.total.cents == 750);
-    PURR_CHECK(world.Wallet.negated.cents == -250);
-    PURR_CHECK(world.Wallet.stretched == 6.0f);
+    tide_world_init(&world, 1.0f);
+    TIDE_CHECK(world.Wallet.total.cents == 750);
+    TIDE_CHECK(world.Wallet.negated.cents == -250);
+    TIDE_CHECK(world.Wallet.stretched == 6.0f);
 }
 
-PURR_TEST(operators_compare)
+TIDE_TEST(operators_compare)
 {
-    purr_world_init(&world, 1.0f);
-    PURR_CHECK(world.Wallet.equal);
-    PURR_CHECK(world.Wallet.unequal);
-    PURR_CHECK(world.Wallet.ordered);
+    tide_world_init(&world, 1.0f);
+    TIDE_CHECK(world.Wallet.equal);
+    TIDE_CHECK(world.Wallet.unequal);
+    TIDE_CHECK(world.Wallet.ordered);
 }

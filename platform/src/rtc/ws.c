@@ -142,7 +142,7 @@ void rtc_ws_update(rtc_ws *w, const double now)
         if (w->tls) {
             const int done = rtc_tls_handshake(w->tls, w->socket);
             if (done < 0) {
-                fprintf(stderr, "purr: couldn't connect securely to the relay\n");
+                fprintf(stderr, "tide: couldn't connect securely to the relay\n");
                 closed(w);
                 return;
             }

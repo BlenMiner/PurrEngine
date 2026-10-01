@@ -1,4 +1,4 @@
-#include "purr/platform.h"
+#include "tide/platform.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -8,7 +8,7 @@
 #include <raylib.h>
 
 #ifdef __wasm__
-#include "purr_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
+#include "tide_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
 #endif
 
 #define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
@@ -16,17 +16,17 @@
 
 // Buttons are found by their offset in the device struct, so one table covers
 // every key and a missing one fails to compile.
-#define BUTTON_AT(device, offset) ((purr_button *)((char *)(device) + (offset)))
+#define BUTTON_AT(device, offset) ((tide_button *)((char *)(device) + (offset)))
 
-// Every PurrLang key with its raylib key (desktop) and DOM `code` (web). Both
-// name physical positions after the US layout, as PurrLang does.
+// Every Tide key with its raylib key (desktop) and DOM `code` (web). Both
+// name physical positions after the US layout, as Tide does.
 typedef struct key_binding {
-    size_t offset; // In purr_keyboard
+    size_t offset; // In tide_keyboard
     int raylib;
     const char *dom;
 } key_binding;
 
-#define KEY(name, raylib, dom) {offsetof(purr_keyboard, name), raylib, dom}
+#define KEY(name, raylib, dom) {offsetof(tide_keyboard, name), raylib, dom}
 
 static const key_binding keys[] = {
     KEY(a, KEY_A, "KeyA"), KEY(b, KEY_B, "KeyB"), KEY(c, KEY_C, "KeyC"), KEY(d, KEY_D, "KeyD"),
@@ -67,7 +67,7 @@ static const key_binding keys[] = {
     KEY(numpadDivide, KEY_KP_DIVIDE, "NumpadDivide"), KEY(numpadPeriod, KEY_KP_DECIMAL, "NumpadDecimal"),
 };
 
-_Static_assert(COUNT_OF(keys) == 0 PURR_KEYBOARD_KEYS(PLUS_ONE), "every key in devices.h needs a binding");
+_Static_assert(COUNT_OF(keys) == 0 TIDE_KEYBOARD_KEYS(PLUS_ONE), "every key in devices.h needs a binding");
 
 typedef struct button_binding {
     size_t offset;
@@ -75,14 +75,14 @@ typedef struct button_binding {
 } button_binding;
 
 static const button_binding mouse_buttons[] = {
-    {offsetof(purr_mouse, left), MOUSE_BUTTON_LEFT},
-    {offsetof(purr_mouse, right), MOUSE_BUTTON_RIGHT},
-    {offsetof(purr_mouse, middle), MOUSE_BUTTON_MIDDLE},
-    {offsetof(purr_mouse, back), MOUSE_BUTTON_SIDE},     // GLFW button 4, what mice send for back
-    {offsetof(purr_mouse, forward), MOUSE_BUTTON_EXTRA}, // GLFW button 5
+    {offsetof(tide_mouse, left), MOUSE_BUTTON_LEFT},
+    {offsetof(tide_mouse, right), MOUSE_BUTTON_RIGHT},
+    {offsetof(tide_mouse, middle), MOUSE_BUTTON_MIDDLE},
+    {offsetof(tide_mouse, back), MOUSE_BUTTON_SIDE},     // GLFW button 4, what mice send for back
+    {offsetof(tide_mouse, forward), MOUSE_BUTTON_EXTRA}, // GLFW button 5
 };
 
-_Static_assert(COUNT_OF(mouse_buttons) == 0 PURR_MOUSE_BUTTONS(PLUS_ONE), "every mouse button needs a binding");
+_Static_assert(COUNT_OF(mouse_buttons) == 0 TIDE_MOUSE_BUTTONS(PLUS_ONE), "every mouse button needs a binding");
 
 // raylib's button (desktop), and the button's index in the browser's standard
 // gamepad mapping (web).
@@ -93,33 +93,33 @@ typedef struct gamepad_binding {
 } gamepad_binding;
 
 static const gamepad_binding gamepad_buttons[] = {
-    {offsetof(purr_gamepad, buttonSouth), GAMEPAD_BUTTON_RIGHT_FACE_DOWN, 0},
-    {offsetof(purr_gamepad, buttonEast), GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, 1},
-    {offsetof(purr_gamepad, buttonWest), GAMEPAD_BUTTON_RIGHT_FACE_LEFT, 2},
-    {offsetof(purr_gamepad, buttonNorth), GAMEPAD_BUTTON_RIGHT_FACE_UP, 3},
-    {offsetof(purr_gamepad, leftShoulder), GAMEPAD_BUTTON_LEFT_TRIGGER_1, 4},
-    {offsetof(purr_gamepad, rightShoulder), GAMEPAD_BUTTON_RIGHT_TRIGGER_1, 5},
-    {offsetof(purr_gamepad, leftStickButton), GAMEPAD_BUTTON_LEFT_THUMB, 10},
-    {offsetof(purr_gamepad, rightStickButton), GAMEPAD_BUTTON_RIGHT_THUMB, 11},
-    {offsetof(purr_gamepad, start), GAMEPAD_BUTTON_MIDDLE_RIGHT, 9},
-    {offsetof(purr_gamepad, select), GAMEPAD_BUTTON_MIDDLE_LEFT, 8},
-    {offsetof(purr_gamepad, dpad.up), GAMEPAD_BUTTON_LEFT_FACE_UP, 12},
-    {offsetof(purr_gamepad, dpad.down), GAMEPAD_BUTTON_LEFT_FACE_DOWN, 13},
-    {offsetof(purr_gamepad, dpad.left), GAMEPAD_BUTTON_LEFT_FACE_LEFT, 14},
-    {offsetof(purr_gamepad, dpad.right), GAMEPAD_BUTTON_LEFT_FACE_RIGHT, 15},
+    {offsetof(tide_gamepad, buttonSouth), GAMEPAD_BUTTON_RIGHT_FACE_DOWN, 0},
+    {offsetof(tide_gamepad, buttonEast), GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, 1},
+    {offsetof(tide_gamepad, buttonWest), GAMEPAD_BUTTON_RIGHT_FACE_LEFT, 2},
+    {offsetof(tide_gamepad, buttonNorth), GAMEPAD_BUTTON_RIGHT_FACE_UP, 3},
+    {offsetof(tide_gamepad, leftShoulder), GAMEPAD_BUTTON_LEFT_TRIGGER_1, 4},
+    {offsetof(tide_gamepad, rightShoulder), GAMEPAD_BUTTON_RIGHT_TRIGGER_1, 5},
+    {offsetof(tide_gamepad, leftStickButton), GAMEPAD_BUTTON_LEFT_THUMB, 10},
+    {offsetof(tide_gamepad, rightStickButton), GAMEPAD_BUTTON_RIGHT_THUMB, 11},
+    {offsetof(tide_gamepad, start), GAMEPAD_BUTTON_MIDDLE_RIGHT, 9},
+    {offsetof(tide_gamepad, select), GAMEPAD_BUTTON_MIDDLE_LEFT, 8},
+    {offsetof(tide_gamepad, dpad.up), GAMEPAD_BUTTON_LEFT_FACE_UP, 12},
+    {offsetof(tide_gamepad, dpad.down), GAMEPAD_BUTTON_LEFT_FACE_DOWN, 13},
+    {offsetof(tide_gamepad, dpad.left), GAMEPAD_BUTTON_LEFT_FACE_LEFT, 14},
+    {offsetof(tide_gamepad, dpad.right), GAMEPAD_BUTTON_LEFT_FACE_RIGHT, 15},
 };
 
-_Static_assert(COUNT_OF(gamepad_buttons) == 0 PURR_GAMEPAD_BUTTONS(PLUS_ONE) PURR_DPAD_BUTTONS(PLUS_ONE),
+_Static_assert(COUNT_OF(gamepad_buttons) == 0 TIDE_GAMEPAD_BUTTONS(PLUS_ONE) TIDE_DPAD_BUTTONS(PLUS_ONE),
                "every gamepad button needs a binding");
 
 #ifdef __wasm__
 static bool web_timer_frames; // Frames on timers instead of animation frames
 #endif
 
-static purr_frame_fn run_frame;
+static tide_frame_fn run_frame;
 static void *run_user;
 
-void purr_platform_open(const purr_window_desc *desc)
+void tide_platform_open(const tide_window_desc *desc)
 {
     unsigned int flags = 0;
     // On the web, a resizable window is a canvas that fills the page. Tests
@@ -141,14 +141,14 @@ void purr_platform_open(const purr_window_desc *desc)
     // raylib reads web keys by the character they type, which depends on the
     // keyboard layout. The page reads the DOM's `code`, which names positions.
     web_timer_frames = desc->hidden;
-    for (size_t i = 0; i < COUNT_OF(keys); i++) purr_web_watch_key((int)i, keys[i].dom);
+    for (size_t i = 0; i < COUNT_OF(keys); i++) tide_web_watch_key((int)i, keys[i].dom);
 #endif
 }
 
 _Noreturn static void finish(const int code)
 {
 #ifdef __wasm__
-    purr_web_stop();
+    tide_web_stop();
 #endif
     CloseWindow();
     exit(code);
@@ -163,58 +163,58 @@ static int step(void)
 }
 
 #ifdef __wasm__
-// The page calls it for every frame, once purr_platform_run starts the loop.
-__attribute__((export_name("purr_web_frame"))) void purr_web_frame(void)
+// The page calls it for every frame, once tide_platform_run starts the loop.
+__attribute__((export_name("tide_web_frame"))) void tide_web_frame(void)
 {
     const int code = step();
-    if (code != PURR_KEEP_RUNNING) finish(code);
+    if (code != TIDE_KEEP_RUNNING) finish(code);
 }
 #endif
 
-void purr_platform_run(const purr_frame_fn frame, void *user)
+void tide_platform_run(const tide_frame_fn frame, void *user)
 {
     run_frame = frame;
     run_user = user;
 #ifdef __wasm__
     // Frames on requestAnimationFrame, or as fast as timers allow when hidden.
     // Doesn't return: it unwinds main's stack back to the browser.
-    purr_web_run(web_timer_frames);
+    tide_web_run(web_timer_frames);
 #else
     for (;;) {
         if (WindowShouldClose()) finish(0);
         const int code = step();
-        if (code != PURR_KEEP_RUNNING) finish(code);
+        if (code != TIDE_KEEP_RUNNING) finish(code);
     }
 #endif
 }
 
-static void poll_keyboard(purr_keyboard *k)
+static void poll_keyboard(tide_keyboard *k)
 {
     for (size_t i = 0; i < COUNT_OF(keys); i++) {
 #ifdef __wasm__
-        const bool held = purr_web_key_held((int)i);
+        const bool held = tide_web_key_held((int)i);
 #else
         const bool held = IsKeyDown(keys[i].raylib);
 #endif
-        purr_button_set(BUTTON_AT(k, keys[i].offset), held);
+        tide_button_set(BUTTON_AT(k, keys[i].offset), held);
     }
 }
 
-static void poll_mouse(purr_mouse *m)
+static void poll_mouse(tide_mouse *m)
 {
     const Vector2 position = GetMousePosition();
     const Vector2 delta = GetMouseDelta();
     const Vector2 scroll = GetMouseWheelMoveV();
     // raylib counts from the top left, y down; Devices follows Unity: from the
     // bottom left, y up.
-    m->position = purr_f2(position.x, (float)GetScreenHeight() - position.y);
+    m->position = tide_f2(position.x, (float)GetScreenHeight() - position.y);
     // Delta and scroll add up until the input is sampled.
-    m->delta = purr_f2(m->delta.x + delta.x, m->delta.y - delta.y);
-    m->scroll = purr_f2(m->scroll.x + scroll.x, m->scroll.y + scroll.y);
-    m->poll_delta = purr_f2(delta.x, -delta.y);
-    m->poll_scroll = purr_f2(scroll.x, scroll.y);
+    m->delta = tide_f2(m->delta.x + delta.x, m->delta.y - delta.y);
+    m->scroll = tide_f2(m->scroll.x + scroll.x, m->scroll.y + scroll.y);
+    m->poll_delta = tide_f2(delta.x, -delta.y);
+    m->poll_scroll = tide_f2(scroll.x, scroll.y);
     for (size_t i = 0; i < COUNT_OF(mouse_buttons); i++)
-        purr_button_set(BUTTON_AT(m, mouse_buttons[i].offset), IsMouseButtonDown(mouse_buttons[i].raylib));
+        tide_button_set(BUTTON_AT(m, mouse_buttons[i].offset), IsMouseButtonDown(mouse_buttons[i].raylib));
 }
 
 #ifndef __wasm__
@@ -225,60 +225,60 @@ static float trigger(const int pad, const int axis)
 }
 #endif
 
-static void poll_gamepad(purr_gamepad *g)
+static void poll_gamepad(tide_gamepad *g)
 {
     const int pad = 0;
 #ifdef __wasm__
     // The browser's standard mapping: axes 0 to 3 are the sticks, and the
     // triggers are analog buttons 6 and 7.
-    g->connected = purr_web_gamepad_connected(pad);
+    g->connected = tide_web_gamepad_connected(pad);
     if (g->connected) {
-        g->leftStick = purr_f2(purr_web_gamepad_axis(pad, 0), -purr_web_gamepad_axis(pad, 1));
-        g->rightStick = purr_f2(purr_web_gamepad_axis(pad, 2), -purr_web_gamepad_axis(pad, 3));
-        g->leftTrigger = purr_web_gamepad_button(pad, 6);
-        g->rightTrigger = purr_web_gamepad_button(pad, 7);
+        g->leftStick = tide_f2(tide_web_gamepad_axis(pad, 0), -tide_web_gamepad_axis(pad, 1));
+        g->rightStick = tide_f2(tide_web_gamepad_axis(pad, 2), -tide_web_gamepad_axis(pad, 3));
+        g->leftTrigger = tide_web_gamepad_button(pad, 6);
+        g->rightTrigger = tide_web_gamepad_button(pad, 7);
     }
 #else
     g->connected = IsGamepadAvailable(pad);
     if (g->connected) {
-        g->leftStick = purr_f2(GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_X),
+        g->leftStick = tide_f2(GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_X),
                                -GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_Y));
-        g->rightStick = purr_f2(GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X),
+        g->rightStick = tide_f2(GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X),
                                 -GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_Y));
         g->leftTrigger = trigger(pad, GAMEPAD_AXIS_LEFT_TRIGGER);
         g->rightTrigger = trigger(pad, GAMEPAD_AXIS_RIGHT_TRIGGER);
     }
 #endif
     if (!g->connected) {
-        g->leftStick = g->rightStick = purr_f2(0.0f, 0.0f);
+        g->leftStick = g->rightStick = tide_f2(0.0f, 0.0f);
         g->leftTrigger = g->rightTrigger = 0.0f;
     }
     for (size_t i = 0; i < COUNT_OF(gamepad_buttons); i++) {
 #ifdef __wasm__
-        const bool held = g->connected && purr_web_gamepad_button(pad, gamepad_buttons[i].web) > 0.5f;
+        const bool held = g->connected && tide_web_gamepad_button(pad, gamepad_buttons[i].web) > 0.5f;
 #else
         const bool held = g->connected && IsGamepadButtonDown(pad, gamepad_buttons[i].raylib);
 #endif
-        purr_button_set(BUTTON_AT(g, gamepad_buttons[i].offset), held);
+        tide_button_set(BUTTON_AT(g, gamepad_buttons[i].offset), held);
     }
 }
 
 // Characters typed since the last poll, which follow the keyboard layout.
-static void poll_text(purr_typed *text)
+static void poll_text(tide_typed *text)
 {
     text->count = 0;
     for (;;) {
 #ifdef __wasm__
-        const int c = purr_web_take_char();
+        const int c = tide_web_take_char();
 #else
         const int c = GetCharPressed();
 #endif
         if (c <= 0) break;
-        if (text->count < PURR_TEXT_MAX) text->chars[text->count++] = (uint32_t)c;
+        if (text->count < TIDE_TEXT_MAX) text->chars[text->count++] = (uint32_t)c;
     }
 }
 
-void purr_platform_poll(purr_devices *devices)
+void tide_platform_poll(tide_devices *devices)
 {
     poll_keyboard(&devices->keyboard);
     poll_mouse(&devices->mouse);
@@ -287,17 +287,17 @@ void purr_platform_poll(purr_devices *devices)
 }
 
 // The camera maps world units (y up) to window pixels (y down). Each frame's
-// list starts at the origin with 1 unit per pixel. After PURR_DRAW_GUI, it
+// list starts at the origin with 1 unit per pixel. After TIDE_DRAW_GUI, it
 // maps the GUI's pixels instead: from the top left, y down.
 typedef struct camera {
-    purr_float2 center;
+    tide_float2 center;
     float scale; // Pixels per world unit
     bool gui;
 } camera;
 
 static camera last_camera = {{0.0f, 0.0f}, 1.0f, false};
 
-static Vector2 to_screen(const camera *cam, const purr_float2 p)
+static Vector2 to_screen(const camera *cam, const tide_float2 p)
 {
     if (cam->gui) return (Vector2){p.x * cam->scale, p.y * cam->scale};
     return (Vector2){(float)GetScreenWidth() * 0.5f + (p.x - cam->center.x) * cam->scale,
@@ -305,10 +305,10 @@ static Vector2 to_screen(const camera *cam, const purr_float2 p)
 }
 
 // A rect's top left corner on screen: y goes up in the world, down in the GUI.
-static Vector2 rect_corner(const camera *cam, const purr_draw_command *c)
+static Vector2 rect_corner(const camera *cam, const tide_draw_command *c)
 {
     const float half_height = cam->gui ? -c->b.y * 0.5f : c->b.y * 0.5f;
-    return to_screen(cam, purr_f2(c->a.x - c->b.x * 0.5f, c->a.y + half_height));
+    return to_screen(cam, tide_f2(c->a.x - c->b.x * 0.5f, c->a.y + half_height));
 }
 
 static unsigned char color_channel(const float v)
@@ -318,51 +318,51 @@ static unsigned char color_channel(const float v)
     return (unsigned char)(v * 255.0f + 0.5f);
 }
 
-static Color to_raylib(const purr_color c)
+static Color to_raylib(const tide_color c)
 {
     return (Color){color_channel(c.r), color_channel(c.g), color_channel(c.b), color_channel(c.a)};
 }
 
-void purr_platform_draw(const purr_draw_list *list)
+void tide_platform_draw(const tide_draw_list *list)
 {
     ClearBackground(BLACK); // Every frame starts black; Draw.Clear picks another color
     camera cam = {{0.0f, 0.0f}, 1.0f, false};
-    camera world = cam; // The last world camera, for purr_platform_world_to_screen
+    camera world = cam; // The last world camera, for tide_platform_world_to_screen
     for (uint32_t i = 0; i < list->count; i++) {
-        const purr_draw_command *c = &list->commands[i];
+        const tide_draw_command *c = &list->commands[i];
         const Color color = to_raylib(c->color);
-        switch ((purr_draw_kind)c->kind) {
-        case PURR_DRAW_CLEAR:
+        switch ((tide_draw_kind)c->kind) {
+        case TIDE_DRAW_CLEAR:
             ClearBackground(color);
             break;
-        case PURR_DRAW_CAMERA:
+        case TIDE_DRAW_CAMERA:
             cam.center = c->a;
             cam.scale = c->b.x > 0.0f ? (float)GetScreenHeight() / (2.0f * c->b.x) : 1.0f;
             cam.gui = false;
             world = cam;
             break;
-        case PURR_DRAW_GUI:
+        case TIDE_DRAW_GUI:
             cam.scale = 1.0f;
             cam.gui = true;
             break;
-        case PURR_DRAW_CIRCLE:
+        case TIDE_DRAW_CIRCLE:
             DrawCircleV(to_screen(&cam, c->a), c->b.x * cam.scale, color);
             break;
-        case PURR_DRAW_WIRE_CIRCLE:
+        case TIDE_DRAW_WIRE_CIRCLE:
             DrawCircleLinesV(to_screen(&cam, c->a), c->b.x * cam.scale, color);
             break;
-        case PURR_DRAW_RECT:
-        case PURR_DRAW_WIRE_RECT: {
+        case TIDE_DRAW_RECT:
+        case TIDE_DRAW_WIRE_RECT: {
             const Vector2 top_left = rect_corner(&cam, c);
             const Rectangle r = {top_left.x, top_left.y, c->b.x * cam.scale, c->b.y * cam.scale};
-            if (c->kind == PURR_DRAW_RECT) DrawRectangleRec(r, color);
+            if (c->kind == TIDE_DRAW_RECT) DrawRectangleRec(r, color);
             else DrawRectangleLinesEx(r, 1.0f, color);
             break;
         }
-        case PURR_DRAW_LINE:
+        case TIDE_DRAW_LINE:
             DrawLineV(to_screen(&cam, c->a), to_screen(&cam, c->b), color);
             break;
-        case PURR_DRAW_TEXT: {
+        case TIDE_DRAW_TEXT: {
             const float size = c->b.x * cam.scale;
             DrawTextEx(GetFontDefault(), list->text + c->text, to_screen(&cam, c->a), size, size / 10.0f, color);
             break;
@@ -373,45 +373,45 @@ void purr_platform_draw(const purr_draw_list *list)
 
     static bool warned;
     if (list->dropped > 0 && !warned) {
-        TraceLog(LOG_WARNING, "DRAW: %u commands didn't fit in the draw list (raise PURR_DRAW_MAX_COMMANDS)",
+        TraceLog(LOG_WARNING, "DRAW: %u commands didn't fit in the draw list (raise TIDE_DRAW_MAX_COMMANDS)",
                  (unsigned)list->dropped);
         warned = true;
     }
 }
 
-purr_float2 purr_platform_world_to_screen(const purr_float2 world)
+tide_float2 tide_platform_world_to_screen(const tide_float2 world)
 {
     const Vector2 p = to_screen(&last_camera, world);
-    return purr_f2(p.x, p.y);
+    return tide_f2(p.x, p.y);
 }
 
-purr_float2 purr_platform_screen_size(void)
+tide_float2 tide_platform_screen_size(void)
 {
-    return purr_f2((float)GetScreenWidth(), (float)GetScreenHeight());
+    return tide_f2((float)GetScreenWidth(), (float)GetScreenHeight());
 }
 
-float purr_platform_measure_text(const char *text, const float size)
+float tide_platform_measure_text(const char *text, const float size)
 {
     return MeasureTextEx(GetFontDefault(), text, size, size / 10.0f).x;
 }
 
-void purr_platform_draw_overlay(const char *text)
+void tide_platform_draw_overlay(const char *text)
 {
     const int size = 16;
     DrawText(text, GetScreenWidth() - MeasureText(text, size) - 12, 8, size, GRAY);
 }
 
-int purr_platform_fps(void)
+int tide_platform_fps(void)
 {
     return GetFPS();
 }
 
-void purr_platform_read_pixels(const purr_draw_list *list, const purr_float2 *points, const int count, uint32_t *rgba)
+void tide_platform_read_pixels(const tide_draw_list *list, const tide_float2 *points, const int count, uint32_t *rgba)
 {
     const int height = GetScreenHeight();
     const RenderTexture2D target = LoadRenderTexture(GetScreenWidth(), height);
     BeginTextureMode(target);
-    purr_platform_draw(list);
+    tide_platform_draw(list);
     EndTextureMode();
     const Image image = LoadImageFromTexture(target.texture);
     UnloadRenderTexture(target);

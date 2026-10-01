@@ -1,20 +1,20 @@
-# The purr command
+# The tide command
 
-`purr` builds and runs games. A game is every `.purr` file in a folder and its subfolders, with the `.c` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)). Commands take the game's folder, or use the current one.
+`tide` builds and runs games. A game is every `.tide` file in a folder and its subfolders, with the `.c` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)). Commands take the game's folder, or use the current one.
 
 ```
-purr <command> [folder] [options]
+tide <command> [folder] [options]
 ```
 
 | Command | What it does |
 |---|---|
-| `purr run [folder]` | Builds the game and plays it |
-| `purr build [folder]` | Builds the game into `<folder>/build` |
-| `purr schedule [folder]` | Shows which systems can run at the same time, and why the others wait |
-| `purr editors` | Adds PurrLang to VS Code, Cursor, VSCodium and Windsurf |
-| `purr upgrade` | Updates purr to the newest version |
-| `purr version` | Shows purr's version, and which compilers it found |
-| `purr help` | Lists every option |
+| `tide run [folder]` | Builds the game and plays it |
+| `tide build [folder]` | Builds the game into `<folder>/build` |
+| `tide schedule [folder]` | Shows which systems can run at the same time, and why the others wait |
+| `tide editors` | Adds Tide to VS Code, Cursor, VSCodium and Windsurf |
+| `tide upgrade` | Updates tide to the newest version |
+| `tide version` | Shows tide's version, and which compilers it found |
+| `tide help` | Lists every option |
 
 ## run and build
 
@@ -27,15 +27,15 @@ purr <command> [folder] [options]
 | `-o <path>` | `build` only: where the program goes |
 | `--no-open` | `run --web` only: serves the page without opening a browser |
 
-`purr build --release --web` makes one self-contained `.html` file with the game inside. It opens straight from disk, and can be put online as it is.
+`tide build --release --web` makes one self-contained `.html` file with the game inside. It opens straight from disk, and can be put online as it is.
 
 ## Hot reload
 
-While `purr run` plays a game, saving a `.purr` file rebuilds it, and so does saving one of its C files or libraries. The game carries on with the new code in the same window:
+While `tide run` plays a game, saving a `.tide` file rebuilds it, and so does saving one of its C files or libraries. The game carries on with the new code in the same window:
 
 - If you changed only code (systems, views, event handlers, methods), the match and everything local, like menus, carry on where they are.
 - If you changed data (components, fields, singletons, the input), the game is carried over to it by name, and goes on from where it was.
-- If the new code has errors, `purr` prints them and the game keeps running its last build.
+- If the new code has errors, `tide` prints them and the game keeps running its last build.
 
 Carrying the game over works like this:
 
@@ -46,17 +46,17 @@ Carrying the game over works like this:
 - A changed default doesn't change existing entities, only new ones.
 - If the scene the game is in is gone, the game starts over.
 
-`purr` says what happened after each reload, like `reloaded, and carried the game over to its new data layout; 1 field reset; 2 entities dropped`.
+`tide` says what happened after each reload, like `reloaded, and carried the game over to its new data layout; 1 field reset; 2 entities dropped`.
 
-When the game gets into a state you don't want, type `r` and press Enter in `purr`'s terminal to start it over. With a match on several windows (`--host` in one, `--connect localhost` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over. On the web, a reload plays on alone for now: the room closes, and the other players drop out.
+When the game gets into a state you don't want, type `r` and press Enter in `tide`'s terminal to start it over. With a match on several windows (`--host` in one, `--connect localhost` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over. On the web, a reload plays on alone for now: the room closes, and the other players drop out.
 
-`purr run --web` reloads too. `purr` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console. VS Code and JetBrains IDEs can play it beside your code instead (see [Editors](editors.md)).
+`tide run --web` reloads too. `tide` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console. VS Code and JetBrains IDEs can play it beside your code instead (see [Editors](editors.md)).
 
-Hot reload is only for `purr run`: `purr build` makes a plain program, or a page with nothing of it.
+Hot reload is only for `tide run`: `tide build` makes a plain program, or a page with nothing of it.
 
 ## Multiplayer
 
-`purr run` can start a match others join. The game's `Main` scene must be the match's for this (see [Scenes](../language/scenes.md)); a game that starts in a menu does the same from code (see [Multiplayer](../language/multiplayer.md)).
+`tide run` can start a match others join. The game's `Main` scene must be the match's for this (see [Scenes](../language/scenes.md)); a game that starts in a menu does the same from code (see [Multiplayer](../language/multiplayer.md)).
 
 | Option | What it does |
 |---|---|
@@ -74,4 +74,4 @@ Hot reload is only for `purr run`: `purr build` makes a plain program, or a page
 
 ## Files
 
-`purr` keeps its work in a hidden `.purr` folder in the game's folder. You can delete it any time, and git ignores it. `purr build` puts what it makes in `build/`, with the game's `.dll`, `.so` or `.dylib` libraries next to the program. C files and libraries in hidden folders or in `build/` aren't part of the game.
+`tide` keeps its work in a hidden `.tide` folder in the game's folder. You can delete it any time, and git ignores it. `tide build` puts what it makes in `build/`, with the game's `.dll`, `.so` or `.dylib` libraries next to the program. C files and libraries in hidden folders or in `build/` aren't part of the game.

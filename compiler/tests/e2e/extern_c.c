@@ -1,4 +1,4 @@
-// The C side of extern.purr: plain C, as a library would be, declaring its
+// The C side of extern.tide: plain C, as a library would be, declaring its
 // own types with the same fields as the game's.
 #include <stdbool.h>
 #include <stddef.h>

@@ -2,7 +2,7 @@
 
 ## Files
 
-A game is every `.purr` file in its folder and its subfolders. Every declaration is visible from every file, and there are no imports between files. How you split a game into files is up to you: the editors can move a declaration to a file of its own.
+A game is every `.tide` file in its folder and its subfolders. Every declaration is visible from every file, and there are no imports between files. How you split a game into files is up to you: the editors can move a declaration to a file of its own.
 
 Files compile in order of their paths, and that's the default order of systems and views: by file, then as they're written in each file (see [Systems](./systems.md#order)).
 
@@ -11,7 +11,7 @@ Files compile in order of their paths, and that's the default order of systems a
 Large games keep names apart with namespaces. `namespace` at the top of a file puts everything in it in that namespace:
 
 ```csharp
-// combat.purr
+// combat.tide
 namespace Combat;
 
 component Health { int value = 100; }
@@ -20,7 +20,7 @@ component Health { int value = 100; }
 Code outside the namespace names its declarations with it, `Combat.Health`, or imports the namespace with `using`:
 
 ```csharp
-// main.purr
+// main.tide
 using Combat;
 
 scene Main { }

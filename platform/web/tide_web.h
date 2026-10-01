@@ -1,0 +1,78 @@
+#pragma once
+
+// What the page's JavaScript (platform/web/tide.js) gives WebAssembly in web
+// builds: the canvas and its WebGL 2 context, input, and the frame loop. The
+// GL functions themselves are imported by their C names (see tide.js).
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define TIDE_WEB_IMPORT(name) __attribute__((import_module("tide"), import_name(#name)))
+
+// Sizes the canvas and creates its WebGL 2 context: `width` x `height` CSS
+// pixels, or the whole page when `resizable`. False if the browser has no
+// WebGL 2.
+TIDE_WEB_IMPORT(init_canvas) bool tide_web_init_canvas(int width, int height, bool resizable);
+// Its size in CSS pixels, which the program counts in...
+TIDE_WEB_IMPORT(canvas_width) int tide_web_canvas_width(void);
+TIDE_WEB_IMPORT(canvas_height) int tide_web_canvas_height(void);
+// ...and in the pixels it renders: devicePixelRatio times as many.
+TIDE_WEB_IMPORT(canvas_pixel_width) int tide_web_canvas_pixel_width(void);
+TIDE_WEB_IMPORT(canvas_pixel_height) int tide_web_canvas_pixel_height(void);
+
+// The mouse over the canvas, in CSS pixels from its top left. Buttons are a
+// bit mask in raylib's order: left, right, middle, back, forward. A button
+// pressed since the last call reads as held, even if it's already up again.
+TIDE_WEB_IMPORT(mouse_x) float tide_web_mouse_x(void);
+TIDE_WEB_IMPORT(mouse_y) float tide_web_mouse_y(void);
+TIDE_WEB_IMPORT(mouse_buttons) int tide_web_mouse_buttons(void);
+// Scrolling since the last call, positive away from the user.
+TIDE_WEB_IMPORT(take_wheel_x) float tide_web_take_wheel_x(void);
+TIDE_WEB_IMPORT(take_wheel_y) float tide_web_take_wheel_y(void);
+
+// Keys by the DOM's `code`, which names physical positions: `index` is ours.
+// Held keys are released when the page loses focus. A key pressed since the
+// last call reads as held, even if it's already up again.
+TIDE_WEB_IMPORT(watch_key) void tide_web_watch_key(int index, const char *code);
+TIDE_WEB_IMPORT(key_held) bool tide_web_key_held(int index);
+
+// The next character typed, as a Unicode code point, or 0 once there are no
+// more. They follow the keyboard layout, unlike keys.
+TIDE_WEB_IMPORT(take_char) int tide_web_take_char(void);
+
+// Gamepads in the browser's standard mapping: axes -1 to 1 (y down), buttons
+// 0 to 1 (triggers are analog buttons 6 and 7).
+TIDE_WEB_IMPORT(gamepad_connected) bool tide_web_gamepad_connected(int pad);
+TIDE_WEB_IMPORT(gamepad_axis) float tide_web_gamepad_axis(int pad, int axis);
+TIDE_WEB_IMPORT(gamepad_button) float tide_web_gamepad_button(int pad, int button);
+
+// Starts calling the exported tide_web_frame, on animation frames or, with
+// `timer_frames`, as fast as timers allow (headless pages have no animation
+// frames). Doesn't return: it unwinds main's stack back to the browser.
+TIDE_WEB_IMPORT(run) __attribute__((noreturn)) void tide_web_run(bool timer_frames);
+TIDE_WEB_IMPORT(stop) void tide_web_stop(void);
+
+// Runs JavaScript, for tests that need to fake browser events.
+TIDE_WEB_IMPORT(eval) void tide_web_eval(const char *script);
+
+// Rooms (platform/src/rooms.c): matches players find by a code, through the
+// relay, with WebRTC data channels between them. One at a time: opening one
+// closes the last. Each has a number, which the calls about it take; the host
+// is player 0 to those who join, and they're 1 and up to it.
+TIDE_WEB_IMPORT(room_host) uint32_t tide_web_room_host(void);
+TIDE_WEB_IMPORT(room_join) uint32_t tide_web_room_join(const char *code);
+TIDE_WEB_IMPORT(room_close) void tide_web_room_close(uint32_t room);
+// The room's code into `out` (7 bytes), "" while it has none.
+TIDE_WEB_IMPORT(room_code) void tide_web_room_code(char *out);
+// The room joined isn't one, or it couldn't be reached.
+TIDE_WEB_IMPORT(room_failed) bool tide_web_room_failed(void);
+TIDE_WEB_IMPORT(room_send) void tide_web_room_send(uint32_t room, uint32_t to, const void *data, uint32_t size);
+// The next datagram that arrived: its size, or 0 when there's none.
+TIDE_WEB_IMPORT(room_receive) uint32_t tide_web_room_receive(uint32_t room, uint32_t *from, void *data,
+                                                             uint32_t capacity);
+
+// Hot reloading, under tide run --web: what the page's last program left this
+// one (tide_reload_save in platform/src/reload.c), 0 bytes if nothing, and a
+// copy of it.
+TIDE_WEB_IMPORT(resume_size) uint32_t tide_web_resume_size(void);
+TIDE_WEB_IMPORT(resume_copy) void tide_web_resume_copy(void *to);

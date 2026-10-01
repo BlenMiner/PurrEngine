@@ -1,34 +1,34 @@
-# PurrEngine
+# Tide
 
 A networking-first game engine. The simulation is deterministic, so players on
 different machines, the web included, can share one world. Games are written in
-PurrLang, which compiles to C and then to native code or WebAssembly.
+the Tide language, which compiles to C and then to native code or WebAssembly.
 
-**Docs, and the demo running in your browser:** https://blenminer.github.io/PurrEngine/
+**Docs, and the demo running in your browser:** https://blenminer.github.io/tide-engine/
 
 ## Install
 
 Windows, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/BlenMiner/PurrEngine/release/install.ps1 | iex
+irm https://raw.githubusercontent.com/BlenMiner/tide-engine/release/install.ps1 | iex
 ```
 
 Linux and macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/BlenMiner/PurrEngine/release/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/BlenMiner/tide-engine/release/install.sh | sh
 ```
 
-This installs `purr` for your user (in `%LOCALAPPDATA%\Purr` or `~/.purr`) and
+This installs `tide` for your user (in `%LOCALAPPDATA%\Tide` or `~/.tide`) and
 puts it on your `PATH`; no admin rights needed. For nightly versions, which
-follow development day by day, set `PURR_CHANNEL=nightly` before running the
+follow development day by day, set `TIDE_CHANNEL=nightly` before running the
 script.
 
-`purr` has its C compiler built in (clang), for native and web games alike.
+`tide` has its C compiler built in (clang), for native and web games alike.
 Native games also need the system's own headers and libraries:
 
-- **Windows:** nothing more; `purr` brings them.
+- **Windows:** nothing more; `tide` brings them.
 - **Linux:** your distribution's C development files, which come with gcc:
   `sudo apt install build-essential` on Debian and Ubuntu, `sudo dnf install gcc`
   on Fedora.
@@ -36,7 +36,7 @@ Native games also need the system's own headers and libraries:
 
 ## Make a game
 
-A game is a folder of `.purr` files. Save this as `game.purr` in a new folder:
+A game is a folder of `.tide` files. Save this as `game.tide` in a new folder:
 
 ```csharp
 component Ball
@@ -69,43 +69,43 @@ Then, in that folder:
 
 | Command | What it does |
 |---|---|
-| `purr run` | Builds the game and plays it |
-| `purr run --web` | Builds it as a web page and opens it |
-| `purr build` | Builds the game into `build/` |
-| `purr build --release --web` | An optimized, self-contained `.html` (WebGL 2) |
-| `purr schedule` | Shows which systems can run at the same time, and why the others wait |
+| `tide run` | Builds the game and plays it |
+| `tide run --web` | Builds it as a web page and opens it |
+| `tide build` | Builds the game into `build/` |
+| `tide build --release --web` | An optimized, self-contained `.html` (WebGL 2) |
+| `tide schedule` | Shows which systems can run at the same time, and why the others wait |
 
-`purr help` lists every option. `purr` keeps its work in a hidden `.purr`
+`tide help` lists every option. `tide` keeps its work in a hidden `.tide`
 folder next to your files, which you can delete any time; it's ignored by git.
 
-The [docs](https://blenminer.github.io/PurrEngine/) go through the language a topic at a time, and
-[docs/purrlang.md](docs/purrlang.md) is its full spec.
+The [docs](https://blenminer.github.io/tide-engine/) go through the language a topic at a time, and
+[docs/spec.md](docs/spec.md) is its full spec.
 
 ## Stay up to date
 
 ```sh
-purr upgrade            # the newest version of your channel
-purr upgrade --nightly  # switch to nightly versions
-purr upgrade --stable   # back to stable ones
+tide upgrade            # the newest version of your channel
+tide upgrade --nightly  # switch to nightly versions
+tide upgrade --stable   # back to stable ones
 ```
 
-`purr` also tells you, at most once a day, when a new version is out.
+`tide` also tells you, at most once a day, when a new version is out.
 
 ## Editors
 
-Open your game's folder, the one you run `purr run` in, and every `.purr` file
+Open your game's folder, the one you run `tide run` in, and every `.tide` file
 in it is one game: completion, errors as you type with quick fixes, go to
 definition, rename, formatting, moving a declaration to a file of its own and
 more work across all of them.
 
-- **VS Code, Cursor, VSCodium and Windsurf:** the installer adds PurrLang to
-  the ones it finds, and `purr upgrade` keeps it up to date. Installed one
-  later? Run `purr editors`.
+- **VS Code, Cursor, VSCodium and Windsurf:** the installer adds Tide to
+  the ones it finds, and `tide upgrade` keeps it up to date. Installed one
+  later? Run `tide editors`.
 - **JetBrains IDEs** (CLion, Rider, IntelliJ and the others, 2024.2 or later):
-  install the [PurrLang plugin](https://plugins.jetbrains.com/plugin/34610-purrlang)
+  install the Tide plugin
   from Settings > Plugins > Marketplace. It brings the LSP4IJ plugin it needs.
   Dark color schemes show type names as plain text; see
-  [tools/purrlang-jetbrains/README.md](tools/purrlang-jetbrains/README.md#colors)
+  [tools/tide-jetbrains/README.md](tools/tide-jetbrains/README.md#colors)
   to color them.
 
 ## Working on the engine

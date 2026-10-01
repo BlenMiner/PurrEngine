@@ -1,12 +1,12 @@
-// UDP for sessions: purr_platform_udp_open and purr_platform_resolve (see
-// purr/platform.h). A file of its own, since it includes the operating
+// UDP for sessions: tide_platform_udp_open and tide_platform_resolve (see
+// tide/platform.h). A file of its own, since it includes the operating
 // system's headers, which raylib's clash with.
 
 #if !defined(_WIN32) && !defined(__wasi__)
 #define _DEFAULT_SOURCE // getaddrinfo and struct addrinfo under strict C
 #endif
 
-#include "purr/platform.h"
+#include "tide/platform.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -14,21 +14,21 @@
 #if defined(__wasi__)
 
 // The web has no UDP; a browser will reach servers another way.
-bool purr_platform_udp_open(const uint16_t port, purr_transport *out)
+bool tide_platform_udp_open(const uint16_t port, tide_transport *out)
 {
     (void)port;
     (void)out;
     return false;
 }
 
-bool purr_platform_udp_open_local(const uint16_t port, purr_transport *out)
+bool tide_platform_udp_open_local(const uint16_t port, tide_transport *out)
 {
-    return purr_platform_udp_open(port, out);
+    return tide_platform_udp_open(port, out);
 }
 
-bool purr_platform_resolve(const char *text, const uint16_t default_port, purr_address *out)
+bool tide_platform_resolve(const char *text, const uint16_t default_port, tide_address *out)
 {
-    return purr_address_parse(text, default_port, out);
+    return tide_address_parse(text, default_port, out);
 }
 
 #else
@@ -70,10 +70,10 @@ static bool started(void)
 #endif
 }
 
-static void udp_send(void *self, const purr_address to, const void *data, const uint32_t size)
+static void udp_send(void *self, const tide_address to, const void *data, const uint32_t size)
 {
     const udp *u = self;
-    if (to.kind != PURR_ADDRESS_IPV4) return;
+    if (to.kind != TIDE_ADDRESS_IPV4) return;
     struct sockaddr_in a;
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
@@ -82,7 +82,7 @@ static void udp_send(void *self, const purr_address to, const void *data, const 
     sendto(u->socket, (const char *)data, (int)size, 0, (const struct sockaddr *)&a, sizeof a);
 }
 
-static uint32_t udp_receive(void *self, purr_address *from, void *data, const uint32_t capacity)
+static uint32_t udp_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
 {
     const udp *u = self;
     for (;;) {
@@ -90,7 +90,7 @@ static uint32_t udp_receive(void *self, purr_address *from, void *data, const ui
         socklen_t length = sizeof a;
         const int n = (int)recvfrom(u->socket, (char *)data, (int)capacity, 0, (struct sockaddr *)&a, &length);
         if (n > 0 && a.sin_family == AF_INET) {
-            *from = (purr_address){PURR_ADDRESS_IPV4, ntohl(a.sin_addr.s_addr), ntohs(a.sin_port)};
+            *from = (tide_address){TIDE_ADDRESS_IPV4, ntohl(a.sin_addr.s_addr), ntohs(a.sin_port)};
             return (uint32_t)n;
         }
         if (n > 0) continue; // Not IPv4
@@ -111,7 +111,7 @@ static void udp_close(void *self)
     free(u);
 }
 
-static bool udp_open(const uint32_t host, const uint16_t port, purr_transport *out)
+static bool udp_open(const uint32_t host, const uint16_t port, tide_transport *out)
 {
     if (!started()) return false;
     const udp_socket s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -134,23 +134,23 @@ static bool udp_open(const uint32_t host, const uint16_t port, purr_transport *o
         return false;
     }
     u->socket = s;
-    *out = (purr_transport){u, udp_send, udp_receive, udp_close};
+    *out = (tide_transport){u, udp_send, udp_receive, udp_close};
     return true;
 }
 
-bool purr_platform_udp_open(const uint16_t port, purr_transport *out)
+bool tide_platform_udp_open(const uint16_t port, tide_transport *out)
 {
     return udp_open(INADDR_ANY, port, out);
 }
 
-bool purr_platform_udp_open_local(const uint16_t port, purr_transport *out)
+bool tide_platform_udp_open_local(const uint16_t port, tide_transport *out)
 {
     return udp_open(INADDR_LOOPBACK, port, out);
 }
 
-bool purr_platform_resolve(const char *text, const uint16_t default_port, purr_address *out)
+bool tide_platform_resolve(const char *text, const uint16_t default_port, tide_address *out)
 {
-    if (purr_address_parse(text, default_port, out)) return true;
+    if (tide_address_parse(text, default_port, out)) return true;
     if (!started()) return false;
     // name or name:port
     char name[256];
@@ -172,7 +172,7 @@ bool purr_platform_resolve(const char *text, const uint16_t default_port, purr_a
     struct addrinfo *found = NULL;
     if (getaddrinfo(name, NULL, &hints, &found) != 0 || !found) return false;
     const struct sockaddr_in *a = (const struct sockaddr_in *)found->ai_addr;
-    *out = (purr_address){PURR_ADDRESS_IPV4, ntohl(a->sin_addr.s_addr), (uint16_t)port};
+    *out = (tide_address){TIDE_ADDRESS_IPV4, ntohl(a->sin_addr.s_addr), (uint16_t)port};
     freeaddrinfo(found);
     return true;
 }

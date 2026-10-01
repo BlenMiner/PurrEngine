@@ -81,7 +81,7 @@ static int compare_prerelease(const char *a, const size_t an, const char *b, con
     return (i <= an) - (j <= bn);
 }
 
-int purr_version_compare(const char *a, const char *b)
+int tide_version_compare(const char *a, const char *b)
 {
     version x;
     version y;
@@ -95,13 +95,13 @@ int purr_version_compare(const char *a, const char *b)
     return compare_prerelease(x.pre, x.pre_len, y.pre, y.pre_len);
 }
 
-bool purr_version_valid(const char *text)
+bool tide_version_valid(const char *text)
 {
     version v;
     return parse(text, &v);
 }
 
-const char *purr_release_version(const json *release)
+const char *tide_release_version(const json *release)
 {
     const char *tag = json_str(json_get(release, "tag_name"));
     return tag && tag[0] == 'v' ? tag + 1 : tag;
@@ -115,32 +115,32 @@ static bool is_true(const json *v)
 static bool allowed(const json *release, const char *channel)
 {
     version v;
-    if (!parse(purr_release_version(release), &v) || is_true(json_get(release, "draft"))) return false;
+    if (!parse(tide_release_version(release), &v) || is_true(json_get(release, "draft"))) return false;
     return strcmp(channel, "stable") != 0 || !is_true(json_get(release, "prerelease"));
 }
 
-const json *purr_release_pick(const json *releases, const json *latest, const char *channel)
+const json *tide_release_pick(const json *releases, const json *latest, const char *channel)
 {
     const json *best = latest && allowed(latest, channel) ? latest : NULL;
     for (int i = 0; releases && releases->kind == JSON_ARRAY && i < releases->count; i++) {
         const json *r = releases->items[i];
         if (!allowed(r, channel)) continue;
-        if (!best || purr_version_compare(purr_release_version(r), purr_release_version(best)) > 0) best = r;
+        if (!best || tide_version_compare(tide_release_version(r), tide_release_version(best)) > 0) best = r;
     }
     return best;
 }
 
-bool purr_release_is(const json *release, const char *version)
+bool tide_release_is(const json *release, const char *version)
 {
     if (version && version[0] == 'v') version++;
-    const char *v = purr_release_version(release);
+    const char *v = tide_release_version(release);
     return v && version && strcmp(v, version) == 0 && !is_true(json_get(release, "draft"));
 }
 
-const json *purr_release_find(const json *releases, const char *version)
+const json *tide_release_find(const json *releases, const char *version)
 {
     for (int i = 0; releases && releases->kind == JSON_ARRAY && i < releases->count; i++) {
-        if (purr_release_is(releases->items[i], version)) return releases->items[i];
+        if (tide_release_is(releases->items[i], version)) return releases->items[i];
     }
     return NULL;
 }

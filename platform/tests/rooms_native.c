@@ -1,10 +1,10 @@
 // Desktop only: rooms through the relay, run by rooms.mjs, which starts a
-// relay on this machine and sets PURR_RELAY to it.
+// relay on this machine and sets TIDE_RELAY to it.
 //
-//     purr_platform_rooms host              hosts a match in a room, says its code
-//     purr_platform_rooms join <code>       joins it
-//     purr_platform_rooms echo-host         hosts a room, for a browser that echoes
-//     purr_platform_rooms echo-join <code>  joins a browser's room that echoes
+//     tide_platform_rooms host              hosts a match in a room, says its code
+//     tide_platform_rooms join <code>       joins it
+//     tide_platform_rooms echo-host         hosts a room, for a browser that echoes
+//     tide_platform_rooms echo-join <code>  joins a browser's room that echoes
 //
 // The first two play a match, like web_rooms.c: each says "ok" once the
 // other's input reaches it, and keeps playing so the other can finish. The
@@ -18,8 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "purr/platform.h"
-#include "purr/session.h"
+#include "tide/platform.h"
+#include "tide/session.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -57,7 +57,7 @@ static double clock_seconds(void)
 typedef struct world {
     uint32_t tick;
     uint32_t joined;
-    int32_t inputs[PURR_MAX_PLAYERS + 1];
+    int32_t inputs[TIDE_MAX_PLAYERS + 1];
 } world;
 
 static void start(void *w, const float dt, const void *s)
@@ -74,7 +74,7 @@ static void copy(void *to, const void *from)
 
 static uint64_t hash(const void *w)
 {
-    return purr_hash(w, sizeof(world));
+    return tide_hash(w, sizeof(world));
 }
 
 static void tick(void *w)
@@ -82,27 +82,27 @@ static void tick(void *w)
     ((world *)w)->tick++;
 }
 
-static void joined(void *w, const purr_player_id player)
+static void joined(void *w, const tide_player_id player)
 {
     (void)player;
     ((world *)w)->joined++;
 }
 
-static void left(void *w, const purr_player_id player)
+static void left(void *w, const tide_player_id player)
 {
     (void)w;
     (void)player;
 }
 
-static void set_input(void *w, const purr_player_id player, const void *input)
+static void set_input(void *w, const tide_player_id player, const void *input)
 {
-    const int32_t index = purr_player_index(player);
+    const int32_t index = tide_player_index(player);
     if (index >= 0) memcpy(&((world *)w)->inputs[index], input, 4);
 }
 
 static void set_server_input(void *w, const void *input)
 {
-    memcpy(&((world *)w)->inputs[PURR_MAX_PLAYERS], input, 4);
+    memcpy(&((world *)w)->inputs[TIDE_MAX_PLAYERS], input, 4);
 }
 
 static uint32_t write_input(const void *input, uint8_t *out, const uint32_t capacity)
@@ -119,7 +119,7 @@ static bool read_input(const uint8_t *data, const uint32_t size, void *input)
     return true;
 }
 
-static const purr_game game = {
+static const tide_game game = {
     .hash = 7,
     .world_size = sizeof(world),
     .input_size = 4,
@@ -148,43 +148,43 @@ static void sample(void *user, const uint32_t t, void *input)
 static int play(const bool host, const char *code)
 {
     me = host ? 1 : 2;
-    purr_session *session = purr_session_create(&(purr_session_desc){.game = &game, .tick_rate = 60, .sample = sample});
+    tide_session *session = tide_session_create(&(tide_session_desc){.game = &game, .tick_rate = 60, .sample = sample});
     const double begin = clock_seconds();
-    purr_transport network;
-    purr_address server;
+    tide_transport network;
+    tide_address server;
     if (host) {
-        if (!purr_platform_host_open(0, &network)) return printf("FAIL: no room to host\n"), 1;
-        purr_session_host(session, NULL, network, 0.0);
+        if (!tide_platform_host_open(0, &network)) return printf("FAIL: no room to host\n"), 1;
+        tide_session_host(session, NULL, network, 0.0);
     } else {
-        if (!purr_platform_room_join(code, &network, &server)) return printf("FAIL: no room to join\n"), 1;
-        purr_session_join(session, network, server, 0.0);
+        if (!tide_platform_room_join(code, &network, &server)) return printf("FAIL: no room to join\n"), 1;
+        tide_session_join(session, network, server, 0.0);
     }
     bool said_code = false, done = false;
     for (;;) {
         const double now = clock_seconds() - begin;
         if (now > 45.0) return printf("FAIL: the players didn't meet within 45 seconds\n"), 1;
-        if (purr_platform_room_failed()) purr_session_fail(session, PURR_DISCONNECT_FAILED);
-        purr_session_update(session, now);
-        purr_session_event event;
-        while (purr_session_next_event(session, &event)) {
-            if (event.kind == PURR_SESSION_DISCONNECTED_EVENT) {
+        if (tide_platform_room_failed()) tide_session_fail(session, TIDE_DISCONNECT_FAILED);
+        tide_session_update(session, now);
+        tide_session_event event;
+        while (tide_session_next_event(session, &event)) {
+            if (event.kind == TIDE_SESSION_DISCONNECTED_EVENT) {
                 printf("FAIL: the match ended, reason %d\n", (int)event.reason);
                 return 1;
             }
             printf("connected\n");
         }
-        char room[PURR_ROOM_CODE_LENGTH + 1];
-        purr_platform_room_code(room, sizeof room);
+        char room[TIDE_ROOM_CODE_LENGTH + 1];
+        tide_platform_room_code(room, sizeof room);
         if (host && !said_code && room[0]) {
             printf("room %s\n", room);
             said_code = true;
         }
-        const world *w = purr_session_world(session);
+        const world *w = tide_session_world(session);
         const int32_t other = me == 1 ? 2 : 1;
         bool seen = false;
-        for (int i = 0; w && i < (int)PURR_MAX_PLAYERS; i++) seen |= w->inputs[i] == other;
+        for (int i = 0; w && i < (int)TIDE_MAX_PLAYERS; i++) seen |= w->inputs[i] == other;
         if (!done && seen && w->joined == 2) {
-            const purr_session_status status = purr_session_status_of(session);
+            const tide_session_status status = tide_session_status_of(session);
             printf("ok: tick %u, verified %u, %u resyncs\n", (unsigned)w->tick, (unsigned)status.client.verified_tick,
                    (unsigned)status.client.resyncs);
             done = true;
@@ -199,9 +199,9 @@ static int play(const bool host, const char *code)
 
 static int echo(const bool host, const char *code)
 {
-    purr_transport t;
-    purr_address other = {0};
-    if (host ? !purr_platform_room_host(&t) : !purr_platform_room_join(code, &t, &other)) {
+    tide_transport t;
+    tide_address other = {0};
+    if (host ? !tide_platform_room_host(&t) : !tide_platform_room_join(code, &t, &other)) {
         return printf("FAIL: no room\n"), 1;
     }
     const double begin = clock_seconds();
@@ -216,14 +216,14 @@ static int echo(const bool host, const char *code)
             printf("FAIL: %d of 120 sizes came back within 45 seconds\n", sizes_back);
             return 1;
         }
-        if (purr_platform_room_failed()) return printf("FAIL: the room failed\n"), 1;
-        char room[PURR_ROOM_CODE_LENGTH + 1];
-        purr_platform_room_code(room, sizeof room);
+        if (tide_platform_room_failed()) return printf("FAIL: the room failed\n"), 1;
+        char room[TIDE_ROOM_CODE_LENGTH + 1];
+        tide_platform_room_code(room, sizeof room);
         if (host && !said_code && room[0]) {
             printf("room %s\n", room);
             said_code = true;
         }
-        purr_address from;
+        tide_address from;
         uint32_t n;
         while ((n = t.receive(t.self, &from, datagram, sizeof datagram)) != 0) {
             if (!found) {

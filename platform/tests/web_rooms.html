@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>PurrEngine rooms test</title>
+<title>Tide rooms test</title>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1"></canvas>
@@ -15,7 +15,7 @@
     console.log(line);
     parent.postMessage({ who: query.get('who'), line: String(line) }, '*');
   };
-  var Purr = {
+  var Tide = {
     canvas: document.getElementById('canvas'),
     arguments: (query.get('args') || '').split(',').filter(Boolean),
     relay: query.get('relay'),

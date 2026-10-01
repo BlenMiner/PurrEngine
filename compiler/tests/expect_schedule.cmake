@@ -1,11 +1,11 @@
-# Runs `purrc --schedule` on SOURCE and checks that it prints EXPECTED exactly.
+# Runs `tidec --schedule` on SOURCE and checks that it prints EXPECTED exactly.
 execute_process(
-    COMMAND "${PURRC}" "${SOURCE}" --schedule
+    COMMAND "${TIDEC}" "${SOURCE}" --schedule
     RESULT_VARIABLE result
     OUTPUT_VARIABLE stdout
     ERROR_VARIABLE stderr)
 if(NOT result EQUAL 0)
-    message(FATAL_ERROR "purrc --schedule failed:\n${stderr}")
+    message(FATAL_ERROR "tidec --schedule failed:\n${stderr}")
 endif()
 file(READ "${EXPECTED}" expected)
 string(REPLACE "\r\n" "\n" expected "${expected}")

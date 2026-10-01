@@ -17,26 +17,26 @@ system Blend(mut Mix mix)
 
 ## Names
 
-The C function has the name the extern is written with. When C's name doesn't suit PurrLang, `[NativeName]` gives it, and the PurrLang name can follow PurrLang's style:
+The C function has the name the extern is written with. When C's name doesn't suit Tide, `[NativeName]` gives it, and the Tide name can follow Tide's style:
 
 ```csharp
 [NativeName("stb_perlin_noise3")]
 extern float Noise(float x, float y, float z, int xWrap, int yWrap, int zWrap);
 ```
 
-A namespace doesn't change the C name: in `namespace Terrain;`, that's `Terrain.Noise` in PurrLang and still `stb_perlin_noise3` in C.
+A namespace doesn't change the C name: in `namespace Terrain;`, that's `Terrain.Noise` in Tide and still `stb_perlin_noise3` in C.
 
 ## Where the C goes
 
 In the game's folder, with nothing to set up:
 
 - Every `.c` file in the folder and its subfolders compiles with the game, with the same determinism flags as the engine. Headers next to them are found as C finds them.
-- Every prebuilt library there links with the game when it was built for the platform being built for: `.a` and `.lib` files, and `.so`, `.dll` and `.dylib` ones. purr reads each library to tell which platform and CPU it's for, so one folder holds them all, named and placed however you like.
+- Every prebuilt library there links with the game when it was built for the platform being built for: `.a` and `.lib` files, and `.so`, `.dll` and `.dylib` ones. tide reads each library to tell which platform and CPU it's for, so one folder holds them all, named and placed however you like.
 - Code for one platform only goes in `#ifdef`, as in any C.
 
 ```
 MyGame/
-  game.purr
+  game.tide
   noise.c              // #define STB_PERLIN_IMPLEMENTATION, then #include "stb_perlin.h"
   stb_perlin.h
   steam/
@@ -53,21 +53,21 @@ Windows games build for MinGW, so a static library built with Microsoft's compil
 
 On the web, only C files and WebAssembly libraries define functions. When an extern function has no definition there, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`.
 
-`purr run` builds again when a C file, header or library changes. The C is part of the game's library, which each build replaces, so whatever C keeps in its own variables starts over at each reload.
+`tide run` builds again when a C file, header or library changes. The C is part of the game's library, which each build replaces, so whatever C keeps in its own variables starts over at each reload.
 
 ## Values across
 
 Extern functions take and return plain data, by value:
 
-| PurrLang | C |
+| Tide | C |
 | --- | --- |
 | `int`, `float`, `bool` | `int32_t` (`int`), `float`, `bool` |
-| `float3`, `int2`, `quaternion`, `float4x4`, ... | `purr_float3`, `purr_int2`, ... from `purr/math.h` |
-| `Color`, `Rect`, `Entity`, `PlayerID` | `purr_color`, `purr_rect`, `purr_entity`, `purr_player_id` |
+| `float3`, `int2`, `quaternion`, `float4x4`, ... | `tide_float3`, `tide_int2`, ... from `tide/math.h` |
+| `Color`, `Rect`, `Entity`, `PlayerID` | `tide_color`, `tide_rect`, `tide_entity`, `tide_player_id` |
 | an enum | `int32_t` |
 | a struct or component | a struct with the same fields, in the same order |
 
-C often takes pointers. PurrLang has none, and no pointer arithmetic: the parameter says how a value goes to C, and the call takes its address by itself. Every pointer is only good until C returns.
+C often takes pointers. Tide has none, and no pointer arithmetic: the parameter says how a value goes to C, and the call takes its address by itself. Every pointer is only good until C returns.
 
 | Parameter | C gets |
 | --- | --- |
@@ -107,26 +107,26 @@ extern bool RayCast(float3 from, float3 direction, mut Hit hit);
 
 ```c
 #include <stdbool.h>
-#include "purr/math.h"
+#include "tide/math.h"
 
 typedef struct Hit
 {
-    purr_float3 point;
+    tide_float3 point;
     float distance;
 } Hit;
 
-bool RayCast(purr_float3 from, purr_float3 direction, Hit *hit)
+bool RayCast(tide_float3 from, tide_float3 direction, Hit *hit)
 {
     // ...
     return false;
 }
 ```
 
-PurrLang's types have no padding the compiler adds, so a C struct with the same fields lines up with them. Structs that hold text or lists can't go to C, and neither can lists of text.
+Tide's types have no padding the compiler adds, so a C struct with the same fields lines up with them. Structs that hold text or lists can't go to C, and neither can lists of text.
 
 ## Order
 
-C can keep state, so calling it is a side effect, and PurrLang keeps its order: in `Pick(Roll(), Roll())`, the first `Roll` runs first on every platform, though C itself would let each compiler pick. The same goes for functions, methods and operators that call C, and for calls inside `&&`, `||` and `?:`, whose parts still only run when they would.
+C can keep state, so calling it is a side effect, and Tide keeps its order: in `Pick(Roll(), Roll())`, the first `Roll` runs first on every platform, though C itself would let each compiler pick. The same goes for functions, methods and operators that call C, and for calls inside `&&`, `||` and `?:`, whose parts still only run when they would.
 
 ## What C is trusted with
 
@@ -136,4 +136,4 @@ The compiler doesn't look inside C. It takes each call as touching nothing it tr
 - **State.** Variables C keeps aren't in the world, so they aren't sent, rolled back or hashed. Keep what the match depends on in components and singletons.
 - **Threads.** Once systems run in parallel, two that call the same C function can run at the same time.
 
-purrc declares each extern function from its PurrLang signature. If it doesn't match the C function, the call goes wrong the way it would in C.
+tidec declares each extern function from its Tide signature. If it doesn't match the C function, the call goes wrong the way it would in C.

@@ -1,10 +1,10 @@
 // Fuzzing the WebRTC stack (platform/src/rtc): everything that reads what
 // other machines send, fed real messages broken at random. It passes if
-// nothing crashes, hangs or, built with sanitizers (PURR_SANITIZE), touches
+// nothing crashes, hangs or, built with sanitizers (TIDE_SANITIZE), touches
 // memory it shouldn't. Checksums and signatures are made right again after
 // breaking a message, most of the time, so the breakage gets past them.
 //
-//     purr_platform_rtc_fuzz [rounds] [seed]
+//     tide_platform_rtc_fuzz [rounds] [seed]
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -2,18 +2,18 @@
 # Rendering and platform). Downloaded at configure time, pinned to a release.
 include(FetchContent)
 
-# Web builds only download it (see purr_add_raylib_web).
-if(PURR_WEB)
-    set(_purr_raylib_no_cmake SOURCE_SUBDIR purr-builds-it)
+# Web builds only download it (see tide_add_raylib_web).
+if(TIDE_WEB)
+    set(_tide_raylib_no_cmake SOURCE_SUBDIR tide-builds-it)
 endif()
 FetchContent_Declare(raylib
     URL https://github.com/raysan5/raylib/archive/refs/tags/6.0.tar.gz
     URL_HASH SHA256=2b3ee1e2120c7a0796b33062c7e9a694dd8a8caa56a96319ac8c8ecf54a90d0b
     DOWNLOAD_EXTRACT_TIMESTAMP ON
-    ${_purr_raylib_no_cmake})
+    ${_tide_raylib_no_cmake})
 
 # A function, so these settings stay local to raylib.
-function(purr_add_raylib)
+function(tide_add_raylib)
     set(BUILD_EXAMPLES OFF)
     # Never CUSTOMIZE_BUILD: in raylib 6.0 it reads every `#define X 0` in
     # config.h as ON, which among other things stops EndDrawing from presenting
@@ -31,17 +31,17 @@ function(purr_add_raylib)
 endfunction()
 
 # Web builds compile raylib themselves, since its own build assumes Emscripten.
-# rcore.c gets our platform backend (platform/web/raylib/rcore_web_purr.c) in
+# rcore.c gets our platform backend (platform/web/raylib/rcore_web_tide.c) in
 # place of raylib's, and rlgl uses OpenGL ES 3, which the page's JavaScript
-# implements on WebGL 2 (platform/web/purr.js). Audio and 3D models aren't
+# implements on WebGL 2 (platform/web/tide.js). Audio and 3D models aren't
 # built: the engine doesn't use them yet.
-function(purr_add_raylib_web)
+function(tide_add_raylib_web)
     FetchContent_MakeAvailable(raylib)
     set(src "${raylib_SOURCE_DIR}/src")
 
     file(READ "${src}/rcore.c" rcore)
     set(original "#elif defined(PLATFORM_MEMORY)\n    #include \"platforms/rcore_memory.c\"")
-    string(REPLACE "${original}" "#elif defined(PLATFORM_WEB_PURR)\n    #include \"rcore_web_purr.c\"\n${original}"
+    string(REPLACE "${original}" "#elif defined(PLATFORM_WEB_TIDE)\n    #include \"rcore_web_tide.c\"\n${original}"
         patched "${rcore}")
     if(patched STREQUAL rcore)
         message(FATAL_ERROR "raylib's rcore.c changed: update the patch in cmake/Raylib.cmake")
@@ -56,7 +56,7 @@ function(purr_add_raylib_web)
 
     add_library(raylib STATIC "${patched_file}" "${src}/rshapes.c" "${src}/rtextures.c" "${src}/rtext.c")
     target_compile_definitions(raylib PRIVATE
-        PLATFORM_WEB_PURR GRAPHICS_API_OPENGL_ES3 SUPPORT_MODULE_RMODELS=0 SUPPORT_MODULE_RAUDIO=0)
+        PLATFORM_WEB_TIDE GRAPHICS_API_OPENGL_ES3 SUPPORT_MODULE_RMODELS=0 SUPPORT_MODULE_RAUDIO=0)
     target_include_directories(raylib
         PUBLIC "${src}"
         PRIVATE "${PROJECT_SOURCE_DIR}/platform/web/raylib" "${PROJECT_SOURCE_DIR}/platform/web"
@@ -65,8 +65,8 @@ function(purr_add_raylib_web)
     target_compile_options(raylib PRIVATE -w)
 endfunction()
 
-if(PURR_WEB)
-    purr_add_raylib_web()
+if(TIDE_WEB)
+    tide_add_raylib_web()
 else()
-    purr_add_raylib()
+    tide_add_raylib()
 endif()

@@ -1,9 +1,9 @@
-#include "purr/session.h"
+#include "tide/session.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-// See purr/session.h.
+// See tide/session.h.
 //
 // Every datagram starts with a header: "PU", the protocol version and a type.
 //
@@ -31,7 +31,7 @@
 // whether it didn't change or didn't arrive in time; a second set of bits says
 // which ones were late, so a client knows whether its prediction held.
 
-#define MAGIC 0x5055u // "PU"
+#define MAGIC 0x5449u // "TI"
 #define PROTOCOL 1u
 
 enum { MSG_HELLO = 1, MSG_WELCOME, MSG_REFUSE, MSG_CHUNK, MSG_CLIENT, MSG_SERVER, MSG_BYE };
@@ -39,7 +39,7 @@ enum { REFUSE_OTHER_GAME = 1, REFUSE_FULL = 2 };
 enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
 enum { BYE_LEFT = 0, BYE_ENDED = 1 };
 
-#define SERVER_SLOT PURR_MAX_PLAYERS // The server's input, after the players'
+#define SERVER_SLOT TIDE_MAX_PLAYERS // The server's input, after the players'
 #define PREDICTION_SECONDS 1.0 // How far a client runs ahead of the last tick it knows, at most
 #define HISTORY_SECONDS 4.0    // How long the server keeps ticks to send again, and a client keeps ticks ahead
 #define FIRST_RING 8u          // Snapshots a client starts with; more as it runs further ahead
@@ -48,7 +48,7 @@ enum { BYE_LEFT = 0, BYE_ENDED = 1 };
 #define CHUNK 1000u                  // Bytes of a packed world per chunk
 #define CHUNKS_PER_UPDATE 64u
 #define PACKETS_PER_UPDATE 8u
-#define MAX_EVENTS (4u * PURR_MAX_PLAYERS)
+#define MAX_EVENTS (4u * TIDE_MAX_PLAYERS)
 #define TIMEOUT 5.0     // Seconds of silence before giving up on the other side
 #define ROOM_TIMEOUT 15.0 // ...or on a room's host before it first answers: WebRTC can take a while to connect
 #define HELLO_EVERY 0.2 // Seconds between HELLOs until the server answers
@@ -80,22 +80,22 @@ static uint64_t ticks_in(const double seconds, const uint32_t rate)
     return n > 0.0 ? (uint64_t)n : 0u;
 }
 
-static void header(purr_writer *w, const uint8_t type)
+static void header(tide_writer *w, const uint8_t type)
 {
-    purr_write_u16(w, MAGIC);
-    purr_write_u8(w, PROTOCOL);
-    purr_write_u8(w, type);
+    tide_write_u16(w, MAGIC);
+    tide_write_u8(w, PROTOCOL);
+    tide_write_u8(w, type);
 }
 
 // The datagram's type, or 0 if it isn't ours.
-static uint8_t read_header(purr_reader *r)
+static uint8_t read_header(tide_reader *r)
 {
-    if (purr_read_u16(r) != MAGIC || purr_read_u8(r) != PROTOCOL) return 0;
-    const uint8_t type = purr_read_u8(r);
+    if (tide_read_u16(r) != MAGIC || tide_read_u8(r) != PROTOCOL) return 0;
+    const uint8_t type = tide_read_u8(r);
     return r->failed ? 0 : type;
 }
 
-static void send_packet(const purr_transport *t, const purr_address to, const purr_writer *w)
+static void send_packet(const tide_transport *t, const tide_address to, const tide_writer *w)
 {
     if (!w->overflow && t->send) t->send(t->self, to, w->data, w->size);
 }
@@ -111,14 +111,14 @@ static void patch_u64(uint8_t *at, const uint64_t v)
 }
 
 // The most a frame can take: its header, the events, and every slot's input.
-static uint32_t frame_capacity(const purr_game *g)
+static uint32_t frame_capacity(const tide_game *g)
 {
-    return 4u + 8u + 1u + 2u * MAX_EVENTS + 8u + (PURR_MAX_PLAYERS + 1u) * (2u + g->max_input_bytes);
+    return 4u + 8u + 1u + 2u * MAX_EVENTS + 8u + (TIDE_MAX_PLAYERS + 1u) * (2u + g->max_input_bytes);
 }
 
 // An input from outside, as every machine will read it: unpacked, packed again
 // the one way it packs, and unpacked from that. Returns the packed size, or 0.
-static uint32_t canonical_input(const purr_game *g, const uint8_t *data, const uint32_t size, void *input,
+static uint32_t canonical_input(const tide_game *g, const uint8_t *data, const uint32_t size, void *input,
                                 uint8_t *packed)
 {
     if (!g->read_input(data, size, input)) return 0;
@@ -144,7 +144,7 @@ typedef struct sent_mark {
 typedef struct connection {
     bool used;
     uint32_t transport;
-    purr_address address;
+    tide_address address;
     uint32_t nonce;
     bool local; // On the server's machine: its input is the server's too
     double last_heard;
@@ -183,33 +183,33 @@ static uint64_t next_random(uint64_t *state)
     return z ^ (z >> 31);
 }
 
-struct purr_server {
-    purr_server_desc desc;
-    const purr_game *game;
+struct tide_server {
+    tide_server_desc desc;
+    const tide_game *game;
     void *world;
     uint32_t tick;
     bool started;
-    bool ended; // The match ran out of scenes (purr_game.ended): no more ticks
+    bool ended; // The match ran out of scenes (tide_game.ended): no more ticks
     double clock_start;
     uint32_t clock_base;
     double now;
-    connection connections[PURR_MAX_PLAYERS]; // Player n is connections[n]
+    connection connections[TIDE_MAX_PLAYERS]; // Player n is connections[n]
     uint8_t events[MAX_EVENTS][2];            // Joins and leaves before the next tick
     uint32_t event_count;
     windows w;
     stored_frame *frames; // history
     uint8_t *frame;  // The tick being made
-    uint8_t *packet; // PURR_NET_MTU
+    uint8_t *packet; // TIDE_NET_MTU
     uint8_t *input;  // An input: input_size, then its packed bytes
     uint8_t *packed; // max_input_bytes
     uint8_t *server_last; // The server's input last set, packed
     uint32_t server_last_size;
     // Each player's cookie, kept after they leave so they can come back, and
     // since when they're away (0: here, or never was)
-    uint64_t cookies[PURR_MAX_PLAYERS];
-    double away_since[PURR_MAX_PLAYERS];
+    uint64_t cookies[TIDE_MAX_PLAYERS];
+    double away_since[TIDE_MAX_PLAYERS];
     uint64_t random;
-    uint32_t present; // Players in the world it went on from, who haven't joined it yet (purr_server_desc.players)
+    uint32_t present; // Players in the world it went on from, who haven't joined it yet (tide_server_desc.players)
 };
 
 static double resend_after(const uint32_t rtt_ms)
@@ -218,7 +218,7 @@ static double resend_after(const uint32_t rtt_ms)
     return rtt * 1.5 > 0.05 ? rtt * 1.5 : 0.05;
 }
 
-static void add_event(purr_server *s, const uint8_t kind, const uint32_t player)
+static void add_event(tide_server *s, const uint8_t kind, const uint32_t player)
 {
     if (s->event_count == MAX_EVENTS) return;
     s->events[s->event_count][0] = kind;
@@ -236,13 +236,13 @@ static void stop_sending(connection *c)
 }
 
 // Packs the world as it is now, before the next tick, to send it.
-static void start_snapshot(purr_server *s, connection *c)
+static void start_snapshot(tide_server *s, connection *c)
 {
     stop_sending(c);
-    const uint32_t bound = purr_zeros_bound(s->game->world_size);
+    const uint32_t bound = tide_zeros_bound(s->game->world_size);
     c->snapshot = malloc(bound);
     if (!c->snapshot) return;
-    c->snapshot_size = purr_zeros_pack(s->world, s->game->world_size, c->snapshot, bound);
+    c->snapshot_size = tide_zeros_pack(s->world, s->game->world_size, c->snapshot, bound);
     c->chunk_count = (c->snapshot_size + CHUNK - 1u) / CHUNK;
     c->chunk_sent = calloc(c->chunk_count ? c->chunk_count : 1u, sizeof *c->chunk_sent);
     c->snapshot_tick = s->tick;
@@ -264,7 +264,7 @@ static void free_connection(connection *c)
     memset(c, 0, sizeof *c);
 }
 
-static void drop_connection(purr_server *s, connection *c)
+static void drop_connection(tide_server *s, connection *c)
 {
     const uint32_t player = (uint32_t)(c - s->connections);
     add_event(s, EVENT_LEAVE, player);
@@ -272,39 +272,39 @@ static void drop_connection(purr_server *s, connection *c)
     free_connection(c);
 }
 
-static void send_bye(const purr_server *s, const uint32_t transport, const purr_address to)
+static void send_bye(const tide_server *s, const uint32_t transport, const tide_address to)
 {
     uint8_t data[8];
-    purr_writer w = {data, sizeof data, 0, false};
+    tide_writer w = {data, sizeof data, 0, false};
     header(&w, MSG_BYE);
-    purr_write_u8(&w, s->ended ? BYE_ENDED : BYE_LEFT);
+    tide_write_u8(&w, s->ended ? BYE_ENDED : BYE_LEFT);
     send_packet(&s->desc.transports[transport], to, &w);
 }
 
-static void refuse(const purr_server *s, const uint32_t transport, const purr_address to, const uint8_t reason)
+static void refuse(const tide_server *s, const uint32_t transport, const tide_address to, const uint8_t reason)
 {
     uint8_t data[8];
-    purr_writer w = {data, sizeof data, 0, false};
+    tide_writer w = {data, sizeof data, 0, false};
     header(&w, MSG_REFUSE);
-    purr_write_u8(&w, reason);
+    tide_write_u8(&w, reason);
     send_packet(&s->desc.transports[transport], to, &w);
 }
 
-static connection *find_connection(purr_server *s, const uint32_t transport, const purr_address from)
+static connection *find_connection(tide_server *s, const uint32_t transport, const tide_address from)
 {
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
-        if (c->used && c->transport == transport && purr_address_equal(c->address, from)) return c;
+        if (c->used && c->transport == transport && tide_address_equal(c->address, from)) return c;
     }
     return NULL;
 }
 
-static void on_hello(purr_server *s, const uint32_t transport, const purr_address from, purr_reader *r)
+static void on_hello(tide_server *s, const uint32_t transport, const tide_address from, tide_reader *r)
 {
-    const uint64_t game = purr_read_u64(r);
-    const uint32_t nonce = purr_read_u32(r);
-    const uint32_t their_time = purr_read_u32(r);
-    const uint64_t cookie = purr_read_u64(r);
+    const uint64_t game = tide_read_u64(r);
+    const uint32_t nonce = tide_read_u32(r);
+    const uint32_t their_time = tide_read_u32(r);
+    const uint64_t cookie = tide_read_u64(r);
     if (r->failed) return;
     connection *c = find_connection(s, transport, from);
     if (c && c->nonce == nonce) return; // It's being welcomed already
@@ -314,7 +314,7 @@ static void on_hello(purr_server *s, const uint32_t transport, const purr_addres
         return;
     }
     int32_t player = -1;
-    for (uint32_t i = 0; cookie && i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; cookie && i < TIDE_MAX_PLAYERS; i++) {
         if (s->cookies[i] == cookie) player = (int32_t)i;
     }
     if (c && (int32_t)(c - s->connections) != player) drop_connection(s, c); // The same machine, starting over
@@ -336,11 +336,11 @@ static void on_hello(purr_server *s, const uint32_t transport, const purr_addres
     }
     // A player coming back gets their slot; a new one a slot never used, or
     // failing that, the one away the longest, whose cookie stops working.
-    for (uint32_t i = 0; player < 0 && i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; player < 0 && i < TIDE_MAX_PLAYERS; i++) {
         if (!s->connections[i].used && s->cookies[i] == 0) player = (int32_t)i;
     }
     if (player < 0) {
-        for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+        for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
             if (!s->connections[i].used && (player < 0 || s->away_since[i] < s->away_since[player])) player = (int32_t)i;
         }
         if (player >= 0) s->cookies[player] = 0; // Given away
@@ -381,18 +381,18 @@ static void on_hello(purr_server *s, const uint32_t transport, const purr_addres
     }
 }
 
-static void on_client(purr_server *s, connection *c, purr_reader *r)
+static void on_client(tide_server *s, connection *c, tide_reader *r)
 {
-    const uint32_t their_time = purr_read_u32(r);
-    const uint32_t echo = purr_read_u32(r);
-    const uint8_t flags = purr_read_u8(r);
-    const uint32_t chunk_tick = purr_read_u32(r);
-    const uint32_t chunk_ack = purr_read_u32(r);
-    const uint64_t chunk_mask = purr_read_u64(r);
-    const uint32_t frame_ack = purr_read_u32(r);
-    const uint32_t frame_mask = purr_read_u32(r);
-    const uint32_t first_input = purr_read_u32(r);
-    const uint8_t input_count = purr_read_u8(r);
+    const uint32_t their_time = tide_read_u32(r);
+    const uint32_t echo = tide_read_u32(r);
+    const uint8_t flags = tide_read_u8(r);
+    const uint32_t chunk_tick = tide_read_u32(r);
+    const uint32_t chunk_ack = tide_read_u32(r);
+    const uint64_t chunk_mask = tide_read_u64(r);
+    const uint32_t frame_ack = tide_read_u32(r);
+    const uint32_t frame_mask = tide_read_u32(r);
+    const uint32_t first_input = tide_read_u32(r);
+    const uint8_t input_count = tide_read_u8(r);
     if (r->failed) return;
     c->last_heard = s->now;
     c->their_time = their_time;
@@ -413,8 +413,8 @@ static void on_client(purr_server *s, connection *c, purr_reader *r)
 
     const uint32_t max = s->game->max_input_bytes;
     for (uint32_t i = 0; i < input_count; i++) {
-        const uint16_t size = purr_read_u16(r);
-        const uint8_t *bytes = purr_read_bytes(r, size);
+        const uint16_t size = tide_read_u16(r);
+        const uint8_t *bytes = tide_read_bytes(r, size);
         if (!bytes) return;
         const uint32_t t = first_input + i;
         if (t < s->tick || t - s->tick >= s->w.inputs || size > max || size == 0) continue; // Late, or much too early
@@ -426,15 +426,15 @@ static void on_client(purr_server *s, connection *c, purr_reader *r)
     }
 }
 
-static void server_receive(purr_server *s, const uint32_t transport)
+static void server_receive(tide_server *s, const uint32_t transport)
 {
-    const purr_transport *t = &s->desc.transports[transport];
+    const tide_transport *t = &s->desc.transports[transport];
     if (!t->receive) return;
-    uint8_t data[PURR_NET_MTU];
-    purr_address from;
+    uint8_t data[TIDE_NET_MTU];
+    tide_address from;
     uint32_t size;
     while ((size = t->receive(t->self, &from, data, sizeof data)) > 0) {
-        purr_reader r = {data, size, 0, false};
+        tide_reader r = {data, size, 0, false};
         const uint8_t type = read_header(&r);
         if (type == MSG_HELLO) {
             if (s->ended) send_bye(s, transport, from); // Too late to join
@@ -450,34 +450,34 @@ static void server_receive(purr_server *s, const uint32_t transport)
 
 // Runs one tick: joins and leaves, then the inputs that arrived for it, in
 // slot order, then the systems. Clients do exactly the same with the frame.
-static void server_tick(purr_server *s)
+static void server_tick(tide_server *s)
 {
-    const purr_game *g = s->game;
+    const tide_game *g = s->game;
     const uint32_t tick = s->tick;
-    purr_writer w = {s->frame, frame_capacity(g), 0, false};
-    purr_write_u32(&w, tick);
-    purr_write_u64(&w, 0); // The hash, once the tick has run
-    purr_write_u8(&w, (uint8_t)s->event_count);
+    tide_writer w = {s->frame, frame_capacity(g), 0, false};
+    tide_write_u32(&w, tick);
+    tide_write_u64(&w, 0); // The hash, once the tick has run
+    tide_write_u8(&w, (uint8_t)s->event_count);
     for (uint32_t i = 0; i < s->event_count; i++) {
-        const purr_player_id player = purr_player_from_index(s->events[i][1]);
+        const tide_player_id player = tide_player_from_index(s->events[i][1]);
         if (s->events[i][0] == EVENT_JOIN) g->player_joined(s->world, player);
         else g->player_left(s->world, player);
-        purr_write_u8(&w, s->events[i][0]);
-        purr_write_u8(&w, s->events[i][1]);
+        tide_write_u8(&w, s->events[i][0]);
+        tide_write_u8(&w, s->events[i][1]);
     }
     s->event_count = 0;
 
     // Each input that changed. One that's the same as the slot's last is left
     // out: keeping the last input is the same as setting it again.
     const uint32_t mask_at = w.size;
-    purr_write_u32(&w, 0);
-    purr_write_u32(&w, 0);
+    tide_write_u32(&w, 0);
+    tide_write_u32(&w, 0);
     uint32_t mask = 0;
     uint32_t late = 0;
     const uint32_t max = g->max_input_bytes;
     uint8_t *input = s->input;
     uint32_t server_size = 0; // The server's input: its own player's, on the server's machine
-    for (uint32_t p = 0; g->set_input && p < PURR_MAX_PLAYERS; p++) {
+    for (uint32_t p = 0; g->set_input && p < TIDE_MAX_PLAYERS; p++) {
         connection *c = &s->connections[p];
         if (!c->used) continue;
         const uint32_t slot = tick % s->w.inputs;
@@ -496,10 +496,10 @@ static void server_tick(purr_server *s)
         if (size == c->last_size && memcmp(last, s->packed, size) == 0) continue;
         memcpy(last, s->packed, size);
         c->last_size = size;
-        g->set_input(s->world, purr_player_from_index((int32_t)p), input);
+        g->set_input(s->world, tide_player_from_index((int32_t)p), input);
         mask |= 1u << p;
-        purr_write_u16(&w, (uint16_t)size);
-        purr_write_bytes(&w, s->packed, size);
+        tide_write_u16(&w, (uint16_t)size);
+        tide_write_bytes(&w, s->packed, size);
     }
     const uint8_t *server_packed = input + g->input_size;
     if (server_size && !(server_size == s->server_last_size && memcmp(s->server_last, server_packed, server_size) == 0)) {
@@ -508,8 +508,8 @@ static void server_tick(purr_server *s)
         g->read_input(server_packed, server_size, input);
         g->set_server_input(s->world, input);
         mask |= 1u << SERVER_SLOT;
-        purr_write_u16(&w, (uint16_t)server_size);
-        purr_write_bytes(&w, server_packed, server_size);
+        tide_write_u16(&w, (uint16_t)server_size);
+        tide_write_bytes(&w, server_packed, server_size);
     }
     patch_u32(s->frame + mask_at, mask);
     patch_u32(s->frame + mask_at + 4u, late);
@@ -526,25 +526,25 @@ static void server_tick(purr_server *s)
     *f = (stored_frame){tick, w.size, data};
 }
 
-static void send_welcome(const purr_server *s, const connection *c)
+static void send_welcome(const tide_server *s, const connection *c)
 {
     uint8_t data[64];
-    purr_writer w = {data, sizeof data, 0, false};
+    tide_writer w = {data, sizeof data, 0, false};
     header(&w, MSG_WELCOME);
-    purr_write_u32(&w, c->nonce);
-    purr_write_u8(&w, (uint8_t)(c - s->connections));
-    purr_write_u8(&w, c->local ? 1u : 0u); // Its input is the server's too
-    purr_write_u32(&w, s->desc.tick_rate);
-    purr_write_u32(&w, c->snapshot_tick);
-    purr_write_u32(&w, c->snapshot_size);
-    purr_write_u32(&w, c->chunk_count);
-    purr_write_u32(&w, millis(s->now));
-    purr_write_u32(&w, c->their_time);
-    purr_write_u64(&w, s->cookies[c - s->connections]);
+    tide_write_u32(&w, c->nonce);
+    tide_write_u8(&w, (uint8_t)(c - s->connections));
+    tide_write_u8(&w, c->local ? 1u : 0u); // Its input is the server's too
+    tide_write_u32(&w, s->desc.tick_rate);
+    tide_write_u32(&w, c->snapshot_tick);
+    tide_write_u32(&w, c->snapshot_size);
+    tide_write_u32(&w, c->chunk_count);
+    tide_write_u32(&w, millis(s->now));
+    tide_write_u32(&w, c->their_time);
+    tide_write_u64(&w, s->cookies[c - s->connections]);
     send_packet(&s->desc.transports[c->transport], c->address, &w);
 }
 
-static void send_chunks(purr_server *s, connection *c)
+static void send_chunks(tide_server *s, connection *c)
 {
     const double again = resend_after(c->rtt_ms);
     uint32_t sent = 0;
@@ -553,36 +553,36 @@ static void send_chunks(purr_server *s, connection *c)
         if (c->chunk_sent[i] > 0.0 && s->now - c->chunk_sent[i] < again) continue;
         const uint32_t from = i * CHUNK;
         const uint32_t size = c->snapshot_size - from < CHUNK ? c->snapshot_size - from : CHUNK;
-        purr_writer w = {s->packet, PURR_NET_MTU, 0, false};
+        tide_writer w = {s->packet, TIDE_NET_MTU, 0, false};
         header(&w, MSG_CHUNK);
-        purr_write_u32(&w, c->snapshot_tick);
-        purr_write_u32(&w, i);
-        purr_write_u16(&w, (uint16_t)size);
-        purr_write_bytes(&w, c->snapshot + from, size);
+        tide_write_u32(&w, c->snapshot_tick);
+        tide_write_u32(&w, i);
+        tide_write_u16(&w, (uint16_t)size);
+        tide_write_bytes(&w, c->snapshot + from, size);
         send_packet(&s->desc.transports[c->transport], c->address, &w);
         c->chunk_sent[i] = s->now > 0.0 ? s->now : 1e-9;
         sent++;
     }
 }
 
-static void start_server_packet(const purr_server *s, const connection *c, purr_writer *w, uint32_t *count_at)
+static void start_server_packet(const tide_server *s, const connection *c, tide_writer *w, uint32_t *count_at)
 {
-    *w = (purr_writer){s->packet, PURR_NET_MTU, 0, false};
+    *w = (tide_writer){s->packet, TIDE_NET_MTU, 0, false};
     header(w, MSG_SERVER);
-    purr_write_u32(w, millis(s->now));
-    purr_write_u32(w, c->their_time);
-    purr_write_u32(w, s->tick);
+    tide_write_u32(w, millis(s->now));
+    tide_write_u32(w, c->their_time);
+    tide_write_u32(w, s->tick);
     int32_t margin = (int32_t)(c->newest_input - s->tick);
     if (margin < -30000) margin = -30000;
     if (margin > 30000) margin = 30000;
-    purr_write_u16(w, (uint16_t)(int16_t)margin);
-    purr_write_u32(w, c->newest_input);
+    tide_write_u16(w, (uint16_t)(int16_t)margin);
+    tide_write_u32(w, c->newest_input);
     *count_at = w->size;
-    purr_write_u8(w, 0);
+    tide_write_u8(w, 0);
 }
 
 // The ticks it lacks, in pieces, as many packets as it takes (up to a limit).
-static void send_frames(purr_server *s, connection *c)
+static void send_frames(tide_server *s, connection *c)
 {
     if (s->tick - c->frame_ack >= s->w.history) { // Too far behind for the ticks kept: the whole world again
         start_snapshot(s, c);
@@ -592,13 +592,13 @@ static void send_frames(purr_server *s, connection *c)
     // a lost one costs a frame, not a round trip. Beyond that, what was sent
     // goes again once it should have been acknowledged.
     uint32_t lacking = 0;
-    for (uint32_t tick = c->frame_ack; tick < s->tick && lacking <= PURR_NET_MTU; tick++) {
+    for (uint32_t tick = c->frame_ack; tick < s->tick && lacking <= TIDE_NET_MTU; tick++) {
         const stored_frame *f = &s->frames[tick % s->w.history];
         if (f->tick == tick) lacking += f->size + 11u * ((f->size + PIECE - 1u) / PIECE);
     }
-    const double again = lacking + 32u <= PURR_NET_MTU ? 0.0 : resend_after(c->rtt_ms);
-    const purr_transport *t = &s->desc.transports[c->transport];
-    purr_writer w;
+    const double again = lacking + 32u <= TIDE_NET_MTU ? 0.0 : resend_after(c->rtt_ms);
+    const tide_transport *t = &s->desc.transports[c->transport];
+    tide_writer w;
     uint32_t count_at;
     uint32_t pieces = 0;
     uint32_t packets = 0;
@@ -613,18 +613,18 @@ static void send_frames(purr_server *s, connection *c)
         for (uint32_t k = 0; k < count && packets < PACKETS_PER_UPDATE; k++) {
             const uint32_t from = k * PIECE;
             const uint32_t size = f->size - from < PIECE ? f->size - from : PIECE;
-            if (w.size + 11u + size > PURR_NET_MTU || pieces == 255u) {
+            if (w.size + 11u + size > TIDE_NET_MTU || pieces == 255u) {
                 s->packet[count_at] = (uint8_t)pieces;
                 send_packet(t, c->address, &w);
                 packets++;
                 start_server_packet(s, c, &w, &count_at);
                 pieces = 0;
             }
-            purr_write_u32(&w, tick);
-            purr_write_u16(&w, (uint16_t)f->size);
-            purr_write_u8(&w, (uint8_t)k);
-            purr_write_u16(&w, (uint16_t)size);
-            purr_write_bytes(&w, f->data + from, size);
+            tide_write_u32(&w, tick);
+            tide_write_u16(&w, (uint16_t)f->size);
+            tide_write_u8(&w, (uint8_t)k);
+            tide_write_u16(&w, (uint16_t)size);
+            tide_write_bytes(&w, f->data + from, size);
             pieces++;
         }
         *mark = (sent_mark){tick, s->now > 0.0 ? s->now : 1e-9};
@@ -633,24 +633,24 @@ static void send_frames(purr_server *s, connection *c)
     if (packets < PACKETS_PER_UPDATE) send_packet(t, c->address, &w); // Always one, for the times and margin
 }
 
-purr_server *purr_server_create(const purr_server_desc *desc, const double now)
+tide_server *tide_server_create(const tide_server_desc *desc, const double now)
 {
-    purr_server *s = calloc(1, sizeof *s);
+    tide_server *s = calloc(1, sizeof *s);
     if (!s) return NULL;
     s->desc = *desc;
     s->game = desc->game;
     if (s->desc.tick_rate == 0) s->desc.tick_rate = 60;
-    const purr_game *g = s->game;
+    const tide_game *g = s->game;
     s->w = windows_for(s->desc.tick_rate);
     s->frames = calloc(s->w.history, sizeof *s->frames);
     s->world = calloc(1, g->world_size);
     s->frame = malloc(frame_capacity(g));
-    s->packet = malloc(PURR_NET_MTU);
+    s->packet = malloc(TIDE_NET_MTU);
     s->input = calloc(1, (size_t)g->input_size + g->max_input_bytes + 1u);
     s->packed = malloc((size_t)g->max_input_bytes + 1u);
     s->server_last = malloc((size_t)g->max_input_bytes + 1u);
     if (!s->frames || !s->world || !s->frame || !s->packet || !s->input || !s->packed || !s->server_last) {
-        purr_server_destroy(s);
+        tide_server_destroy(s);
         return NULL;
     }
     const float dt = desc->dt > 0.0f ? desc->dt : 1.0f / (float)s->desc.tick_rate;
@@ -660,14 +660,14 @@ purr_server *purr_server_create(const purr_server_desc *desc, const double now)
     s->now = now;
     s->started = !desc->wait_for_first;
     s->clock_start = now;
-    s->random = purr_hash(&s, sizeof s) ^ purr_hash(&now, sizeof now);
+    s->random = tide_hash(&s, sizeof s) ^ tide_hash(&now, sizeof now);
     return s;
 }
 
-void purr_server_destroy(purr_server *s)
+void tide_server_destroy(tide_server *s)
 {
     if (!s) return;
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (!c->used) continue;
         send_bye(s, c->transport, c->address);
@@ -687,11 +687,11 @@ void purr_server_destroy(purr_server *s)
     free(s);
 }
 
-void purr_server_update(purr_server *s, const double now)
+void tide_server_update(tide_server *s, const double now)
 {
     s->now = now;
     for (uint32_t i = 0; i < 2; i++) server_receive(s, i);
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (c->used && now - c->last_heard > TIMEOUT) drop_connection(s, c);
     }
@@ -703,7 +703,7 @@ void purr_server_update(purr_server *s, const double now)
             s->clock_start = now;
         }
     }
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (!c->used) continue;
         if (s->ended) { // Every update, until they've all gone
@@ -717,20 +717,20 @@ void purr_server_update(purr_server *s, const double now)
     }
 }
 
-const void *purr_server_world(const purr_server *s)
+const void *tide_server_world(const tide_server *s)
 {
     return s->world;
 }
 
-uint32_t purr_server_tick(const purr_server *s)
+uint32_t tide_server_tick(const tide_server *s)
 {
     return s->tick;
 }
 
-uint32_t purr_server_player_count(const purr_server *s)
+uint32_t tide_server_player_count(const tide_server *s)
 {
     uint32_t n = 0;
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) n += s->connections[i].used ? 1u : 0u;
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) n += s->connections[i].used ? 1u : 0u;
     return n;
 }
 
@@ -745,11 +745,11 @@ typedef struct pending_frame {
     uint8_t *data;
 } pending_frame;
 
-struct purr_client {
-    purr_client_desc desc;
-    const purr_game *game;
-    purr_session_state state;
-    purr_disconnect_reason reason;
+struct tide_client {
+    tide_client_desc desc;
+    const tide_game *game;
+    tide_session_state state;
+    tide_disconnect_reason reason;
     uint32_t nonce;
     double created;
     double last_hello;
@@ -804,14 +804,14 @@ struct purr_client {
     uint8_t *input; // input_size
 };
 
-static void go_offline(purr_client *c, const purr_disconnect_reason reason)
+static void go_offline(tide_client *c, const tide_disconnect_reason reason)
 {
-    if (c->state == PURR_SESSION_OFFLINE) return;
-    c->state = PURR_SESSION_OFFLINE;
+    if (c->state == TIDE_SESSION_OFFLINE) return;
+    c->state = TIDE_SESSION_OFFLINE;
     c->reason = reason;
 }
 
-static void stop_receiving(purr_client *c)
+static void stop_receiving(tide_client *c)
 {
     free(c->snapshot);
     free(c->chunk_have);
@@ -820,19 +820,19 @@ static void stop_receiving(purr_client *c)
     c->receiving = false;
 }
 
-static void on_welcome(purr_client *c, purr_reader *r)
+static void on_welcome(tide_client *c, tide_reader *r)
 {
-    const uint32_t nonce = purr_read_u32(r);
-    const uint8_t player = purr_read_u8(r);
-    const uint8_t flags = purr_read_u8(r);
-    const uint32_t tick_rate = purr_read_u32(r);
-    const uint32_t tick = purr_read_u32(r);
-    const uint32_t size = purr_read_u32(r);
-    const uint32_t chunks = purr_read_u32(r);
-    const uint32_t their_time = purr_read_u32(r);
-    const uint32_t echo = purr_read_u32(r);
-    const uint64_t cookie = purr_read_u64(r);
-    if (r->failed || nonce != c->nonce || player >= PURR_MAX_PLAYERS || tick_rate == 0) return;
+    const uint32_t nonce = tide_read_u32(r);
+    const uint8_t player = tide_read_u8(r);
+    const uint8_t flags = tide_read_u8(r);
+    const uint32_t tick_rate = tide_read_u32(r);
+    const uint32_t tick = tide_read_u32(r);
+    const uint32_t size = tide_read_u32(r);
+    const uint32_t chunks = tide_read_u32(r);
+    const uint32_t their_time = tide_read_u32(r);
+    const uint32_t echo = tide_read_u32(r);
+    const uint64_t cookie = tide_read_u64(r);
+    if (r->failed || nonce != c->nonce || player >= TIDE_MAX_PLAYERS || tick_rate == 0) return;
     if (!c->frames) { // Its windows, now that it knows the tick rate
         c->w = windows_for(tick_rate);
         c->frames = calloc(c->w.history, sizeof *c->frames);
@@ -840,7 +840,7 @@ static void on_welcome(purr_client *c, purr_reader *r)
         c->input_size = calloc(c->w.inputs, sizeof *c->input_size);
         c->inputs = malloc((size_t)c->w.inputs * (c->game->max_input_bytes ? c->game->max_input_bytes : 1u));
         if (!c->frames || !c->input_tick || !c->input_size || !c->inputs) {
-            go_offline(c, PURR_DISCONNECT_FAILED);
+            go_offline(c, TIDE_DISCONNECT_FAILED);
             return;
         }
         for (uint32_t i = 0; i < c->w.inputs; i++) c->input_tick[i] = UINT32_MAX;
@@ -869,14 +869,14 @@ static void on_welcome(purr_client *c, purr_reader *r)
     c->chunks_had = 0;
 }
 
-static void load_snapshot(purr_client *c);
+static void load_snapshot(tide_client *c);
 
-static void on_chunk(purr_client *c, purr_reader *r)
+static void on_chunk(tide_client *c, tide_reader *r)
 {
-    const uint32_t tick = purr_read_u32(r);
-    const uint32_t index = purr_read_u32(r);
-    const uint16_t size = purr_read_u16(r);
-    const uint8_t *bytes = purr_read_bytes(r, size);
+    const uint32_t tick = tide_read_u32(r);
+    const uint32_t index = tide_read_u32(r);
+    const uint16_t size = tide_read_u16(r);
+    const uint8_t *bytes = tide_read_bytes(r, size);
     if (!bytes || !c->receiving || tick != c->snapshot_tick || index >= c->chunk_count || c->chunk_have[index]) return;
     const uint32_t from = index * CHUNK;
     if (from + size > c->snapshot_size) return;
@@ -885,14 +885,14 @@ static void on_chunk(purr_client *c, purr_reader *r)
     if (++c->chunks_had == c->chunk_count) load_snapshot(c);
 }
 
-static void on_server(purr_client *c, purr_reader *r)
+static void on_server(tide_client *c, tide_reader *r)
 {
-    const uint32_t their_time = purr_read_u32(r);
-    const uint32_t echo = purr_read_u32(r);
-    purr_read_u32(r); // The server's tick
-    const int16_t margin = (int16_t)purr_read_u16(r);
-    const uint32_t input_ack = purr_read_u32(r);
-    const uint8_t pieces = purr_read_u8(r);
+    const uint32_t their_time = tide_read_u32(r);
+    const uint32_t echo = tide_read_u32(r);
+    tide_read_u32(r); // The server's tick
+    const int16_t margin = (int16_t)tide_read_u16(r);
+    const uint32_t input_ack = tide_read_u32(r);
+    const uint8_t pieces = tide_read_u8(r);
     if (r->failed) return;
     c->their_time = their_time;
     if (echo) c->rtt_ms = millis(c->now) - echo;
@@ -901,11 +901,11 @@ static void on_server(purr_client *c, purr_reader *r)
     if (input_ack > c->input_ack) c->input_ack = input_ack;
     if (!c->loaded) return;
     for (uint32_t i = 0; i < pieces; i++) {
-        const uint32_t tick = purr_read_u32(r);
-        const uint16_t total = purr_read_u16(r);
-        const uint8_t index = purr_read_u8(r);
-        const uint16_t size = purr_read_u16(r);
-        const uint8_t *bytes = purr_read_bytes(r, size);
+        const uint32_t tick = tide_read_u32(r);
+        const uint16_t total = tide_read_u16(r);
+        const uint8_t index = tide_read_u8(r);
+        const uint16_t size = tide_read_u16(r);
+        const uint8_t *bytes = tide_read_bytes(r, size);
         if (!bytes) return;
         if (tick < c->verified || tick - c->verified >= c->w.history || total == 0) continue;
         pending_frame *f = &c->frames[tick % c->w.history];
@@ -925,30 +925,30 @@ static void on_server(purr_client *c, purr_reader *r)
     }
 }
 
-static void client_receive(purr_client *c)
+static void client_receive(tide_client *c)
 {
-    uint8_t data[PURR_NET_MTU];
-    purr_address from;
+    uint8_t data[TIDE_NET_MTU];
+    tide_address from;
     uint32_t size;
-    const purr_transport *t = &c->desc.transport;
+    const tide_transport *t = &c->desc.transport;
     while (t->receive && (size = t->receive(t->self, &from, data, sizeof data)) > 0) {
-        if (!purr_address_equal(from, c->desc.server)) continue;
-        purr_reader r = {data, size, 0, false};
+        if (!tide_address_equal(from, c->desc.server)) continue;
+        tide_reader r = {data, size, 0, false};
         const uint8_t type = read_header(&r);
         if (type != 0 && type != MSG_HELLO) c->last_heard = c->now;
         switch (type) {
         case MSG_WELCOME: on_welcome(c, &r); break;
         case MSG_CHUNK: on_chunk(c, &r); break;
         case MSG_SERVER: on_server(c, &r); break;
-        case MSG_REFUSE: go_offline(c, PURR_DISCONNECT_REFUSED); break;
+        case MSG_REFUSE: go_offline(c, TIDE_DISCONNECT_REFUSED); break;
         case MSG_BYE: {
-            const bool ended = purr_read_u8(&r) == BYE_ENDED && !r.failed;
-            go_offline(c, ended ? PURR_DISCONNECT_ENDED : PURR_DISCONNECT_SERVER_LEFT);
+            const bool ended = tide_read_u8(&r) == BYE_ENDED && !r.failed;
+            go_offline(c, ended ? TIDE_DISCONNECT_ENDED : TIDE_DISCONNECT_SERVER_LEFT);
             break;
         }
         default: break;
         }
-        if (c->state == PURR_SESSION_OFFLINE) return;
+        if (c->state == TIDE_SESSION_OFFLINE) return;
     }
 }
 
@@ -957,7 +957,7 @@ static bool frame_complete(const pending_frame *f, const uint32_t tick)
     return f->tick == tick && f->data && f->have == (f->pieces >= 32u ? UINT32_MAX : (1u << f->pieces) - 1u);
 }
 
-static const uint8_t *own_input(const purr_client *c, const uint32_t tick, uint32_t *size)
+static const uint8_t *own_input(const tide_client *c, const uint32_t tick, uint32_t *size)
 {
     const uint32_t slot = tick % c->w.inputs;
     if (c->input_tick[slot] != tick) return NULL;
@@ -968,14 +968,14 @@ static const uint8_t *own_input(const purr_client *c, const uint32_t tick, uint3
 // Whether a tick went as it was predicted: no one joined or left, no one
 // else's input changed, and this machine's arrived in time, as it was sent (and
 // the server's, when that's this machine's too).
-static bool as_predicted(const purr_client *c, const pending_frame *f)
+static bool as_predicted(const tide_client *c, const pending_frame *f)
 {
-    purr_reader r = {f->data, f->size, 0, false};
-    purr_read_u32(&r);
-    purr_read_u64(&r);
-    if (purr_read_u8(&r) != 0) return false;
-    const uint32_t mask = purr_read_u32(&r);
-    const uint32_t late = purr_read_u32(&r);
+    tide_reader r = {f->data, f->size, 0, false};
+    tide_read_u32(&r);
+    tide_read_u64(&r);
+    if (tide_read_u8(&r) != 0) return false;
+    const uint32_t mask = tide_read_u32(&r);
+    const uint32_t late = tide_read_u32(&r);
     if (!c->game->set_input) return mask == 0;
     const uint32_t mine = 1u << c->player | (c->server_input_mine ? 1u << SERVER_SLOT : 0u);
     if ((mask & ~mine) || (late & mine)) return false;
@@ -983,21 +983,21 @@ static bool as_predicted(const purr_client *c, const pending_frame *f)
     const uint8_t *own = own_input(c, f->tick, &own_size);
     if (!own) return mask == 0;
     for (uint32_t bits = mask; bits; bits &= bits - 1u) {
-        const uint16_t size = purr_read_u16(&r);
-        const uint8_t *bytes = purr_read_bytes(&r, size);
+        const uint16_t size = tide_read_u16(&r);
+        const uint8_t *bytes = tide_read_bytes(&r, size);
         if (!bytes || size != own_size || memcmp(bytes, own, size) != 0) return false;
     }
     return !r.failed;
 }
 
-static void *world_at(const purr_client *c, const uint32_t tick)
+static void *world_at(const tide_client *c, const uint32_t tick)
 {
     return c->worlds[tick % c->ring];
 }
 
 // Room for one more snapshot. The ones in use keep their ticks; the others,
 // and new ones, fill the rest.
-static bool room_ahead(purr_client *c)
+static bool room_ahead(tide_client *c)
 {
     // From the one before `verified` to the one after `ahead`
     if (c->ahead + 2u - c->verified < c->ring) return true;
@@ -1041,36 +1041,36 @@ static bool room_ahead(purr_client *c)
 // The hash a frame says the world has after its tick.
 static uint64_t frame_hash(const pending_frame *f)
 {
-    purr_reader r = {f->data, f->size, 0, false};
-    purr_read_u32(&r);
-    return purr_read_u64(&r);
+    tide_reader r = {f->data, f->size, 0, false};
+    tide_read_u32(&r);
+    return tide_read_u64(&r);
 }
 
 // Runs a tick the server sent on `world`, the world before it. False if it's
 // broken or the world came out different from the server's.
-static bool apply_frame(purr_client *c, void *world, const pending_frame *f)
+static bool apply_frame(tide_client *c, void *world, const pending_frame *f)
 {
-    const purr_game *g = c->game;
-    purr_reader r = {f->data, f->size, 0, false};
-    purr_read_u32(&r);
-    const uint64_t hash = purr_read_u64(&r);
-    const uint8_t events = purr_read_u8(&r);
+    const tide_game *g = c->game;
+    tide_reader r = {f->data, f->size, 0, false};
+    tide_read_u32(&r);
+    const uint64_t hash = tide_read_u64(&r);
+    const uint8_t events = tide_read_u8(&r);
     for (uint32_t i = 0; i < events; i++) {
-        const uint8_t kind = purr_read_u8(&r);
-        const uint8_t player = purr_read_u8(&r);
-        if (r.failed || player >= PURR_MAX_PLAYERS) return false;
-        if (kind == EVENT_JOIN) g->player_joined(world, purr_player_from_index(player));
-        else g->player_left(world, purr_player_from_index(player));
+        const uint8_t kind = tide_read_u8(&r);
+        const uint8_t player = tide_read_u8(&r);
+        if (r.failed || player >= TIDE_MAX_PLAYERS) return false;
+        if (kind == EVENT_JOIN) g->player_joined(world, tide_player_from_index(player));
+        else g->player_left(world, tide_player_from_index(player));
     }
-    const uint32_t mask = purr_read_u32(&r);
-    purr_read_u32(&r); // Late ones
+    const uint32_t mask = tide_read_u32(&r);
+    tide_read_u32(&r); // Late ones
     for (uint32_t slot = 0; slot <= SERVER_SLOT; slot++) {
         if (!(mask >> slot & 1u)) continue;
-        const uint16_t size = purr_read_u16(&r);
-        const uint8_t *bytes = purr_read_bytes(&r, size);
+        const uint16_t size = tide_read_u16(&r);
+        const uint8_t *bytes = tide_read_bytes(&r, size);
         if (!bytes || !g->read_input || !g->read_input(bytes, size, c->input)) return false;
         if (slot == SERVER_SLOT) g->set_server_input(world, c->input);
-        else g->set_input(world, purr_player_from_index((int32_t)slot), c->input);
+        else g->set_input(world, tide_player_from_index((int32_t)slot), c->input);
     }
     if (r.failed) return false;
     g->tick(world);
@@ -1079,15 +1079,15 @@ static bool apply_frame(purr_client *c, void *world, const pending_frame *f)
 
 // Runs predicted tick `tick`: the snapshot after it is the one before it, run
 // with this machine's input.
-static void run_predicted(purr_client *c, const uint32_t tick)
+static void run_predicted(tide_client *c, const uint32_t tick)
 {
-    const purr_game *g = c->game;
+    const tide_game *g = c->game;
     void *world = world_at(c, tick + 1u);
     g->copy_world(world, world_at(c, tick));
     uint32_t size = 0;
     const uint8_t *own = g->set_input ? own_input(c, tick, &size) : NULL;
     if (own && g->read_input(own, size, c->input)) {
-        const purr_player_id me = purr_player_from_index(c->player);
+        const tide_player_id me = tide_player_from_index(c->player);
         g->set_input(world, me, c->input);
         if (c->server_input_mine) g->set_server_input(world, c->input);
     }
@@ -1095,17 +1095,17 @@ static void run_predicted(purr_client *c, const uint32_t tick)
 }
 
 // From the verified world, the predicted ticks again.
-static void predict_again(purr_client *c)
+static void predict_again(tide_client *c)
 {
     for (uint32_t t = c->verified; t < c->ahead; t++) run_predicted(c, t);
 }
 
-static void load_snapshot(purr_client *c)
+static void load_snapshot(tide_client *c)
 {
     // Ahead of the world that came, it keeps its predicted ticks, which it runs again
     const uint32_t tick = c->snapshot_tick;
     if (!c->loaded || c->ahead < tick) c->verified = c->ahead = tick;
-    const bool ok = purr_zeros_unpack(c->snapshot, c->snapshot_size, world_at(c, tick), c->game->world_size);
+    const bool ok = tide_zeros_unpack(c->snapshot, c->snapshot_size, world_at(c, tick), c->game->world_size);
     stop_receiving(c);
     if (!ok) {
         c->need_snapshot = true;
@@ -1124,7 +1124,7 @@ static void load_snapshot(purr_client *c)
         }
     }
     if (first) {
-        c->state = PURR_SESSION_CONNECTED;
+        c->state = TIDE_SESSION_CONNECTED;
         c->ahead = tick;
         // Ahead of the server by its lead, and the round trip it takes to get there
         const uint32_t trip = (uint32_t)ticks_in((double)c->rtt_ms / 1000.0, c->tick_rate);
@@ -1138,9 +1138,9 @@ static void load_snapshot(purr_client *c)
 }
 
 // Runs one tick ahead: this machine's input goes in, and out to the server.
-static void predict(purr_client *c)
+static void predict(tide_client *c)
 {
-    const purr_game *g = c->game;
+    const tide_game *g = c->game;
     const uint32_t tick = c->ahead;
     if (g->set_input && c->desc.sample) {
         c->desc.sample(c->desc.user, tick, c->input);
@@ -1154,7 +1154,7 @@ static void predict(purr_client *c)
     c->ahead++;
 }
 
-static void play(purr_client *c)
+static void play(tide_client *c)
 {
     // Ticks the server confirmed. One that went as predicted is already in its
     // snapshot, which only needs its hash checked. One that didn't runs on the
@@ -1200,26 +1200,26 @@ static void play(purr_client *c)
     }
 }
 
-static void send_hello(purr_client *c)
+static void send_hello(tide_client *c)
 {
     uint8_t data[32];
-    purr_writer w = {data, sizeof data, 0, false};
+    tide_writer w = {data, sizeof data, 0, false};
     header(&w, MSG_HELLO);
-    purr_write_u64(&w, c->game->hash);
-    purr_write_u32(&w, c->nonce);
-    purr_write_u32(&w, millis(c->now));
-    purr_write_u64(&w, c->desc.cookie);
+    tide_write_u64(&w, c->game->hash);
+    tide_write_u32(&w, c->nonce);
+    tide_write_u32(&w, millis(c->now));
+    tide_write_u64(&w, c->desc.cookie);
     send_packet(&c->desc.transport, c->desc.server, &w);
     c->last_hello = c->now;
 }
 
-static void send_client(purr_client *c)
+static void send_client(tide_client *c)
 {
-    purr_writer w = {c->packet, PURR_NET_MTU, 0, false};
+    tide_writer w = {c->packet, TIDE_NET_MTU, 0, false};
     header(&w, MSG_CLIENT);
-    purr_write_u32(&w, millis(c->now));
-    purr_write_u32(&w, c->their_time);
-    purr_write_u8(&w, c->need_snapshot && !c->receiving ? 1u : 0u);
+    tide_write_u32(&w, millis(c->now));
+    tide_write_u32(&w, c->their_time);
+    tide_write_u8(&w, c->need_snapshot && !c->receiving ? 1u : 0u);
     // The chunks it has of the world being received, or that it has all of the last one
     uint32_t chunk_tick = 0;
     uint32_t chunk_ack = 0;
@@ -1234,69 +1234,69 @@ static void send_client(purr_client *c)
         chunk_tick = c->loaded_tick;
         chunk_ack = UINT32_MAX;
     }
-    purr_write_u32(&w, chunk_tick);
-    purr_write_u32(&w, chunk_ack);
-    purr_write_u64(&w, chunk_mask);
+    tide_write_u32(&w, chunk_tick);
+    tide_write_u32(&w, chunk_ack);
+    tide_write_u64(&w, chunk_mask);
     uint32_t frame_mask = 0;
     for (uint32_t i = 0; i < 32u; i++) {
         const uint32_t tick = c->verified + 1u + i;
         if (frame_complete(&c->frames[tick % c->w.history], tick)) frame_mask |= 1u << i;
     }
-    purr_write_u32(&w, c->verified);
-    purr_write_u32(&w, frame_mask);
+    tide_write_u32(&w, c->verified);
+    tide_write_u32(&w, frame_mask);
 
     // Inputs from the first the server lacks, as many as fit
     uint32_t first = c->input_ack > c->verified ? c->input_ack : c->verified;
     if (first > c->ahead) first = c->ahead;
-    purr_write_u32(&w, first);
+    tide_write_u32(&w, first);
     const uint32_t count_at = w.size;
-    purr_write_u8(&w, 0);
+    tide_write_u8(&w, 0);
     uint32_t count = 0;
     for (uint32_t t = first; t < c->ahead && count < 255u; t++) {
         uint32_t size = 0;
         const uint8_t *own = own_input(c, t, &size);
-        if (!own || w.size + 2u + size > PURR_NET_MTU) break;
-        purr_write_u16(&w, (uint16_t)size);
-        purr_write_bytes(&w, own, size);
+        if (!own || w.size + 2u + size > TIDE_NET_MTU) break;
+        tide_write_u16(&w, (uint16_t)size);
+        tide_write_bytes(&w, own, size);
         count++;
     }
     c->packet[count_at] = (uint8_t)count;
     send_packet(&c->desc.transport, c->desc.server, &w);
 }
 
-purr_client *purr_client_create(const purr_client_desc *desc, const double now)
+tide_client *tide_client_create(const tide_client_desc *desc, const double now)
 {
-    purr_client *c = calloc(1, sizeof *c);
+    tide_client *c = calloc(1, sizeof *c);
     if (!c) return NULL;
     c->desc = *desc;
     c->game = desc->game;
-    const purr_game *g = c->game;
-    c->state = PURR_SESSION_CONNECTING;
+    const tide_game *g = c->game;
+    c->state = TIDE_SESSION_CONNECTING;
     c->created = now;
     c->now = now;
     c->last_heard = now;
     c->last_hello = -1.0;
-    c->nonce = (uint32_t)(purr_hash(&c, sizeof c) ^ purr_hash(&now, sizeof now)) | 1u;
+    c->nonce = (uint32_t)(tide_hash(&c, sizeof c) ^ tide_hash(&now, sizeof now)) | 1u;
     c->ring = FIRST_RING;
     c->worlds = calloc(c->ring, sizeof *c->worlds);
     for (uint32_t i = 0; c->worlds && i < c->ring; i++) c->worlds[i] = calloc(1, g->world_size);
     c->input = calloc(1, (size_t)g->input_size + 1u);
-    c->packet = malloc(PURR_NET_MTU);
+    c->packet = malloc(TIDE_NET_MTU);
     bool worlds = c->worlds != NULL;
     for (uint32_t i = 0; worlds && i < c->ring; i++) worlds = c->worlds[i] != NULL;
     if (!worlds || !c->input || !c->packet) {
-        purr_client_destroy(c);
+        tide_client_destroy(c);
         return NULL;
     }
     return c;
 }
 
-void purr_client_destroy(purr_client *c)
+void tide_client_destroy(tide_client *c)
 {
     if (!c) return;
-    if (c->state != PURR_SESSION_OFFLINE && c->desc.transport.send) {
+    if (c->state != TIDE_SESSION_OFFLINE && c->desc.transport.send) {
         uint8_t data[8];
-        purr_writer w = {data, sizeof data, 0, false};
+        tide_writer w = {data, sizeof data, 0, false};
         header(&w, MSG_BYE);
         send_packet(&c->desc.transport, c->desc.server, &w);
     }
@@ -1314,15 +1314,15 @@ void purr_client_destroy(purr_client *c)
     free(c);
 }
 
-void purr_client_update(purr_client *c, const double now)
+void tide_client_update(tide_client *c, const double now)
 {
     c->now = now;
-    if (c->state == PURR_SESSION_OFFLINE) return;
+    if (c->state == TIDE_SESSION_OFFLINE) return;
     client_receive(c);
-    if (c->state == PURR_SESSION_OFFLINE) return;
-    const double patience = !c->welcomed && c->desc.server.kind == PURR_ADDRESS_ROOM ? ROOM_TIMEOUT : TIMEOUT;
+    if (c->state == TIDE_SESSION_OFFLINE) return;
+    const double patience = !c->welcomed && c->desc.server.kind == TIDE_ADDRESS_ROOM ? ROOM_TIMEOUT : TIMEOUT;
     if (now - c->last_heard > patience) {
-        go_offline(c, PURR_DISCONNECT_TIMED_OUT);
+        go_offline(c, TIDE_DISCONNECT_TIMED_OUT);
         return;
     }
     if (!c->welcomed) {
@@ -1333,12 +1333,12 @@ void purr_client_update(purr_client *c, const double now)
     send_client(c);
 }
 
-purr_client_status purr_client_status_of(const purr_client *c)
+tide_client_status tide_client_status_of(const tide_client *c)
 {
-    return (purr_client_status){
+    return (tide_client_status){
         .state = c->state,
         .reason = c->reason,
-        .player = c->welcomed ? purr_player_from_index(c->player) : (purr_player_id){0},
+        .player = c->welcomed ? tide_player_from_index(c->player) : (tide_player_id){0},
         .ping_ms = c->rtt_ms,
         .verified_tick = c->verified,
         .predicted_tick = c->ahead,
@@ -1347,26 +1347,26 @@ purr_client_status purr_client_status_of(const purr_client *c)
     };
 }
 
-const void *purr_client_world(const purr_client *c)
+const void *tide_client_world(const tide_client *c)
 {
     return c->loaded ? world_at(c, c->ahead) : NULL;
 }
 
-const void *purr_client_verified_world(const purr_client *c)
+const void *tide_client_verified_world(const tide_client *c)
 {
     return c->loaded ? world_at(c, c->verified) : NULL;
 }
 
-purr_view_worlds purr_client_view(const purr_client *c)
+tide_view_worlds tide_client_view(const tide_client *c)
 {
-    if (!c->loaded) return (purr_view_worlds){0};
+    if (!c->loaded) return (tide_view_worlds){0};
     // How many ticks into the match this moment is, by the client's clock:
     // the latest tick it ran is at most one of them behind.
     const double at = (double)c->clock_base + (c->now - c->clock_start) * (double)c->tick_rate;
     double alpha = at - (double)c->ahead;
     if (alpha < 0.0) alpha = 0.0;
     if (alpha > 1.0) alpha = 1.0;
-    return (purr_view_worlds){world_at(c, c->ahead), c->ahead > c->first_tick ? world_at(c, c->ahead - 1u) : NULL,
+    return (tide_view_worlds){world_at(c, c->ahead), c->ahead > c->first_tick ? world_at(c, c->ahead - 1u) : NULL,
                               (float)alpha};
 }
 
@@ -1375,136 +1375,136 @@ purr_view_worlds purr_client_view(const purr_client *c)
 
 #define SESSION_EVENTS 8u
 
-struct purr_session {
-    purr_session_desc desc;
-    purr_loopback *loopback;
-    purr_server *server;
-    purr_client *client;
-    purr_session_state last_state;
-    purr_address joined;  // The server it last joined, and the cookie that makes it the same player there
+struct tide_session {
+    tide_session_desc desc;
+    tide_loopback *loopback;
+    tide_server *server;
+    tide_client *client;
+    tide_session_state last_state;
+    tide_address joined;  // The server it last joined, and the cookie that makes it the same player there
     uint64_t cookie;
-    purr_session_event events[SESSION_EVENTS];
+    tide_session_event events[SESSION_EVENTS];
     uint32_t event_count;
     double last_now; // The host's time at the last update
-    double paused;   // Host time that didn't pass for this machine's own match (see purr_session_update)
+    double paused;   // Host time that didn't pass for this machine's own match (see tide_session_update)
 };
 
 // The session's own time starts over with each match.
-static void start_clock(purr_session *s, const double now)
+static void start_clock(tide_session *s, const double now)
 {
     s->last_now = now;
     s->paused = 0.0;
 }
 
-static void push_event(purr_session *s, const purr_session_event e)
+static void push_event(tide_session *s, const tide_session_event e)
 {
     if (s->event_count < SESSION_EVENTS) s->events[s->event_count++] = e;
 }
 
 // Ends whatever it's in, without a word to local code.
-static void tear_down(purr_session *s)
+static void tear_down(tide_session *s)
 {
-    purr_client_destroy(s->client);
-    purr_server_destroy(s->server);
-    purr_loopback_destroy(s->loopback);
+    tide_client_destroy(s->client);
+    tide_server_destroy(s->server);
+    tide_loopback_destroy(s->loopback);
     s->client = NULL;
     s->server = NULL;
     s->loopback = NULL;
-    s->last_state = PURR_SESSION_OFFLINE;
+    s->last_state = TIDE_SESSION_OFFLINE;
 }
 
-purr_session *purr_session_create(const purr_session_desc *desc)
+tide_session *tide_session_create(const tide_session_desc *desc)
 {
-    purr_session *s = calloc(1, sizeof *s);
+    tide_session *s = calloc(1, sizeof *s);
     if (!s) return NULL;
     s->desc = *desc;
     if (s->desc.tick_rate == 0) s->desc.tick_rate = 60;
     return s;
 }
 
-void purr_session_destroy(purr_session *s)
+void tide_session_destroy(tide_session *s)
 {
     if (!s) return;
     tear_down(s);
     free(s);
 }
 
-void purr_session_fail(purr_session *s, const purr_disconnect_reason reason)
+void tide_session_fail(tide_session *s, const tide_disconnect_reason reason)
 {
     tear_down(s);
-    push_event(s, (purr_session_event){PURR_SESSION_DISCONNECTED_EVENT, reason});
+    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, reason});
 }
 
-void purr_session_leave(purr_session *s)
+void tide_session_leave(tide_session *s)
 {
     if (!s->client && !s->server) return;
     tear_down(s);
-    push_event(s, (purr_session_event){PURR_SESSION_DISCONNECTED_EVENT, PURR_DISCONNECT_LEFT});
+    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
 }
 
 // A server with this machine's player on it, over loopback; `network` takes others.
-static void start_server(purr_session *s, const void *start, const void *world, const uint32_t players,
-                         const purr_transport network, const double now)
+static void start_server(tide_session *s, const void *start, const void *world, const uint32_t players,
+                         const tide_transport network, const double now)
 {
-    purr_session_leave(s);
+    tide_session_leave(s);
     start_clock(s, now);
-    s->loopback = purr_loopback_create(1);
+    s->loopback = tide_loopback_create(1);
     if (!s->loopback) {
         if (network.close) network.close(network.self);
-        purr_session_fail(s, PURR_DISCONNECT_FAILED);
+        tide_session_fail(s, TIDE_DISCONNECT_FAILED);
         return;
     }
-    purr_loopback_set_time(s->loopback, now);
-    const purr_server_desc server = {
+    tide_loopback_set_time(s->loopback, now);
+    const tide_server_desc server = {
         .game = s->desc.game,
         .tick_rate = s->desc.tick_rate,
         .start = start,
-        .transports = {purr_loopback_endpoint(s->loopback, 1), network},
+        .transports = {tide_loopback_endpoint(s->loopback, 1), network},
         .local_first = true,
         .wait_for_first = true,
         .world = world,
         .players = players,
     };
-    s->server = purr_server_create(&server, now);
-    const purr_client_desc client = {
+    s->server = tide_server_create(&server, now);
+    const tide_client_desc client = {
         .game = s->desc.game,
-        .transport = purr_loopback_endpoint(s->loopback, 2),
-        .server = purr_loopback_address(1),
+        .transport = tide_loopback_endpoint(s->loopback, 2),
+        .server = tide_loopback_address(1),
         .sample = s->desc.sample,
         .user = s->desc.user,
         .lead = 0, // Its inputs go straight in: the server ticks right after it
     };
-    s->client = s->server ? purr_client_create(&client, now) : NULL;
+    s->client = s->server ? tide_client_create(&client, now) : NULL;
     if (!s->client) {
         tear_down(s);
-        purr_session_fail(s, PURR_DISCONNECT_FAILED);
+        tide_session_fail(s, TIDE_DISCONNECT_FAILED);
         return;
     }
-    s->last_state = PURR_SESSION_CONNECTING;
+    s->last_state = TIDE_SESSION_CONNECTING;
 }
 
-void purr_session_play(purr_session *s, const void *start, const double now)
+void tide_session_play(tide_session *s, const void *start, const double now)
 {
-    start_server(s, start, NULL, 0, (purr_transport){0}, now);
+    start_server(s, start, NULL, 0, (tide_transport){0}, now);
 }
 
-void purr_session_play_from(purr_session *s, const void *world, const uint32_t players, const double now)
+void tide_session_play_from(tide_session *s, const void *world, const uint32_t players, const double now)
 {
-    start_server(s, NULL, world, players, (purr_transport){0}, now);
+    start_server(s, NULL, world, players, (tide_transport){0}, now);
 }
 
-void purr_session_host(purr_session *s, const void *start, const purr_transport network, const double now)
+void tide_session_host(tide_session *s, const void *start, const tide_transport network, const double now)
 {
     start_server(s, start, NULL, 0, network, now);
 }
 
-void purr_session_join(purr_session *s, const purr_transport network, const purr_address server, const double now)
+void tide_session_join(tide_session *s, const tide_transport network, const tide_address server, const double now)
 {
-    purr_session_leave(s);
+    tide_session_leave(s);
     start_clock(s, now);
-    if (!purr_address_equal(server, s->joined)) s->cookie = 0;
+    if (!tide_address_equal(server, s->joined)) s->cookie = 0;
     s->joined = server;
-    const purr_client_desc client = {
+    const tide_client_desc client = {
         .game = s->desc.game,
         .transport = network,
         .server = server,
@@ -1513,16 +1513,16 @@ void purr_session_join(purr_session *s, const purr_transport network, const purr
         .lead = 2,
         .cookie = s->cookie,
     };
-    s->client = purr_client_create(&client, now);
+    s->client = tide_client_create(&client, now);
     if (!s->client) {
         if (network.close) network.close(network.self);
-        purr_session_fail(s, PURR_DISCONNECT_FAILED);
+        tide_session_fail(s, TIDE_DISCONNECT_FAILED);
         return;
     }
-    s->last_state = PURR_SESSION_CONNECTING;
+    s->last_state = TIDE_SESSION_CONNECTING;
 }
 
-void purr_session_update(purr_session *s, const double now)
+void tide_session_update(tide_session *s, const double now)
 {
     if (!s->client) return;
     // This machine's server stops whenever the machine does (a browser tab in
@@ -1535,48 +1535,48 @@ void purr_session_update(purr_session *s, const double now)
     s->last_now = now;
     const double t = now - s->paused;
 
-    if (s->loopback) purr_loopback_set_time(s->loopback, t);
-    purr_client_update(s->client, t);
-    if (s->server) purr_server_update(s->server, t);
-    purr_client_update(s->client, t); // What the server just sent: this machine's ticks, at once
+    if (s->loopback) tide_loopback_set_time(s->loopback, t);
+    tide_client_update(s->client, t);
+    if (s->server) tide_server_update(s->server, t);
+    tide_client_update(s->client, t); // What the server just sent: this machine's ticks, at once
 
-    const purr_client_status status = purr_client_status_of(s->client);
+    const tide_client_status status = tide_client_status_of(s->client);
     if (!s->server && status.cookie) s->cookie = status.cookie;
-    if (status.state == PURR_SESSION_CONNECTED && s->last_state != PURR_SESSION_CONNECTED) {
-        push_event(s, (purr_session_event){PURR_SESSION_CONNECTED_EVENT, PURR_DISCONNECT_LEFT});
+    if (status.state == TIDE_SESSION_CONNECTED && s->last_state != TIDE_SESSION_CONNECTED) {
+        push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
     }
-    if (status.state == PURR_SESSION_OFFLINE) {
+    if (status.state == TIDE_SESSION_OFFLINE) {
         tear_down(s);
-        push_event(s, (purr_session_event){PURR_SESSION_DISCONNECTED_EVENT, status.reason});
+        push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, status.reason});
         return;
     }
     s->last_state = status.state;
 }
 
-const void *purr_session_world(const purr_session *s)
+const void *tide_session_world(const tide_session *s)
 {
-    return s->client ? purr_client_world(s->client) : NULL;
+    return s->client ? tide_client_world(s->client) : NULL;
 }
 
-purr_view_worlds purr_session_view(const purr_session *s)
+tide_view_worlds tide_session_view(const tide_session *s)
 {
-    return s->client ? purr_client_view(s->client) : (purr_view_worlds){0};
+    return s->client ? tide_client_view(s->client) : (tide_view_worlds){0};
 }
 
-const void *purr_session_server_world(const purr_session *s)
+const void *tide_session_server_world(const tide_session *s)
 {
-    return s->server ? purr_server_world(s->server) : NULL;
+    return s->server ? tide_server_world(s->server) : NULL;
 }
 
-purr_session_status purr_session_status_of(const purr_session *s)
+tide_session_status tide_session_status_of(const tide_session *s)
 {
-    purr_session_status status = {0};
-    if (s->client) status.client = purr_client_status_of(s->client);
+    tide_session_status status = {0};
+    if (s->client) status.client = tide_client_status_of(s->client);
     status.server = s->server != NULL;
     return status;
 }
 
-bool purr_session_next_event(purr_session *s, purr_session_event *event)
+bool tide_session_next_event(tide_session *s, tide_session_event *event)
 {
     if (s->event_count == 0) return false;
     *event = s->events[0];
@@ -1585,7 +1585,7 @@ bool purr_session_next_event(purr_session *s, purr_session_event *event)
     return true;
 }
 
-void purr_session_set_game(purr_session *s, const purr_game *game)
+void tide_session_set_game(tide_session *s, const tide_game *game)
 {
     s->desc.game = game;
     if (s->server) {
@@ -1606,7 +1606,7 @@ typedef struct server_migration {
     uint8_t *input;
     uint8_t *packed;
     uint8_t *server_last;
-    uint8_t *inputs[PURR_MAX_PLAYERS];
+    uint8_t *inputs[TIDE_MAX_PLAYERS];
 } server_migration;
 
 typedef struct client_migration {
@@ -1622,10 +1622,10 @@ static void discard_server_migration(server_migration *m)
     free(m->input);
     free(m->packed);
     free(m->server_last);
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) free(m->inputs[i]);
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) free(m->inputs[i]);
 }
 
-static void discard_client_migration(const purr_client *c, client_migration *m)
+static void discard_client_migration(const tide_client *c, client_migration *m)
 {
     for (uint32_t i = 0; m->worlds && i < c->ring; i++) free(m->worlds[i]);
     free(m->worlds);
@@ -1633,7 +1633,7 @@ static void discard_client_migration(const purr_client *c, client_migration *m)
     free(m->inputs);
 }
 
-static bool prepare_server(const purr_server *s, const purr_game *g, const purr_migrate_fn migrate, void *user,
+static bool prepare_server(const tide_server *s, const tide_game *g, const tide_migrate_fn migrate, void *user,
                            server_migration *m)
 {
     const uint32_t bytes = g->max_input_bytes ? g->max_input_bytes : 1u;
@@ -1643,7 +1643,7 @@ static bool prepare_server(const purr_server *s, const purr_game *g, const purr_
     m->packed = malloc((size_t)g->max_input_bytes + 1u);
     m->server_last = malloc((size_t)g->max_input_bytes + 1u);
     bool ok = m->world && m->frame && m->input && m->packed && m->server_last;
-    for (uint32_t i = 0; ok && i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; ok && i < TIDE_MAX_PLAYERS; i++) {
         if (!s->connections[i].used) continue;
         m->inputs[i] = malloc((size_t)(s->w.inputs + 1u) * bytes);
         ok = m->inputs[i] != NULL;
@@ -1653,7 +1653,7 @@ static bool prepare_server(const purr_server *s, const purr_game *g, const purr_
 
 // Inputs sent for ticks to come were packed for the old layout: the players'
 // last ones stand for them until new ones arrive.
-static void commit_server(purr_server *s, const purr_game *g, server_migration *m)
+static void commit_server(tide_server *s, const tide_game *g, server_migration *m)
 {
     free(s->world);
     free(s->frame);
@@ -1668,7 +1668,7 @@ static void commit_server(purr_server *s, const purr_game *g, server_migration *
     s->server_last_size = 0;
     s->game = g;
     s->desc.game = g;
-    for (uint32_t i = 0; i < PURR_MAX_PLAYERS; i++) {
+    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         connection *c = &s->connections[i];
         if (!c->used) continue;
         free(c->inputs);
@@ -1680,7 +1680,7 @@ static void commit_server(purr_server *s, const purr_game *g, server_migration *
     }
 }
 
-static bool prepare_client(const purr_client *c, const purr_game *g, const purr_migrate_fn migrate, void *user,
+static bool prepare_client(const tide_client *c, const tide_game *g, const tide_migrate_fn migrate, void *user,
                            client_migration *m)
 {
     const uint32_t bytes = g->max_input_bytes ? g->max_input_bytes : 1u;
@@ -1701,7 +1701,7 @@ static bool prepare_client(const purr_client *c, const purr_game *g, const purr_
 
 // It goes on from the verified world: the ticks it predicted, and its inputs
 // for them, were the old build's.
-static void commit_client(purr_client *c, const purr_game *g, client_migration *m)
+static void commit_client(tide_client *c, const tide_game *g, client_migration *m)
 {
     for (uint32_t i = 0; i < c->ring; i++) free(c->worlds[i]);
     free(c->worlds);
@@ -1724,7 +1724,7 @@ static void commit_client(purr_client *c, const purr_game *g, client_migration *
 
 // This machine's own player takes its server's world as it is now, which is
 // what it would come to.
-static void take_server_world(purr_client *c, const purr_server *s)
+static void take_server_world(tide_client *c, const tide_server *s)
 {
     c->game->copy_world(world_at(c, s->tick), s->world);
     c->verified = s->tick;
@@ -1733,7 +1733,7 @@ static void take_server_world(purr_client *c, const purr_server *s)
     c->loaded_tick = s->tick;
 }
 
-bool purr_session_migrate(purr_session *s, const purr_game *game, const purr_migrate_fn migrate, void *user)
+bool tide_session_migrate(tide_session *s, const tide_game *game, const tide_migrate_fn migrate, void *user)
 {
     const bool own = s->server && s->client; // This machine's player, on its own server
     server_migration sm = {0};

@@ -1,7 +1,7 @@
-// purr's built-in C compiler: clang and lld, linked into purr (see
+// tide's built-in C compiler: clang and lld, linked into tide (see
 // cmake/LLVM.cmake), so users need no compiler of their own.
 //
-// `purr cc <clang arguments>` works like clang: its driver runs in this
+// `tide cc <clang arguments>` works like clang: its driver runs in this
 // process, compiles in it (as clang does by default), and links with lld in it
 // too, instead of running a linker program. clang's own main isn't in a
 // library, so this is a small version of it (clang/tools/driver in LLVM).
@@ -39,39 +39,39 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
-// The targets purr builds for: the machine's own, and the web.
+// The targets tide builds for: the machine's own, and the web.
 extern "C" {
-#define PURR_TARGET(name)                                                                                              \
+#define TIDE_TARGET(name)                                                                                              \
     void LLVMInitialize##name##TargetInfo();                                                                           \
     void LLVMInitialize##name##Target();                                                                               \
     void LLVMInitialize##name##TargetMC();                                                                             \
     void LLVMInitialize##name##AsmPrinter();                                                                           \
     void LLVMInitialize##name##AsmParser();
 #if defined(__x86_64__) || defined(_M_X64)
-PURR_TARGET(X86)
-#define PURR_NATIVE_TARGET X86
+TIDE_TARGET(X86)
+#define TIDE_NATIVE_TARGET X86
 #elif defined(__aarch64__) || defined(_M_ARM64)
-PURR_TARGET(AArch64)
-#define PURR_NATIVE_TARGET AArch64
+TIDE_TARGET(AArch64)
+#define TIDE_NATIVE_TARGET AArch64
 #endif
-PURR_TARGET(WebAssembly)
+TIDE_TARGET(WebAssembly)
 }
 
-#define PURR_INIT_TARGET_(name)                                                                                        \
+#define TIDE_INIT_TARGET_(name)                                                                                        \
     LLVMInitialize##name##TargetInfo();                                                                                \
     LLVMInitialize##name##Target();                                                                                    \
     LLVMInitialize##name##TargetMC();                                                                                  \
     LLVMInitialize##name##AsmPrinter();                                                                                \
     LLVMInitialize##name##AsmParser();
-#define PURR_INIT_TARGET(name) PURR_INIT_TARGET_(name)
+#define TIDE_INIT_TARGET(name) TIDE_INIT_TARGET_(name)
 
 static void init_targets()
 {
     static bool done;
     if (done) return;
     done = true;
-    PURR_INIT_TARGET(PURR_NATIVE_TARGET)
-    PURR_INIT_TARGET(WebAssembly)
+    TIDE_INIT_TARGET(TIDE_NATIVE_TARGET)
+    TIDE_INIT_TARGET(WebAssembly)
 }
 
 // The linkers games need: the web's, and the machine's own.
@@ -100,7 +100,7 @@ static void backend_error(void *user, const char *message, bool)
     llvm::sys::Process::Exit(1);
 }
 
-// `args` starts with -cc1, and `self` is purr's path.
+// `args` starts with -cc1, and `self` is tide's path.
 static int cc1(llvm::ArrayRef<const char *> args, const char *self)
 {
     init_targets();
@@ -153,11 +153,11 @@ static int driver(llvm::SmallVectorImpl<const char *> &args)
 
     std::unique_ptr<clang::DiagnosticOptions> diag_opts = clang::CreateAndPopulateDiagOpts(args);
     auto *printer = new clang::TextDiagnosticPrinter(llvm::errs(), *diag_opts);
-    printer->setPrefix("purr");
+    printer->setPrefix("tide");
     clang::DiagnosticsEngine diags(clang::DiagnosticIDs::create(), *diag_opts, printer);
     clang::ProcessWarningOptions(diags, *diag_opts, *vfs, /*ReportDiags=*/false);
 
-    clang::driver::Driver driver(self, llvm::sys::getDefaultTargetTriple(), diags, "purr", vfs);
+    clang::driver::Driver driver(self, llvm::sys::getDefaultTargetTriple(), diags, "tide", vfs);
     // Compiles run in this process: clang runs -cc1 itself.
     auto run_cc1 = [&](llvm::SmallVectorImpl<const char *> &argv) {
         llvm::cl::ResetAllOptionOccurrences();
@@ -166,7 +166,7 @@ static int driver(llvm::SmallVectorImpl<const char *> &args)
     driver.CC1Main = run_cc1;
     llvm::CrashRecoveryContext::Enable();
 
-    // The driver looks for a linker program; point it at purr, which never runs
+    // The driver looks for a linker program; point it at tide, which never runs
     // as one: link commands go to lld here. Only when linking for a target that
     // asks for it (wasm's doesn't), or clang warns that the argument is unused.
     bool links = true;
@@ -191,7 +191,7 @@ static int driver(llvm::SmallVectorImpl<const char *> &args)
             std::string error;
             bool failed = false;
             code = job.Execute({}, &error, &failed);
-            if (failed) llvm::errs() << "purr: error: " << error << "\n";
+            if (failed) llvm::errs() << "tide: error: " << error << "\n";
         } else {
             code = link(triple, job_args);
         }
@@ -200,11 +200,11 @@ static int driver(llvm::SmallVectorImpl<const char *> &args)
     return 0;
 }
 
-int purr_cc(const int argc, const char **argv)
+int tide_cc(const int argc, const char **argv)
 {
-    // clang's paths are relative to purr's: its headers are in ../lib/clang.
+    // clang's paths are relative to tide's: its headers are in ../lib/clang.
     llvm::SmallVector<const char *, 64> args(argv, argv + argc);
-    const std::string self = llvm::sys::fs::getMainExecutable(argv[0], reinterpret_cast<void *>(&purr_cc));
+    const std::string self = llvm::sys::fs::getMainExecutable(argv[0], reinterpret_cast<void *>(&tide_cc));
     args[0] = self.c_str();
     if (args.size() > 1 && llvm::StringRef(args[1]) == "cc") args.erase(args.begin() + 1);
     if (args.size() > 1 && llvm::StringRef(args[1]) == "-cc1") {

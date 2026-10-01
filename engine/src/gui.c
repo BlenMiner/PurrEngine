@@ -1,12 +1,12 @@
-#include "purr/gui.h"
+#include "tide/gui.h"
 
 #include <stdio.h>
 
-#include "purr/text.h"
+#include "tide/text.h"
 #include <stdlib.h>
 #include <string.h>
 
-// See purr/gui.h. The GUI is local: it runs on one machine and never touches
+// See tide/gui.h. The GUI is local: it runs on one machine and never touches
 // the simulation, so it's free to use the C library (formatting and parsing
 // numbers) and to depend on the window's size.
 
@@ -31,21 +31,21 @@
 #define LEAST_TRACK 40.0f  // A slider's track
 #define LEAST_PART 36.0f   // Each number of a vector or color field
 
-static const purr_color TEXT = {0.93f, 0.93f, 0.95f, 1.0f};
-static const purr_color PANEL = {0.07f, 0.07f, 0.1f, 0.9f};
-static const purr_color CONTROL = {0.2f, 0.2f, 0.25f, 1.0f};
-static const purr_color CONTROL_HOT = {0.28f, 0.28f, 0.34f, 1.0f};
-static const purr_color CONTROL_DOWN = {0.14f, 0.14f, 0.18f, 1.0f};
-static const purr_color FIELD = {0.12f, 0.12f, 0.15f, 1.0f};
-static const purr_color FIELD_HOT = {0.16f, 0.16f, 0.2f, 1.0f};
-static const purr_color ACCENT = {1.0f, 0.77f, 0.24f, 1.0f};
-static const purr_color DIM = {0.0f, 0.0f, 0.0f, 0.5f}; // Over the screen, under a modal
+static const tide_color TEXT = {0.93f, 0.93f, 0.95f, 1.0f};
+static const tide_color PANEL = {0.07f, 0.07f, 0.1f, 0.9f};
+static const tide_color CONTROL = {0.2f, 0.2f, 0.25f, 1.0f};
+static const tide_color CONTROL_HOT = {0.28f, 0.28f, 0.34f, 1.0f};
+static const tide_color CONTROL_DOWN = {0.14f, 0.14f, 0.18f, 1.0f};
+static const tide_color FIELD = {0.12f, 0.12f, 0.15f, 1.0f};
+static const tide_color FIELD_HOT = {0.16f, 0.16f, 0.2f, 1.0f};
+static const tide_color ACCENT = {1.0f, 0.77f, 0.24f, 1.0f};
+static const tide_color DIM = {0.0f, 0.0f, 0.0f, 0.5f}; // Over the screen, under a modal
 
 enum { VERTICAL, HORIZONTAL, AREA };
 
 #define ROOT_ID 1u // The screen's own group, where widgets outside any container go
 
-// Navigation keys, in purr_gui.keys
+// Navigation keys, in tide_gui.keys
 enum {
     KEY_UP = 1u << 0,
     KEY_DOWN = 1u << 1,
@@ -67,10 +67,10 @@ enum {
 
 #define STICK 0.5f // How far the left stick goes before it counts as a d-pad press
 
-static uint32_t nav_keys(const purr_devices *d)
+static uint32_t nav_keys(const tide_devices *d)
 {
-    const purr_keyboard *k = &d->keyboard;
-    const purr_gamepad *p = &d->gamepad;
+    const tide_keyboard *k = &d->keyboard;
+    const tide_gamepad *p = &d->gamepad;
     uint32_t keys = 0;
     if (k->upArrow.held) keys |= KEY_UP;
     if (k->downArrow.held) keys |= KEY_DOWN;
@@ -93,7 +93,7 @@ static uint32_t nav_keys(const purr_devices *d)
     return keys;
 }
 
-static bool pressed(const purr_gui *g, const uint32_t keys)
+static bool pressed(const tide_gui *g, const uint32_t keys)
 {
     return (g->keys_pressed & keys) != 0;
 }
@@ -119,7 +119,7 @@ static float guess_width(const char *text, const float size)
     return (float)strlen(text) * size * 0.6f;
 }
 
-static float text_width(const purr_gui *g, const char *text)
+static float text_width(const tide_gui *g, const char *text)
 {
     return g->measure(text, FONT);
 }
@@ -127,28 +127,28 @@ static float text_width(const purr_gui *g, const char *text)
 // ---------------------------------------------------------------------------
 // Drawing
 
-static purr_rect grow(const purr_rect r, const float by)
+static tide_rect grow(const tide_rect r, const float by)
 {
-    return (purr_rect){r.x - by, r.y - by, r.width + 2.0f * by, r.height + 2.0f * by};
+    return (tide_rect){r.x - by, r.y - by, r.width + 2.0f * by, r.height + 2.0f * by};
 }
 
-static bool contains(const purr_rect r, const purr_float2 p)
+static bool contains(const tide_rect r, const tide_float2 p)
 {
     return p.x >= r.x && p.y >= r.y && p.x < r.x + r.width && p.y < r.y + r.height;
 }
 
-static void fill(purr_gui *g, const purr_rect r, const purr_color color)
+static void fill(tide_gui *g, const tide_rect r, const tide_color color)
 {
-    purr_draw_rect(&g->list, purr_f2(r.x + r.width * 0.5f, r.y + r.height * 0.5f), purr_f2(r.width, r.height), color);
+    tide_draw_rect(&g->list, tide_f2(r.x + r.width * 0.5f, r.y + r.height * 0.5f), tide_f2(r.width, r.height), color);
 }
 
 // Text starting at `x`, centered on `middle` vertically.
-static void text_at(purr_gui *g, const char *text, const float x, const float middle, const purr_color color)
+static void text_at(tide_gui *g, const char *text, const float x, const float middle, const tide_color color)
 {
-    if (text[0]) purr_draw_text(&g->list, text, purr_f2(x, middle - FONT * 0.5f), FONT, color);
+    if (text[0]) tide_draw_text(&g->list, text, tide_f2(x, middle - FONT * 0.5f), FONT, color);
 }
 
-static void text_centered(purr_gui *g, const char *text, const purr_rect r, const purr_color color)
+static void text_centered(tide_gui *g, const char *text, const tide_rect r, const tide_color color)
 {
     text_at(g, text, r.x + (r.width - text_width(g, text)) * 0.5f, r.y + r.height * 0.5f, color);
 }
@@ -156,7 +156,7 @@ static void text_centered(purr_gui *g, const char *text, const purr_rect r, cons
 // ---------------------------------------------------------------------------
 // IDs and remembered sizes
 
-uint32_t purr_gui_seed(const uint32_t a, const uint32_t b)
+uint32_t tide_gui_seed(const uint32_t a, const uint32_t b)
 {
     uint32_t h = a * 0x9E3779B1u ^ (b + 0x7F4A7C15u + (a << 6) + (a >> 2));
     h ^= h >> 16;
@@ -167,56 +167,56 @@ uint32_t purr_gui_seed(const uint32_t a, const uint32_t b)
     return h ? h : 1u;
 }
 
-uint32_t purr_gui_id(purr_gui *g, const uint32_t seed, const uint32_t site)
+uint32_t tide_gui_id(tide_gui *g, const uint32_t seed, const uint32_t site)
 {
-    const uint32_t key = purr_gui_seed(seed, site);
-    uint32_t slot = key & (PURR_GUI_MAX_IDS - 1);
-    for (uint32_t probe = 0; probe < PURR_GUI_MAX_IDS; probe++) {
-        purr_gui_seen *s = &g->seen[slot];
+    const uint32_t key = tide_gui_seed(seed, site);
+    uint32_t slot = key & (TIDE_GUI_MAX_IDS - 1);
+    for (uint32_t probe = 0; probe < TIDE_GUI_MAX_IDS; probe++) {
+        tide_gui_seen *s = &g->seen[slot];
         if (s->frame != g->frame) { // Free this frame
-            *s = (purr_gui_seen){key, g->frame, 1};
+            *s = (tide_gui_seen){key, g->frame, 1};
             return key;
         }
-        if (s->key == key) return purr_gui_seed(key, s->count++);
-        slot = (slot + 1) & (PURR_GUI_MAX_IDS - 1);
+        if (s->key == key) return tide_gui_seed(key, s->count++);
+        slot = (slot + 1) & (TIDE_GUI_MAX_IDS - 1);
     }
     return key; // Full: widgets from one site share an ID
 }
 
-static const purr_gui_size *remembered(const purr_gui *g, const uint32_t id)
+static const tide_gui_size *remembered(const tide_gui *g, const uint32_t id)
 {
-    const purr_gui_size *s = &g->sizes[id & (PURR_GUI_MAX_SIZES - 1)];
+    const tide_gui_size *s = &g->sizes[id & (TIDE_GUI_MAX_SIZES - 1)];
     return s->frame != 0 && s->id == id ? s : NULL;
 }
 
-static void remember(purr_gui *g, const uint32_t id, const purr_float2 size, const float natural, const float least)
+static void remember(tide_gui *g, const uint32_t id, const tide_float2 size, const float natural, const float least)
 {
-    g->sizes[id & (PURR_GUI_MAX_SIZES - 1)] = (purr_gui_size){id, g->frame, size, natural, least};
+    g->sizes[id & (TIDE_GUI_MAX_SIZES - 1)] = (tide_gui_size){id, g->frame, size, natural, least};
 }
 
 // ---------------------------------------------------------------------------
 // Frames
 
 // A button as views see it: down or up since last frame.
-static purr_button frame_button(const purr_button now, const purr_button last)
+static tide_button frame_button(const tide_button now, const tide_button last)
 {
-    return (purr_button){.pressed = now.held, .down = now.held && !last.held, .up = !now.held && last.held, .held = now.held};
+    return (tide_button){.pressed = now.held, .down = now.held && !last.held, .up = !now.held && last.held, .held = now.held};
 }
 
 // The devices views read this frame, from the platform's.
-static void frame_devices(purr_gui *g, const purr_devices *now)
+static void frame_devices(tide_gui *g, const tide_devices *now)
 {
-    purr_devices *d = &g->devices;
-    const purr_devices *last = &g->last;
+    tide_devices *d = &g->devices;
+    const tide_devices *last = &g->last;
     memset(d, 0, sizeof *d);
 #define FRAME_KEY(name) d->keyboard.name = frame_button(now->keyboard.name, last->keyboard.name);
 #define FRAME_MOUSE(name) d->mouse.name = frame_button(now->mouse.name, last->mouse.name);
 #define FRAME_PAD(name) d->gamepad.name = frame_button(now->gamepad.name, last->gamepad.name);
 #define FRAME_DPAD(name) d->gamepad.dpad.name = frame_button(now->gamepad.dpad.name, last->gamepad.dpad.name);
-    PURR_KEYBOARD_KEYS(FRAME_KEY)
-    PURR_MOUSE_BUTTONS(FRAME_MOUSE)
-    PURR_GAMEPAD_BUTTONS(FRAME_PAD)
-    PURR_DPAD_BUTTONS(FRAME_DPAD)
+    TIDE_KEYBOARD_KEYS(FRAME_KEY)
+    TIDE_MOUSE_BUTTONS(FRAME_MOUSE)
+    TIDE_GAMEPAD_BUTTONS(FRAME_PAD)
+    TIDE_DPAD_BUTTONS(FRAME_DPAD)
 #undef FRAME_KEY
 #undef FRAME_MOUSE
 #undef FRAME_PAD
@@ -234,34 +234,34 @@ static void frame_devices(purr_gui *g, const purr_devices *now)
 
 // Hides what the GUI uses from devices the game or views read. The GUI works
 // out the next frame's from the platform's, so nothing is lost.
-static void hide(const purr_gui *g, purr_devices *d)
+static void hide(const tide_gui *g, tide_devices *d)
 {
     if (g->focus || g->editing || g->modal) {
-#define RELEASE(b) (b) = (purr_button){0};
+#define RELEASE(b) (b) = (tide_button){0};
 #define RELEASE_KEY(name) RELEASE(d->keyboard.name)
 #define RELEASE_PAD(name) RELEASE(d->gamepad.name)
 #define RELEASE_DPAD(name) RELEASE(d->gamepad.dpad.name)
-        PURR_KEYBOARD_KEYS(RELEASE_KEY)
-        PURR_GAMEPAD_BUTTONS(RELEASE_PAD)
-        PURR_DPAD_BUTTONS(RELEASE_DPAD)
+        TIDE_KEYBOARD_KEYS(RELEASE_KEY)
+        TIDE_GAMEPAD_BUTTONS(RELEASE_PAD)
+        TIDE_DPAD_BUTTONS(RELEASE_DPAD)
 #undef RELEASE_KEY
 #undef RELEASE_PAD
 #undef RELEASE_DPAD
-        d->gamepad.leftStick = d->gamepad.rightStick = purr_f2(0.0f, 0.0f);
+        d->gamepad.leftStick = d->gamepad.rightStick = tide_f2(0.0f, 0.0f);
         d->gamepad.leftTrigger = d->gamepad.rightTrigger = 0.0f;
     }
     if (g->over || g->active || g->modal) {
 #define RELEASE_MOUSE(name) RELEASE(d->mouse.name)
-        PURR_MOUSE_BUTTONS(RELEASE_MOUSE)
+        TIDE_MOUSE_BUTTONS(RELEASE_MOUSE)
 #undef RELEASE_MOUSE
 #undef RELEASE
-        d->mouse.scroll = purr_f2(0.0f, 0.0f);
+        d->mouse.scroll = tide_f2(0.0f, 0.0f);
     }
-    if (g->modal) d->mouse.delta = purr_f2(0.0f, 0.0f);
+    if (g->modal) d->mouse.delta = tide_f2(0.0f, 0.0f);
 }
 
 // Moves the focus with Tab, the arrows and the d-pad, in last frame's order.
-static void navigate(purr_gui *g)
+static void navigate(tide_gui *g)
 {
     const bool tab = pressed(g, KEY_TAB);
     bool next = tab && !(g->keys & KEY_SHIFT);
@@ -288,7 +288,7 @@ static void navigate(purr_gui *g)
     }
 }
 
-void purr_gui_begin(purr_gui *g, const purr_devices *devices, const purr_float2 screen, const purr_measure_fn measure)
+void tide_gui_begin(tide_gui *g, const tide_devices *devices, const tide_float2 screen, const tide_measure_fn measure)
 {
     g->frame++;
     if (g->frame == 0) g->frame = 1; // Stamps of 0 mean never
@@ -297,8 +297,8 @@ void purr_gui_begin(purr_gui *g, const purr_devices *devices, const purr_float2 
     g->measure = measure ? measure : guess_width;
 
     // The devices count the mouse from the bottom left, y up; the GUI from the top left, y down.
-    const purr_mouse *m = &devices->mouse;
-    g->mouse = purr_f2(m->position.x, screen.y - m->position.y);
+    const tide_mouse *m = &devices->mouse;
+    g->mouse = tide_f2(m->position.x, screen.y - m->position.y);
     g->mouse_held = m->left.held;
     g->mouse_pressed = g->mouse_held && !g->mouse_was_held;
     g->mouse_released = !g->mouse_held && g->mouse_was_held;
@@ -326,15 +326,15 @@ void purr_gui_begin(purr_gui *g, const purr_devices *devices, const purr_float2 
     g->nav_count = 0;
     g->depth = 0;
     g->in_modal = 0;
-    const purr_gui_size *root = remembered(g, ROOT_ID);
-    g->groups[0] = (purr_gui_group){
+    const tide_gui_size *root = remembered(g, ROOT_ID);
+    g->groups[0] = (tide_gui_group){
         .id = ROOT_ID, .kind = VERTICAL, .room = screen.x, .stretch = root ? root->natural : 0.0f, .anchor = -1};
-    purr_draw_reset(&g->list);
+    tide_draw_reset(&g->list);
 }
 
-void purr_gui_end(purr_gui *g, purr_draw_list *draw)
+void tide_gui_end(tide_gui *g, tide_draw_list *draw)
 {
-    purr_gui_close(g, 0);
+    tide_gui_close(g, 0);
     remember(g, ROOT_ID, g->groups[0].size, g->groups[0].natural, g->groups[0].least);
 
     // What wasn't drawn this frame lets go.
@@ -354,12 +354,12 @@ void purr_gui_end(purr_gui *g, purr_draw_list *draw)
     g->nav_last_count = g->nav_count;
 
     if (g->list.count > 0) {
-        purr_draw_gui(draw);
-        purr_draw_append(draw, &g->list);
+        tide_draw_gui(draw);
+        tide_draw_append(draw, &g->list);
     }
 }
 
-void purr_gui_hide(purr_gui *g, purr_devices *d)
+void tide_gui_hide(tide_gui *g, tide_devices *d)
 {
     g->game_input = true;
     hide(g, d);
@@ -370,7 +370,7 @@ void purr_gui_hide(purr_gui *g, purr_devices *d)
 
 // Whether widgets drawn now work: always, unless a modal is up and they're
 // outside it.
-static bool live(const purr_gui *g)
+static bool live(const tide_gui *g)
 {
     return g->modal == 0 || g->in_modal == g->modal;
 }
@@ -378,7 +378,7 @@ static bool live(const purr_gui *g)
 // Whether the mouse is on the widget. Where widgets overlap, the one drawn
 // last is on top: it was under the mouse last frame, and hides the others
 // while the mouse stays on it.
-static bool hovered(purr_gui *g, const uint32_t id, const purr_rect r)
+static bool hovered(tide_gui *g, const uint32_t id, const tide_rect r)
 {
     if (!live(g) || !contains(r, g->mouse)) return false;
     g->hot_next = id;
@@ -388,7 +388,7 @@ static bool hovered(purr_gui *g, const uint32_t id, const purr_rect r)
 }
 
 // Whether the mouse is pressing the widget: from a press on it until it's let go.
-static bool held_down(purr_gui *g, const uint32_t id, const bool hover)
+static bool held_down(tide_gui *g, const uint32_t id, const bool hover)
 {
     if (hover && g->mouse_pressed && !g->claimed) {
         g->active = id;
@@ -400,7 +400,7 @@ static bool held_down(purr_gui *g, const uint32_t id, const bool hover)
 }
 
 // Adds the widget to the ones the focus moves between; true if it has it.
-static bool focusable(purr_gui *g, const uint32_t id)
+static bool focusable(tide_gui *g, const uint32_t id)
 {
     if (!live(g)) return false;
     if (g->grab && g->grab == g->in_modal) { // The first widget of a modal that just came on top
@@ -408,7 +408,7 @@ static bool focusable(purr_gui *g, const uint32_t id)
         g->focus = id;
         g->editing = 0;
     }
-    if (g->nav_count < PURR_GUI_MAX_NAV) g->nav[g->nav_count++] = id;
+    if (g->nav_count < TIDE_GUI_MAX_NAV) g->nav[g->nav_count++] = id;
     if (g->focus != id) return false;
     g->focus_seen = true;
     return true;
@@ -416,7 +416,7 @@ static bool focusable(purr_gui *g, const uint32_t id)
 
 // A button's press: a click that starts and ends on it, or Enter, Space or
 // the south button while it has the focus.
-static bool clicked(purr_gui *g, const uint32_t id, const purr_rect r, bool *hover, bool *down)
+static bool clicked(tide_gui *g, const uint32_t id, const tide_rect r, bool *hover, bool *down)
 {
     *hover = hovered(g, id, r);
     *down = held_down(g, id, *hover);
@@ -427,7 +427,7 @@ static bool clicked(purr_gui *g, const uint32_t id, const purr_rect r, bool *hov
 // ---------------------------------------------------------------------------
 // Layout
 
-static purr_gui_group *top(purr_gui *g)
+static tide_gui_group *top(tide_gui *g)
 {
     return &g->groups[g->depth];
 }
@@ -443,14 +443,14 @@ static float squeeze(const float natural, const float least, const float room)
 
 // How wide a widget wants to be: `natural`, or in a vertical container, as
 // wide as its widest widget was last frame if it `stretch`es.
-static float wanted(const purr_gui_group *grp, const float natural, const bool stretch)
+static float wanted(const tide_gui_group *grp, const float natural, const bool stretch)
 {
     return stretch && grp->kind != HORIZONTAL && grp->stretch > natural ? grp->stretch : natural;
 }
 
 // How wide it gets: what it wants if there's room, and down to `least` if
 // there isn't. A row shrinks each widget by as much as it can give.
-static float fit(const purr_gui_group *grp, const float want, const float least)
+static float fit(const tide_gui_group *grp, const float want, const float least)
 {
     const float floor = min_f(least, want);
     if (grp->kind == HORIZONTAL) return want - (want - floor) * grp->squeeze;
@@ -459,19 +459,19 @@ static float fit(const purr_gui_group *grp, const float want, const float least)
 
 // Puts something `width` wide at the next place in the current container.
 // `natural` and `least` are the widths it would take with room and squeezed.
-static purr_rect take(purr_gui *g, const float width, const float height, const float natural, const float least)
+static tide_rect take(tide_gui *g, const float width, const float height, const float natural, const float least)
 {
-    purr_gui_group *grp = top(g);
-    const purr_rect r = {grp->cursor.x, grp->cursor.y, width, height};
+    tide_gui_group *grp = top(g);
+    const tide_rect r = {grp->cursor.x, grp->cursor.y, width, height};
     if (grp->kind == HORIZONTAL) {
         grp->cursor.x += width + SPACING;
-        grp->size = purr_f2(r.x + width - grp->origin.x, max_f(grp->size.y, r.y + height - grp->origin.y));
+        grp->size = tide_f2(r.x + width - grp->origin.x, max_f(grp->size.y, r.y + height - grp->origin.y));
         grp->natural += natural + SPACING; // The last one's spacing comes off when it closes
         grp->least += least + SPACING;
         return r;
     }
     grp->cursor.y += height + SPACING;
-    grp->size = purr_f2(max_f(grp->size.x, r.x + width - grp->origin.x), r.y + height - grp->origin.y);
+    grp->size = tide_f2(max_f(grp->size.x, r.x + width - grp->origin.x), r.y + height - grp->origin.y);
     grp->natural = max_f(grp->natural, natural);
     grp->least = max_f(grp->least, least);
     return r;
@@ -480,18 +480,18 @@ static purr_rect take(purr_gui *g, const float width, const float height, const 
 // Takes the next place in the current container for a widget `natural` wide,
 // which can shrink to `least`. In a vertical one, widgets that `stretch` are
 // as wide as its widest one was last frame.
-static purr_rect reserve(purr_gui *g, const float natural, const float least, const bool stretch)
+static tide_rect reserve(tide_gui *g, const float natural, const float least, const bool stretch)
 {
-    const purr_gui_group *grp = top(g);
+    const tide_gui_group *grp = top(g);
     return take(g, fit(grp, wanted(grp, natural, stretch), least), LINE, natural, min_f(least, natural));
 }
 
-static int open_group(purr_gui *g, const uint32_t id, const uint32_t kind, const purr_float2 origin)
+static int open_group(tide_gui *g, const uint32_t id, const uint32_t kind, const tide_float2 origin)
 {
     const int before = g->depth;
-    if (g->depth == PURR_GUI_MAX_DEPTH) return before; // Too deep: its content goes in the container around it
-    const purr_gui_group *around = top(g);
-    const purr_gui_size *last = remembered(g, id);
+    if (g->depth == TIDE_GUI_MAX_DEPTH) return before; // Too deep: its content goes in the container around it
+    const tide_gui_group *around = top(g);
+    const tide_gui_size *last = remembered(g, id);
     // Its room: in a row, its share of the row's, from last frame's size; in a
     // vertical container, all of it.
     float room = around->room;
@@ -500,48 +500,48 @@ static int open_group(purr_gui *g, const uint32_t id, const uint32_t kind, const
                     : max_f(around->room - (around->cursor.x - around->origin.x), 0.0f);
     }
     g->depth++;
-    purr_gui_group *grp = top(g);
-    *grp = (purr_gui_group){.id = id, .kind = kind, .origin = origin, .cursor = origin, .room = room, .anchor = -1,
+    tide_gui_group *grp = top(g);
+    *grp = (tide_gui_group){.id = id, .kind = kind, .origin = origin, .cursor = origin, .room = room, .anchor = -1,
                             .panel = UINT32_MAX, .in_modal_before = g->in_modal};
     if (last && kind != HORIZONTAL) grp->stretch = last->natural;
     if (last && kind == HORIZONTAL) grp->squeeze = squeeze(last->natural, last->least, room);
     return before;
 }
 
-int purr_gui_begin_vertical(purr_gui *g, const uint32_t id)
+int tide_gui_begin_vertical(tide_gui *g, const uint32_t id)
 {
     return open_group(g, id, VERTICAL, top(g)->cursor);
 }
 
-int purr_gui_begin_horizontal(purr_gui *g, const uint32_t id)
+int tide_gui_begin_horizontal(tide_gui *g, const uint32_t id)
 {
     return open_group(g, id, HORIZONTAL, top(g)->cursor);
 }
 
 // Where an anchored area of `size` goes on the screen. One too big for it
 // starts at the top left margin, so what doesn't fit is what comes last.
-static purr_float2 place(const purr_gui *g, int32_t anchor, const purr_float2 size)
+static tide_float2 place(const tide_gui *g, int32_t anchor, const tide_float2 size)
 {
-    if (anchor < 0 || anchor > PURR_ANCHOR_LOWER_RIGHT) anchor = PURR_ANCHOR_UPPER_LEFT;
+    if (anchor < 0 || anchor > TIDE_ANCHOR_LOWER_RIGHT) anchor = TIDE_ANCHOR_UPPER_LEFT;
     const int column = anchor % 3;
     const int row = anchor / 3;
     const float x = column == 0 ? AREA_MARGIN : column == 1 ? (g->width - size.x) * 0.5f : g->width - AREA_MARGIN - size.x;
     const float y = row == 0 ? AREA_MARGIN : row == 1 ? (g->height - size.y) * 0.5f : g->height - AREA_MARGIN - size.y;
-    return purr_f2(max_f(x, AREA_MARGIN), max_f(y, AREA_MARGIN));
+    return tide_f2(max_f(x, AREA_MARGIN), max_f(y, AREA_MARGIN));
 }
 
 // An area's background, sized when it closes.
-static uint32_t panel(purr_gui *g, const purr_rect r)
+static uint32_t panel(tide_gui *g, const tide_rect r)
 {
     const uint32_t index = g->list.count;
     fill(g, r, PANEL);
     return g->list.count > index ? index : UINT32_MAX;
 }
 
-int purr_gui_begin_area(purr_gui *g, const uint32_t id, const purr_rect rect)
+int tide_gui_begin_area(tide_gui *g, const uint32_t id, const tide_rect rect)
 {
     const uint32_t background = panel(g, rect);
-    const int before = open_group(g, id, AREA, purr_f2(rect.x + AREA_PADDING, rect.y + AREA_PADDING));
+    const int before = open_group(g, id, AREA, tide_f2(rect.x + AREA_PADDING, rect.y + AREA_PADDING));
     if (g->depth == before) return before;
     top(g)->room = max_f(rect.width - 2.0f * AREA_PADDING, 0.0f);
     top(g)->rect = rect;
@@ -550,15 +550,15 @@ int purr_gui_begin_area(purr_gui *g, const uint32_t id, const purr_rect rect)
     return before;
 }
 
-int purr_gui_begin_area_at(purr_gui *g, const uint32_t id, const int32_t anchor)
+int tide_gui_begin_area_at(tide_gui *g, const uint32_t id, const int32_t anchor)
 {
     // Placed with last frame's size, so widgets know where they are as
     // they're drawn. If the size changes, it moves at the end.
-    const purr_gui_size *last = remembered(g, id);
-    const purr_float2 size = last ? last->size : purr_f2(0.0f, 0.0f);
-    const purr_float2 at = place(g, anchor, size);
-    const uint32_t background = panel(g, (purr_rect){at.x, at.y, size.x, size.y});
-    const int before = open_group(g, id, AREA, purr_f2(at.x + AREA_PADDING, at.y + AREA_PADDING));
+    const tide_gui_size *last = remembered(g, id);
+    const tide_float2 size = last ? last->size : tide_f2(0.0f, 0.0f);
+    const tide_float2 at = place(g, anchor, size);
+    const uint32_t background = panel(g, (tide_rect){at.x, at.y, size.x, size.y});
+    const int before = open_group(g, id, AREA, tide_f2(at.x + AREA_PADDING, at.y + AREA_PADDING));
     if (g->depth == before) return before;
     top(g)->room = max_f(g->width - 2.0f * (AREA_MARGIN + AREA_PADDING), 0.0f);
     top(g)->guess = at;
@@ -568,7 +568,7 @@ int purr_gui_begin_area_at(purr_gui *g, const uint32_t id, const int32_t anchor)
     return before;
 }
 
-int purr_gui_begin_modal(purr_gui *g, const uint32_t id, const int32_t anchor, bool *open)
+int tide_gui_begin_modal(tide_gui *g, const uint32_t id, const int32_t anchor, bool *open)
 {
     if (!*open) return -1;
     // Back closes the modal on top. Not the one that came up this frame: the
@@ -578,35 +578,35 @@ int purr_gui_begin_modal(purr_gui *g, const uint32_t id, const int32_t anchor, b
         *open = false;
         return -1;
     }
-    fill(g, (purr_rect){0.0f, 0.0f, g->width, g->height}, DIM);
+    fill(g, (tide_rect){0.0f, 0.0f, g->width, g->height}, DIM);
     g->over_next = true; // The whole screen is the modal's
     g->modal_next = id;  // The last one drawn is on top
-    const int before = purr_gui_begin_area_at(g, id, anchor);
+    const int before = tide_gui_begin_area_at(g, id, anchor);
     if (g->depth > before) g->in_modal = id;
     return before;
 }
 
-static void close_area(purr_gui *g, const purr_gui_group *grp)
+static void close_area(tide_gui *g, const tide_gui_group *grp)
 {
-    const purr_float2 size = purr_f2(grp->size.x + 2.0f * AREA_PADDING, grp->size.y + 2.0f * AREA_PADDING);
-    purr_rect r = grp->rect;
+    const tide_float2 size = tide_f2(grp->size.x + 2.0f * AREA_PADDING, grp->size.y + 2.0f * AREA_PADDING);
+    tide_rect r = grp->rect;
     if (grp->anchor >= 0) {
-        const purr_float2 at = place(g, grp->anchor, size);
+        const tide_float2 at = place(g, grp->anchor, size);
         const float dx = at.x - grp->guess.x;
         const float dy = at.y - grp->guess.y;
         if ((dx != 0.0f || dy != 0.0f) && grp->panel != UINT32_MAX) {
             for (uint32_t i = grp->panel; i < g->list.count; i++) {
-                purr_draw_command *c = &g->list.commands[i];
-                c->a = purr_f2(c->a.x + dx, c->a.y + dy);
-                if (c->kind == PURR_DRAW_LINE) c->b = purr_f2(c->b.x + dx, c->b.y + dy);
+                tide_draw_command *c = &g->list.commands[i];
+                c->a = tide_f2(c->a.x + dx, c->a.y + dy);
+                if (c->kind == TIDE_DRAW_LINE) c->b = tide_f2(c->b.x + dx, c->b.y + dy);
             }
         }
-        r = (purr_rect){at.x, at.y, size.x, size.y};
+        r = (tide_rect){at.x, at.y, size.x, size.y};
     }
     if (grp->panel != UINT32_MAX) {
-        purr_draw_command *c = &g->list.commands[grp->panel];
-        c->a = purr_f2(r.x + r.width * 0.5f, r.y + r.height * 0.5f);
-        c->b = purr_f2(r.width, r.height);
+        tide_draw_command *c = &g->list.commands[grp->panel];
+        c->a = tide_f2(r.x + r.width * 0.5f, r.y + r.height * 0.5f);
+        c->b = tide_f2(r.width, r.height);
     }
     remember(g, grp->id, size, grp->natural, grp->least);
     if (!contains(r, g->mouse)) return;
@@ -618,10 +618,10 @@ static void close_area(purr_gui *g, const purr_gui_group *grp)
     }
 }
 
-void purr_gui_close(purr_gui *g, const int depth)
+void tide_gui_close(tide_gui *g, const int depth)
 {
     while (g->depth > depth && g->depth > 0) {
-        const purr_gui_group grp = *top(g);
+        const tide_gui_group grp = *top(g);
         g->depth--;
         g->in_modal = grp.in_modal_before;
         if (grp.kind == AREA) {
@@ -639,9 +639,9 @@ void purr_gui_close(purr_gui *g, const int depth)
     }
 }
 
-void purr_gui_layout_space(purr_gui *g, const float size)
+void tide_gui_layout_space(tide_gui *g, const float size)
 {
-    purr_gui_group *grp = top(g);
+    tide_gui_group *grp = top(g);
     if (grp->kind == HORIZONTAL) {
         grp->cursor.x += size;
         grp->size.x = max_f(grp->size.x, grp->cursor.x - SPACING - grp->origin.x);
@@ -654,13 +654,13 @@ void purr_gui_layout_space(purr_gui *g, const float size)
 }
 
 // A labelled widget's label column, as narrow as it goes: the label and a gap.
-static float label_least(const purr_gui *g, const char *label)
+static float label_least(const tide_gui *g, const char *label)
 {
     return label[0] ? text_width(g, label) + 2.0f * SPACING : 0.0f;
 }
 
 // The label column with room: at least LABEL_WIDTH, so a column of them lines up.
-static float label_width(const purr_gui *g, const char *label)
+static float label_width(const tide_gui *g, const char *label)
 {
     return label[0] ? max_f(LABEL_WIDTH, label_least(g, label)) : 0.0f;
 }
@@ -670,43 +670,43 @@ static float label_width(const purr_gui *g, const char *label)
 // Squeezed, the label's column gives up its room first, down to the label: by
 // what the widget lost from the width it wanted, so the labelled widgets of a
 // vertical container, which want the same width, keep their columns lined up.
-static purr_rect labelled(purr_gui *g, const char *label, const float natural, const float least)
+static tide_rect labelled(tide_gui *g, const char *label, const float natural, const float least)
 {
-    const purr_gui_group *grp = top(g);
+    const tide_gui_group *grp = top(g);
     const float column = label_width(g, label);
     const float tight = label_least(g, label);
     const float want = wanted(grp, column + natural, true);
     const float width = fit(grp, want, tight + least);
-    const purr_rect r = take(g, width, LINE, column + natural, tight + least);
+    const tide_rect r = take(g, width, LINE, column + natural, tight + least);
     const float w = min_f(max_f(column - (want - width), tight), r.width);
     text_at(g, label, r.x, r.y + r.height * 0.5f, TEXT);
-    return (purr_rect){r.x + w, r.y, r.width - w, r.height};
+    return (tide_rect){r.x + w, r.y, r.width - w, r.height};
 }
 
 // Draws the label in its column and returns the rest of the rect.
-static purr_rect after_label(purr_gui *g, const purr_rect r, const char *label)
+static tide_rect after_label(tide_gui *g, const tide_rect r, const char *label)
 {
     if (!label[0]) return r;
     const float w = min_f(label_width(g, label), r.width);
     text_at(g, label, r.x, r.y + r.height * 0.5f, TEXT);
-    return (purr_rect){r.x + w, r.y, r.width - w, r.height};
+    return (tide_rect){r.x + w, r.y, r.width - w, r.height};
 }
 
 // ---------------------------------------------------------------------------
 // Widgets
 
-void purr_gui_label(purr_gui *g, const purr_rect rect, const char *text)
+void tide_gui_label(tide_gui *g, const tide_rect rect, const char *text)
 {
     text_at(g, text, rect.x, rect.y + rect.height * 0.5f, TEXT);
 }
 
-void purr_gui_layout_label(purr_gui *g, const char *text)
+void tide_gui_layout_label(tide_gui *g, const char *text)
 {
     const float width = text_width(g, text);
-    purr_gui_label(g, reserve(g, width, width, false), text);
+    tide_gui_label(g, reserve(g, width, width, false), text);
 }
 
-bool purr_gui_button(purr_gui *g, const uint32_t id, const purr_rect rect, const char *text)
+bool tide_gui_button(tide_gui *g, const uint32_t id, const tide_rect rect, const char *text)
 {
     bool hover, down;
     const bool pressed_now = clicked(g, id, rect, &hover, &down);
@@ -716,18 +716,18 @@ bool purr_gui_button(purr_gui *g, const uint32_t id, const purr_rect rect, const
     return pressed_now;
 }
 
-bool purr_gui_layout_button(purr_gui *g, const uint32_t id, const char *text)
+bool tide_gui_layout_button(tide_gui *g, const uint32_t id, const char *text)
 {
     const float width = text_width(g, text);
-    return purr_gui_button(g, id, reserve(g, width + 2.0f * PAD, width + PAD, true), text);
+    return tide_gui_button(g, id, reserve(g, width + 2.0f * PAD, width + PAD, true), text);
 }
 
-bool purr_gui_toggle(purr_gui *g, const uint32_t id, const purr_rect rect, const char *text, bool *value)
+bool tide_gui_toggle(tide_gui *g, const uint32_t id, const tide_rect rect, const char *text, bool *value)
 {
     bool hover, down;
     const bool changed = clicked(g, id, rect, &hover, &down);
     if (changed) *value = !*value;
-    const purr_rect box = {rect.x, rect.y + (rect.height - BOX) * 0.5f, BOX, BOX};
+    const tide_rect box = {rect.x, rect.y + (rect.height - BOX) * 0.5f, BOX, BOX};
     if (g->focus == id) fill(g, grow(box, BORDER), ACCENT);
     fill(g, box, hover ? CONTROL_HOT : CONTROL);
     if (*value) fill(g, grow(box, -4.0f), ACCENT);
@@ -735,15 +735,15 @@ bool purr_gui_toggle(purr_gui *g, const uint32_t id, const purr_rect rect, const
     return changed;
 }
 
-bool purr_gui_layout_toggle(purr_gui *g, const uint32_t id, const char *text, bool *value)
+bool tide_gui_layout_toggle(tide_gui *g, const uint32_t id, const char *text, bool *value)
 {
     const float width = BOX + 8.0f + text_width(g, text);
-    return purr_gui_toggle(g, id, reserve(g, width, width, true), text, value);
+    return tide_gui_toggle(g, id, reserve(g, width, width, true), text, value);
 }
 
 // A slider's track and thumb. `t` is where the value is, 0 to 1; returns
 // where the player moved it, or -1.
-static float slider(purr_gui *g, const uint32_t id, const purr_rect r, const float t, const float steps)
+static float slider(tide_gui *g, const uint32_t id, const tide_rect r, const float t, const float steps)
 {
     const bool hover = hovered(g, id, r);
     const bool down = held_down(g, id, hover);
@@ -755,11 +755,11 @@ static float slider(purr_gui *g, const uint32_t id, const purr_rect r, const flo
 
     const float at = moved >= 0.0f ? moved : t;
     const float middle = r.y + r.height * 0.5f;
-    const purr_rect rail = {r.x, middle - 3.0f, r.width, 6.0f};
+    const tide_rect rail = {r.x, middle - 3.0f, r.width, 6.0f};
     if (focused) fill(g, grow(rail, BORDER), ACCENT);
     fill(g, rail, hover || down ? CONTROL_HOT : CONTROL);
-    fill(g, (purr_rect){rail.x, rail.y, rail.width * at, rail.height}, ACCENT);
-    fill(g, (purr_rect){r.x + r.width * at - 6.0f, middle - 12.0f, 12.0f, 24.0f}, down ? ACCENT : TEXT);
+    fill(g, (tide_rect){rail.x, rail.y, rail.width * at, rail.height}, ACCENT);
+    fill(g, (tide_rect){r.x + r.width * at - 6.0f, middle - 12.0f, 12.0f, 24.0f}, down ? ACCENT : TEXT);
     return moved;
 }
 
@@ -772,15 +772,15 @@ static float fraction(const float v, const float min, const float max)
 }
 
 // The track's rect: the rest of the widget after its label, minus the value on the right.
-static purr_rect track(purr_gui *g, const purr_rect rect, const char *label, const char *value)
+static tide_rect track(tide_gui *g, const tide_rect rect, const char *label, const char *value)
 {
-    const purr_rect r = after_label(g, rect, label);
+    const tide_rect r = after_label(g, rect, label);
     const float w = max_f(r.width - VALUE_WIDTH, 0.0f);
     text_at(g, value, r.x + w + 2.0f * SPACING, r.y + r.height * 0.5f, TEXT);
-    return (purr_rect){r.x + 6.0f, r.y, max_f(w - 12.0f, 0.0f), r.height}; // Room for the thumb at both ends
+    return (tide_rect){r.x + 6.0f, r.y, max_f(w - 12.0f, 0.0f), r.height}; // Room for the thumb at both ends
 }
 
-bool purr_gui_slider(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, float *value,
+bool tide_gui_slider(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, float *value,
                      const float min, const float max)
 {
     char text[32];
@@ -793,14 +793,14 @@ bool purr_gui_slider(purr_gui *g, const uint32_t id, const purr_rect rect, const
     return true;
 }
 
-bool purr_gui_layout_slider(purr_gui *g, const uint32_t id, const char *label, float *value, const float min,
+bool tide_gui_layout_slider(tide_gui *g, const uint32_t id, const char *label, float *value, const float min,
                             const float max)
 {
-    const purr_rect r = labelled(g, label, SLIDER_WIDTH + VALUE_WIDTH, LEAST_TRACK + VALUE_WIDTH);
-    return purr_gui_slider(g, id, r, "", value, min, max);
+    const tide_rect r = labelled(g, label, SLIDER_WIDTH + VALUE_WIDTH, LEAST_TRACK + VALUE_WIDTH);
+    return tide_gui_slider(g, id, r, "", value, min, max);
 }
 
-bool purr_gui_int_slider(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, int32_t *value,
+bool tide_gui_int_slider(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, int32_t *value,
                          const int32_t min, const int32_t max)
 {
     char text[32];
@@ -817,11 +817,11 @@ bool purr_gui_int_slider(purr_gui *g, const uint32_t id, const purr_rect rect, c
     return true;
 }
 
-bool purr_gui_layout_int_slider(purr_gui *g, const uint32_t id, const char *label, int32_t *value, const int32_t min,
+bool tide_gui_layout_int_slider(tide_gui *g, const uint32_t id, const char *label, int32_t *value, const int32_t min,
                                 const int32_t max)
 {
-    const purr_rect r = labelled(g, label, SLIDER_WIDTH + VALUE_WIDTH, LEAST_TRACK + VALUE_WIDTH);
-    return purr_gui_int_slider(g, id, r, "", value, min, max);
+    const tide_rect r = labelled(g, label, SLIDER_WIDTH + VALUE_WIDTH, LEAST_TRACK + VALUE_WIDTH);
+    return tide_gui_int_slider(g, id, r, "", value, min, max);
 }
 
 // ---------------------------------------------------------------------------
@@ -842,7 +842,7 @@ static void format_number(char *out, const size_t size, const double v, const nu
 
 // Starts typing into a field. Until something is typed, the whole value is
 // selected: typing replaces it.
-static void start_typing(purr_gui *g, const uint32_t id, const double value, const number_kind kind)
+static void start_typing(tide_gui *g, const uint32_t id, const double value, const number_kind kind)
 {
     g->editing = id;
     g->editing_seen = true;
@@ -858,22 +858,22 @@ static bool number_char(const uint32_t c, const number_kind kind)
 }
 
 // Whether any of this frame's typed characters fit a number.
-static bool typed_number(const purr_gui *g, const number_kind kind)
+static bool typed_number(const tide_gui *g, const number_kind kind)
 {
-    for (uint32_t i = 0; i < g->text.count && i < PURR_TEXT_MAX; i++) {
+    for (uint32_t i = 0; i < g->text.count && i < TIDE_TEXT_MAX; i++) {
         if (number_char(g->text.chars[i], kind)) return true;
     }
     return false;
 }
 
-static void type_into(purr_gui *g, const number_kind kind)
+static void type_into(tide_gui *g, const number_kind kind)
 {
     if (pressed(g, KEY_BACKSPACE)) {
         if (g->edit_fresh) g->edit_len = 0;
         else if (g->edit_len > 0) g->edit_len--;
         g->edit_fresh = false;
     }
-    for (uint32_t i = 0; i < g->text.count && i < PURR_TEXT_MAX; i++) {
+    for (uint32_t i = 0; i < g->text.count && i < TIDE_TEXT_MAX; i++) {
         const uint32_t c = g->text.chars[i];
         if (!number_char(c, kind)) continue;
         if (g->edit_fresh) g->edit_len = 0;
@@ -884,7 +884,7 @@ static void type_into(purr_gui *g, const number_kind kind)
 }
 
 // What was typed, if it's a number.
-static bool parse_number(purr_gui *g, const number_kind kind, double *out)
+static bool parse_number(tide_gui *g, const number_kind kind, double *out)
 {
     g->edit[g->edit_len] = '\0';
     char *end = NULL;
@@ -903,7 +903,7 @@ static bool parse_number(purr_gui *g, const number_kind kind, double *out)
 }
 
 // One box of a number field. Returns whether the player changed `value`.
-static bool number_box(purr_gui *g, const uint32_t id, const purr_rect box, double *value, const number_kind kind)
+static bool number_box(tide_gui *g, const uint32_t id, const tide_rect box, double *value, const number_kind kind)
 {
     const bool hover = hovered(g, id, box);
     if (hover && g->mouse_pressed && !g->claimed) {
@@ -955,15 +955,15 @@ static bool number_box(purr_gui *g, const uint32_t id, const purr_rect box, doub
 }
 
 // A field of `n` floats side by side.
-static bool float_parts(purr_gui *g, const uint32_t id, const purr_rect r, float *parts, const int n,
+static bool float_parts(tide_gui *g, const uint32_t id, const tide_rect r, float *parts, const int n,
                         const number_kind kind)
 {
     const float w = max_f((r.width - SPACING * (float)(n - 1)) / (float)n, 0.0f);
     bool changed = false;
     for (int i = 0; i < n; i++) {
-        const purr_rect box = {r.x + (float)i * (w + SPACING), r.y, w, r.height};
+        const tide_rect box = {r.x + (float)i * (w + SPACING), r.y, w, r.height};
         double v = parts[i];
-        if (number_box(g, purr_gui_seed(id, (uint32_t)i + 1u), box, &v, kind) && (float)v != parts[i]) {
+        if (number_box(g, tide_gui_seed(id, (uint32_t)i + 1u), box, &v, kind) && (float)v != parts[i]) {
             parts[i] = (float)v;
             changed = true;
         }
@@ -971,7 +971,7 @@ static bool float_parts(purr_gui *g, const uint32_t id, const purr_rect r, float
     return changed;
 }
 
-bool purr_gui_int_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, int32_t *value)
+bool tide_gui_int_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, int32_t *value)
 {
     double v = *value;
     if (!number_box(g, id, after_label(g, rect, label), &v, NUMBER_INT) || (int32_t)v == *value) return false;
@@ -979,7 +979,7 @@ bool purr_gui_int_field(purr_gui *g, const uint32_t id, const purr_rect rect, co
     return true;
 }
 
-bool purr_gui_float_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, float *value)
+bool tide_gui_float_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, float *value)
 {
     float parts[1] = {*value};
     if (!float_parts(g, id, after_label(g, rect, label), parts, 1, NUMBER_FLOAT)) return false;
@@ -987,41 +987,41 @@ bool purr_gui_float_field(purr_gui *g, const uint32_t id, const purr_rect rect, 
     return true;
 }
 
-bool purr_gui_float2_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, purr_float2 *value)
+bool tide_gui_float2_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, tide_float2 *value)
 {
     float parts[2] = {value->x, value->y};
     if (!float_parts(g, id, after_label(g, rect, label), parts, 2, NUMBER_FLOAT)) return false;
-    *value = purr_f2(parts[0], parts[1]);
+    *value = tide_f2(parts[0], parts[1]);
     return true;
 }
 
-bool purr_gui_float3_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, purr_float3 *value)
+bool tide_gui_float3_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, tide_float3 *value)
 {
     float parts[3] = {value->x, value->y, value->z};
     if (!float_parts(g, id, after_label(g, rect, label), parts, 3, NUMBER_FLOAT)) return false;
-    *value = purr_f3(parts[0], parts[1], parts[2]);
+    *value = tide_f3(parts[0], parts[1], parts[2]);
     return true;
 }
 
-bool purr_gui_float4_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, purr_float4 *value)
+bool tide_gui_float4_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, tide_float4 *value)
 {
     float parts[4] = {value->x, value->y, value->z, value->w};
     if (!float_parts(g, id, after_label(g, rect, label), parts, 4, NUMBER_FLOAT)) return false;
-    *value = purr_f4(parts[0], parts[1], parts[2], parts[3]);
+    *value = tide_f4(parts[0], parts[1], parts[2], parts[3]);
     return true;
 }
 
-bool purr_gui_color_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, purr_color *value)
+bool tide_gui_color_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, tide_color *value)
 {
-    const purr_rect r = after_label(g, rect, label);
-    const purr_rect swatch = {r.x, r.y, min_f(r.height, r.width), r.height};
+    const tide_rect r = after_label(g, rect, label);
+    const tide_rect swatch = {r.x, r.y, min_f(r.height, r.width), r.height};
     fill(g, swatch, CONTROL);
     fill(g, grow(swatch, -3.0f), *value);
     float parts[4] = {value->r, value->g, value->b, value->a};
     const float skip = swatch.width + SPACING;
-    const purr_rect rest = {r.x + skip, r.y, max_f(r.width - skip, 0.0f), r.height};
+    const tide_rect rest = {r.x + skip, r.y, max_f(r.width - skip, 0.0f), r.height};
     if (!float_parts(g, id, rest, parts, 4, NUMBER_UNIT)) return false;
-    *value = (purr_color){parts[0], parts[1], parts[2], parts[3]};
+    *value = (tide_color){parts[0], parts[1], parts[2], parts[3]};
     return true;
 }
 
@@ -1058,7 +1058,7 @@ static int utf8(const uint32_t c, char *out)
     return 0;
 }
 
-static void start_text(purr_gui *g, const uint32_t id, const purr_str value)
+static void start_text(tide_gui *g, const uint32_t id, const tide_str value)
 {
     g->editing = id;
     g->editing_seen = true;
@@ -1071,7 +1071,7 @@ static void start_text(purr_gui *g, const uint32_t id, const purr_str value)
 }
 
 // Typed characters and Backspace into the edit buffer; whether it changed.
-static bool type_text(purr_gui *g)
+static bool type_text(tide_gui *g)
 {
     bool changed = false;
     if (pressed(g, KEY_BACKSPACE) && g->edit_len > 0) {
@@ -1079,7 +1079,7 @@ static bool type_text(purr_gui *g)
         while (g->edit_len > 0 && ((unsigned char)g->edit[g->edit_len] & 0xC0u) == 0x80u);
         changed = true;
     }
-    for (uint32_t i = 0; i < g->text.count && i < PURR_TEXT_MAX; i++) {
+    for (uint32_t i = 0; i < g->text.count && i < TIDE_TEXT_MAX; i++) {
         char bytes[4];
         const int n = utf8(g->text.chars[i], bytes);
         if (n == 0 || g->edit_len + (uint32_t)n + 1 > sizeof g->edit) continue;
@@ -1091,14 +1091,14 @@ static bool type_text(purr_gui *g)
     return changed;
 }
 
-bool purr_gui_text_field(purr_gui *g, const uint32_t id, const purr_rect rect, const char *label, const purr_textref value)
+bool tide_gui_text_field(tide_gui *g, const uint32_t id, const tide_rect rect, const char *label, const tide_textref value)
 {
-    const purr_rect box = after_label(g, rect, label);
+    const tide_rect box = after_label(g, rect, label);
     const bool hover = hovered(g, id, box);
     if (hover && g->mouse_pressed && !g->claimed) {
         g->claimed = true;
         g->focus = id;
-        if (g->editing != id) start_text(g, id, purr_textref_get(value));
+        if (g->editing != id) start_text(g, id, tide_textref_get(value));
     }
     const bool focused = focusable(g, id);
     bool changed = false;
@@ -1107,37 +1107,37 @@ bool purr_gui_text_field(purr_gui *g, const uint32_t id, const purr_rect rect, c
         if (!focused || pressed(g, KEY_ENTER)) g->editing = 0;
         else changed = type_text(g);
     } else if (focused && (pressed(g, KEY_ENTER) || g->text.count > 0)) {
-        start_text(g, id, purr_textref_get(value));
+        start_text(g, id, tide_textref_get(value));
         changed = type_text(g);
     }
     if (changed) {
         // A copy of the buffer, which keeps changing as the player types.
-        const purr_str typed = {g->edit, (int32_t)g->edit_len, purr_utf8_chars(g->edit, (int32_t)g->edit_len)};
-        purr_textref_set(value, purr_str_add(PURR_STR_EMPTY, typed));
+        const tide_str typed = {g->edit, (int32_t)g->edit_len, tide_utf8_chars(g->edit, (int32_t)g->edit_len)};
+        tide_textref_set(value, tide_str_add(TIDE_STR_EMPTY, typed));
     }
 
     if (focused) fill(g, grow(box, BORDER), ACCENT);
     fill(g, box, hover ? FIELD_HOT : FIELD);
-    const purr_str shown = purr_textref_get(value);
+    const tide_str shown = tide_textref_get(value);
     char text[300];
     snprintf(text, sizeof text, g->editing == id ? "%.*s_" : "%.*s", (int)shown.bytes, shown.ptr);
     text_at(g, text, box.x + 10.0f, box.y + box.height * 0.5f, TEXT);
     return changed;
 }
 
-bool purr_gui_layout_text_field(purr_gui *g, const uint32_t id, const char *label, const purr_textref value)
+bool tide_gui_layout_text_field(tide_gui *g, const uint32_t id, const char *label, const tide_textref value)
 {
-    return purr_gui_text_field(g, id, labelled(g, label, 2.0f * FIELD_WIDTH, 2.0f * LEAST_FIELD), "", value);
+    return tide_gui_text_field(g, id, labelled(g, label, 2.0f * FIELD_WIDTH, 2.0f * LEAST_FIELD), "", value);
 }
 
-bool purr_gui_layout_int_field(purr_gui *g, const uint32_t id, const char *label, int32_t *value)
+bool tide_gui_layout_int_field(tide_gui *g, const uint32_t id, const char *label, int32_t *value)
 {
-    return purr_gui_int_field(g, id, labelled(g, label, FIELD_WIDTH, LEAST_FIELD), "", value);
+    return tide_gui_int_field(g, id, labelled(g, label, FIELD_WIDTH, LEAST_FIELD), "", value);
 }
 
-bool purr_gui_layout_float_field(purr_gui *g, const uint32_t id, const char *label, float *value)
+bool tide_gui_layout_float_field(tide_gui *g, const uint32_t id, const char *label, float *value)
 {
-    return purr_gui_float_field(g, id, labelled(g, label, FIELD_WIDTH, LEAST_FIELD), "", value);
+    return tide_gui_float_field(g, id, labelled(g, label, FIELD_WIDTH, LEAST_FIELD), "", value);
 }
 
 static float parts_width(const int n, const float each)
@@ -1145,28 +1145,28 @@ static float parts_width(const int n, const float each)
     return (float)n * each + (float)(n - 1) * SPACING;
 }
 
-bool purr_gui_layout_float2_field(purr_gui *g, const uint32_t id, const char *label, purr_float2 *value)
+bool tide_gui_layout_float2_field(tide_gui *g, const uint32_t id, const char *label, tide_float2 *value)
 {
-    const purr_rect r = labelled(g, label, parts_width(2, PART_WIDTH), parts_width(2, LEAST_PART));
-    return purr_gui_float2_field(g, id, r, "", value);
+    const tide_rect r = labelled(g, label, parts_width(2, PART_WIDTH), parts_width(2, LEAST_PART));
+    return tide_gui_float2_field(g, id, r, "", value);
 }
 
-bool purr_gui_layout_float3_field(purr_gui *g, const uint32_t id, const char *label, purr_float3 *value)
+bool tide_gui_layout_float3_field(tide_gui *g, const uint32_t id, const char *label, tide_float3 *value)
 {
-    const purr_rect r = labelled(g, label, parts_width(3, PART_WIDTH), parts_width(3, LEAST_PART));
-    return purr_gui_float3_field(g, id, r, "", value);
+    const tide_rect r = labelled(g, label, parts_width(3, PART_WIDTH), parts_width(3, LEAST_PART));
+    return tide_gui_float3_field(g, id, r, "", value);
 }
 
-bool purr_gui_layout_float4_field(purr_gui *g, const uint32_t id, const char *label, purr_float4 *value)
+bool tide_gui_layout_float4_field(tide_gui *g, const uint32_t id, const char *label, tide_float4 *value)
 {
-    const purr_rect r = labelled(g, label, parts_width(4, PART_WIDTH), parts_width(4, LEAST_PART));
-    return purr_gui_float4_field(g, id, r, "", value);
+    const tide_rect r = labelled(g, label, parts_width(4, PART_WIDTH), parts_width(4, LEAST_PART));
+    return tide_gui_float4_field(g, id, r, "", value);
 }
 
-bool purr_gui_layout_color_field(purr_gui *g, const uint32_t id, const char *label, purr_color *value)
+bool tide_gui_layout_color_field(tide_gui *g, const uint32_t id, const char *label, tide_color *value)
 {
     const float swatch = LINE + SPACING;
-    const purr_rect r =
+    const tide_rect r =
         labelled(g, label, swatch + parts_width(4, COLOR_PART_WIDTH), swatch + parts_width(4, LEAST_PART));
-    return purr_gui_color_field(g, id, r, "", value);
+    return tide_gui_color_field(g, id, r, "", value);
 }

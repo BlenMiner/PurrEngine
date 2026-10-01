@@ -1,7 +1,7 @@
 # New .c files in this folder are picked up automatically on the next build.
-file(GLOB PURR_TEST_SOURCES CONFIGURE_DEPENDS *.c)
+file(GLOB TIDE_TEST_SOURCES CONFIGURE_DEPENDS *.c)
 
-add_executable(purr_tests ${PURR_TEST_SOURCES})
-target_link_libraries(purr_tests PRIVATE purr)
+add_executable(tide_tests ${TIDE_TEST_SOURCES})
+target_link_libraries(tide_tests PRIVATE tide)
 
-add_test(NAME purr_tests COMMAND purr_tests)
+add_test(NAME tide_tests COMMAND tide_tests)

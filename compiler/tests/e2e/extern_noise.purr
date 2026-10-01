@@ -1,5 +1,0 @@
-// An extern in a namespace: PurrLang names it Noise.Half, and C half_of.
-namespace Noise;
-
-[NativeName("half_of")]
-extern float Half(float x);

@@ -2,7 +2,7 @@
 // OpenSSL's: random inputs every run, checked by rtc_vectors.c, and our
 // signatures checked here in turn.
 //
-//   node rtc_vectors.mjs <purr_platform_rtc_vectors> <scratch folder> [cases of each kind]
+//   node rtc_vectors.mjs <tide_platform_rtc_vectors> <scratch folder> [cases of each kind]
 
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';

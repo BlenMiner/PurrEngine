@@ -1,6 +1,6 @@
 # Basics
 
-PurrLang's syntax is C#-like. If you know C#, C or Java, most of it will read as you expect. This page covers what's the same everywhere in the language: values, variables and control flow. The pages after it cover what's special to PurrLang.
+Tide's syntax is C#-like. If you know C#, C or Java, most of it will read as you expect. This page covers what's the same everywhere in the language: values, variables and control flow. The pages after it cover what's special to Tide.
 
 ## Style
 

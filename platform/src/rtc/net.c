@@ -100,12 +100,12 @@ void rtc_socket_close(const rtc_socket s)
     if (s != RTC_NO_SOCKET) close_socket(FD(s));
 }
 
-// PURR_RTC_LOCAL: sockets on loopback only, for tests on one machine. They
+// TIDE_RTC_LOCAL: sockets on loopback only, for tests on one machine. They
 // then open no port to the network, and on Windows ask nothing of the firewall.
 bool rtc_local_only(void)
 {
     static int on = -1;
-    if (on < 0) on = getenv("PURR_RTC_LOCAL") != NULL;
+    if (on < 0) on = getenv("TIDE_RTC_LOCAL") != NULL;
     return on;
 }
 
@@ -254,7 +254,7 @@ int rtc_tcp_receive(const rtc_socket s, void *out, const size_t capacity)
 void rtc_debug(const char *format, ...)
 {
     static int on = -1;
-    if (on < 0) on = getenv("PURR_RTC_DEBUG") != NULL;
+    if (on < 0) on = getenv("TIDE_RTC_DEBUG") != NULL;
     if (!on) return;
     va_list args;
     va_start(args, format);

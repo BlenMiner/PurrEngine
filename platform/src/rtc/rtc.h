@@ -1,6 +1,6 @@
 #pragma once
 
-// WebRTC data channels for desktop games, written for PurrEngine with no code
+// WebRTC data channels for desktop games, written for Tide with no code
 // from elsewhere: what rooms need to reach browsers, and each other, directly
 // (see platform/src/rooms.c). Inside the platform layer only.
 //
@@ -132,7 +132,7 @@ static inline bool rtc_addr_equal(const rtc_addr a, const rtc_addr b)
 
 double rtc_now(void); // Seconds, from some point
 // A UDP socket on a port of its own, or RTC_NO_SOCKET: on every address, or
-// on loopback only when PURR_RTC_LOCAL is set (for tests).
+// on loopback only when TIDE_RTC_LOCAL is set (for tests).
 rtc_socket rtc_udp_open(void);
 bool rtc_local_only(void);
 uint16_t rtc_socket_port(rtc_socket s);
@@ -342,7 +342,7 @@ typedef struct rtc_ice {
     rtc_socket socket;
     int state;
     bool controlling;
-    bool relay_only; // PURR_RTC_RELAY_ONLY: through TURN or not at all, to test it
+    bool relay_only; // TIDE_RTC_RELAY_ONLY: through TURN or not at all, to test it
     uint64_t tiebreaker;
     char ufrag[9];
     char pwd[25];
@@ -652,7 +652,7 @@ void rtc_ws_close(rtc_ws *w);
 // ---------------------------------------------------------------------------
 // Everything else
 
-// What the stack does, on stderr, when PURR_RTC_DEBUG is set.
+// What the stack does, on stderr, when TIDE_RTC_DEBUG is set.
 void rtc_debug(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 uint32_t rtc_crc32(const void *data, size_t size);  // STUN's FINGERPRINT

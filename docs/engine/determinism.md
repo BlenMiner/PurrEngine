@@ -1,8 +1,8 @@
 # Determinism
 
-Given the same build and the same inputs, PurrEngine's simulation gives bit-identical results on every supported platform: Windows, Linux, macOS and the web, on Intel, AMD and ARM. That's what lets players send only their inputs, and lets desktop and web players share one match.
+Given the same build and the same inputs, Tide's simulation gives bit-identical results on every supported platform: Windows, Linux, macOS and the web, on Intel, AMD and ARM. That's what lets players send only their inputs, and lets desktop and web players share one match.
 
-It uses ordinary 32-bit floats, not fixed point. PurrLang code gets this for free: there's nothing to avoid, and no special types to use. This page is about how the engine keeps it, for the curious, and for anyone writing C that touches the simulation.
+It uses ordinary 32-bit floats, not fixed point. Tide code gets this for free: there's nothing to avoid, and no special types to use. This page is about how the engine keeps it, for the curious, and for anyone writing C that touches the simulation.
 
 ## Floats
 
@@ -42,4 +42,4 @@ The engine's tests hash the exact bits of math results and of whole simulations,
 
 ## Writing C
 
-Code in C that changes the simulation, like a custom host, follows the same rules: use the engine's `purr/math.h`, never `<math.h>`, and don't depend on the order C evaluates function arguments in, which differs between platforms. Draw inputs into locals first.
+Code in C that changes the simulation, like a custom host, follows the same rules: use the engine's `tide/math.h`, never `<math.h>`, and don't depend on the order C evaluates function arguments in, which differs between platforms. Draw inputs into locals first.

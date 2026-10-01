@@ -1,86 +1,86 @@
 #include <stdlib.h>
 
-#include "purr/entity.h"
-#include "purr_test.h"
+#include "tide/entity.h"
+#include "tide_test.h"
 
 // The table is large, so tests allocate it zeroed on the heap.
-static purr_entities *new_table(void)
+static tide_entities *new_table(void)
 {
-    return calloc(1, sizeof(purr_entities));
+    return calloc(1, sizeof(tide_entities));
 }
 
-PURR_TEST(entity_null_is_never_alive)
+TIDE_TEST(entity_null_is_never_alive)
 {
-    purr_entities *t = new_table();
-    const purr_entity null = {0};
-    PURR_CHECK(purr_entity_is_null(null));
-    PURR_CHECK(!purr_entity_alive(t, null));
+    tide_entities *t = new_table();
+    const tide_entity null = {0};
+    TIDE_CHECK(tide_entity_is_null(null));
+    TIDE_CHECK(!tide_entity_alive(t, null));
     free(t);
 }
 
-PURR_TEST(entity_create_is_alive_and_pending)
+TIDE_TEST(entity_create_is_alive_and_pending)
 {
-    purr_entities *t = new_table();
-    const purr_entity e = purr_entity_create(t);
-    PURR_CHECK(!purr_entity_is_null(e));
-    PURR_CHECK(purr_entity_alive(t, e));
-    PURR_CHECK(purr_entity_location(t, e).archetype == PURR_ARCHETYPE_NONE);
+    tide_entities *t = new_table();
+    const tide_entity e = tide_entity_create(t);
+    TIDE_CHECK(!tide_entity_is_null(e));
+    TIDE_CHECK(tide_entity_alive(t, e));
+    TIDE_CHECK(tide_entity_location(t, e).archetype == TIDE_ARCHETYPE_NONE);
     free(t);
 }
 
-PURR_TEST(entity_location_round_trips)
+TIDE_TEST(entity_location_round_trips)
 {
-    purr_entities *t = new_table();
-    const purr_entity e = purr_entity_create(t);
-    purr_entity_set_location(t, e, (purr_location){3, 42});
-    const purr_location loc = purr_entity_location(t, e);
-    PURR_CHECK(loc.archetype == 3);
-    PURR_CHECK(loc.row == 42);
+    tide_entities *t = new_table();
+    const tide_entity e = tide_entity_create(t);
+    tide_entity_set_location(t, e, (tide_location){3, 42});
+    const tide_location loc = tide_entity_location(t, e);
+    TIDE_CHECK(loc.archetype == 3);
+    TIDE_CHECK(loc.row == 42);
     free(t);
 }
 
-PURR_TEST(entity_destroy_invalidates_handle)
+TIDE_TEST(entity_destroy_invalidates_handle)
 {
-    purr_entities *t = new_table();
-    const purr_entity e = purr_entity_create(t);
-    PURR_CHECK(purr_entity_destroy(t, e));
-    PURR_CHECK(!purr_entity_alive(t, e));
-    PURR_CHECK(!purr_entity_destroy(t, e));
-    PURR_CHECK(purr_entity_location(t, e).archetype == PURR_ARCHETYPE_NONE);
+    tide_entities *t = new_table();
+    const tide_entity e = tide_entity_create(t);
+    TIDE_CHECK(tide_entity_destroy(t, e));
+    TIDE_CHECK(!tide_entity_alive(t, e));
+    TIDE_CHECK(!tide_entity_destroy(t, e));
+    TIDE_CHECK(tide_entity_location(t, e).archetype == TIDE_ARCHETYPE_NONE);
     free(t);
 }
 
-PURR_TEST(entity_reuse_bumps_generation)
+TIDE_TEST(entity_reuse_bumps_generation)
 {
-    purr_entities *t = new_table();
-    const purr_entity a = purr_entity_create(t);
-    purr_entity_destroy(t, a);
-    const purr_entity b = purr_entity_create(t);
-    PURR_CHECK(b.index == a.index);
-    PURR_CHECK(b.generation != a.generation);
-    PURR_CHECK(purr_entity_alive(t, b));
-    PURR_CHECK(!purr_entity_alive(t, a));
+    tide_entities *t = new_table();
+    const tide_entity a = tide_entity_create(t);
+    tide_entity_destroy(t, a);
+    const tide_entity b = tide_entity_create(t);
+    TIDE_CHECK(b.index == a.index);
+    TIDE_CHECK(b.generation != a.generation);
+    TIDE_CHECK(tide_entity_alive(t, b));
+    TIDE_CHECK(!tide_entity_alive(t, a));
     free(t);
 }
 
-PURR_TEST(entity_reuse_order_is_lifo)
+TIDE_TEST(entity_reuse_order_is_lifo)
 {
-    purr_entities *t = new_table();
-    const purr_entity a = purr_entity_create(t);
-    const purr_entity b = purr_entity_create(t);
-    purr_entity_destroy(t, a);
-    purr_entity_destroy(t, b);
-    PURR_CHECK(purr_entity_create(t).index == b.index);
-    PURR_CHECK(purr_entity_create(t).index == a.index);
+    tide_entities *t = new_table();
+    const tide_entity a = tide_entity_create(t);
+    const tide_entity b = tide_entity_create(t);
+    tide_entity_destroy(t, a);
+    tide_entity_destroy(t, b);
+    TIDE_CHECK(tide_entity_create(t).index == b.index);
+    TIDE_CHECK(tide_entity_create(t).index == a.index);
     free(t);
 }
 
-PURR_TEST(entity_create_fails_when_full)
+TIDE_TEST(entity_create_fails_when_full)
 {
-    purr_entities *t = new_table();
-    for (uint32_t i = 0; i < PURR_MAX_ENTITIES; i++) {
-        PURR_REQUIRE(!purr_entity_is_null(purr_entity_create(t)));
+    tide_entities *t = new_table();
+    for (uint32_t i = 0; i < TIDE_MAX_ENTITIES; i++) {
+        TIDE_REQUIRE(!tide_entity_is_null(tide_entity_create(t)));
     }
-    PURR_CHECK(purr_entity_is_null(purr_entity_create(t)));
+    TIDE_CHECK(tide_entity_is_null(tide_entity_create(t)));
     free(t);
 }
