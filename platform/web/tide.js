@@ -6,8 +6,8 @@
 // - the few WASI functions wasi-libc needs: output, the clock, arguments, exit.
 //
 // The page defines `var Tide = { canvas, print, printErr, arguments, onExit,
-// onAbort }` (all optional) before this script, and TIDE_PROGRAM holds the
-// program as base64 (cmake/web_page.mjs, or the tide command).
+// onAbort, checkGL }` (all optional) before this script, and TIDE_PROGRAM holds
+// the program as base64 (cmake/web_page.mjs, or the tide command).
 //
 // The lines between the `tide run` markers below are for hot reloading, in the
 // page `tide run --web` serves; the pages made to ship leave them out.
@@ -876,6 +876,23 @@
             gl.vertexAttribPointer(i, size, type, !!normalized, stride, offset),
         glViewport: (x, y, w, h) => gl.viewport(x, y, w, h),
     };
+
+    // With `checkGL` (test pages), a GL error stops the program, naming the
+    // call: WebGL only warns about one in the console, where no test sees it.
+    // Each call waits for glGetError, which is too slow for pages that ship.
+    if (config.checkGL) {
+        const errors = { 0x0500: 'INVALID_ENUM', 0x0501: 'INVALID_VALUE', 0x0502: 'INVALID_OPERATION',
+            0x0505: 'OUT_OF_MEMORY', 0x0506: 'INVALID_FRAMEBUFFER_OPERATION', 0x9242: 'CONTEXT_LOST_WEBGL' };
+        for (const [name, call] of Object.entries(glFunctions)) {
+            if (name === 'glGetError') continue;
+            glFunctions[name] = (...args) => {
+                const result = call(...args);
+                const error = gl.getError();
+                if (error) throw new Error(`${name}(${args.join(', ')}): GL_${errors[error] || error}`);
+                return result;
+            };
+        }
+    }
 
     // A function the program imports but this file lacks fails when called,
     // with its name, rather than stopping the page from loading.

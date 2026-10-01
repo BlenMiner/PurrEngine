@@ -1,5 +1,5 @@
 # tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>]
-#               [TITLE <title>] [STATS] [LAYOUT])
+#               [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])
 #
 # Builds a Tide game as the program <target>. The game is every .tide file
 # in the current source folder and its subfolders (new ones are picked up by
@@ -21,11 +21,17 @@
 # The generated files land in the build tree and are regenerated whenever a
 # .tide file or tidec changes. Every game is also listed in
 # TIDE_GAMES_MANIFEST, so editors know which files belong together.
+#
+# tidec's warnings are errors here (cmake/run_tidec.cmake), as the compiler's
+# are. WARNINGS lists the ones a game means to have, such as tests of what
+# tidec generates for programs it warns about: each is part of a warning's
+# text, and has to be there.
 
 set(TIDE_GAMES_MANIFEST "${PROJECT_SOURCE_DIR}/build/tools/games.txt")
+set(TIDE_RUN_TIDEC "${CMAKE_CURRENT_LIST_DIR}/run_tidec.cmake")
 
 function(tide_add_game target)
-    cmake_parse_arguments(ARG "STATS;LAYOUT" "NAME;TITLE" "SOURCES;HOST" ${ARGN})
+    cmake_parse_arguments(ARG "STATS;LAYOUT" "NAME;TITLE" "SOURCES;HOST;WARNINGS" ${ARGN})
     if("SOURCES" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "tide_add_game(${target}): list the game's .tide files after SOURCES, or leave "
                             "SOURCES out to use every .tide file in ${CMAKE_CURRENT_SOURCE_DIR} and its subfolders")
@@ -86,11 +92,23 @@ function(tide_add_game target)
     set(out_dir "${CMAKE_CURRENT_BINARY_DIR}/tide/${target}")
     set(out_c "${out_dir}/${name}.c")
     set(out_h "${out_dir}/${name}.h")
+    # The warnings it means to have, written only when they change, so tidec
+    # runs again when they do.
+    set(expected "${CMAKE_CURRENT_BINARY_DIR}/tide/${target}.warnings")
+    list(JOIN ARG_WARNINGS "\n" warnings)
+    set(written "-")
+    if(EXISTS "${expected}")
+        file(READ "${expected}" written)
+    endif()
+    if(NOT written STREQUAL warnings)
+        file(WRITE "${expected}" "${warnings}")
+    endif()
     add_custom_command(
         OUTPUT "${out_c}" "${out_h}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out_dir}"
-        COMMAND ${TIDEC_COMMAND} ${sources} -o "${out_dir}" --name "${name}" ${layout}
-        DEPENDS ${TIDEC_DEPENDS} ${sources}
+        COMMAND "${CMAKE_COMMAND}" "-DTIDEC=${TIDEC_PATH}" "-DEXPECTED=${expected}" -P "${TIDE_RUN_TIDEC}"
+            -- ${sources} -o "${out_dir}" --name "${name}" ${layout}
+        DEPENDS ${TIDEC_DEPENDS} ${sources} "${expected}" "${TIDE_RUN_TIDEC}"
         COMMENT "tidec ${target}"
         VERBATIM)
 

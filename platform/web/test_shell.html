@@ -9,11 +9,12 @@
 <pre id="log"></pre>
 <script>
   // For headless web tests (see cmake/WebTest.cmake): stdout goes into #log,
-  // and the exit code into <body data-exit>.
+  // the exit code into <body data-exit>, and a GL error stops the program.
   const log = document.getElementById('log');
   const show = text => { console.log(text); log.textContent += text + '\n'; };
   var Tide = {
     canvas: document.getElementById('canvas'),
+    checkGL: true,
     print: show,
     printErr: show,
     onExit: code => { document.body.dataset.exit = code; },

@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
+# Static libraries listed once more only for linkers that need it: Apple's
+# warns about a repeated one, as a program that links the engine and the
+# platform layer would get otherwise. CMake 3.29 and later.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
 
 # Always build with clang, however CMake is invoked (presets, IDE profiles, plain `cmake -B`).
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)

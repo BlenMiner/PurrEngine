@@ -141,6 +141,14 @@ void PollInputEvents(void)
 
 // ---------------------------------------------------------------------------
 
+// The page's JavaScript provides every GL function as an import, so there's
+// nothing to look up.
+static void *GetProcAddress(const char *name)
+{
+    (void)name;
+    return NULL;
+}
+
 int InitPlatform(void)
 {
     const bool resizable = FLAG_IS_SET(CORE.Window.flags, FLAG_WINDOW_RESIZABLE);
@@ -148,6 +156,9 @@ int InitPlatform(void)
         TRACELOG(LOG_FATAL, "PLATFORM: this browser has no WebGL 2");
         return -1;
     }
+    // What the GL supports, VAOs among it: without them, rlgl binds its
+    // attributes on every draw, the default shader's missing normal included.
+    rlLoadExtensions((void *)GetProcAddress);
     FitCanvas();
     CORE.Window.ready = true;
     InitTimer();

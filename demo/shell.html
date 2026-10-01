@@ -16,13 +16,15 @@
 <pre id="log"></pre>
 <script>
   // `?smoke` runs the automated check instead of the game (see demo/main.c).
-  // Its output goes into #log, and the exit code into <body data-exit>.
+  // Its output goes into #log, the exit code into <body data-exit>, and a GL
+  // error stops it.
   const smoke = new URLSearchParams(location.search).has('smoke');
   const log = document.getElementById('log');
   function show(text) { if (smoke) log.textContent += text + '\n'; }
   var Tide = {
     canvas: document.getElementById('canvas'),
     arguments: smoke ? ['--smoke'] : [],
+    checkGL: smoke,
     print: text => { console.log(text); show(text); },
     printErr: text => { console.error(text); show(text); },
     onExit: code => { document.body.dataset.exit = code; },

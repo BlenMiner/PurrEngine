@@ -1738,14 +1738,14 @@ void tide_session_destroy(tide_session *s)
 void tide_session_fail(tide_session *s, const tide_disconnect_reason reason)
 {
     tear_down(s);
-    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, reason});
+    push_event(s, (tide_session_event){.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = reason});
 }
 
 void tide_session_leave(tide_session *s)
 {
     if (!s->client && !s->server && !s->migrating) return;
     tear_down(s);
-    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
+    push_event(s, (tide_session_event){.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = TIDE_DISCONNECT_LEFT});
 }
 
 // A server with this machine's player on it, over loopback, and no one else
@@ -1908,7 +1908,9 @@ void tide_session_update(tide_session *s, const double now)
     if (status.state == TIDE_SESSION_OFFLINE && status.reason == TIDE_DISCONNECT_KICKED && !s->server) s->kicked = true;
     if (status.state == TIDE_SESSION_CONNECTED && s->last_state != TIDE_SESSION_CONNECTED) {
         // Back in a match that changed hands, it was never out of it
-        if (!s->stale) push_event(s, (tide_session_event){TIDE_SESSION_CONNECTED_EVENT, TIDE_DISCONNECT_LEFT});
+        if (!s->stale) {
+            push_event(s, (tide_session_event){.kind = TIDE_SESSION_CONNECTED_EVENT, .reason = TIDE_DISCONNECT_LEFT});
+        }
         drop_stale(s);
     }
     if (status.state == TIDE_SESSION_OFFLINE && !s->server && !s->stale && can_migrate(s->client)) {
@@ -1916,7 +1918,7 @@ void tide_session_update(tide_session *s, const double now)
         return;
     }
     if (status.state == TIDE_SESSION_OFFLINE) {
-        tide_session_event gone = {TIDE_SESSION_DISCONNECTED_EVENT, status.reason};
+        tide_session_event gone = {.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = status.reason};
         memcpy(gone.message, status.message, sizeof gone.message);
         tear_down(s);
         push_event(s, gone);
@@ -1971,7 +1973,7 @@ void tide_session_end(tide_session *s)
     // Its goodbyes say the match ended, and so does its transports' `end`
     s->server->ended = true;
     tear_down(s);
-    push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_ENDED});
+    push_event(s, (tide_session_event){.kind = TIDE_SESSION_DISCONNECTED_EVENT, .reason = TIDE_DISCONNECT_ENDED});
 }
 
 void tide_session_set_room(tide_session *s, const char *code, const char *key)

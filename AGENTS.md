@@ -55,6 +55,12 @@ Requires CMake 3.25+, Ninja, and clang. The build finds clang automatically, che
 
 There are two presets for everyday work. `debug` has no optimization. `release` is optimized and keeps debug info for profiling. Web builds, MinGW builds and the package have their own (see below).
 
+Warnings are errors, wherever they come from, and one that's already there gets fixed, never left alone:
+
+- The compiler's: our C builds with `-Werror` (`cmake/TideFlags.cmake`). Third-party code (raylib, LLVM's headers) is built with its warnings off.
+- tidec's, in the games `tide_add_game` builds (`cmake/run_tidec.cmake`). A test of what tidec generates for a program it warns about lists those warnings after `WARNINGS`, and the build checks they're there.
+- The browser's, in web tests: test pages set `Tide.checkGL`, so a GL error stops the program and names the call (`platform/web/tide.js`), where WebGL would only warn in the console. It checks every call, which is too slow for pages that ship.
+
 Every native build also copies the language server to `build/tools/tidels`, the fixed path editors run: the VS Code extension and the JetBrains plugin use it when the open folder is this repo (see `tools/`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
 
 The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with `-DTIDE_PLATFORM=OFF` to build without the platform layer and the demo, for example offline.
@@ -90,13 +96,14 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 
 ### Tide programs
 
-`tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS])` builds a game as the program `<target>` (see `cmake/Tide.cmake`):
+`tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [WARNINGS <text>...])` builds a game as the program `<target>` (see `cmake/Tide.cmake`):
 
 - The game is every `.tide` file in the current source folder and its subfolders; the next build picks up new files. `SOURCES` lists the files instead, for tests and folders that hold several games.
 - The game's C (its `extern` functions') is every `.c` file there but the `HOST` ones and those in hidden folders or `build/`, or the `.c` files in `SOURCES`. Unlike `tide`, it doesn't pick up prebuilt libraries.
 - Without `HOST`, the game is the whole program and needs no C: a generated `main` runs it in a window through `tide/run.h`. On the web it's `<target>.html`.
 - With `HOST`, those C files are the program (tests, the demo's smoke test, custom hosts). They include `<name>.h`, where `NAME` defaults to `<target>`.
 - `tidec` compiles all the files together, in order of their paths. The generated files regenerate whenever a `.tide` file or `tidec` changes.
+- A warning from `tidec` fails the build, unless part of its text is listed after `WARNINGS`; each of those has to be there (see Building).
 - `<target>_schedule` is a build target that prints the game's schedule: which systems can run at the same time, and why the others wait.
 - Every game's files are listed in `build/tools/games.txt`, one `<game>\t<path>` per line. A path ending in `/` is a folder: every `.tide` file in it and its subfolders, so editors see new files before the next build. `tidels` reads it, and the one in `build/tools/` of any folder open in the editor, to analyze a game's files together, in `tidec`'s order. A file in no game belongs to the open folder it's in, as `tide run` would build that folder, unless a manifest lists games in that folder: then it's analyzed alone.
 
