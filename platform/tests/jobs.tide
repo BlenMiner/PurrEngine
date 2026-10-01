@@ -29,6 +29,13 @@ component Name
     string value;
 }
 
+// Heavy work for each rock, so ticks are worth threads everywhere: the web
+// starts them past more work than desktop does
+component Wheel
+{
+    float angle;
+}
+
 component Fuse
 {
     int left;
@@ -85,7 +92,7 @@ event(Spawned) Setup(with Main)
     for (var i = 0; i < 12000; i++)
     {
         Spawn(Body { position = float3(float(i), 0, 0), velocity = float3(1, float(i % 7), 0), id = i }, Rock,
-              Label { text = $"rock {i}" }, Size);
+              Label { text = $"rock {i}" }, Size, Wheel { angle = float(i) });
     }
     for (var i = 0; i < 6000; i++)
     {
@@ -99,6 +106,12 @@ system Move(Time time, mut Body body)
     body.position += body.velocity * time.dt;
     if (body.position.y > 50)
         body.velocity.y = -body.velocity.y;
+}
+
+system Turn(Time time, mut Wheel wheel)
+{
+    for (var i = 0; i < 8; i++)
+        wheel.angle = Math.Sin(wheel.angle + time.dt * float(i)) * 3;
 }
 
 // Changes recorded on every thread: some rocks get a fuse

@@ -121,9 +121,14 @@ static void reply(connection *c, const serve_fn answer, void *user)
         if (query) *query = '\0';
         answer(user, path, &r);
     }
-    char header[512];
+    // The page is cross-origin isolated, so the game can share its memory with
+    // workers and run ticks on threads (platform/web/tide.js), and editors
+    // can still show it in a frame of theirs.
+    char header[640];
     const int n = snprintf(header, sizeof header,
                            "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
+                           "Cross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\n"
+                           "Cross-Origin-Resource-Policy: cross-origin\r\n"
                            "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
                            r.status, r.status == 200 ? "OK" : "Not Found", r.type, (unsigned long)r.size);
     set_blocking(c->s, true);

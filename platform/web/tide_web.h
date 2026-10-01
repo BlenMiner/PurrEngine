@@ -54,6 +54,11 @@ TIDE_WEB_IMPORT(gamepad_button) float tide_web_gamepad_button(int pad, int butto
 TIDE_WEB_IMPORT(run) __attribute__((noreturn)) void tide_web_run(bool timer_frames);
 TIDE_WEB_IMPORT(stop) void tide_web_stop(void);
 
+// Threads the program can run on: the CPU's cores when the page can share the
+// program's memory with workers (it's cross-origin isolated), or else 1. Each
+// thread pthread_create makes is a worker (wasi-threads' thread-spawn).
+TIDE_WEB_IMPORT(threads) uint32_t tide_web_threads(void);
+
 // Whether the page is hidden: another tab in front, or the window minimized.
 // Frames go on, but nobody sees what they draw.
 TIDE_WEB_IMPORT(hidden) bool tide_web_hidden(void);

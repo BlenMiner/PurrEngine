@@ -2,7 +2,7 @@
 
 Every system declares what it reads and writes, so the compiler knows, before the game runs, which systems can run at the same time and which have to wait. That plan is the **schedule**.
 
-The tick follows it on every core: a system starts as soon as what it waits for is done, and big systems split their entities across threads too. Running in parallel never changes results, so every machine still gets the same match. A small tick, where waking the other threads would cost more than they'd save, runs on one thread, and so does every tick on the web.
+The tick follows it on every core: a system starts as soon as what it waits for is done, and big systems split their entities across threads too. Running in parallel never changes results, so every machine still gets the same match. A small tick, where waking the other threads would cost more than they'd save, runs on one thread. On the web, ticks run on threads when the page is cross-origin isolated (see [Command line](../guide/cli.md#threads-on-the-web)), and on one thread elsewhere.
 
 ## Reading it
 

@@ -126,6 +126,7 @@ bool tide_platform_room_failed(void);
 bool tide_platform_host_open(uint16_t port, tide_transport *out);
 
 // Threads to run ticks on (tide/jobs.h): a pool with one for each of the
-// CPU's cores, the caller's among them, made on first use. NULL with one core,
-// and on the web, which runs everything on one thread.
+// CPU's cores, the caller's among them, made on first use. NULL with one core.
+// On the web, its threads are workers, which only a cross-origin isolated page
+// has (NULL elsewhere), started the first time a tick has work for them.
 const tide_jobs *tide_platform_jobs(void);

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tide threads test</title>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1"></canvas>
+<script>
+  // The page web_threads.mjs serves: every line the program prints, and how
+  // it ends, go back to the server, in order.
+  let sent = Promise.resolve();
+  const post = (path, body) => { sent = sent.then(() => fetch(path, { method: 'POST', body })); };
+  const tell = line => {
+    console.log(line);
+    post('log', String(line));
+  };
+  tell('cross-origin isolated: ' + globalThis.crossOriginIsolated);
+  var Tide = {
+    canvas: document.getElementById('canvas'),
+    print: tell,
+    printErr: tell,
+    onExit: code => post('result', String(code)),
+    onAbort: reason => {
+      tell('abort: ' + reason);
+      post('result', 'abort');
+    },
+  };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

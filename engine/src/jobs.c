@@ -16,8 +16,13 @@
 
 // Below this much work in all (see tide_system_tasks.count), a tick runs on
 // one thread: waking the others would cost more than they'd save. It's about a
-// tenth of a millisecond's work.
+// tenth of a millisecond's work, or on the web, where waking a worker takes
+// longer, three.
+#ifdef __wasm__
+#define PARALLEL_WORK 6000000u
+#else
 #define PARALLEL_WORK 2000000u
+#endif
 
 #define NONE UINT32_MAX
 

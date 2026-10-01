@@ -30,12 +30,14 @@
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
 
-    // A NUL-terminated string in the program's memory.
+    // A NUL-terminated string in the program's memory. Copied out, as for
+    // every browser function that won't take shared memory: the program's is
+    // shared when it runs on threads.
     function string(ptr) {
         const bytes = u8();
         let end = ptr;
         while (bytes[end]) end++;
-        return decoder.decode(bytes.subarray(ptr, end));
+        return decoder.decode(bytes.slice(ptr, end));
     }
 
     // A string copied into the program's memory, kept for good (glGetString's).
@@ -58,9 +60,17 @@
         constructor(code) { this.code = code; }
     }
 
+    // Random bytes, as many as asked: the browser gives 64 KiB at a time.
+    function randomBytes(count) {
+        const bytes = new Uint8Array(count);
+        for (let at = 0; at < count; at += 65536) crypto.getRandomValues(bytes.subarray(at, Math.min(count, at + 65536)));
+        return bytes;
+    }
+
     let stopped = false;
     function finish(code) {
         stopped = true;
+        endThreads();
         flush(1);
         flush(2);
         if (config.onExit) config.onExit(code);
@@ -114,9 +124,10 @@
             return 0;
         },
         random_get(ptr, len) {
-            crypto.getRandomValues(u8().subarray(ptr, ptr + len));
+            u8().set(randomBytes(len), ptr);
             return 0;
         },
+        sched_yield: () => 0, // malloc's lock, which threads spin on
         fd_write(fd, iovs, count, writtenPtr) {
             let written = 0;
             for (let i = 0; i < count; i++) {
@@ -772,7 +783,7 @@
             for (let i = 0; i < count; i++) {
                 const ptr = i32()[(stringsPtr >> 2) + i];
                 const len = lengthsPtr ? i32()[(lengthsPtr >> 2) + i] : -1;
-                source += len < 0 ? string(ptr) : decoder.decode(u8().subarray(ptr, ptr + len));
+                source += len < 0 ? string(ptr) : decoder.decode(u8().slice(ptr, ptr + len));
             }
             gl.shaderSource(get('shader', s), source);
         },
@@ -831,32 +842,208 @@
 
     function fail(error) {
         stopped = true;
+        endThreads();
         printErr('tide: ' + (error && error.stack || error));
         if (config.onAbort) config.onAbort(error);
     }
 
+    // -----------------------------------------------------------------------
+    // Threads (wasi-threads). Programs import their memory, which they're built
+    // to share between threads. Where the page is cross-origin isolated, it is
+    // shared, and each thread the program starts (pthread_create, through
+    // thread-spawn) is a worker running the same program on it. Elsewhere,
+    // browsers won't share memory: the program gets memory of its own, and runs
+    // on one thread (tide_web_threads says 1), with the same results.
+
+    const canShare = typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
+    let module = null;   // The running program, compiled: its threads instantiate it too
+    let shared = false;  // Its memory is shared
+    let threads = [];    // Its workers
+    let nextThread = 1;
+
+    function endThreads() {
+        for (const worker of threads) worker.terminate();
+        threads = [];
+    }
+
+    // The memory a program imports (env.memory): its limits, and where their
+    // flags are in its bytes. Read from its import section, since browsers
+    // don't say.
+    function memoryImport(bytes) {
+        let at = 8; // After the magic number and version
+        const leb = () => {
+            let value = 0, scale = 1, byte;
+            do {
+                byte = bytes[at++];
+                value += (byte & 0x7f) * scale;
+                scale *= 128;
+            } while (byte & 0x80);
+            return value;
+        };
+        const name = () => {
+            const length = leb();
+            at += length;
+            return decoder.decode(bytes.subarray(at - length, at));
+        };
+        while (at < bytes.length) {
+            const id = bytes[at++];
+            const end = leb() + at;
+            if (id !== 2) { // Not the imports
+                at = end;
+                continue;
+            }
+            for (let count = leb(); count > 0; count--) {
+                const from = name(), field = name(), kind = bytes[at++];
+                if (kind === 0) leb(); // A function: its type
+                else if (kind === 3) at += 2; // A global: its type, and whether it changes
+                else if (kind === 4) { at++; leb(); } // A tag
+                else { // A table's or a memory's limits, after a table's element type
+                    if (kind === 1) at++;
+                    const flagsAt = at, flags = bytes[at++];
+                    const initial = leb(), maximum = flags & 1 ? leb() : undefined;
+                    if (kind === 2 && from === 'env' && field === 'memory') {
+                        return { flagsAt, shared: (flags & 2) !== 0, initial, maximum };
+                    }
+                }
+            }
+            return null;
+        }
+        return null;
+    }
+
+    // What each thread's worker runs: the program on the page's memory, from
+    // wasi_thread_start, with WASI's output, clock and random numbers. What
+    // only the page has (WebGL, the canvas, input) fails on a thread.
+    function threadMain() {
+        onmessage = ({ data: { module, memory, tid, startArg, origin } }) => {
+            const decoder = new TextDecoder();
+            const view = () => new DataView(memory.buffer);
+            const u8 = () => new Uint8Array(memory.buffer);
+            const wasi = {
+                fd_write(fd, iovs, count, writtenPtr) {
+                    let text = '', written = 0;
+                    for (let i = 0; i < count; i++) {
+                        const ptr = view().getUint32(iovs + i * 8, true), len = view().getUint32(iovs + i * 8 + 4, true);
+                        text += decoder.decode(u8().slice(ptr, ptr + len));
+                        written += len;
+                    }
+                    if (fd === 1 || fd === 2) postMessage({ fd, text });
+                    view().setUint32(writtenPtr, written, true);
+                    return fd === 1 || fd === 2 ? 0 : 8;
+                },
+                clock_time_get(id, precision, timePtr) {
+                    const ms = id === 0 ? Date.now() : performance.timeOrigin + performance.now() - origin; // The page's clock
+                    view().setBigUint64(timePtr, BigInt(Math.round(ms * 1e6)), true);
+                    return 0;
+                },
+                random_get(ptr, len) {
+                    const bytes = new Uint8Array(len);
+                    for (let at = 0; at < len; at += 65536) crypto.getRandomValues(bytes.subarray(at, Math.min(len, at + 65536)));
+                    u8().set(bytes, ptr);
+                    return 0;
+                },
+                sched_yield: () => 0,
+                proc_exit(code) {
+                    postMessage({ exit: code });
+                    throw new Error('exit');
+                },
+            };
+            const imports = {};
+            for (const { module: from, name, kind } of WebAssembly.Module.imports(module)) {
+                imports[from] = imports[from] || {};
+                if (kind === 'memory') imports[from][name] = memory;
+                else if (from === 'wasi_snapshot_preview1') imports[from][name] = wasi[name] || (() => 52); // ENOSYS
+                else imports[from][name] = () => { throw new Error(`${name} only works on the page's own thread`); };
+            }
+            new WebAssembly.Instance(module, imports).exports.wasi_thread_start(tid, startArg);
+        };
+    }
+    let threadURL = null;
+
+    // thread-spawn: a thread of the running program, as a worker. Its ID, or
+    // a negative number when there's none to be had.
+    function spawnThread(startArg) {
+        if (!shared) return -1;
+        try {
+            threadURL = threadURL || URL.createObjectURL(new Blob([`(${threadMain})()`], { type: 'text/javascript' }));
+            const worker = new Worker(threadURL);
+            const tid = nextThread++ & 0x1fffffff;
+            worker.onmessage = ({ data }) => {
+                if ('exit' in data) {
+                    finish(data.exit);
+                } else {
+                    output(data.fd, data.text);
+                }
+            };
+            worker.onerror = event => fail(event.message || 'a thread failed');
+            worker.postMessage({ module, memory, tid, startArg, origin: performance.timeOrigin });
+            threads.push(worker);
+            return tid;
+        } catch (error) {
+            printErr('tide: no thread: ' + error);
+            return -1;
+        }
+    }
+    platform.threads = () => shared ? Math.max(1, Math.min(navigator.hardwareConcurrency || 1, 32)) : 1;
+
     const imports = {
         wasi_snapshot_preview1: lenient('WASI', wasi, () => ENOSYS),
+        wasi: { 'thread-spawn': spawnThread },
         tide: platform,
         env: lenient('env', glFunctions, (module, name) => { throw new Error(`tide.js has no ${name}`); }),
     };
 
-    // Compiles on the spot where the browser allows it (Chrome: up to 8 MB on
-    // the main thread). The page has nothing else to do meanwhile, and headless
-    // tests run on virtual time, which keeps running while a compile happens in
-    // the background, so it can run out before main.
+    // A program and its memory: shared where the page can share it, or else
+    // its own, with the program's import of it changed to match. Compiles on
+    // the spot where the browser allows it (Chrome: up to 8 MB on the main
+    // thread). The page has nothing else to do meanwhile, and headless tests
+    // run on virtual time, which keeps running while a compile happens in the
+    // background, so it can run out before main.
     async function instantiate(bytes) {
+        const wanted = memoryImport(bytes);
+        let made = null, isShared = false;
+        if (wanted) {
+            const limits = { initial: wanted.initial, maximum: wanted.maximum };
+            if (wanted.shared && canShare) {
+                try {
+                    made = new WebAssembly.Memory({ ...limits, shared: true });
+                    isShared = true;
+                } catch (error) { // No room for it, as on some phones: one thread
+                    printErr('tide: running on one thread: ' + error);
+                }
+            }
+            if (!isShared && wanted.shared) {
+                bytes = bytes.slice();
+                bytes[wanted.flagsAt] &= ~2;
+            }
+            made = made || new WebAssembly.Memory(limits);
+        }
+        const env = lenient('env', { ...glFunctions, memory: made }, (from, name) => { throw new Error(`tide.js has no ${name}`); });
+        const all = { ...imports, env };
+        let compiled;
         try {
-            return new WebAssembly.Instance(new WebAssembly.Module(bytes), imports);
+            compiled = new WebAssembly.Module(bytes);
         } catch (error) {
             if (!(error instanceof RangeError)) throw error;
-            return (await WebAssembly.instantiate(bytes, imports)).instance;
+            compiled = await WebAssembly.compile(bytes);
         }
+        let instance;
+        try {
+            instance = new WebAssembly.Instance(compiled, all);
+        } catch (error) {
+            if (!(error instanceof RangeError)) throw error;
+            instance = await WebAssembly.instantiate(compiled, all);
+        }
+        return { instance, module: compiled, shared: isShared };
     }
 
-    // Runs an instance's main, which returns only through exit(), or by
-    // starting the frame loop.
-    function begin(instance) {
+    // Runs a program's main, which returns only through exit(), or by starting
+    // the frame loop.
+    function begin(program) {
+        endThreads();
+        module = program.module;
+        shared = program.shared;
+        const instance = program.instance;
         exports = instance.exports;
         memory = exports.memory;
         try {
@@ -893,7 +1080,7 @@
     // Starts `bytes` in the running program's place: fresh, or going on from
     // where it is.
     async function replace(bytes, fresh) {
-        const instance = await instantiate(bytes);
+        const program = await instantiate(bytes);
         resumeWith = null;
         if (!fresh && exports && exports.tide_reload_save && !stopped) {
             try {
@@ -906,7 +1093,7 @@
         if (gl) forgetGL();
         closeRoom(); // The new build plays on alone, like any web game for now
         stopped = false;
-        begin(instance);
+        begin(program);
         resumeWith = null;
     }
 

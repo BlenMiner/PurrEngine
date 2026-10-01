@@ -70,10 +70,11 @@ if(TIDE_WEB)
     set(TIDE_PACKAGE_LIBS lib/web)
     install(FILES web/tide.js DESTINATION web COMPONENT tide)
     # The C library tide links web games with, from cmake/wasi-toolchain.cmake:
-    # only what wasm32-wasip1 C programs use.
-    install(DIRECTORY "${TIDE_WASI_SYSROOT}/include/wasm32-wasip1" DESTINATION wasi/sysroot/include COMPONENT tide)
-    install(FILES "${TIDE_WASI_SYSROOT}/lib/wasm32-wasip1/crt1-command.o" "${TIDE_WASI_SYSROOT}/lib/wasm32-wasip1/libc.a"
-        "${TIDE_WASI_SYSROOT}/lib/wasm32-wasip1/libm.a" DESTINATION wasi/sysroot/lib/wasm32-wasip1 COMPONENT tide)
+    # only what its target's C programs use (threads are in libc.a).
+    install(DIRECTORY "${TIDE_WASI_SYSROOT}/include/${TIDE_WASI_TARGET}" DESTINATION wasi/sysroot/include COMPONENT tide)
+    install(FILES "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}/crt1-command.o"
+        "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}/libc.a" "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}/libm.a"
+        DESTINATION wasi/sysroot/lib/${TIDE_WASI_TARGET} COMPONENT tide)
     install(FILES "${TIDE_WASI_BUILTINS}" DESTINATION wasi RENAME libclang_rt.builtins.a COMPONENT tide)
 elseif(MINGW)
     # tide builds Windows games for MinGW, with this C runtime (see
@@ -176,4 +177,15 @@ if(TIDE_WEB)
             "$<TARGET_FILE_DIR:tide_platform_web_rooms>/tide_platform_web_rooms.html"
             "${CMAKE_CURRENT_BINARY_DIR}/tide_platform_web_rooms-browser")
     set_tests_properties(tide_platform_web_rooms PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120)
+
+    # Ticks on threads in a browser: a cross-origin isolated page, whose
+    # threads are workers sharing its memory, against ticks on one thread.
+    tide_add_game(tide_platform_web_threads SOURCES tests/jobs.tide NAME game HOST tests/web_threads.c)
+    target_link_libraries(tide_platform_web_threads PRIVATE tide_platform)
+    tide_web_page(tide_platform_web_threads SHELL tests/web_threads.html)
+    add_test(NAME tide_platform_web_threads
+        COMMAND "${TIDE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web_threads.mjs" "${TIDE_BROWSER}"
+            "$<TARGET_FILE_DIR:tide_platform_web_threads>/tide_platform_web_threads.html"
+            "${CMAKE_CURRENT_BINARY_DIR}/tide_platform_web_threads-browser")
+    set_tests_properties(tide_platform_web_threads PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120)
 endif()
