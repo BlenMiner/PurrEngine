@@ -2537,7 +2537,11 @@ static void gen_header(gen *g)
     sb_put(o, "// The same, starting the match in `start`'s scene instead (NULL: Main).\n");
     sb_put(o, "void purr_world_start(purr_world *w, float dt, const purr_start *start);\n\n");
     sb_put(o, "// Runs every system once, in declaration order, then applies structural changes.\n");
+    sb_put(o, "// With no scene left, it loads Main again if it's the match's.\n");
     sb_put(o, "void purr_world_tick(purr_world *w);\n\n");
+    sb_put(o, "// Whether the match is over: its last scene unloaded, and Main is local, so it\n");
+    sb_put(o, "// can't come back. Sessions end the match then.\n");
+    sb_put(o, "bool purr_world_ended(const purr_world *w);\n\n");
     sb_put(o, "// Snapshots between ticks: `to` becomes `from`, copying only what's in use (rows up\n");
     sb_put(o, "// to each archetype's count, and so on), and the hash of what's in use. Past the\n");
     sb_put(o, "// counts a world is all zeros, so a copy is the same bytes as copying it whole.\n");
@@ -3155,6 +3159,26 @@ static void gen_dispatch_prototypes(gen *g)
     sb_put(o, "\n");
 }
 
+// Whether a world can hold scenes: some archetype of its is one.
+static bool has_scene_archetypes(const gen *g, const bool local)
+{
+    for (int a = 0; a < g->prog->archetypes.count; a++) {
+        if (arch_local(g, a) == local && arch_scene(g, a)) return true;
+    }
+    return false;
+}
+
+// Whether a world that can hold scenes has none loaded, as a C condition on `w`.
+static void gen_no_scene(gen *g, const bool local)
+{
+    bool first = true;
+    for (int a = 0; a < g->prog->archetypes.count; a++) {
+        if (arch_local(g, a) != local || !arch_scene(g, a)) continue;
+        sb_printf(&g->c, "%sw->%s.count == 0", first ? "" : " && ", arch_name(g, a));
+        first = false;
+    }
+}
+
 // Applying a world's queue at the end of the tick (the match) or frame (local).
 static void gen_apply(gen *g, const bool local)
 {
@@ -3347,9 +3371,9 @@ static void gen_apply(gen *g, const bool local)
     // handlers record goes on the end of the queue and is applied in turn, until
     // nothing is left.
     sb_printf(o,
-        "static void %sapply_commands(%s *w)\n"
+        "static void %sapply_from(%s *w, uint32_t i)\n"
         "{\n"
-        "    for (uint32_t i = 0; i < w->command_count; i++) {\n"
+        "    for (; i < w->command_count; i++) {\n"
         "        purr_command *c = &w->commands[i];\n"
         "        switch (c->kind) {\n"
         "        case PURR_CMD_SPAWN: %sapply_spawn(w, c); break;\n"
@@ -3363,12 +3387,27 @@ static void gen_apply(gen *g, const bool local)
         "        default: break;\n"
         "        }\n"
         "    }\n"
+        "}\n\n",
+        p, world, p, p, p, p, p, p, local ? "" : "        case PURR_CMD_SCENE_PLAYER: purr_apply_scene_player(w, c); break;\n");
+    sb_printf(o, "static void %sapply_commands(%s *w)\n{\n    %sapply_from(w, 0);\n", p, world, p);
+    // Once nothing is left, a world that's Main's and has no scene loads Main
+    // again, with what its Spawned handlers make. Only once, so a Main that
+    // unloads itself as it loads doesn't load forever.
+    if (prog->main->is_local == local) {
+        sb_put(o, "    // Every scene unloaded: Main loads again.\n    if (");
+        gen_no_scene(g, local);
+        const int a = prog->main_archetype;
+        sb_printf(o, ") {\n        const uint32_t from = w->command_count;\n        purr_cmd_load%d(w, (purr_spawn%d){.%s = ", a, a,
+                  type_cname(prog->main));
+        gen_value(g, o, prog->main, NULL, 0);
+        sb_printf(o, "}, 0);\n        %sapply_from(w, from);\n    }\n", p);
+    }
+    sb_printf(o,
         "    // Cleared, so a world's bytes only depend on its state, never on what it did before.\n"
         "    memset(w->commands, 0, sizeof w->commands[0] * w->command_count);\n"
         "    w->command_count = 0;\n"
         "%s"
         "}\n\n",
-        p, world, p, p, p, p, p, p, local ? "" : "        case PURR_CMD_SCENE_PLAYER: purr_apply_scene_player(w, c); break;\n",
         prog->uses_heap ? "    purr_heap_flush(&w->heap);\n" : "");
 
     if (prog->input && !local) {
@@ -4254,6 +4293,18 @@ static void gen_api(gen *g)
     if (prog->input) sb_put(o, "    memcpy(w->previous_inputs, w->inputs, sizeof w->inputs);\n");
     sb_put(o, "    w->Time.tick++;\n}\n\n");
 
+    // A match that's out of scenes ends when Main is local. A match Main comes
+    // back instead (see purr_apply_commands), and a match that can't hold a
+    // scene can't start.
+    sb_put(o, "bool purr_world_ended(const purr_world *w)\n{\n");
+    if (prog->main->is_local && has_scene_archetypes(g, false)) {
+        sb_put(o, "    return ");
+        gen_no_scene(g, false);
+        sb_put(o, ";\n}\n\n");
+    } else {
+        sb_put(o, "    (void)w;\n    return false;\n}\n\n");
+    }
+
     sb_put(o, "void purr_local_init(purr_local *local)\n{\n    memset(local, 0, sizeof *local);\n");
     if (prog->uses_heap) sb_put(o, "    purr_text_use(NULL, NULL, 0, &local->heap, local, sizeof *local);\n");
     for (int i = 0; i < prog->singletons.count; i++) {
@@ -4570,6 +4621,7 @@ static void gen_game_api(gen *g)
     sb_put(o, "static void purr_game_tick(void *w)\n{\n    purr_world_tick(w);\n}\n\n");
     sb_put(o, "static void purr_game_copy(void *to, const void *from)\n{\n    purr_world_copy(to, from);\n}\n\n");
     sb_put(o, "static uint64_t purr_game_hash(const void *w)\n{\n    return purr_world_hash(w);\n}\n\n");
+    sb_put(o, "static bool purr_game_ended(const void *w)\n{\n    return purr_world_ended(w);\n}\n\n");
     sb_put(o, "static void purr_game_joined(void *w, purr_player_id player)\n{\n    purr_world_player_joined(w, player);\n}\n\n");
     sb_put(o, "static void purr_game_left(void *w, purr_player_id player)\n{\n    purr_world_player_left(w, player);\n}\n\n");
     uint32_t bits = 0;
@@ -4617,6 +4669,7 @@ static void gen_game_api(gen *g)
         sb_put(o, "    .set_input = purr_game_set_input,\n    .set_server_input = purr_game_set_server_input,\n");
         sb_put(o, "    .write_input = purr_game_write_input,\n    .read_input = purr_game_read_input,\n");
     }
+    sb_put(o, "    .ended = purr_game_ended,\n");
     sb_put(o, "};\n");
 }
 

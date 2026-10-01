@@ -191,14 +191,46 @@ static str last_part(const str text)
     return (str){text.ptr + dot + 1, text.len - dot - 1};
 }
 
+// Each part of the namespace `path` written at `at`: Game and Game.Combat in
+// `namespace Game.Combat;`. A part is named by the path up to it, so the Combat
+// in Game.Combat is never another namespace's Combat.
+static void namespace_parts(const loc at, const str path, const bool declaration)
+{
+    int t = token_at(at);
+    if (t < 0) return;
+    const afile *f = &A.files[at.file];
+    for (int start = 0; start < path.len && t < f->tok_count; start++) {
+        int end = start;
+        while (end < path.len && path.ptr[end] != '.') end++;
+        const token *part = &f->toks[t];
+        if (part->kind != T_IDENT || !str_eq(part->text, (str){path.ptr + start, end - start})) return;
+        add_occ((occurrence){.at = part->at, .len = part->text.len, .kind = OCC_NAMESPACE, .declaration = declaration,
+                             .name = {path.ptr, end}});
+        if (end < path.len && (t + 1 >= f->tok_count || f->toks[t + 1].kind != T_DOT)) return;
+        t += 2; // And the dot
+        start = end;
+    }
+}
+
 // The namespace in front of a qualified name written at `qual_at`: Combat in
 // Combat.Health. Nothing for a plain name.
 static void qualifier_ref(const loc qual_at, const loc name_at, const str text)
 {
     const str name = last_part(text);
     if (name.len == text.len || qual_at.line == 0 || loc_cmp(qual_at, name_at) == 0) return;
-    const str ns = {text.ptr, text.len - name.len - 1};
-    add_occ((occurrence){.at = qual_at, .len = ns.len, .kind = OCC_NAMESPACE, .name = ns});
+    namespace_parts(qual_at, (str){text.ptr, text.len - name.len - 1}, false);
+}
+
+// The namespace a part of Game.Combat.Health names in code: Game.Combat for Combat.
+static str namespace_path(const expr *e)
+{
+    if (e->kind != E_MEMBER) return e->name;
+    const str left = namespace_path(e->object);
+    char *text = arena_alloc((size_t)left.len + (size_t)e->member.len + 2);
+    memcpy(text, left.ptr, (size_t)left.len);
+    text[left.len] = '.';
+    memcpy(text + left.len + 1, e->member.ptr, (size_t)e->member.len);
+    return (str){text, left.len + 1 + e->member.len};
 }
 
 // A type written by name, maybe qualified: `qual_at` is where it starts, `at`
@@ -346,6 +378,7 @@ static void walk_expr(const expr *e)
             o.decl = e->type_decl;
         } else if (e->bind == BIND_NAMESPACE) { // Combat in Game.Combat.Health
             o.kind = OCC_NAMESPACE;
+            o.name = namespace_path(e);
         } else if (e->c_constant) {
             o.kind = OCC_CONSTANT;
             o.owner = e->object->name;
@@ -565,14 +598,8 @@ static void index_program(void)
     // `namespace X;` and `using Y;` at the top of each file
     for (int i = 0; i < A.prog->units.count; i++) {
         const unit *u = A.prog->units.items[i];
-        if (u->ns.len > 0) {
-            add_occ((occurrence){.at = u->ns_at, .len = u->ns.len, .kind = OCC_NAMESPACE, .declaration = true,
-                                 .name = u->ns});
-        }
-        for (int k = 0; k < u->usings.count; k++) {
-            add_occ((occurrence){.at = u->using_at.items[k], .len = u->usings.items[k].len, .kind = OCC_NAMESPACE,
-                                 .name = u->usings.items[k]});
-        }
+        if (u->ns.len > 0) namespace_parts(u->ns_at, u->ns, true);
+        for (int k = 0; k < u->usings.count; k++) namespace_parts(u->using_at.items[k], u->usings.items[k], false);
     }
 
     for (int i = 0; i < A.prog->decls.count; i++) {
@@ -1006,7 +1033,6 @@ static void describe(const occurrence *o, sb *out)
             }
         } else {
             sb_put(out, o->decl->is_view ? "\n\nRuns once per frame. It reads the match and changes local state, never the match."
-                                         : o->decl->is_main ? "\n\nThe entry point: runs once when the world is created."
                                          : o->decl->per_entity ? "\n\nRuns once per tick for every matching entity."
                                          : "\n\nRuns once per tick.");
         }
@@ -1211,7 +1237,6 @@ static const char *ordinal(const int n)
 // Where a system or view runs, and what it runs after: the schedule, visible.
 static void describe_order(const decl *d, sb *out)
 {
-    if (d->is_main) return;
     if (d->is_handler) {
         if (!d->event || d->event->handlers.count < 2) return;
         int index = 0;
@@ -1669,11 +1694,11 @@ void analysis_definition(const char *uri, const int line, const int character, j
             len = o->local->name.len;
         } else if (o->kind == OCC_NAMESPACE) {
             // The first file that declares it (or a namespace inside it)
-            for (int i = 0; i < A.prog->units.count && target.line == 0; i++) {
-                const unit *u = A.prog->units.items[i];
-                if (u->ns.len >= o->name.len && memcmp(u->ns.ptr, o->name.ptr, (size_t)o->name.len) == 0) {
-                    target = u->ns_at;
-                    len = u->ns.len;
+            for (int i = 0; i < A.occs.count && target.line == 0; i++) {
+                const occurrence *d = &A.occs.items[i];
+                if (d->kind == OCC_NAMESPACE && d->declaration && str_eq(d->name, o->name)) {
+                    target = d->at;
+                    len = d->len;
                 }
             }
         }
@@ -2530,7 +2555,7 @@ static void complete_systems(completion *c, const bool views)
 {
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (d->kind == DECL_SYSTEM && d->is_view == views && !d->is_main) {
+        if (d->kind == DECL_SYSTEM && d->is_view == views) {
             item(c, name_for(d), CK_FUNCTION, views ? "view" : "system", NULL, NULL);
         }
     }
@@ -2569,7 +2594,7 @@ static bool complete_in_namespace(completion *c, const str ns, const bool system
     }
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (!d->unit || !str_eq(d->unit->ns, ns) || d->is_main) continue;
+        if (!d->unit || !str_eq(d->unit->ns, ns)) continue;
         if (systems != (d->kind == DECL_SYSTEM)) continue;
         const int kind = d->kind == DECL_COMPONENT || d->kind == DECL_STRUCT ? CK_STRUCT : d->kind == DECL_INPUT ? CK_INTERFACE
                        : d->kind == DECL_EVENT ? CK_EVENT : d->kind == DECL_ENUM ? CK_ENUM
@@ -3113,20 +3138,16 @@ static const char *rename_target(const int line, const int character, const occu
     case OCC_TYPE:
         if (!o->decl) return "Built-in types can't be renamed.";
         if (o->decl->builtin) return "Types built into the engine can't be renamed.";
-        if (o->decl == A.prog->main) return "Main is the scene the program starts in, so it keeps its name.";
-        return NULL;
-    case OCC_SYSTEM:
-        if (o->decl->is_main) return "Main is the entry point, so it keeps its name.";
         return NULL;
     case OCC_FIELD:
         if (!o->decl || o->decl->builtin) return "Fields of built-in types can't be renamed.";
         return NULL;
+    case OCC_SYSTEM:
     case OCC_PARAM:
     case OCC_LOCAL:
     case OCC_ENUM_MEMBER:
-        return NULL;
     case OCC_NAMESPACE:
-        return "Renaming namespaces isn't supported yet: change the `namespace` line in each of its files.";
+        return NULL;
     case OCC_METHOD:
     case OCC_FUNCTION:
         if (is_operator_decl(o->decl)) return "Operators are named by their symbol, so they can't be renamed.";
@@ -3286,6 +3307,24 @@ static const char *check_new_name(const occurrence *target, const str name)
     case OCC_LOCAL: {
         const decl *d = decl_of_local(target->local);
         clash = param_named(d, name) || (d && local_named(d->body, name));
+        break;
+    }
+    case OCC_NAMESPACE: {
+        // Another namespace, or a declaration, with the new path: Game.Fight for Game.Combat
+        const str old_path = target->name;
+        const int parent = old_path.len - last_part(old_path).len;
+        sb renamed = {0};
+        sb_printf(&renamed, "%.*s" STR_FMT, parent, old_path.ptr, STR_ARG(name));
+        const str path = {renamed.data, (int)renamed.len};
+        for (int i = 0; i < A.prog->units.count; i++) {
+            const str ns = A.prog->units.items[i]->ns;
+            if (str_eq(ns, path) || (ns.len > path.len && ns.ptr[path.len] == '.' && memcmp(ns.ptr, path.ptr, (size_t)path.len) == 0)) {
+                clash = true;
+            }
+        }
+        for (int i = 0; i < A.prog->decls.count; i++) {
+            if (str_eq(A.prog->decls.items[i]->qualified, path)) clash = true;
+        }
         break;
     }
     default:

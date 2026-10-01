@@ -92,7 +92,9 @@ static purr_gui purr_run_gui;
 static purr_run_desc purr_run_settings;
 static purr_session *purr_run_session;
 static double purr_run_now; // Seconds since the program started
-static bool purr_run_dropped; // The match ended or turned this machine away, not because it left or couldn't start
+// The server went away or turned this machine away: not because it left,
+// couldn't start, or the match ran out of scenes
+static bool purr_run_dropped;
 
 // This machine's input for one tick.
 static inline void purr_run_sample(void *user, const uint32_t tick, void *input)
@@ -253,7 +255,8 @@ static inline int purr_run_frame(void *user, const float seconds)
     purr_session_event event;
     while (purr_session_next_event(s, &event)) {
         const bool connected = event.kind == PURR_SESSION_CONNECTED_EVENT;
-        purr_run_dropped = !connected && event.reason != PURR_DISCONNECT_LEFT && event.reason != PURR_DISCONNECT_FAILED;
+        purr_run_dropped = !connected && event.reason != PURR_DISCONNECT_LEFT && event.reason != PURR_DISCONNECT_FAILED &&
+                           event.reason != PURR_DISCONNECT_ENDED;
         if (connected) game->connected(purr_run_local);
         else game->disconnected(purr_run_local, event.reason);
     }

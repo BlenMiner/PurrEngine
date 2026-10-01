@@ -222,7 +222,6 @@ typedef struct decl {
     bool is_view;        // A view: a DECL_SYSTEM that runs once per frame, reads the world and draws.
     bool is_handler;     // An event handler: a DECL_SYSTEM that runs when its event is sent, `event(Hit hit) Name(...)`.
     struct decl *event;  // A handler's event
-    bool is_main;
     bool per_entity;     // Runs once per matching entity, not once per tick.
     bool entity_local;   // Its entities are the local world's (views of local components)
     bool draws;          // A function that draws or uses the GUI, itself or through the functions it calls

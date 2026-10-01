@@ -27,4 +27,8 @@ PURR_TEST(scenes_local_main_opens_a_menu)
     PURR_CHECK(purr_local_entity_count(&local) == 4);
     frame();
     PURR_CHECK(purr_local_entity_count(&local) == 1); // The menu closed, with its buttons
+    PURR_CHECK(local.Frames.opened == 1);
+    frame();
+    PURR_CHECK(purr_local_entity_count(&local) == 4); // Main left, and loaded again with a menu
+    PURR_CHECK(local.Frames.opened == 2);
 }

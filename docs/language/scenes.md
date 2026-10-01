@@ -37,6 +37,10 @@ Scene.Unload(arena);
 
 Loading and unloading happen at the end of the tick, like `Spawn` and `Destroy`. A scene is set up by `Spawned` handlers, and its entities get `Destroyed` when it unloads, both within that tick.
 
+`Main` is the fallback. When the last scene of its world unloads, `Main` loads again at the end of that tick, set up by its `Spawned` handlers as at the start: a match `Main` in the match, a local one in the local state. Unloading one scene and loading another in the same tick never brings it back, and entities in no scene don't count.
+
+A match can't load a local `Main`, so when `Main` is local, a match whose last scene unloads ends there. Every machine in it goes back offline, to its `Main`, and gets `Disconnected` with the reason `Ended` (see [Multiplayer](./multiplayer.md)). Local state carries on as it was.
+
 ```csharp
 // Sets up each arena. The floor joins that arena.
 event(Spawned) SetupArena(Arena arena)
