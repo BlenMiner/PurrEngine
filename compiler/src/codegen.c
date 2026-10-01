@@ -2608,6 +2608,7 @@ static void gen_header(gen *g)
 
     sb_put(o, "// Structural changes and events, deferred to the end of the tick\n\n");
     sb_put(o, "typedef struct tide_command {\n    uint32_t kind;\n    uint32_t id; // Archetype for spawns, component for add and remove, event for sends.\n");
+    sb_put(o, "    uint32_t depth;     // How far down a chain of events: one more than the change whose handlers recorded it\n");
     sb_put(o, "    tide_entity entity; // For sends, the entity it's sent to, or null for the world\n");
     sb_put(o, "    tide_entity scene;  // For spawns, the scene the entity joins, or null for none\n");
     sb_put(o, "    union {\n        uint8_t tide_none;\n        tide_player_id player; // Who's added to or removed from a scene\n");
@@ -2640,6 +2641,7 @@ static void gen_header(gen *g)
         sb_printf(o, "    tide_table %s;\n", arch_name(g, a));
     }
     sb_put(o, "    tide_queue commands; // Of tide_command\n");
+    sb_put(o, "    uint32_t tide_chain; // While changes apply: how far down a chain of events what's recorded now is\n");
     if (prog->input) {
         const char *name = type_cname(prog->input);
         sb_put(o, "    // Each player's input for this tick and the last, then the server's (TIDE_SERVER_INPUT).\n");
@@ -2673,6 +2675,7 @@ static void gen_header(gen *g)
         sb_printf(o, "    tide_table %s;\n", arch_name(g, a));
     }
     sb_put(o, "    tide_queue commands; // Of tide_command\n");
+    sb_put(o, "    uint32_t tide_chain; // While changes apply: how far down a chain of events what's recorded now is\n");
     if (prog->uses_heap) sb_put(o, "    tide_heap heap;\n");
     sb_put(o, "    tide_session_request tide_request; // What local code asked of the session: Session.Start and the like\n");
     sb_put(o, "    tide_start tide_request_start;\n");
@@ -3305,6 +3308,28 @@ static void gen_command_recorders(gen *g)
 
     sb_put(o, "enum { TIDE_CMD_SPAWN, TIDE_CMD_ADD, TIDE_CMD_REMOVE, TIDE_CMD_DESTROY, TIDE_CMD_EVENT, TIDE_CMD_UNLOAD,\n"
               "       TIDE_CMD_SCENE_PLAYER, TIDE_CMD_SNAP };\n\n");
+
+    // A chain of events that never ends (handlers that send events whose
+    // handlers send more) would run until memory runs out: past a depth no
+    // game needs, the program stops, naming where the chain was.
+    sb_put(o, "// How far down a chain of events can go in one tick or frame: each event sent, or\n");
+    sb_put(o, "// entity spawned, by a handler of the one before.\n");
+    sb_put(o, "#ifndef TIDE_MAX_CHAIN\n#define TIDE_MAX_CHAIN 100000u\n#endif\n\n");
+    sb_put(o, "static _Noreturn __attribute__((unused)) void tide_endless_chain(const tide_command *c, const char *when)\n{\n");
+    sb_put(o, "    const char *what = \"a structural change\";\n");
+    sb_put(o, "    if (c->kind == TIDE_CMD_SPAWN) what = \"a spawn\";\n");
+    if (prog->events.count) {
+        sb_put(o, "    if (c->kind == TIDE_CMD_EVENT) {\n        switch (c->id) {\n");
+        for (int i = 0; i < prog->events.count; i++) {
+            const decl *d = prog->events.items[i];
+            if (is_queued(prog, d)) sb_printf(o, "        case %d: what = \"" STR_FMT "\"; break;\n", d->index, STR_ARG(d->qualified));
+        }
+        sb_put(o, "        default: break;\n        }\n    }\n");
+    }
+    sb_put(o, "    fprintf(stderr, \"tide: an endless chain of events: %s is %u deep in one %s, each sent or spawned by a handler \"\n"
+              "                    \"of the one before. Look for handlers that set each other off without end; a chain meant to go \"\n"
+              "                    \"deeper needs TIDE_MAX_CHAIN raised.\\n\", what, (unsigned)c->depth, when);\n");
+    sb_put(o, "    abort();\n}\n\n");
     for (int side = 0; side < 2; side++) {
         const bool local = side == 1;
         const char *p = world_prefix(local);
@@ -3314,6 +3339,7 @@ static void gen_command_recorders(gen *g)
             "    tide_command *c = tide_queue_push(&w->commands, sizeof(tide_command)); // Changes and events of the %s\n"
             "    c->kind = kind;\n"
             "    c->id = id;\n"
+            "    c->depth = w->tide_chain;\n"
             "    c->entity = e;\n"
             "    return c;\n"
             "}\n\n"
@@ -3631,6 +3657,8 @@ static void gen_apply(gen *g, const bool local)
         "{\n"
         "    for (; i < w->commands.count; i++) {\n"
         "        tide_command *c = tide_queue_at(&w->commands, i, sizeof(tide_command));\n"
+        "        if (c->depth >= TIDE_MAX_CHAIN) tide_endless_chain(c, \"%s\");\n"
+        "        w->tide_chain = c->depth + 1u; // What its handlers record is one further down\n"
         "        switch (c->kind) {\n"
         "        case TIDE_CMD_SPAWN: %sapply_spawn(w, c); break;\n"
         "        case TIDE_CMD_ADD: %sapply_add(w, c); break;\n"
@@ -3643,8 +3671,10 @@ static void gen_apply(gen *g, const bool local)
         "        default: break;\n"
         "        }\n"
         "    }\n"
+        "    w->tide_chain = 0;\n"
         "}\n\n",
-        p, world, p, p, p, p, p, p, local ? "" : "        case TIDE_CMD_SCENE_PLAYER: tide_apply_scene_player(w, c); break;\n");
+        p, world, local ? "frame" : "tick", p, p, p, p, p, p,
+        local ? "" : "        case TIDE_CMD_SCENE_PLAYER: tide_apply_scene_player(w, c); break;\n");
     sb_printf(o, "static void %sapply_commands(%s *w)\n{\n    %sapply_from(w, 0);\n", p, world, p);
     // Once nothing is left, a world that's Main's and has no scene loads Main
     // again, with what its Spawned handlers make. Only once, so a Main that

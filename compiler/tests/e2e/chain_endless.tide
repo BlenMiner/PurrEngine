@@ -1,0 +1,29 @@
+// An endless chain of events: two handlers that set each other off. The
+// program stops, naming the event, rather than running until memory runs out.
+
+event Ping
+{
+    int n;
+}
+
+event Pong
+{
+    int n;
+}
+
+scene Main { }
+
+event(Spawned) Serve(with Main)
+{
+    Send(Ping);
+}
+
+event(Ping ping) Return()
+{
+    Send(Pong { n = ping.n + 1 });
+}
+
+event(Pong pong) Volley()
+{
+    Send(Ping { n = pong.n + 1 });
+}

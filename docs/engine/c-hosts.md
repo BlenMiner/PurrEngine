@@ -78,4 +78,4 @@ tide_platform_draw(&draw);
 
 ## Memory
 
-Worlds grow as they need, with no limits but memory: entities, rows of each archetype, structural changes and events in a tick, and the text and lists in a world's heap. Running out of memory ends the program, saying so. An archetype keeps its rows in chunks, and the first starts small, so archetypes with a few entities take little memory.
+Worlds grow as they need, with no limits but memory: entities, rows of each archetype, structural changes and events in a tick, and the text and lists in a world's heap. Running out of memory ends the program, saying so. So does a chain of events that never ends, once it's `TIDE_MAX_CHAIN` deep in one tick (100,000 by default): each event sent, or entity spawned, by a handler of the one before. The message names the event. An archetype keeps its rows in chunks, and the first starts small, so archetypes with a few entities take little memory.

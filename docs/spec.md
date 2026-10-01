@@ -478,7 +478,7 @@ event(Spawned) Arm(with Player)
 - `event` is only a keyword at the start of a declaration, like `input`.
 - A trigger's name is optional for any event: a handler that doesn't read the event leaves it out.
 - `Spawned` handlers run as the spawn is applied, and `Destroyed` handlers just before the entity goes, both in the queue's order. A spawn's `Spawned` handlers run before the next change in the queue.
-- Structural changes and events share one queue per tick, which grows as it needs. What handlers record goes on its end, so an endless chain of events never ends: it goes on until memory runs out.
+- Structural changes and events share one queue per tick, which grows as it needs. What handlers record goes on its end. A chain of events that never ends (handlers that set each other off) stops the program once it's 100,000 deep in one tick, each event sent or entity spawned by a handler of the one before, with a message naming the event. `TIDE_MAX_CHAIN` sets the depth for a game that needs deeper chains.
 - Events can be locals (`var h = hit;`) and can be sent on (`other.Send(hit)`), but they can't be fields, function parameters or system parameters.
 - `[Before]` and `[After]` only order handlers of the same event. Handlers and systems are ordered separately.
 - Games can't send the built-in events. The host sends `PlayerJoined` and `PlayerLeft` with `tide_world_player_joined` and `tide_world_player_left`: they're handled at the end of the next tick, before anything that tick sends. `tide/run.h` has player 0 join before the first tick.

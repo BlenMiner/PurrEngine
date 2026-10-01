@@ -57,6 +57,15 @@ tide_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.tide e2e/multi_file/b_
     e2e/multi_file/c_combat.tide e2e/multi_file/d_items.tide)
 tide_e2e_test(extern SOURCES e2e/extern.tide e2e/extern_noise.tide e2e/extern_c.c) # C functions, from the game's C file
 
+# An endless chain of events stops the program, naming the event: here past
+# 1000 deep, so it stops quickly.
+tide_add_game(tidec_e2e_chain_endless SOURCES e2e/chain_endless.tide NAME game
+    HOST "${CMAKE_CURRENT_SOURCE_DIR}/e2e/chain_endless_main.c")
+target_compile_definitions(tidec_e2e_chain_endless PRIVATE TIDE_MAX_CHAIN=1000u)
+add_test(NAME tidec_e2e_chain_endless COMMAND tidec_e2e_chain_endless)
+set_tests_properties(tidec_e2e_chain_endless PROPERTIES TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "an endless chain of events: P[io]ng is 1000 deep in one tick")
+
 # Error tests: each errors/<name>.tide must fail to compile, and tidec's output
 # must contain the text on the file's first line, written as `// expect: <text>`.
 # A folder errors/<name>/ is one program of several files.
