@@ -1,0 +1,7 @@
+// expect: 'fail' needs the error, like 'fail ParseError.Empty;'
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    fail;
+}
+scene Main { }

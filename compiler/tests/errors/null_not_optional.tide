@@ -1,0 +1,8 @@
+// expect: 'null' is the nothing of a T? value, and this is int
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    int x = null;
+    score.value = x;
+}

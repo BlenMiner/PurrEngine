@@ -1,0 +1,3 @@
+// expect: C functions can't take T? values yet
+extern int Pick(int? value);
+scene Main { }

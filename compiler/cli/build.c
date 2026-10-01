@@ -220,11 +220,13 @@ static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-
 #define LIBRARY_SUFFIX ".so"
 #endif
 
-// Web builds: clang's own wasm target, with the package's wasi-libc (as in
-// cmake/wasi-toolchain.cmake). The page's JavaScript implements the GL
-// functions the platform imports, and allocates with malloc.
+// Web builds: clang's own wasm target, with threads, and the package's
+// wasi-libc (as in cmake/wasi-toolchain.cmake and TideFlags.cmake). The page's
+// JavaScript implements the GL functions the platform imports, allocates with
+// malloc, and makes the memory, which it shares with workers when it can.
 static const char *const web_link_flags[] = {"-Wl,--allow-undefined", "-Wl,--export=malloc", "-Wl,--export=free",
-                                             "-Wl,-z,stack-size=1048576", NULL};
+                                             "-Wl,-z,stack-size=1048576", "-Wl,--import-memory", "-Wl,--export-memory",
+                                             "-Wl,--max-memory=4294967296", NULL};
 
 // The target, when it isn't the system's: its C library comes with tide, in
 // <root>/<runtime>/sysroot, and its compiler runtime is passed by path, since
@@ -241,7 +243,7 @@ static bool find_target(const char *root, const build_options *opts)
 {
     const char *runtime = NULL;
     if (opts->web) {
-        build_target.flag = "--target=wasm32-wasip1";
+        build_target.flag = "--target=wasm32-wasip1-threads";
         runtime = "wasi";
     }
 #ifdef NATIVE_TARGET

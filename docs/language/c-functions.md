@@ -51,7 +51,7 @@ MyGame/
 
 Windows games build for MinGW, so a static library built with Microsoft's compiler may need Microsoft's C runtime and fail to link: rebuild it with clang or MinGW.
 
-On the web, only C files and WebAssembly libraries define functions. When an extern function has no definition there, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`.
+On the web, only C files and WebAssembly libraries define functions. When an extern function has no definition there, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`. Web games build for `wasm32-wasip1-threads`, which shares memory between threads, so a WebAssembly library needs building for that target too (clang's `--target=wasm32-wasip1-threads`), or at least with `-matomics -mbulk-memory`.
 
 `tide run` builds again when a C file, header or library changes. The C is part of the game's library, which each build replaces, so whatever C keeps in its own variables starts over at each reload.
 
@@ -66,6 +66,8 @@ Extern functions take and return plain data, by value:
 | `Color`, `Rect`, `Entity`, `PlayerID` | `tide_color`, `tide_rect`, `tide_entity`, `tide_player_id` |
 | an enum | `int32_t` |
 | a struct or component | a struct with the same fields, in the same order |
+
+A system that splits its entities across threads gives the entities it spawns temporary handles until it's done (see [The schedule](../engine/schedule.md#splitting-across-threads)), so an `Entity` C gets from one may be temporary: `tide_entity_is_temporary(e)`, from `tide/entity.h`, tells. Tide gives the real handle to what the system kept, but not to C, so C that keeps entities should keep real ones.
 
 C often takes pointers. Tide has none, and no pointer arithmetic: the parameter says how a value goes to C, and the call takes its address by itself. Every pointer is only good until C returns.
 
@@ -122,7 +124,9 @@ bool RayCast(tide_float3 from, tide_float3 direction, Hit *hit)
 }
 ```
 
-Tide's types have no padding the compiler adds, so a C struct with the same fields lines up with them. Structs that hold text or lists can't go to C, and neither can lists of text.
+Tide's types have no padding the compiler adds, so a C struct with the same fields lines up with them. Structs that hold text or lists can't go to C, and neither can lists of text or `T?` values.
+
+C functions can't `fail` (see [Errors](./errors.md)): they return what C returns. To turn a C function's error code into an error, check it in a Tide function that fails, and call that.
 
 ## Order
 

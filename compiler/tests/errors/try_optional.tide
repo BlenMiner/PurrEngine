@@ -1,0 +1,12 @@
+// expect: 'try' passes an error on, and int? has none
+int? Find(int x)
+{
+    if (x > 0) return x;
+    return null;
+}
+enum ParseError { Empty }
+int Load(int x) fails ParseError
+{
+    return try Find(x);
+}
+scene Main { }

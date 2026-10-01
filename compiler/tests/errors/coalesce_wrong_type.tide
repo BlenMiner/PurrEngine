@@ -1,0 +1,13 @@
+// expect: 'Parse' gives int, so '??' falls back to int too, not string
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.value = Parse("1") ?? "none";
+}

@@ -48,9 +48,20 @@ TIDE_WEB_IMPORT(gamepad_button) float tide_web_gamepad_button(int pad, int butto
 
 // Starts calling the exported tide_web_frame, on animation frames or, with
 // `timer_frames`, as fast as timers allow (headless pages have no animation
-// frames). Doesn't return: it unwinds main's stack back to the browser.
+// frames). While the page is hidden, frames come from a worker's timers, 60 a
+// second, since browsers slow the page's own. Doesn't return: it unwinds
+// main's stack back to the browser.
 TIDE_WEB_IMPORT(run) __attribute__((noreturn)) void tide_web_run(bool timer_frames);
 TIDE_WEB_IMPORT(stop) void tide_web_stop(void);
+
+// Threads the program can run on: the CPU's cores when the page can share the
+// program's memory with workers (it's cross-origin isolated), or else 1. Each
+// thread pthread_create makes is a worker (wasi-threads' thread-spawn).
+TIDE_WEB_IMPORT(threads) uint32_t tide_web_threads(void);
+
+// Whether the page is hidden: another tab in front, or the window minimized.
+// Frames go on, but nobody sees what they draw.
+TIDE_WEB_IMPORT(hidden) bool tide_web_hidden(void);
 
 // Runs JavaScript, for tests that need to fake browser events.
 TIDE_WEB_IMPORT(eval) void tide_web_eval(const char *script);

@@ -9,9 +9,14 @@
 #
 # wasi-sdk 24 is built with LLVM 18, so any clang from 18 on can link its C
 # library; newer releases need a newer wasm-ld than many systems have.
+#
+# The target has threads (wasi-threads): memory the page shares between its
+# workers, which clang's `-threads` targets build for. Pages that can't share
+# memory (not cross-origin isolated) run the same program on one thread
+# (platform/web/tide.js).
 
 set(TIDE_WASI_SDK_VERSION 24)
-set(TIDE_WASI_TARGET wasm32-wasip1)
+set(TIDE_WASI_TARGET wasm32-wasip1-threads)
 
 set(CMAKE_SYSTEM_NAME WASI)
 set(CMAKE_SYSTEM_PROCESSOR wasm32)
@@ -45,10 +50,10 @@ _tide_wasi_fetch(libclang_rt.builtins-wasm32-wasi-${TIDE_WASI_SDK_VERSION}.0.tar
 
 set(TIDE_WASI_SYSROOT "${_tide_wasi_dir}/wasi-sysroot-${TIDE_WASI_SDK_VERSION}.0")
 set(TIDE_WASI_BUILTINS "${_tide_wasi_dir}/libclang_rt.builtins-wasm32-wasi-${TIDE_WASI_SDK_VERSION}.0/libclang_rt.builtins-wasm32.a")
-# This wasi-sdk keeps its libraries under the target's older name, wasm32-wasi,
-# which newer clang calls deprecated; give them the current one.
+# Older wasi-sdk releases keep their libraries under the target's older name,
+# wasm32-wasi-threads, which newer clang calls deprecated; give them the current one.
 if(NOT EXISTS "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}")
-    file(COPY "${TIDE_WASI_SYSROOT}/lib/wasm32-wasi/" DESTINATION "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}")
+    file(COPY "${TIDE_WASI_SYSROOT}/lib/wasm32-wasi-threads/" DESTINATION "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}")
 endif()
 set(CMAKE_SYSROOT "${TIDE_WASI_SYSROOT}")
 

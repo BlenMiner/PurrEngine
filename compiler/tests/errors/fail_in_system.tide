@@ -1,0 +1,7 @@
+// expect: a system can't fail: nothing calls it to take the error
+enum ParseError { Empty }
+scene Main { }
+system Count()
+{
+    fail ParseError.Empty;
+}

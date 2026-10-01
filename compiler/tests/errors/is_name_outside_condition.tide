@@ -1,0 +1,13 @@
+// expect: a name after 'is' only goes in an if's or a loop's condition
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+singleton Score { bool ok; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.ok = Parse("1") is int value;
+}

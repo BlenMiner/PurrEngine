@@ -1,0 +1,6 @@
+// expect: 'var' takes its type from the value, and 'null' takes its type from the variable
+scene Main { }
+system Count()
+{
+    var x = null;
+}

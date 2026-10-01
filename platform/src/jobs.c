@@ -12,11 +12,107 @@
 #define MOST_THREADS 32u
 #endif
 
-#if defined(__wasm__)
+#if defined(__wasm__) && !defined(__wasm_atomics__)
 
 const tide_jobs *tide_platform_jobs(void)
 {
-    return NULL; // Web builds are single-threaded
+    return NULL; // Built without threads
+}
+
+#elif defined(__wasm__)
+
+// On the web, threads are workers that share the program's memory, which a
+// page can only give them when it's cross-origin isolated (platform/web/tide.js
+// says how many it has). The page's main thread can never wait, for a lock or
+// a signal, only spin: so workers wait for a round on its count, and the
+// caller, which only spins, opens and closes rounds with atomics alone. As on
+// desktop, the caller never waits for a worker to wake (a worker only starts
+// once the page's main thread is back in the browser's hands), only for the
+// ones that joined.
+
+#include <pthread.h>
+
+#include "tide_web.h"
+
+#define OPEN 0x80000000u // In `gate`: the round takes workers. Below it: the workers in it
+
+typedef struct pool {
+    tide_jobs jobs;
+    uint32_t round; // Rounds started, which workers wait on
+    uint32_t gate;
+    void (*work)(void *context, uint32_t thread);
+    void *context;
+    bool started; // Its workers are made
+} pool;
+
+static pool the_pool;
+static bool made;
+
+static void *worker(void *thread);
+
+// The workers, thread 1 and up, with the stack the program's own thread has:
+// the caller is thread 0. Made the first time there's work for them, since a
+// worker costs a page far more than a thread costs a program. Fewer, if the
+// page won't make them all: rounds only ever take the workers that join.
+static void start_workers(pool *p)
+{
+    p->started = true;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 1u << 20);
+    for (uint32_t thread = 1; thread < p->jobs.threads; thread++) {
+        pthread_t t;
+        if (pthread_create(&t, &attr, worker, (void *)(uintptr_t)thread) != 0) break;
+        pthread_detach(t);
+    }
+    pthread_attr_destroy(&attr);
+}
+
+static void *worker(void *thread)
+{
+    pool *p = &the_pool;
+    uint32_t seen = 0;
+    for (;;) {
+        uint32_t round;
+        while ((round = __atomic_load_n(&p->round, __ATOMIC_ACQUIRE)) == seen) {
+            __builtin_wasm_memory_atomic_wait32((int32_t *)&p->round, (int32_t)seen, -1);
+        }
+        seen = round;
+        uint32_t gate = __atomic_load_n(&p->gate, __ATOMIC_ACQUIRE);
+        bool joined = false;
+        while ((gate & OPEN) && !joined) {
+            joined = __atomic_compare_exchange_n(&p->gate, &gate, gate + 1u, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        }
+        if (!joined) continue; // Over before it woke
+        p->work(p->context, (uint32_t)(uintptr_t)thread);
+        __atomic_fetch_sub(&p->gate, 1u, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+
+static void run(void *self, void (*work)(void *context, uint32_t thread), void *context)
+{
+    pool *p = self;
+    if (!p->started) start_workers(p);
+    p->work = work;
+    p->context = context;
+    __atomic_store_n(&p->gate, OPEN, __ATOMIC_RELEASE);
+    __atomic_fetch_add(&p->round, 1u, __ATOMIC_RELEASE);
+    __builtin_wasm_memory_atomic_notify((int32_t *)&p->round, UINT32_MAX);
+    work(context, 0);
+    __atomic_fetch_and(&p->gate, ~OPEN, __ATOMIC_ACQ_REL);
+    while (__atomic_load_n(&p->gate, __ATOMIC_ACQUIRE) != 0) {
+    }
+}
+
+const tide_jobs *tide_platform_jobs(void)
+{
+    if (made) return the_pool.jobs.threads > 1 ? &the_pool.jobs : NULL;
+    made = true;
+    pool *p = &the_pool;
+    const uint32_t n = tide_web_threads();
+    p->jobs = (tide_jobs){p, n < MOST_THREADS ? n : MOST_THREADS, run};
+    return p->jobs.threads > 1 ? &p->jobs : NULL;
 }
 
 #else

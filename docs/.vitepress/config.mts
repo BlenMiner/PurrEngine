@@ -60,6 +60,7 @@ export default defineConfig({
                     { text: 'Components and entities', link: '/language/entities' },
                     { text: 'Systems', link: '/language/systems' },
                     { text: 'Structs and functions', link: '/language/functions' },
+                    { text: 'Errors', link: '/language/errors' },
                     { text: 'Math', link: '/language/math' },
                     { text: 'Text and lists', link: '/language/text-and-lists' },
                     { text: 'Events', link: '/language/events' },

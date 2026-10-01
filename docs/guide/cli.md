@@ -29,6 +29,17 @@ tide <command> [folder] [options]
 
 `tide build --release --web` makes one self-contained `.html` file with the game inside. It opens straight from disk, and can be put online as it is.
 
+### Threads on the web
+
+A game's ticks run on every core when the page is cross-origin isolated: served with these two headers, which let it share its memory with the workers its threads run in.
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+`tide run --web` serves the page with them. Where a page is put online, the host has to send them: on itch.io, it's the **SharedArrayBuffer support** option in the game's embed settings. A page without them, or opened from disk, runs the same game on one thread, with the same results, so web players on either kind of page play together. Workers only start once a tick has enough work for them.
+
 ## Hot reload
 
 While `tide run` plays a game, saving a `.tide` file rebuilds it, and so does saving one of its C files or libraries. The game carries on with the new code in the same window:

@@ -1,0 +1,12 @@
+// expect: say it fails after its parameters, 'int Total(...) fails ParseError'
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+int Total(string a)
+{
+    return try Parse(a);
+}
+scene Main { }

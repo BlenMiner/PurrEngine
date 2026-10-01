@@ -1868,8 +1868,8 @@ void tide_session_update(tide_session *s, const double now)
         if (s->ending->now >= s->ending_until || s->ending->now < s->ending_until - KICK_SECONDS) drop_ending(s);
     }
     if (!s->client) return;
-    // This machine's server stops whenever the machine does (a browser tab in
-    // the background, a breakpoint), and its player with it. Beyond the ticks
+    // This machine's server stops whenever the machine does (a breakpoint, a
+    // browser that froze the page), and its player with it. Beyond the ticks
     // the server can run in one update, which it would drop anyway, that time
     // didn't pass for the match: neither side went quiet, and there's nothing
     // to catch up. A client of another machine keeps to the real time.

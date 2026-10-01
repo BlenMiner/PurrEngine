@@ -122,6 +122,18 @@ static qname parse_type(parser *p, const char *what)
     return q;
 }
 
+// A declared type, which can be T?: a value or nothing. Its text ends with '?'.
+static qname parse_decl_type(parser *p, const char *what)
+{
+    qname q = parse_type(p, what);
+    if (!accept(p, T_QUESTION)) return q;
+    char *text = arena_alloc((size_t)q.text.len + 2);
+    memcpy(text, q.text.ptr, (size_t)q.text.len);
+    text[q.text.len] = '?';
+    q.text = (str){text, q.text.len + 1};
+    return q;
+}
+
 static expr *new_expr(const expr_kind kind, const loc at)
 {
     expr *e = NEW(expr);
@@ -216,6 +228,9 @@ static expr *parse_primary(parser *p)
     case T_DEFAULT:
         advance(p);
         return new_expr(E_DEFAULT, t->at);
+    case T_NULL:
+        advance(p);
+        return new_expr(E_NULL, t->at);
     case T_INTERP: {
         // $"a {x} b {y:F2} c": the tokens are `$"a {`, x, `} b {`, y, `:F2`, `} c"`.
         advance(p);
@@ -280,7 +295,14 @@ static expr *parse_primary(parser *p)
 static expr *parse_postfix(parser *p)
 {
     expr *e = parse_primary(p);
-    while (at(p, T_DOT) || at(p, T_LBRACKET)) {
+    while (at(p, T_DOT) || at(p, T_LBRACKET) || at(p, T_NOT)) {
+        if (at(p, T_NOT)) { // Parse(text)!: its value, or the default when it fails
+            const token *bang = advance(p);
+            expr *value = new_expr(E_DEFAULTED, bang->at);
+            value->lhs = e;
+            e = value;
+            continue;
+        }
         if (at(p, T_LBRACKET)) { // items[i]
             const token *open = advance(p);
             expr *index = new_expr(E_INDEX, open->at);
@@ -333,6 +355,18 @@ static expr *parse_postfix(parser *p)
 
 static expr *parse_unary(parser *p)
 {
+    // try Parse(text): binds like a unary operator, as C#'s await does.
+    if (at(p, T_TRY)) {
+        const token *keyword = advance(p);
+        if (at(p, T_LBRACE)) {
+            diag_error(keyword->at, "Tide has no 'try { } catch': errors are values, which code handles where it calls");
+            diag_note("'try' goes before a call that can fail and passes its error on: 'var score = try Parse(text);'");
+            longjmp(p->fail, 1);
+        }
+        expr *e = new_expr(E_TRY, keyword->at);
+        e->lhs = parse_unary(p);
+        return e;
+    }
     if (at(p, T_NOT) || at(p, T_MINUS) || at(p, T_TILDE)) {
         const token *op = advance(p);
         expr *e = new_expr(E_UNARY, op->at);
@@ -369,11 +403,42 @@ static int binary_precedence(const tok_kind kind)
     }
 }
 
+#define IS_PRECEDENCE 7 // `is` is relational, as in C#
+
+// x is int score, x is ParseError why, x is ParseError.Empty, or without the name.
+static expr *parse_is(parser *p, expr *lhs)
+{
+    const token *keyword = advance(p);
+    expr *e = new_expr(E_IS, keyword->at);
+    e->lhs = lhs;
+    const qname type = parse_type(p, "a type after 'is', like 'is int score'");
+    e->pattern = type.text;
+    e->pattern_at = type.name_at;
+    e->pattern_qual_at = type.at;
+    if (at(p, T_IDENT)) {
+        const token *name = advance(p);
+        stmt *binding = NEW(stmt);
+        binding->kind = S_VAR;
+        binding->at = type.at;
+        binding->name = name->text;
+        binding->name_at = name->at;
+        binding->type_name = type.text;
+        binding->type_at = type.name_at;
+        binding->type_qual_at = type.at;
+        e->binding = binding;
+    }
+    return e;
+}
+
 // Precedence climbing; all binary operators are left-associative.
 static expr *parse_binary(parser *p, const int min_prec)
 {
     expr *lhs = parse_unary(p);
     for (;;) {
+        if (at(p, T_IS) && IS_PRECEDENCE >= min_prec) {
+            lhs = parse_is(p, lhs);
+            continue;
+        }
         const int prec = binary_precedence(peek(p)->kind);
         if (prec == 0 || prec < min_prec) return lhs;
         const token *op = advance(p);
@@ -385,11 +450,24 @@ static expr *parse_binary(parser *p, const int min_prec)
     }
 }
 
+// a ?? b binds looser than || and tighter than ?:, and groups to the right,
+// as in C#: a ?? b ?? 0 is a ?? (b ?? 0).
+static expr *parse_coalesce(parser *p)
+{
+    expr *lhs = parse_binary(p, 1);
+    if (!at(p, T_COALESCE)) return lhs;
+    const token *op = advance(p);
+    expr *e = new_expr(E_COALESCE, op->at);
+    e->lhs = lhs;
+    e->rhs = parse_coalesce(p);
+    return e;
+}
+
 // cond ? a : b binds looser than every binary operator and groups to the
 // right, as in C#: a ? b : c ? d : e is a ? b : (c ? d : e).
 static expr *parse_expr(parser *p)
 {
-    expr *cond = parse_binary(p, 1);
+    expr *cond = parse_coalesce(p);
     if (!at(p, T_QUESTION)) return cond;
     const token *question = advance(p);
     expr *e = new_expr(E_CONDITIONAL, question->at);
@@ -441,7 +519,8 @@ bool attributes_before_field(const token *toks, int i)
         i++;
     } while (toks[i].kind == T_LBRACKET);
     const token *t = &toks[i];
-    return t->kind == T_IDENT && (toks[i + 1].kind == T_IDENT || toks[i + 1].kind == T_DOT) && !is_decl_word(t->text);
+    return t->kind == T_IDENT && (toks[i + 1].kind == T_IDENT || toks[i + 1].kind == T_DOT || toks[i + 1].kind == T_QUESTION)
+        && !is_decl_word(t->text);
 }
 
 // [mut] Type Name(: a method or function, rather than a field or a local.
@@ -457,6 +536,7 @@ static bool at_method(const parser *p)
         if (peek_at(p, i)->kind != T_GT) return false;
         i++;
     }
+    if (peek_at(p, i)->kind == T_QUESTION) i++; // int? Find(...)
     return peek_at(p, i)->kind == T_IDENT && peek_at(p, i + 1)->kind == T_LPAREN;
 }
 
@@ -547,7 +627,7 @@ static stmt *parse_var(parser *p)
     stmt *s = new_stmt(S_VAR, first->at);
     s->is_mut = accept(p, T_MUT);
     if (!accept(p, T_VAR)) {
-        const qname type = parse_type(p, "'var' or a type");
+        const qname type = parse_decl_type(p, "'var' or a type");
         s->type_name = type.text;
         s->type_at = type.name_at;
         s->type_qual_at = type.at;
@@ -603,6 +683,21 @@ static stmt *parse_switch(parser *p)
     return s;
 }
 
+// `Type name`, `Combat.Stats name` or `int? name =`: a local's declaration,
+// rather than an expression.
+static bool at_local_decl(const parser *p)
+{
+    const token *t = peek(p);
+    if (t->kind != T_IDENT) return false;
+    if (str_eq_c(t->text, "List") && peek_at(p, 1)->kind == T_LT) return true;
+    int next = 1;
+    while (peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
+    if (peek_at(p, next)->kind == T_IDENT) return true;
+    const tok_kind after = peek_at(p, next + 2)->kind;
+    return peek_at(p, next)->kind == T_QUESTION && peek_at(p, next + 1)->kind == T_IDENT
+        && (after == T_ASSIGN || after == T_SEMI);
+}
+
 // i++, --i, x = y, x += y or a call: a statement without its ';', as a for's
 // step and as the start of most statements.
 static stmt *parse_simple(parser *p)
@@ -644,10 +739,7 @@ static stmt *parse_for(parser *p)
     expect(p, T_LPAREN, "'(' after 'for'");
     if (!accept(p, T_SEMI)) {
         const token *t = peek(p);
-        int next = 1;
-        while (t->kind == T_IDENT && peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
-        const bool list = t->kind == T_IDENT && str_eq_c(t->text, "List") && peek_at(p, 1)->kind == T_LT;
-        if (t->kind == T_MUT || t->kind == T_VAR || list || (t->kind == T_IDENT && peek_at(p, next)->kind == T_IDENT)) {
+        if (t->kind == T_MUT || t->kind == T_VAR || at_local_decl(p)) {
             s->init = parse_var(p); // Takes the ';'
             s->init->loop_var = true;
         } else {
@@ -685,6 +777,18 @@ static stmt *parse_stmt(parser *p)
         advance(p);
         stmt *s = new_stmt(S_RETURN, t->at);
         if (!at(p, T_SEMI)) s->value = parse_expr(p); // Only methods return values; the checker says so
+        expect(p, T_SEMI, "';'");
+        return s;
+    }
+
+    case T_FAIL: { // fail ParseError.Empty;
+        advance(p);
+        stmt *s = new_stmt(S_FAIL, t->at);
+        if (at(p, T_SEMI)) {
+            diag_error(t->at, "'fail' needs the error, like 'fail ParseError.Empty;'");
+            longjmp(p->fail, 1);
+        }
+        s->value = parse_expr(p);
         expect(p, T_SEMI, "';'");
         return s;
     }
@@ -749,10 +853,7 @@ static stmt *parse_stmt(parser *p)
                       STR_ARG(peek_at(p, 2)->text));
             longjmp(p->fail, 1);
         }
-        int next = 1;
-        while (t->kind == T_IDENT && peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
-        if (t->kind == T_IDENT && peek_at(p, next)->kind == T_IDENT) return parse_var(p);
-        if (t->kind == T_IDENT && str_eq_c(t->text, "List") && peek_at(p, 1)->kind == T_LT) return parse_var(p);
+        if (at_local_decl(p)) return parse_var(p);
 
         stmt *s = parse_simple(p);
         // A call's block: Foldout("Audio") { ... }, GUILayout.Horizontal() { ... }
@@ -858,7 +959,7 @@ static void parse_field_attributes(parser *p)
 // Type name; [= default];
 static void parse_field(parser *p, decl *d)
 {
-    const qname type = parse_type(p, "field type or '}'");
+    const qname type = parse_decl_type(p, "field type or '}'");
     const token *field_name = expect_ident(p, "field name");
     field f = {0};
     f.name = field_name->text;
@@ -893,7 +994,7 @@ static void parse_routine_params(parser *p, decl *m)
                 prm.mode = PARAM_IN;
             }
             prm.function_param = true;
-            const qname type = parse_type(p, "parameter type");
+            const qname type = parse_decl_type(p, "parameter type");
             prm.type_name = type.text;
             prm.type_qual_at = type.at;
             prm.type_at = type.name_at;
@@ -903,6 +1004,14 @@ static void parse_routine_params(parser *p, decl *m)
         } while (accept(p, T_COMMA));
     }
     expect(p, T_RPAREN, "')' after parameters");
+    // `fails ParseError`: the error it can end with. Only a keyword here.
+    if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "fails")) {
+        m->fails_at = advance(p)->at;
+        const qname error = parse_type(p, "the error it fails with, like 'fails ParseError'");
+        m->fails_name = error.text;
+        m->fails_type_at = error.name_at;
+        m->fails_type_qual_at = error.at;
+    }
 }
 
 // (Type name, ...) { ... }: the rest of a method, function or operator.
@@ -918,7 +1027,7 @@ static void parse_routine_rest(parser *p, decl *m, const token *name)
 // game's C files or libraries define.
 static decl *parse_extern(parser *p)
 {
-    const qname ret = parse_type(p, "return type");
+    const qname ret = parse_decl_type(p, "return type");
     const token *name = expect_ident(p, "function name");
     decl *m = new_decl(DECL_FUNCTION, name);
     m->unit = p->unit;
@@ -1009,7 +1118,7 @@ static decl *parse_settings(parser *p, const token *keyword)
 static decl *parse_method(parser *p, decl *owner)
 {
     const bool is_mut = accept(p, T_MUT);
-    const qname ret = parse_type(p, "return type");
+    const qname ret = parse_decl_type(p, "return type");
     const token *name = expect_ident(p, owner ? "method name" : "function name");
     decl *m = new_decl(owner ? DECL_METHOD : DECL_FUNCTION, name);
     m->unit = p->unit;
@@ -1046,7 +1155,7 @@ static bool is_overloadable(const tok_kind kind)
 // ReturnType operator +(Type a, Type b) { ... } in a struct.
 static decl *parse_operator(parser *p, decl *owner)
 {
-    const qname ret = parse_type(p, "return type");
+    const qname ret = parse_decl_type(p, "return type");
     const token *keyword = advance(p);
     const token *op = advance(p);
     if (!is_overloadable(op->kind)) {
@@ -1157,7 +1266,7 @@ static void parse_query_rest(parser *p, decl *d)
             } else {
                 prm.mode = accept(p, T_MUT) ? PARAM_MUT : PARAM_READ;
             }
-            const qname type = parse_type(p, what);
+            const qname type = parse_decl_type(p, what);
             prm.type_name = type.text;
             prm.type_qual_at = type.at;
             prm.type_at = type.name_at;

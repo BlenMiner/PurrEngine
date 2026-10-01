@@ -1,16 +1,19 @@
 // Web only: two players in a room, through the relay (relay/) and WebRTC.
 // web_rooms.mjs runs it twice in one page: `host`, which opens a room and
 // says its code, then `join <code>`. The game is written by hand in C, as in
-// udp.c. Each prints "ok" once the other's inputs reach it, and keeps playing
-// so the other can finish; anything else ends it with "FAIL". With
-// `handover-host` and `handover-join <code> <n>`, three of them check host
-// migration instead.
+// udp.c. Once the other's inputs reach it, the host's page goes hidden for
+// longer than players take to time out, as if its player switched tabs, and
+// the match has to go on: the joiner's verified tick keeps up. Each prints
+// "ok" then, and keeps playing so the other can finish; anything else ends it
+// with "FAIL". With `handover-host` and `handover-join <code> <n>`, three of
+// them check host migration instead.
 
 #include <stdio.h>
 #include <string.h>
 
 #include "tide/platform.h"
 #include "tide/session.h"
+#include "tide_web.h"
 
 typedef struct world {
     uint32_t tick;
@@ -127,6 +130,29 @@ static double now;
 static bool said_code;
 static bool done;
 
+// The host's page hidden, as browsers hide it when another tab is in front:
+// no animation frames, and timers a second apart at the soonest. The event
+// comes after the frame, as browsers send it.
+#define HIDDEN_SECONDS 7.0 // Past the session's 5 second timeout
+
+static double met_at = -1.0;   // When the other's inputs first reached this one
+static uint32_t met_verified;  // ...and the verified tick then
+static int hidden_frames = -1; // Frames while the host's page was hidden
+static bool shown_again;
+
+static void set_hidden(const bool hidden)
+{
+    tide_web_eval(hidden ? "setTimeout(() => {"
+                           " const timer = window.setTimeout, frame = window.requestAnimationFrame;"
+                           " window.shown = () => { window.setTimeout = timer; window.requestAnimationFrame = frame;"
+                           " delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); };"
+                           " window.setTimeout = (f, ms, ...rest) => timer(f, Math.max(ms || 0, 1000), ...rest);"
+                           " window.requestAnimationFrame = () => 0;"
+                           " Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });"
+                           " document.dispatchEvent(new Event('visibilitychange')); })"
+                         : "setTimeout(() => window.shown())");
+}
+
 // Host migration (see handover in rooms_native.c): the host leaves a second
 // after both players joined; they say "ok before" once in, and "ok after"
 // once the match changed hands, with their player both times.
@@ -178,23 +204,22 @@ static void migrate(void)
     }
 }
 
-static int frame(void *user, const float seconds)
+// Three players: the host leaves once both others are in, and they go on.
+static int frame_handover(void)
 {
-    (void)user;
-    now += seconds;
-    if (now > 45.0 && !done) return fail("the players didn't meet within 45 seconds");
+    if (now > 45.0 && !done) return fail("the match didn't change hands within 45 seconds");
     char code[TIDE_ROOM_CODE_LENGTH + 1];
     char key[TIDE_ROOM_KEY_LENGTH + 1];
     if (tide_platform_room_failed() && !tide_session_migrating(session, code, key)) {
         tide_session_fail(session, TIDE_DISCONNECT_FAILED);
     }
     tide_session_update(session, now);
-    if (handover) migrate();
+    migrate();
     tide_session_event event;
     while (tide_session_next_event(session, &event)) {
         if (event.kind == TIDE_SESSION_CONNECTED_EVENT) {
             printf("connected\n");
-        } else if (handover && me == 1 && event.reason == TIDE_DISCONNECT_LEFT) {
+        } else if (me == 1 && event.reason == TIDE_DISCONNECT_LEFT) {
             printf("left\n");
         } else {
             printf("disconnected, reason %d\n", (int)event.reason);
@@ -206,32 +231,79 @@ static int frame(void *user, const float seconds)
         printf("room %s\n", code);
         said_code = true;
     }
-
     const world *w = tide_session_world(session);
     const tide_session_status status = tide_session_status_of(session);
     const bool in = status.client.state == TIDE_SESSION_CONNECTED;
-    if (handover) {
-        if (me == 1 && in && w && w->joined == 3 && all_in == 0.0) all_in = now;
-        if (me == 1 && all_in > 0.0 && now - all_in > 1.0 && !done) {
-            tide_session_leave(session); // The others carry on without this machine
-            done = true;
+    if (me == 1 && in && w && w->joined == 3 && all_in == 0.0) all_in = now;
+    if (me == 1 && all_in > 0.0 && now - all_in > 1.0 && !done) {
+        tide_session_leave(session); // The others carry on without this machine
+        done = true;
+    }
+    if (me != 1 && in && w && w->joined == 3 && !before) {
+        printf("ok before: player %u\n", (unsigned)status.client.player.id);
+        before = true;
+    }
+    if (me != 1 && in && w && moved && w->left == 1 && !done) {
+        printf("ok after: player %u%s\n", (unsigned)status.client.player.id, status.server ? ", hosting" : "");
+        done = true;
+    }
+    return TIDE_KEEP_RUNNING;
+}
+
+static int frame(void *user, const float seconds)
+{
+    (void)user;
+    now += seconds;
+    if (handover) return frame_handover();
+    if (now > 45.0) return fail(met_at < 0.0 ? "the players didn't meet within 45 seconds" : "the test didn't finish within 45 seconds");
+    if (tide_platform_room_failed()) tide_session_fail(session, TIDE_DISCONNECT_FAILED);
+    tide_session_update(session, now);
+    tide_session_event event;
+    while (tide_session_next_event(session, &event)) {
+        if (event.kind == TIDE_SESSION_CONNECTED_EVENT) {
+            printf("connected\n");
+        } else {
+            printf("disconnected, reason %d\n", (int)event.reason);
+            return fail("the match ended");
         }
-        if (me != 1 && in && w && w->joined == 3 && !before) {
-            printf("ok before: player %u\n", (unsigned)status.client.player.id);
-            before = true;
-        }
-        if (me != 1 && in && w && moved && w->left == 1 && !done) {
-            printf("ok after: player %u%s\n", (unsigned)status.client.player.id, status.server ? ", hosting" : "");
-            done = true;
-        }
-        return TIDE_KEEP_RUNNING;
+    }
+    char code[TIDE_ROOM_CODE_LENGTH + 1];
+    tide_platform_room_code(code, sizeof code);
+    if (me == 1 && !said_code && code[0]) {
+        printf("room %s\n", code);
+        said_code = true;
     }
 
     // Each sees the other's input in the match: it went through the room
+    const world *w = tide_session_world(session);
     const int32_t other = me == 1 ? 2 : 1;
     bool seen = false;
     for (int i = 0; w && i < (int)TIDE_MAX_PLAYERS; i++) seen |= w->inputs[i] == other;
-    if (!done && seen && w->joined == 2 && in && code[0]) {
+    const tide_session_status status = tide_session_status_of(session);
+    if (met_at < 0.0 && seen && w->joined == 2 && status.client.state == TIDE_SESSION_CONNECTED && code[0]) {
+        printf("met: tick %u, verified %u, room %s\n", (unsigned)w->tick, (unsigned)status.client.verified_tick, code);
+        met_at = now;
+        met_verified = status.client.verified_tick;
+        if (me == 1) {
+            set_hidden(true);
+            hidden_frames = 0;
+        }
+    }
+    if (me == 1 && hidden_frames >= 0 && !shown_again) {
+        if (tide_web_hidden()) hidden_frames++;
+        if (now - met_at > HIDDEN_SECONDS) {
+            printf("shown again: %d frames while hidden\n", hidden_frames);
+            if (hidden_frames < (int)(HIDDEN_SECONDS * 30.0)) return fail("frames slowed down while the page was hidden");
+            set_hidden(false);
+            shown_again = true;
+        }
+    }
+    // The host's server kept ticking all along: the joiner's verified tick
+    // went on through the time the host's page was hidden.
+    const uint32_t through_tick = met_verified + (uint32_t)(60.0 * (HIDDEN_SECONDS + 2.0));
+    const bool through = me == 1 ? shown_again && !tide_web_hidden()
+                                 : met_at >= 0.0 && status.client.verified_tick >= through_tick;
+    if (!done && through && status.client.state == TIDE_SESSION_CONNECTED) {
         printf("ok: tick %u, verified %u, %u resyncs, room %s\n", (unsigned)w->tick,
                (unsigned)status.client.verified_tick, (unsigned)status.client.resyncs, code);
         done = true;
@@ -242,11 +314,11 @@ static int frame(void *user, const float seconds)
 int main(const int argc, char **argv)
 {
     handover = argc > 1 && strncmp(argv[1], "handover-", 9) == 0;
-    const char *mode = argv[argc > 1 ? 1 : 0] + (handover ? 9 : 0);
-    const bool host = argc > 1 && strcmp(mode, "host") == 0;
+    const char *mode = argc > 1 ? argv[1] + (handover ? 9 : 0) : "";
+    const bool host = strcmp(mode, "host") == 0;
     const bool join = argc > 2 && strcmp(mode, "join") == 0;
     if (!host && !join) return fail("run it with 'host', 'join <code>', 'handover-host' or 'handover-join <code> <n>'");
-    me = host ? 1 : join && handover && argc > 3 ? (int32_t)(argv[3][0] - '0') : 2;
+    me = host ? 1 : handover && argc > 3 ? (int32_t)(argv[3][0] - '0') : 2;
     played = game;
     played.host_migration = handover;
     if (handover) played.hash = 8;

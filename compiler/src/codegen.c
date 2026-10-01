@@ -156,6 +156,11 @@ static const char *c_type(const type t)
         return type_cname(t.decl);
     }
     if (t.kind == TY_RECORD) return t.decl->c_name;
+    if (t.kind == TY_OPTIONAL || t.kind == TY_FAILABLE) { // See gen_result_types
+        sb b = {0};
+        sb_printf(&b, "tide_result%d", t.decl->index);
+        return b.data;
+    }
     return type_c_name(t);
 }
 
@@ -210,6 +215,25 @@ static void text_paths(const decl *d, const char *prefix, path_list *out)
         } else {
             sb_put(&path, ".");
             text_paths(f->type.decl, path.data, out);
+        }
+    }
+}
+
+// The match entity fields of `d`'s values, as member paths from `prefix`:
+// "target", "stats.owner". Those in lists are in the heap, which systems that
+// split their entities don't change.
+static void entity_paths(const decl *d, const char *prefix, path_list *out)
+{
+    for (int i = 0; i < d->fields.count; i++) {
+        const field *f = &d->fields.items[i];
+        sb path = {0};
+        sb_printf(&path, "%s%s", prefix, field_cname(f));
+        if (f->type.kind == TY_ENTITY) {
+            const heap_path p = {path.data, NULL};
+            vec_push(*out, p);
+        } else if (f->type.kind == TY_STRUCT) {
+            sb_put(&path, ".");
+            entity_paths(f->type.decl, path.data, out);
         }
     }
 }
@@ -557,6 +581,12 @@ static void gen_as(gen *g, sb *o, expr *e, const type want)
         sb_put(o, ")");
         return;
     }
+    if (want.kind == TY_OPTIONAL && have.kind != TY_OPTIONAL) { // A value where a T? goes: int? best = 5
+        sb_printf(o, "((%s){.value = ", c_type(want));
+        gen_as(g, o, e, want.decl->fields.items[0].type);
+        sb_put(o, ", .ok = true})");
+        return;
+    }
     if (want.kind == TY_FLOAT && have.kind == TY_INT) {
         if (e->kind == E_INT) {
             // Same rounding as a runtime conversion, but reads as a plain literal.
@@ -824,6 +854,12 @@ static bool is_fresh(const expr *e)
 // copied if it's taken out of a place.
 static void gen_value_of(gen *g, sb *o, expr *e, const type want)
 {
+    if (want.kind == TY_OPTIONAL && e->type.kind != TY_OPTIONAL && type_has_list(e->type) && !is_fresh(e)) {
+        sb_printf(o, "((%s){.value = ", c_type(want)); // Its own copy, in a T?
+        gen_value_of(g, o, e, want.decl->fields.items[0].type);
+        sb_put(o, ", .ok = true})");
+        return;
+    }
     if (!type_has_list(e->type) || is_fresh(e)) {
         gen_as(g, o, e, want);
         return;
@@ -864,6 +900,12 @@ static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const
 {
     if (overload) {
         gen_operator_call(g, o, overload, l, r);
+        return;
+    }
+    if (l->kind == E_NULL || r->kind == E_NULL) { // found == null: whether a T? is nothing
+        sb_printf(o, "%s(", op == T_EQ ? "!" : "");
+        gen_expr(g, o, l->kind == E_NULL ? r : l);
+        sb_put(o, ").ok");
         return;
     }
     const type lt = l->type;
@@ -1465,6 +1507,15 @@ static void gen_expr(gen *g, sb *o, const expr *e)
     case E_THIS: // The entity the system runs for, or a component method's: its caller's
         sb_put(o, "tide_this");
         break;
+    case E_NULL: // A T? with nothing in it
+        sb_printf(o, "((%s){0})", c_type(e->type));
+        break;
+    case E_COALESCE:
+    case E_IS:
+    case E_TRY:
+    case E_DEFAULTED:
+        sb_put(o, e->hoisted ? e->hoisted : "tide_not_hoisted"); // Ran before the statement (see hoist_unwrap)
+        break;
     case E_NAME:
         if (is_text_ref(e)) {
             sb_printf(o, "tide_textref_get(%s)", local_cname(g, e->name));
@@ -1722,6 +1773,14 @@ static bool is_unit(const expr *e)
     return e->kind == E_CONDITIONAL || (e->kind == E_BINARY && (e->op == T_AND || e->op == T_OR));
 }
 
+// `??`, `is`, `try` and `!` after a value: they look at a T? or a failable
+// call's result, which runs before its statement, into a temporary, and so do
+// they: `try` returns from there, and `??`'s right side only runs when needed.
+static bool is_unwrap(const expr *e)
+{
+    return e->kind == E_COALESCE || e->kind == E_IS || e->kind == E_TRY || e->kind == E_DEFAULTED;
+}
+
 static bool holds_ordered(expr *e);
 
 static void collect_ordered(expr *e, expr_list *out)
@@ -1771,6 +1830,13 @@ static void collect_ordered(expr *e, expr_list *out)
         collect_ordered(e->object, out);
         collect_ordered(e->lhs, out);
         break;
+    case E_COALESCE: // Its right side is its own: it only runs when the left fails
+    case E_IS:
+    case E_TRY:
+    case E_DEFAULTED:
+        collect_ordered(e->lhs, out);
+        vec_push(*out, e);
+        break;
     default:
         break;
     }
@@ -1800,7 +1866,7 @@ static bool must_hoist(const expr_list *ordered)
     if (ordered->count > 1) return true;
     for (int i = 0; i < ordered->count; i++) {
         expr *e = ordered->items[i];
-        if (is_spawn(e)) return true;
+        if (is_spawn(e) || is_unwrap(e)) return true;
         if (!is_unit(e)) continue;
         if (e->kind == E_BINARY ? part_must_hoist(e->rhs) : part_must_hoist(e->lhs) || part_must_hoist(e->rhs)) {
             return true;
@@ -1818,6 +1884,7 @@ static bool needs_hoisting(expr *e)
 }
 
 static void hoist_unit(gen *g, expr *e, const char *name);
+static void hoist_unwrap(gen *g, expr *e);
 static bool wrapped_in_parens(const char *text);
 
 // Runs what keeps its order in a statement's expressions (in the order given)
@@ -1843,6 +1910,9 @@ static void hoist_spawns(gen *g, expr *a, expr *b)
         } else if (is_unit(e)) {
             sb_printf(&name, "tide_called%d", g->call_temps++);
             hoist_unit(g, e, name.data);
+        } else if (is_unwrap(e)) {
+            hoist_unwrap(g, e); // Sets e->hoisted
+            continue;
         } else {
             sb_printf(&name, "tide_called%d", g->call_temps++);
             indent(g, &g->c);
@@ -1892,6 +1962,154 @@ static void hoist_unit(gen *g, expr *e, const char *name)
         g->indent--;
         line(g, o, "%s", side == 0 ? "} else {" : "}");
     }
+}
+
+// A value of C type `have`, as C text, converted to `want` the way gen_as
+// converts expressions: int to float, int vectors to float vectors.
+static void gen_c_as(sb *o, const char *text, const type have, const type want)
+{
+    if (want.kind == TY_FLOAT && have.kind == TY_INT) {
+        sb_printf(o, "(float)(%s)", text);
+    } else if (type_dim(want) >= 2 && type_dim(have) == type_dim(want) && type_is_float_based(want) && type_is_int_based(have)) {
+        sb_printf(o, "tide_%s_from_%s(%s)", type_suffix(want), type_suffix(have), text);
+    } else {
+        sb_put(o, text);
+    }
+}
+
+// The result `??`, `is`, `try` or `!` looks at: a variable's own, the
+// temporary a call that keeps its order already ran into, or a temporary the
+// result goes into first.
+static const char *unwrapped_place(gen *g, expr *e)
+{
+    if (e->kind == E_NAME || e->hoisted) return expr_text(g, e);
+    sb name = {0};
+    sb_printf(&name, "tide_called%d", g->call_temps++);
+    indent(g, &g->c);
+    sb_printf(&g->c, "%s = ", const_decl(e->type, name.data));
+    gen_expr(g, &g->c, e);
+    sb_put(&g->c, ";\n");
+    return name.data;
+}
+
+// Leaves the function being generated with `value`, C text of its result type,
+// closing the GUI containers its own code opened first. For `try`, which is
+// never in a copy of a function that takes a Block.
+static void gen_leave(gen *g, const char *value)
+{
+    sb *o = &g->c;
+    const char *close = g->containers.count > 0 ? g->containers.items[0] : NULL;
+    indent(g, o);
+    if (close) {
+        sb_printf(o, "{ %s = %s; tide_gui_close(tide_ui, %s); return tide_result; }\n",
+                  const_decl(g->routine->result, "tide_result"), value, close);
+    } else {
+        sb_printf(o, "return %s;\n", value);
+    }
+}
+
+// `??`, `is`, `try` or `!` after a value, before its statement: its value goes
+// in a temporary (e->hoisted), or for `is`, whether it matched, with the name
+// it gives set.
+static void hoist_unwrap(gen *g, expr *e)
+{
+    sb *o = &g->c;
+    const char *r = unwrapped_place(g, e->lhs);
+    const type value = e->lhs->type.decl->fields.items[0].type;
+
+    if (e->kind == E_TRY) { // Its error goes to the caller, which fails with the same
+        line(g, o, "if (!%s.ok) {", r);
+        g->indent++;
+        sb leave = {0};
+        sb_printf(&leave, "(%s){.error = %s.error}", c_type(g->routine->result), r);
+        gen_leave(g, leave.data);
+        g->indent--;
+        line(g, o, "}");
+        sb text = {0};
+        sb_printf(&text, value.kind == TY_VOID ? "%s" : "%s.value", r);
+        e->hoisted = text.data;
+        return;
+    }
+    if (e->kind == E_DEFAULTED && value.kind == TY_VOID) { // Open()!: the call, for nothing
+        e->hoisted = r;
+        return;
+    }
+
+    sb name = {0};
+    sb_printf(&name, "tide_called%d", g->call_temps++);
+    e->hoisted = name.data;
+    if (e->kind == E_DEFAULTED) { // Its value, or the default
+        indent(g, o);
+        sb_printf(o, "%s = %s.ok ? %s.value : ", const_decl(value, name.data), r, r);
+        gen_default(g, o, value);
+        sb_put(o, ";\n");
+        return;
+    }
+
+    if (e->kind == E_IS) {
+        indent(g, o);
+        if (e->looks_for == IS_VALUE) sb_printf(o, "const bool %s = %s.ok;\n", name.data, r);
+        else if (e->looks_for == IS_ERROR) sb_printf(o, "const bool %s = !%s.ok;\n", name.data, r);
+        else sb_printf(o, "const bool %s = !%s.ok && %s.error == %s;\n", name.data, r, r, enum_member_cname(e->type_decl, e->enum_member));
+        if (e->binding) {
+            line(g, o, "if (%s) %s = %s.%s;", name.data, local_cname(g, e->binding->name), r,
+                 e->looks_for == IS_VALUE ? "value" : "error");
+        }
+        return;
+    }
+
+    // a ?? b: b only runs when a has no value, with its own calls in order.
+    const type result = e->type;
+    line(g, o, "%s %s;", c_type(result), name.data);
+    line(g, o, "if (%s.ok) {", r);
+    g->indent++;
+    indent(g, o);
+    sb have_text = {0};
+    sb_printf(&have_text, "%s.value", r);
+    if (result.kind == TY_OPTIONAL || result.kind == TY_FAILABLE) {
+        sb_printf(o, "%s = (%s){.value = %s, .ok = true};\n", name.data, c_type(result), have_text.data);
+    } else {
+        sb_printf(o, "%s = ", name.data);
+        gen_c_as(o, have_text.data, value, result);
+        sb_put(o, ";\n");
+    }
+    g->indent--;
+    line(g, o, "} else {");
+    g->indent++;
+    hoist_spawns(g, e->rhs, NULL);
+    indent(g, o);
+    sb_printf(o, "%s = ", name.data);
+    gen_as(g, o, e->rhs, result);
+    sb_put(o, ";\n");
+    g->indent--;
+    line(g, o, "}");
+}
+
+// Whether an if's or loop's condition has `is` tests that give names: in it,
+// or in its parts joined by &&.
+static bool has_bindings(const expr *cond)
+{
+    if (!cond) return false;
+    if (cond->kind == E_IS) return cond->binding != NULL;
+    return cond->kind == E_BINARY && cond->op == T_AND && (has_bindings(cond->lhs) || has_bindings(cond->rhs));
+}
+
+// The names `is` gives in a condition, declared before it: the test sets them.
+static void declare_bindings(gen *g, const expr *cond)
+{
+    if (!cond) return;
+    if (cond->kind == E_IS && cond->binding) {
+        const stmt *b = cond->binding;
+        const char *name = local_cname(g, b->name);
+        indent(g, &g->c);
+        sb_printf(&g->c, "%s %s = ", c_type(b->type), name);
+        gen_default(g, &g->c, b->type);
+        sb_put(&g->c, ";\n");
+        line(g, &g->c, "(void)%s;", name);
+    }
+    if (cond->kind != E_BINARY || cond->op != T_AND) return;
+    declare_bindings(g, cond->lhs);
+    declare_bindings(g, cond->rhs);
 }
 
 static void gen_stmt(gen *g, const stmt *s);
@@ -2111,6 +2329,13 @@ static void gen_stmt(gen *g, const stmt *s)
     sb *o = &g->c;
     if (s->kind != S_BLOCK) line_directive(g, s->at);
 
+    // Names `is` gives in an if's condition, in a block of their own.
+    const bool bindings = s->kind == S_IF && has_bindings(s->cond);
+    if (bindings) {
+        line(g, o, "{");
+        g->indent++;
+        declare_bindings(g, s->cond);
+    }
     switch (s->kind) {
     case S_VAR:
     case S_EXPR: hoist_spawns(g, s->value, NULL); break;
@@ -2118,6 +2343,7 @@ static void gen_stmt(gen *g, const stmt *s)
     case S_IF:
     case S_SWITCH: hoist_spawns(g, s->cond, NULL); break;
     case S_RETURN:
+    case S_FAIL:
     case S_FOREACH: hoist_spawns(g, s->value, NULL); break; // A foreach's list is made once, before it
     default: break;
     }
@@ -2148,6 +2374,10 @@ static void gen_stmt(gen *g, const stmt *s)
             g->indent--;
         }
         line(g, o, "}");
+        if (bindings) {
+            g->indent--;
+            line(g, o, "}");
+        }
         break;
     }
 
@@ -2206,6 +2436,7 @@ static void gen_stmt(gen *g, const stmt *s)
             // What runs in order goes before the condition, each round.
             line(g, o, "while (true) {");
             g->indent++;
+            declare_bindings(g, s->cond); // Names `is` gives, for the body
             hoist_spawns(g, s->cond, NULL);
             line(g, o, "if (!(%s)) break;", expr_text(g, s->cond));
         } else {
@@ -2306,17 +2537,35 @@ static void gen_stmt(gen *g, const stmt *s)
             if (close) line(g, o, "tide_gui_close(tide_ui, %s);", close);
             line(g, o, "goto %s;", g->frame->end);
             g->frame->end_used = true;
-        } else if (s->value) {
+        } else if (s->value || (g->routine && g->routine->result.kind == TY_FAILABLE)) {
+            // A function that can fail returns its value, and that it didn't.
+            const bool failable = g->routine->result.kind == TY_FAILABLE;
             indent(g, o);
-            if (close) sb_printf(o, "{ %s = ", const_decl(g->routine->return_type, "tide_result"));
+            if (close) sb_printf(o, "{ %s = ", const_decl(g->routine->result, "tide_result"));
             else sb_put(o, "return ");
-            gen_value_of(g, o, s->value, g->routine->return_type);
+            if (failable) sb_printf(o, "(%s){", c_type(g->routine->result));
+            if (failable && s->value) sb_put(o, ".value = ");
+            if (s->value) gen_value_of(g, o, s->value, g->routine->return_type);
+            if (failable) sb_printf(o, "%s.ok = true}", s->value ? ", " : "");
             if (close) sb_printf(o, "; tide_gui_close(tide_ui, %s); return tide_result; }\n", close);
             else sb_put(o, ";\n");
         } else {
             if (close) line(g, o, "tide_gui_close(tide_ui, %s);", close);
             line(g, o, g->in_input ? "return tide_self;" : "return;");
         }
+        break;
+    }
+
+    case S_FAIL: { // Only in a function that can fail, or a block written in one
+        const char *close = g->containers.count > 0 ? g->containers.items[0] : NULL;
+        indent(g, o);
+        if (close) sb_printf(o, "{ %s = ", const_decl(g->routine->result, "tide_result"));
+        else sb_put(o, "return ");
+        sb_printf(o, "(%s){.error = ", c_type(g->routine->result));
+        gen_value_of(g, o, s->value, g->routine->fails);
+        sb_put(o, "}");
+        if (close) sb_printf(o, "; tide_gui_close(tide_ui, %s); return tide_result; }\n", close);
+        else sb_put(o, ";\n");
         break;
     }
 
@@ -2527,6 +2776,61 @@ static void gen_type(const gen *g, sb *o, const decl *d)
     sb_printf(o, "} %s;\n", name);
     sb_printf(o, "_Static_assert(sizeof(%s) == %d, \"%s has padding tidec didn't write out\");\n\n", name,
               decl_layout(d).size, name);
+}
+
+// A T?'s or a failable call's members, as C lays them out with pointers of
+// `ptr` bytes: its value, its error and whether it has a value, with the
+// padding written out. Text values are tide_str, whose size has a pointer in
+// it. Returns the size.
+static int gen_result_members(sb *o, const decl *d, const int ptr)
+{
+    const type bool_t = {TY_BOOL, NULL};
+    const type types[3] = {d->fields.items[0].type, d->fields.count > 1 ? d->fields.items[1].type : (type){TY_VOID, NULL}, bool_t};
+    static const char *const names[3] = {"value", "error", "ok"};
+    layout l = {0, 1};
+    int pads = 0;
+    for (int i = 0; i < 3; i++) {
+        const type t = types[i];
+        if (t.kind == TY_VOID) continue;
+        layout f = type_layout(t);
+        if (t.kind == TY_STRING) f = (layout){ptr + 8, ptr};
+        else if (t.kind == TY_COMPONENT || t.kind == TY_EVENT) f = decl_layout(t.decl);
+        const int pad = round_up(l.size, f.align) - l.size;
+        if (pad) sb_printf(o, "    uint8_t tide_pad%d[%d];\n", pads++, pad);
+        sb_printf(o, "    %s %s;\n", c_type(t), names[i]);
+        l.size += pad + f.size;
+        if (f.align > l.align) l.align = f.align;
+    }
+    const int pad = round_up(l.size, l.align) - l.size;
+    if (pad) sb_printf(o, "    uint8_t tide_pad%d[%d];\n", pads, pad);
+    return l.size + pad;
+}
+
+// Every T? and `T fails E` the program uses: plain data, with no padding the
+// compiler adds. A zeroed one has no value: a T?'s nothing.
+static void gen_result_types(gen *g)
+{
+    sb *o = &g->c;
+    if (g->prog->results.count > 0) sb_put(o, "// T? and what functions that can fail give\n\n");
+    for (int i = 0; i < g->prog->results.count; i++) {
+        const decl *d = g->prog->results.items[i];
+        const char *name = c_type((type){d->fields.count > 1 ? TY_FAILABLE : TY_OPTIONAL, (decl *)d});
+        sb wide = {0};
+        sb narrow = {0};
+        const int wide_size = gen_result_members(&wide, d, 8);
+        const int narrow_size = gen_result_members(&narrow, d, 4);
+        sb_printf(o, "// " STR_FMT "\ntypedef struct %s {\n", STR_ARG(d->name), name);
+        if (wide_size == narrow_size && strcmp(wide.data, narrow.data) == 0) {
+            sb_put(o, wide.data);
+            sb_printf(o, "} %s;\n", name);
+            sb_printf(o, "_Static_assert(sizeof(%s) == %d, \"%s has padding tidec didn't write out\");\n\n", name, wide_size, name);
+            continue;
+        }
+        // Text holds a pointer, whose size the padding depends on.
+        sb_printf(o, "#if UINTPTR_MAX > 0xFFFFFFFFu\n%s#else\n%s#endif\n} %s;\n", wide.data, narrow.data, name);
+        sb_printf(o, "_Static_assert(sizeof(%s) == (UINTPTR_MAX > 0xFFFFFFFFu ? %d : %d), \"%s has padding tidec didn't write out\");\n\n",
+                  name, wide_size, narrow_size, name);
+    }
 }
 
 // Rows in each of archetype `a`'s chunks are 1 << this: as many as keep its
@@ -3409,7 +3713,8 @@ static void gen_command_recorders(gen *g)
             sb_printf(o, "TIDE_HELPER tide_entity tide_cmd_spawn%d(%s *w, tide_entity scene, tide_spawn%d values)\n{\n", a,
                       world_type(local), a);
         }
-        sb_put(o, "    tide_entity e = tide_entity_create(&w->entities);\n");
+        // A system that splits its entities across threads gets a temporary handle (tide/jobs.h)
+        sb_printf(o, "    tide_entity e = %s(&w->entities);\n", local ? "tide_entity_create" : "tide_new_entity");
         sb_printf(o, "    tide_command *c = %scmd_push(w, TIDE_CMD_SPAWN, %d, e);\n", world_prefix(local), a);
         sb_printf(o, "    c->data.spawn%d = values;\n", a);
         if (spawn_has_text(g, a)) sb_printf(o, "    tide_own_spawn%d(&c->data.spawn%d, %s);\n", a, a, world_where(local));
@@ -4015,7 +4320,7 @@ static void gen_routine_signature(gen *g, sb *o, const decl *m)
         sb_put(o, m->params.count == 0 ? "void)" : ")");
         return;
     }
-    sb_printf(o, "TIDE_HELPER %s %s(", m->return_type.kind == TY_VOID ? "void" : c_type(m->return_type), routine_cname(m));
+    sb_printf(o, "TIDE_HELPER %s %s(", m->result.kind == TY_VOID ? "void" : c_type(m->result), routine_cname(m));
     int n = 0;
     if (m->draws) {
         sb_put(o, "tide_draw_list *tide_draw, tide_gui *tide_ui, uint32_t tide_seed");
@@ -4062,6 +4367,8 @@ static void gen_routine(gen *g, const decl *m)
         if (takes_where(&m->params.items[i])) line(g, o, "(void)%s;", where_name(g, m->params.items[i].name));
     }
     for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);
+    // A function that can fail and returns nothing succeeds at its end.
+    if (m->result.kind == TY_FAILABLE && m->return_type.kind == TY_VOID) line(g, o, "return (%s){.ok = true};", c_type(m->result));
     g->routine = NULL;
     g->indent = 0;
     sb_put(o, "}\n");
@@ -4419,20 +4726,6 @@ static void gen_incoming_input(const gen *g, sb *o, const char *value)
               repair ? ")" : "", sanitize ? ")" : "");
 }
 
-// Whether a system's entities are split across threads, a task per chunk of
-// them: it runs per entity, and what it changes is its entities' own, in no
-// order across them. Spawns hand out entity IDs in order, one system at a time
-// changes the heap, and a singleton is everyone's. C is trusted: what it does
-// on several threads at once is the game's to get right.
-static bool splits(const decl *sys)
-{
-    if (sys->is_view || !sys->per_entity || sys->spawns || sys->writes_text) return false;
-    for (int i = 0; i < sys->params.count; i++) {
-        if (sys->params.items[i].type.kind == TY_SINGLETON && sys->params.items[i].mode == PARAM_MUT) return false;
-    }
-    return true;
-}
-
 // Roughly what running code once costs, to tell whether a tick's systems are
 // worth threads (tide/jobs.h): an operation counts 1, a call 30 (math like Sin,
 // or a function), and a loop's body as if it ran 8 times. Only that choice
@@ -4493,6 +4786,133 @@ static void gen_chunk(gen *g, const decl *sys, const int a, const char *call, co
     sb_printf(o, ");%s\n%s}\n", clear, pad);
 }
 
+// Whether a system's spawns get temporary handles, settled once it's done
+// (tide/jobs.h).
+static bool system_settles(const decl *sys)
+{
+    return sys->spawns && system_splits(sys);
+}
+
+// The entity fields of the components a system changes, which may hold its
+// spawns' temporary handles until it's done.
+static path_list settled_fields(const decl *sys, const int index)
+{
+    path_list paths = {0};
+    const param *p = &sys->params.items[index];
+    if (p->type.kind == TY_COMPONENT && p->mode == PARAM_MUT && !p->type.decl->is_local) {
+        entity_paths(p->type.decl, "", &paths);
+    }
+    return paths;
+}
+
+static bool settles_fields(const decl *sys)
+{
+    for (int i = 0; i < sys->params.count; i++) {
+        if (settled_fields(sys, i).count) return true;
+    }
+    return false;
+}
+
+// tide_settle_<system>: a task's chunk, with the real handles for the
+// temporary ones its spawns gave, in the components it changes.
+static void gen_system_settle(gen *g, const decl *sys)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    sb_printf(o, "static void tide_settle_%s(void *tide_world_v, uint32_t tide_task, const tide_new_entities *tide_m)\n{\n",
+              decl_cname(sys));
+    sb_put(o, "    tide_world *tide_w = tide_world_v;\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (!runs_on(g, sys, a)) continue;
+        sb_printf(o, "    { // %s\n        tide_table *tide_t = &tide_w->%s;\n", arch_label(g, a), arch_name(g, a));
+        sb_put(o, "        if (tide_task < tide_t->chunks) {\n            const uint32_t tide_c = tide_task;\n");
+        sb_printf(o, "            const uint32_t tide_n = tide_table_rows(tide_t, %d, tide_c);\n", arch_shift(g, a));
+        for (int i = 0; i < sys->params.count; i++) {
+            const path_list paths = settled_fields(sys, i);
+            if (!paths.count) continue;
+            const decl *d = sys->params.items[i].type.decl;
+            const char *comp = type_cname(d);
+            sb_printf(o, "            %s *tide_col_%s = tide_table_column_mut(tide_t, %s, tide_c, %d);\n", comp, comp,
+                      arch_columns(g, a), arch_column(g, a, d->index));
+            sb_put(o, "            for (uint32_t tide_i = 0; tide_i < tide_n; tide_i++) {\n");
+            for (int k = 0; k < paths.count; k++) {
+                sb_printf(o, "                tide_col_%s[tide_i].%s = tide_settled(tide_m, tide_col_%s[tide_i].%s);\n", comp,
+                          paths.items[k].path, comp, paths.items[k].path);
+            }
+            sb_put(o, "            }\n");
+        }
+        sb_put(o, "            return;\n        }\n        tide_task -= tide_t->chunks;\n    }\n");
+    }
+    sb_put(o, "    (void)tide_w;\n    (void)tide_task;\n    (void)tide_m;\n}\n\n");
+}
+
+// tide_settle_item: a change or event recorded by a system whose spawns got
+// temporary handles, with the real ones.
+static void gen_settle_item(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    sb_put(o, "static void tide_settle_item(void *tide_item, const tide_new_entities *tide_m)\n{\n");
+    sb_put(o, "    tide_command *c = tide_item;\n");
+    sb_put(o, "    c->entity = tide_settled(tide_m, c->entity);\n    c->scene = tide_settled(tide_m, c->scene);\n");
+    sb_put(o, "    switch (c->kind) {\n");
+    // Spawns' values
+    sb_put(o, "    case TIDE_CMD_SPAWN:\n        switch (c->id) {\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (!prog->spawn_target.items[a] || arch_local(g, a)) continue;
+        path_list paths = {0};
+        for (int i = 0; i < prog->components.count; i++) {
+            if (!has_component(prog->archetypes.items[a], i)) continue;
+            sb prefix = {0};
+            sb_printf(&prefix, "%s.", type_cname(prog->components.items[i]));
+            entity_paths(prog->components.items[i], prefix.data, &paths);
+        }
+        if (!paths.count) continue;
+        sb_printf(o, "        case %d:\n", a);
+        for (int k = 0; k < paths.count; k++) {
+            sb_printf(o, "            c->data.spawn%d.%s = tide_settled(tide_m, c->data.spawn%d.%s);\n", a, paths.items[k].path, a,
+                      paths.items[k].path);
+        }
+        sb_put(o, "            break;\n");
+    }
+    sb_put(o, "        default: break;\n        }\n        break;\n");
+    // Added components
+    sb_put(o, "    case TIDE_CMD_ADD:\n        switch (c->id) {\n");
+    for (int i = 0; i < prog->components.count; i++) {
+        const decl *d = prog->components.items[i];
+        if (d->is_local || !has_component(prog->added_mask, i)) continue;
+        sb prefix = {0};
+        sb_printf(&prefix, "%s.", type_cname(d));
+        path_list paths = {0};
+        entity_paths(d, prefix.data, &paths);
+        if (!paths.count) continue;
+        sb_printf(o, "        case %d:\n", i);
+        for (int k = 0; k < paths.count; k++) {
+            sb_printf(o, "            c->data.%s = tide_settled(tide_m, c->data.%s);\n", paths.items[k].path, paths.items[k].path);
+        }
+        sb_put(o, "            break;\n");
+    }
+    sb_put(o, "        default: break;\n        }\n        break;\n");
+    // Events' values
+    sb_put(o, "    case TIDE_CMD_EVENT:\n        switch (c->id) {\n");
+    for (int i = 0; i < prog->events.count; i++) {
+        const decl *d = prog->events.items[i];
+        if (d->is_local || !is_queued(prog, d)) continue;
+        sb prefix = {0};
+        sb_printf(&prefix, "event_%s.", type_cname(d));
+        path_list paths = {0};
+        entity_paths(d, prefix.data, &paths);
+        if (!paths.count) continue;
+        sb_printf(o, "        case %d:\n", d->index);
+        for (int k = 0; k < paths.count; k++) {
+            sb_printf(o, "            c->data.%s = tide_settled(tide_m, c->data.%s);\n", paths.items[k].path, paths.items[k].path);
+        }
+        sb_put(o, "            break;\n");
+    }
+    sb_put(o, "        default: break;\n        }\n        break;\n");
+    sb_put(o, "    default: break;\n    }\n}\n\n");
+}
+
 static void gen_system_run(gen *g, const decl *sys)
 {
     const program *prog = g->prog;
@@ -4513,7 +4933,7 @@ static void gen_system_run(gen *g, const decl *sys)
     } else {
         sb_printf(&call, "tide_system_%s(tide_w", name);
     }
-    const bool split = splits(sys);
+    const bool split = system_splits(sys);
 
     if (view) {
         sb_printf(o, "static void tide_run_view_%s(const tide_world *tide_w, const tide_world *tide_prev, float tide_alpha, "
@@ -4594,6 +5014,7 @@ static void gen_system_run(gen *g, const decl *sys)
     }
     g->blending = NULL;
     sb_put(o, "}\n\n");
+    if (!view && system_settles(sys) && settles_fields(sys)) gen_system_settle(g, sys);
 }
 
 // ---------------------------------------------------------------------------
@@ -4755,16 +5176,26 @@ static void gen_api(gen *g)
         }
         sb_put(o, "};\n");
     }
+    // Systems that split their entities give their spawns temporary handles,
+    // settled once they're done.
+    bool any_settles = false;
     if (prog->systems.count) {
         sb_put(o, "static const tide_system_tasks tide_systems[] = {\n");
         for (int i = 0; i < prog->systems.count; i++) {
             const decl *sys = prog->systems.items[i];
             const char *name = decl_cname(sys);
-            if (sys->waits.count) sb_printf(o, "    {tide_tasks_%s, tide_task_%s, %d, tide_waits_%s},\n", name, name, sys->waits.count, name);
-            else sb_printf(o, "    {tide_tasks_%s, tide_task_%s, 0, NULL},\n", name, name);
+            const bool settles = system_settles(sys);
+            any_settles |= settles;
+            sb_printf(o, "    {tide_tasks_%s, tide_task_%s, %d, ", name, name, sys->waits.count);
+            if (sys->waits.count) sb_printf(o, "tide_waits_%s", name);
+            else sb_put(o, "NULL");
+            sb_printf(o, ", %s, %s, ", sys->spawns ? "true" : "false", settles ? "true" : "false");
+            if (settles && settles_fields(sys)) sb_printf(o, "tide_settle_%s},\n", name);
+            else sb_put(o, "NULL},\n");
         }
         sb_put(o, "};\n\n");
     }
+    if (any_settles) gen_settle_item(g);
     // What each thread does before its first task: text finds the match's heap.
     sb_put(o, "static void tide_prepare(void *w)\n{\n");
     if (prog->uses_heap) sb_put(o, "    tide_text_use(&((tide_world *)w)->heap, NULL);\n}\n\n");
@@ -4774,8 +5205,10 @@ static void gen_api(gen *g)
     sb_printf(o, "void tide_world_tick_on(tide_world *w, const tide_jobs *jobs)\n{\n%s", use_match);
     if (prog->match_devices) sb_put(o, "    tide_device_edges(w);\n");
     if (prog->systems.count) {
-        sb_printf(o, "    tide_run_systems(w, tide_systems, %du, jobs, tide_prepare, &w->commands, sizeof(tide_command));\n",
-                  prog->systems.count);
+        sb_printf(o, "    const tide_tick_systems tide_tick = {tide_systems, %du, tide_prepare, &w->commands, sizeof(tide_command), "
+                     "&w->entities, %s};\n",
+                  prog->systems.count, any_settles ? "tide_settle_item" : "NULL");
+        sb_put(o, "    tide_run_systems(w, &tide_tick, jobs);\n");
     } else {
         sb_put(o, "    (void)jobs;\n    (void)tide_prepare;\n");
     }
@@ -5473,6 +5906,7 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_dispatch_prototypes(&g);
     gen_apply(&g, false);
     gen_apply(&g, true);
+    gen_result_types(&g);
     gen_routines(&g);
     gen_blend_helpers(&g); // After the routines: a type's Interpolate is one
     if (prog->match_devices) gen_keep_devices(&g);

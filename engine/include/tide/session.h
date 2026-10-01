@@ -288,8 +288,8 @@ void tide_session_leave(tide_session *s);
 // if it's in one, and reports Disconnected with the reason.
 void tide_session_fail(tide_session *s, tide_disconnect_reason reason);
 // Once per frame, with the host's time in seconds. When this machine runs the
-// server, a long gap since the last update is a pause (a browser tab in the
-// background, a breakpoint): the match goes on from where it stopped.
+// server, a long gap since the last update is a pause (a breakpoint, a
+// browser that froze the page): the match goes on from where it stopped.
 void tide_session_update(tide_session *s, double now);
 // What views read, or NULL outside a match.
 const void *tide_session_world(const tide_session *s);

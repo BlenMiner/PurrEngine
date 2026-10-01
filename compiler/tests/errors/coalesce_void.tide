@@ -1,0 +1,12 @@
+// expect: 'Open' gives no value, so '??' has nothing to fall back from
+enum OpenError { Closed }
+void Open(int port) fails OpenError
+{
+    if (port == 0) fail OpenError.Closed;
+}
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.value = Open(1) ?? 0;
+}

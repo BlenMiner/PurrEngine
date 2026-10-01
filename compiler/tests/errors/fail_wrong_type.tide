@@ -1,0 +1,8 @@
+// expect: 'Parse' fails with ParseError, not int
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail 3;
+    return 1;
+}
+scene Main { }

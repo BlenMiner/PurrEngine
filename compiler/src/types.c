@@ -121,6 +121,10 @@ bool type_assignable(const type to, const type from)
 {
     if (to.kind == TY_ERROR || from.kind == TY_ERROR) return true;
     if (to.kind == from.kind && to.decl == from.decl) return true;
+    // A value goes where a T? goes: int? best = 5.
+    if (to.kind == TY_OPTIONAL && from.kind != TY_OPTIONAL && from.kind != TY_FAILABLE) {
+        return type_assignable(to.decl->fields.items[0].type, from);
+    }
     return type_is_float_based(to) && type_is_int_based(from) && type_dim(to) == type_dim(from);
 }
 
@@ -148,7 +152,9 @@ const char *type_name(const type t)
     case TY_STRUCT:
     case TY_EVENT:
     case TY_ENUM:
-    case TY_LIST: {
+    case TY_LIST:
+    case TY_OPTIONAL:
+    case TY_FAILABLE: {
         char *b = buf[next++ % 4];
         const str name = t.decl->qualified.len > 0 ? t.decl->qualified : t.decl->name;
         snprintf(b, sizeof buf[0], STR_FMT, STR_ARG(name));

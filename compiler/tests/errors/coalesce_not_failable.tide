@@ -1,0 +1,8 @@
+// expect: '??' falls back when a call fails or a T? is nothing, and 'Twice' is int, which always has a value
+int Twice(int x) { return x * 2; }
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.value = Twice(2) ?? 0;
+}

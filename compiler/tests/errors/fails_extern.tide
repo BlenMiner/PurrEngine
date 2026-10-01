@@ -1,0 +1,4 @@
+// expect: C functions can't fail: they return what C returns
+enum ReadError { Missing }
+extern int ReadFile(string path) fails ReadError;
+scene Main { }

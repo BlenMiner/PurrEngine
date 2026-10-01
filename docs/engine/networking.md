@@ -8,7 +8,7 @@ For how a game starts, hosts and joins matches, see [Multiplayer](../language/mu
 
 Single-player is a match too: the machine runs a server itself, and connects to it through a loopback transport. There's no separate offline path, so what works alone works online.
 
-When the machine that runs the server stops for a while, like a browser tab in the background or a program paused in a debugger, the match stops with it, and goes on from where it was when the machine comes back.
+A minimized window or a browser tab in the background doesn't stop a game: it keeps running there without drawing, so the match goes on for the other players. Browsers slow a hidden page's timers and stop its animation frames, so a hidden page's frames come from a worker's timers instead. When the machine that runs the server does stop for a while, like a program paused in a debugger, or a browser that freezes the page (a phone putting the browser away), the match stops with it, and goes on from where it was when the machine comes back.
 
 ## What the server sends
 

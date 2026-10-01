@@ -1,0 +1,7 @@
+// expect: a function that can fail can't return a T? too
+enum ParseError { Empty }
+int? Parse(string text) fails ParseError
+{
+    return null;
+}
+scene Main { }

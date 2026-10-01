@@ -128,6 +128,9 @@ void tide_platform_open(const tide_window_desc *desc)
 #ifndef __wasm__
     // The browser paces web frames itself.
     flags |= desc->hidden ? FLAG_WINDOW_HIDDEN : FLAG_VSYNC_HINT;
+    // raylib stops the loop while the window is minimized, which would stop a
+    // match for the other players: it goes on, paced in step().
+    flags |= FLAG_WINDOW_ALWAYS_RUN;
     // Pixels are the display's logical ones, as CSS pixels are on the web
     // (see platform.h). raylib still renders at the display's full resolution.
     flags |= FLAG_WINDOW_HIGHDPI;
@@ -159,6 +162,16 @@ static int step(void)
     BeginDrawing();
     const int code = run_frame(run_user, GetFrameTime());
     EndDrawing(); // Also polls the OS for input
+#ifndef __wasm__
+    // A minimized window has no vsync to wait for: 60 frames a second, which
+    // draw nothing (see tide_platform_draw).
+    static double last;
+    if (IsWindowMinimized()) {
+        const double left = last + 1.0 / 60.0 - GetTime();
+        if (left > 0.0) WaitTime(left);
+    }
+    last = GetTime();
+#endif
     return code;
 }
 
@@ -323,7 +336,7 @@ static Color to_raylib(const tide_color c)
     return (Color){color_channel(c.r), color_channel(c.g), color_channel(c.b), color_channel(c.a)};
 }
 
-void tide_platform_draw(const tide_draw_list *list)
+static void draw_list(const tide_draw_list *list)
 {
     ClearBackground(BLACK); // Every frame starts black; Draw.Clear picks another color
     camera cam = {{0.0f, 0.0f}, 1.0f, false};
@@ -379,6 +392,22 @@ void tide_platform_draw(const tide_draw_list *list)
     }
 }
 
+// Nobody sees it while the window is minimized or, on the web, the page is
+// hidden, and frames go on meanwhile.
+static bool unseen(void)
+{
+#ifdef __wasm__
+    return tide_web_hidden();
+#else
+    return IsWindowMinimized();
+#endif
+}
+
+void tide_platform_draw(const tide_draw_list *list)
+{
+    if (!unseen()) draw_list(list);
+}
+
 tide_float2 tide_platform_world_to_screen(const tide_float2 world)
 {
     const Vector2 p = to_screen(&last_camera, world);
@@ -397,6 +426,7 @@ float tide_platform_measure_text(const char *text, const float size)
 
 void tide_platform_draw_overlay(const char *text)
 {
+    if (unseen()) return;
     const int size = 16;
     DrawText(text, GetScreenWidth() - MeasureText(text, size) - 12, 8, size, GRAY);
 }
@@ -411,7 +441,7 @@ void tide_platform_read_pixels(const tide_draw_list *list, const tide_float2 *po
     const int height = GetScreenHeight();
     const RenderTexture2D target = LoadRenderTexture(GetScreenWidth(), height);
     BeginTextureMode(target);
-    tide_platform_draw(list);
+    draw_list(list);
     EndTextureMode();
     const Image image = LoadImageFromTexture(target.texture);
     UnloadRenderTexture(target);

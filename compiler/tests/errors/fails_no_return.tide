@@ -1,0 +1,7 @@
+// expect: end every path with 'return value;' or 'fail error;'
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+}
+scene Main { }

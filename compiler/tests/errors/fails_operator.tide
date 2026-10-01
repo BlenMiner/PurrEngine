@@ -1,0 +1,8 @@
+// expect: operators can't fail
+enum MoneyError { Overflow }
+struct Money
+{
+    int cents;
+    Money operator +(Money a, Money b) fails MoneyError { return Money { cents = a.cents + b.cents }; }
+}
+scene Main { }

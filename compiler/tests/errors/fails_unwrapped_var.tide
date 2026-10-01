@@ -1,0 +1,14 @@
+// expect: 'result' holds the result of a call that can fail, so its value needs unwrapping first
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    var result = Parse("1");
+    score.value = result;
+}

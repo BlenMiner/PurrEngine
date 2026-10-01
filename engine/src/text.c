@@ -538,6 +538,7 @@ tide_str tide_str_add_entity(tide_str a, const tide_entity e, const bool local)
 {
     a = add_ascii(a, local ? "LocalEntity(" : "Entity(", local ? 12 : 7);
     if (tide_entity_is_null(e)) return add_ascii(a, "none)", 5);
+    if (tide_entity_is_temporary(e)) return add_ascii(a, "new)", 4); // Its ID comes once its system is done
     a = tide_str_add_int(a, (int32_t)e.index, 0);
     a = add_ascii(a, ":", 1);
     a = tide_str_add_int(a, (int32_t)e.generation, 0);

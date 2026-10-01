@@ -1,0 +1,4 @@
+// expect: a system's parameters are there or it doesn't run, so they can't be T?
+component Health { int value; }
+scene Main { }
+system Heal(Health? health) { }

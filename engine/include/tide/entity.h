@@ -14,6 +14,11 @@
 // The table lives inside the world, its slots in pages that the world's
 // snapshots share (see tide/page.h). It grows as entities are made, with no
 // limit but memory, and a zeroed table is an empty one.
+//
+// One system at a time makes entities, while others may look entities up on
+// other threads: like the heap's (see tide/heap.h), the table of pages is read
+// as a whole, and when it grows, the old one stays until
+// tide_entities_settle, once only one thread runs.
 
 // Slots in each page: 1 << this.
 #define TIDE_ENTITY_PAGE_SHIFT 10u
@@ -44,7 +49,7 @@ typedef struct tide_entities {
     uint32_t free_head;   // The last slot freed plus one, or 0: free slots are reused last freed first, so in a deterministic order
     uint32_t pages;       // Pages of slots it has
     uint32_t room;        // Pages `page` has room for
-    tide_page **page;
+    tide_page **page;     // Before the first, page[-1] holds the table this one replaced, until it's settled
 } tide_entities;
 
 tide_entity tide_entity_create(tide_entities *t);
@@ -78,6 +83,10 @@ uint64_t tide_entities_hash(uint64_t h, const tide_entities *t);
 // Lets go of its pages, leaving it empty.
 void tide_entities_free(tide_entities *t);
 
+// Frees the tables of pages it grew out of, which code on other threads may
+// still have been reading. tide_run_systems calls it once systems are done.
+void tide_entities_settle(tide_entities *t);
+
 // The table as bytes, for sending a world and carrying it over: what
 // tide_entities_pack writes, and reading it back into an empty table (false
 // when the bytes aren't a table).
@@ -88,6 +97,18 @@ bool tide_entities_unpack(tide_entities *t, tide_reader *r);
 static inline bool tide_entity_is_null(const tide_entity e)
 {
     return e.generation == 0;
+}
+
+// A generation with this bit is a temporary handle: what Spawn gives in a
+// system that splits its entities across threads, until the system is done
+// and the entity gets its ID (see tide/jobs.h). Real generations never have it.
+#define TIDE_ENTITY_TEMPORARY 0x80000000u
+
+// Whether `e` is temporary: an entity spawned by the system running now, whose
+// ID it gets once that system is done. C code given an entity can tell this way.
+static inline bool tide_entity_is_temporary(const tide_entity e)
+{
+    return (e.generation & TIDE_ENTITY_TEMPORARY) != 0;
 }
 
 static inline bool tide_entity_equal(const tide_entity a, const tide_entity b)
