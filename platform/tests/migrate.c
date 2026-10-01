@@ -268,7 +268,7 @@ static old_match make_old(const uint32_t waiting)
         header.previous[i].move = (float)i;
     }
     m.bytes = calloc(1, 4096);
-    tide_writer w = {m.bytes, 4096, 0, false};
+    tide_writer w = {m.bytes, 4096, 0, false, false};
     tide_write_bytes(&w, &header, sizeof header);
     tide_entities_pack(&entities, &w);
     const tide_entity none = {0};

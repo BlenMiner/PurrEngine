@@ -18,7 +18,7 @@ The server ticks the one true world. Every tick, it sends each player:
 - the inputs that changed,
 - and a hash of the world after the tick.
 
-An input that didn't change, or didn't arrive, keeps its last value, on every machine.
+An input that didn't change, or didn't arrive, keeps its last value, on every machine. One that changed goes as what changed: a bit for each value that didn't. Players send theirs the same way, each tick's from the tick before.
 
 ## Prediction and rollback
 
@@ -28,11 +28,15 @@ A client keeps a snapshot of every tick from the last one the server confirmed, 
 
 - If it went as the client guessed, the client only checks its hash against its snapshot.
 - If an input was different, the client goes back to the snapshot before that tick, and runs it and the ticks after it again with the right inputs.
-- If a hash differs anyway, the client gets the whole world again from the server, packed.
+- If a hash differs anyway, the client gets the world again from the server: only the pages its own world lacks (see [Sending worlds](#sending-worlds)).
 
 A client predicts at most a second ahead of the verified tick; beyond that, it waits for the server. The server keeps four seconds of ticks to send again, and a player further behind gets the whole world.
 
 Snapshots are cheap, which is what makes this work. The world is plain data, with no pointers, and everything past what's in use is zero, so a snapshot is a copy of the bytes in use, and a hash covers only those. Their cost follows what's in the world, not how big it could be.
+
+## Sending worlds
+
+A world goes over the network page by page, as a delta: each page is either the same as the one the receiver has in its place, or its bytes, with runs of zeros packed small. A player with a world like the match's, such as its own after a hash differed, or the last one it had of a match that changed hands, first gets a hash of each page, says which ones its world lacks, and gets only those. A player joining with nothing does the same with the match as it started, which it starts itself, when starting a match calls no C (see [C functions](../language/c-functions.md#what-c-is-trusted-with)): what never changed since, like a level the match made as it started, never goes over the network. A world small enough to go in one update goes whole, as do worlds of games whose start calls C, and of matches that went on from another's world. A world that doesn't come out as the server's hash says is asked for again, whole.
 
 ## Views and prediction
 
@@ -40,11 +44,11 @@ Views draw the predicted world, blended between its last two ticks (see [Views](
 
 ## Joining
 
-A player who joins gets the whole world, packed, and a cookie. Joining the same server again with the cookie gets them their `PlayerID` back, and with it everything the game kept for them.
+A player who joins gets the whole world and a cookie. Joining the same server again with the cookie gets them their `PlayerID` back, and with it everything the game kept for them.
 
 ## Host migration
 
-With the game's `hostMigration` setting, the server tells every player what they need for its match to go on without it: its room's code, the room's key (which lets only them take the room over), which players are in the match, and the SHA-256 of each one's cookie. When the server leaves or stops answering, its players go to the room again. The relay pings the room's host: if it's gone, the first player there hosts the room, and the relay introduces the others to it. That machine runs the server from the last tick it verified, with the players already in its world, and the others join it with their cookies, which it checks against the hashes. A match that ends says so at the relay too, which keeps its room as ended for five minutes: a player who missed the goodbye and comes back to take the match over is told it ended. See [Multiplayer](../language/multiplayer.md#host-migration).
+With the game's `hostMigration` setting, the server tells every player what they need for its match to go on without it: its room's code, the room's key (which lets only them take the room over), which players are in the match, and the SHA-256 of each one's cookie. When the server leaves or stops answering, its players go to the room again. The relay pings the room's host: if it's gone, the first player there hosts the room, and the relay introduces the others to it. That machine runs the server from the last tick it verified, with the players already in its world, and the others join it with their cookies, which it checks against the hashes. Their own last worlds are nearly the new server's, so they only get the pages theirs lack. A match that ends says so at the relay too, which keeps its room as ended for five minutes: a player who missed the goodbye and comes back to take the match over is told it ended. See [Multiplayer](../language/multiplayer.md#host-migration).
 
 ## Reliability
 

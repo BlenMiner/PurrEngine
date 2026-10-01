@@ -3726,6 +3726,21 @@ static void gen_header(gen *g)
     sb_put(o, "// they aren't a world of this game.\n");
     sb_put(o, "uint32_t tide_world_pack(const tide_world *w, uint8_t *out, uint32_t capacity);\n");
     sb_put(o, "bool tide_world_unpack(tide_world *w, const uint8_t *data, uint32_t size);\n\n");
+    sb_put(o, "// The world as a delta (tide/delta.h): what differs from `base`, a world the\n");
+    sb_put(o, "// receiver has too, or from the receiver's own world, which lacks the pages `need`\n");
+    sb_put(o, "// says (tide_world_need_pages), or neither: all of it. The bytes are to free().\n");
+    sb_put(o, "// Unpacking makes `w` (zeroed, or a world, not `base`) from them and the base they\n");
+    sb_put(o, "// were made from (NULL for none): false, leaving it zeroed, if they don't make the\n");
+    sb_put(o, "// world they say, by its hash.\n");
+    sb_put(o, "uint8_t *tide_world_pack_delta(const tide_world *w, const tide_world *base, const uint8_t *need,\n");
+    sb_put(o, "                               uint32_t need_size, uint32_t *size);\n");
+    sb_put(o, "bool tide_world_unpack_delta(tide_world *w, const tide_world *base, const uint8_t *data, uint32_t size);\n\n");
+    sb_put(o, "// The hashes of the world's pages, to free(), and which of them `base` lacks, into\n");
+    sb_put(o, "// `out`: as much as fits in `capacity`, and the rest it lacks. Its size; 0, lacking\n");
+    sb_put(o, "// everything, if `hashes` aren't a list of them.\n");
+    sb_put(o, "uint8_t *tide_world_hash_pages(const tide_world *w, uint32_t *size);\n");
+    sb_put(o, "uint32_t tide_world_need_pages(const tide_world *base, const uint8_t *hashes, uint32_t size, uint8_t *out,\n");
+    sb_put(o, "                               uint32_t capacity);\n\n");
     sb_put(o, "// Clears the local state (zeroed, or local state: what it had goes) and sets its\n");
     sb_put(o, "// singletons' defaults. If Main is a local scene, loads it.\n");
     sb_put(o, "void tide_local_init(tide_local *local);\n\n");
@@ -6404,64 +6419,89 @@ static bool write_file(const char *path, const sb *b)
 // ---------------------------------------------------------------------------
 // Source: the game, as sessions run it
 
-// Packs or unpacks one value of an input, as bits: bools take one, numbers
-// and enums 32, and a button of the devices whether it's held.
-static void gen_bits(gen *g, const char *at, const type t, const bool write, uint32_t *bits)
+// How gen_bits packs an input: whole, or as what differs from another input,
+// `base`, which every machine has (the last one, as the world keeps it).
+typedef enum bits_mode { BITS_WRITE, BITS_READ, BITS_WRITE_DELTA, BITS_READ_DELTA } bits_mode;
+
+// Packs or unpacks one value of an input, `in->` `at`, as bits: bools take
+// one, numbers and enums 32, and a button of the devices whether it's held.
+// As a delta from `base->` `at`, a bool is whether it flipped, and anything
+// else whether it changed, then its value if it did: unchanged inputs take a
+// bit a value, or none.
+static void gen_bits(gen *g, const char *at, const type t, const bits_mode mode, uint32_t *bits)
 {
     sb *o = &g->c;
     char inner[512];
     const int dim = type_dim(t);
     const int columns = matrix_dim(t);
-    if (t.kind == TY_BOOL) {
-        if (write) line(g, o, "tide_bits_put_bool(&b, %s);", at);
-        else line(g, o, "%s = tide_bits_get_bool(&b);", at);
-        *bits += 1;
-    } else if (t.kind == TY_FLOAT) {
-        if (write) line(g, o, "tide_bits_put_f32(&b, %s);", at);
-        else line(g, o, "%s = tide_bits_get_f32(&b);", at);
-        *bits += 32;
+    // A 32-bit value: as it packs (`put`, with %s for where it is) and as it unpacks
+    const char *put = NULL;
+    const char *get = NULL;
+    if (t.kind == TY_FLOAT) {
+        put = "tide_f32_bits(%s)";
+        get = "tide_bits_get_f32(&b)";
     } else if (t.kind == TY_INT || t.kind == TY_ENUM) {
-        if (write) line(g, o, "tide_bits_put(&b, (uint32_t)%s, 32);", at);
-        else line(g, o, "%s = (int32_t)tide_bits_get(&b, 32);", at);
-        *bits += 32;
-    } else if (t.kind == TY_PLAYER) {
-        snprintf(inner, sizeof inner, "%s.id", at);
-        if (write) line(g, o, "tide_bits_put(&b, %s, 32);", inner);
-        else line(g, o, "%s = tide_bits_get(&b, 32);", inner);
-        *bits += 32;
-    } else if (t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY) {
-        static const char *const parts[] = {"index", "generation"};
-        for (int i = 0; i < 2; i++) {
-            snprintf(inner, sizeof inner, "%s.%s", at, parts[i]);
-            if (write) line(g, o, "tide_bits_put(&b, %s, 32);", inner);
-            else line(g, o, "%s = tide_bits_get(&b, 32);", inner);
-            *bits += 32;
+        put = "(uint32_t)%s";
+        get = "(int32_t)tide_bits_get(&b, 32)";
+    } else if (t.kind == TY_PLAYER || t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY) {
+        put = "%s"; // Their uint32_t parts, below
+        get = "tide_bits_get(&b, 32)";
+    }
+    if (t.kind == TY_BOOL) {
+        if (mode == BITS_WRITE) line(g, o, "tide_bits_put_bool(&b, in->%s);", at);
+        else if (mode == BITS_READ) line(g, o, "in->%s = tide_bits_get_bool(&b);", at);
+        else if (mode == BITS_WRITE_DELTA) line(g, o, "tide_bits_put_bool(&b, in->%s != base->%s);", at, at);
+        else line(g, o, "in->%s = base->%s != tide_bits_get_bool(&b);", at, at);
+        *bits += 1;
+    } else if (t.kind == TY_FLOAT || t.kind == TY_INT || t.kind == TY_ENUM) {
+        char now[600];
+        char was[600];
+        snprintf(inner, sizeof inner, "in->%s", at);
+        snprintf(now, sizeof now, put, inner);
+        snprintf(inner, sizeof inner, "base->%s", at);
+        snprintf(was, sizeof was, put, inner);
+        if (mode == BITS_WRITE) line(g, o, "tide_bits_put(&b, %s, 32);", now);
+        else if (mode == BITS_READ) line(g, o, "in->%s = %s;", at, get);
+        else if (mode == BITS_WRITE_DELTA) line(g, o, "tide_bits_put_changed(&b, %s, %s);", now, was);
+        else line(g, o, "in->%s = tide_bits_get_bool(&b) ? %s : base->%s;", at, get, at);
+        *bits += mode == BITS_WRITE_DELTA || mode == BITS_READ_DELTA ? 33 : 32;
+    } else if (put) { // Players and entities: their parts
+        static const char *const player[] = {"id"};
+        static const char *const entity[] = {"index", "generation"};
+        const int count = t.kind == TY_PLAYER ? 1 : 2;
+        for (int i = 0; i < count; i++) {
+            snprintf(inner, sizeof inner, "%s.%s", at, t.kind == TY_PLAYER ? player[i] : entity[i]);
+            if (mode == BITS_WRITE) line(g, o, "tide_bits_put(&b, in->%s, 32);", inner);
+            else if (mode == BITS_READ) line(g, o, "in->%s = %s;", inner, get);
+            else if (mode == BITS_WRITE_DELTA) line(g, o, "tide_bits_put_changed(&b, in->%s, base->%s);", inner, inner);
+            else line(g, o, "in->%s = tide_bits_get_bool(&b) ? %s : base->%s;", inner, get, inner);
+            *bits += mode == BITS_WRITE_DELTA || mode == BITS_READ_DELTA ? 33 : 32;
         }
     } else if (dim >= 2) {
         for (int i = 0; i < dim; i++) {
             snprintf(inner, sizeof inner, "%s.%s", at, xyzw[i]);
-            gen_bits(g, inner, vector_type(type_is_float_based(t), 1), write, bits);
+            gen_bits(g, inner, vector_type(type_is_float_based(t), 1), mode, bits);
         }
     } else if (columns > 0) {
         for (int i = 0; i < columns; i++) {
             snprintf(inner, sizeof inner, "%s.c%d", at, i);
-            gen_bits(g, inner, vector_type(true, columns), write, bits);
+            gen_bits(g, inner, vector_type(true, columns), mode, bits);
         }
     } else if (t.kind == TY_QUATERNION) {
         snprintf(inner, sizeof inner, "%s.value", at);
-        gen_bits(g, inner, vector_type(true, 4), write, bits);
+        gen_bits(g, inner, vector_type(true, 4), mode, bits);
     } else if (t.kind == TY_COLOR || t.kind == TY_RECT) {
         static const char *const channels[] = {"r", "g", "b", "a"};
         static const char *const sides[] = {"x", "y", "width", "height"};
         for (int i = 0; i < 4; i++) {
             snprintf(inner, sizeof inner, "%s.%s", at, t.kind == TY_RECT ? sides[i] : channels[i]);
-            gen_bits(g, inner, (type){TY_FLOAT, NULL}, write, bits);
+            gen_bits(g, inner, (type){TY_FLOAT, NULL}, mode, bits);
         }
     } else if (t.kind == TY_STRUCT) {
         for (int i = 0; i < t.decl->fields.count; i++) {
             const field *f = &t.decl->fields.items[i];
             snprintf(inner, sizeof inner, "%s.%s", at, field_cname(f));
-            gen_bits(g, inner, f->type, write, bits);
+            gen_bits(g, inner, f->type, mode, bits);
         }
     } else if (t.kind == TY_RECORD) { // The devices: what match code reads of them
         const program *prog = g->prog;
@@ -6471,7 +6511,7 @@ static void gen_bits(gen *g, const char *at, const type t, const bool write, uin
             const type lt = leaf->field->type;
             if (lt.kind == TY_RECORD) snprintf(inner, sizeof inner, "%s.%s.pressed", at, leaf->path);
             else snprintf(inner, sizeof inner, "%s.%s", at, leaf->path);
-            gen_bits(g, inner, lt.kind == TY_RECORD ? (type){TY_BOOL, NULL} : lt, write, bits);
+            gen_bits(g, inner, lt.kind == TY_RECORD ? (type){TY_BOOL, NULL} : lt, mode, bits);
         }
     }
 }
@@ -6526,7 +6566,7 @@ static void gen_world_bytes(gen *g, const bool local)
         sb_printf(o, "    memset(&header.tide_tasks_%s, 0, sizeof header.tide_tasks_%s);\n", id, id);
     }
     if (prog->uses_heap) sb_put(o, "    memset(&header.heap, 0, sizeof header.heap);\n");
-    sb_put(o, "    tide_writer bytes = {out, capacity, 0, false};\n");
+    sb_put(o, "    tide_writer bytes = {out, capacity, 0, false, false};\n");
     sb_put(o, "    tide_write_bytes(&bytes, &header, sizeof header);\n");
     sb_put(o, "    tide_entities_pack(&w->entities, &bytes);\n");
     for (int a = 0; a < prog->archetypes.count; a++) {
@@ -6543,6 +6583,22 @@ static void gen_world_bytes(gen *g, const bool local)
 
     // Unpacking: bytes from the network or another build, so each part is
     // checked, and every entity has to be where the entity table says.
+    sb_put(o, "// Each row's entity is alive and there, and as many are there as are alive somewhere\n");
+    sb_printf(o, "static bool %splaced(const %s *w)\n{\n    bool ok = true;\n", prefix, world);
+    sb_put(o, "    uint32_t placed = 0;\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (arch_local(g, a) != local) continue;
+        const char *name = arch_name(g, a);
+        sb_printf(o, "    for (uint32_t i = 0; ok && i < w->%s.count; i++, placed++) {\n", name);
+        sb_printf(o, "        const tide_location at = tide_entity_location(&w->entities, *%s);\n",
+                  arch_cell(g, "w", a, 0, "tide_entity", "i", false));
+        sb_printf(o, "        ok = at.archetype == %du && at.row == i;\n    }\n", a);
+    }
+    sb_put(o, "    for (uint32_t i = 0; ok && i < w->entities.next_unused; i++) {\n");
+    sb_put(o, "        const tide_location at = tide_entity_location(&w->entities, tide_entity_in_slot(&w->entities, i));\n");
+    sb_put(o, "        if (at.archetype != TIDE_ARCHETYPE_NONE) ok = placed-- > 0;\n    }\n");
+    sb_put(o, "    return ok && placed == 0;\n}\n\n");
+
     sb_printf(o, "bool %sunpack(%s *w, const uint8_t *data, const uint32_t size)\n{\n", prefix, world);
     sb_printf(o, "    %sfree(w);\n", prefix);
     sb_put(o, "    if (size < sizeof *w) return false;\n");
@@ -6571,21 +6627,111 @@ static void gen_world_bytes(gen *g, const bool local)
     }
     if (prog->uses_heap) sb_put(o, "    ok = ok && tide_heap_unpack(&w->heap, &bytes);\n");
     sb_put(o, "    ok = ok && bytes.at == size;\n");
-    sb_put(o, "    // Each row's entity is alive and there, and as many are there as are alive somewhere\n");
-    sb_put(o, "    uint32_t placed = 0;\n");
-    for (int a = 0; a < prog->archetypes.count; a++) {
-        if (arch_local(g, a) != local) continue;
-        const char *name = arch_name(g, a);
-        sb_printf(o, "    for (uint32_t i = 0; ok && i < w->%s.count; i++, placed++) {\n", name);
-        sb_printf(o, "        const tide_location at = tide_entity_location(&w->entities, *%s);\n",
-                  arch_cell(g, "w", a, 0, "tide_entity", "i", false));
-        sb_printf(o, "        ok = at.archetype == %du && at.row == i;\n    }\n", a);
-    }
-    sb_put(o, "    for (uint32_t i = 0; ok && i < w->entities.next_unused; i++) {\n");
-    sb_put(o, "        const tide_location at = tide_entity_location(&w->entities, tide_entity_in_slot(&w->entities, i));\n");
-    sb_put(o, "        if (at.archetype != TIDE_ARCHETYPE_NONE) ok = placed-- > 0;\n    }\n");
-    sb_put(o, "    ok = ok && placed == 0;\n");
+    sb_printf(o, "    ok = ok && %splaced(w);\n", prefix);
     sb_printf(o, "    if (!ok) %sfree(w);\n    return ok;\n}\n\n", prefix);
+}
+
+// The match's world as deltas (tide/delta.h): its struct with the storage
+// zeroed as one region, then its entity table, each of its archetypes' tables
+// in order, its queue (as it packs), its tables of tasks and its heap. And its
+// pages' hashes, part by part, in the same order, and which of them a base
+// lacks.
+static void gen_world_delta(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    // The match's tables of tasks, by id
+    VEC(const char *) tasks = {0};
+    for (int i = 0; i < g->tasks.count; i++) {
+        if (task_table_in(g->tasks.items[i].fn, false)) vec_push(tasks, task_id(g->tasks.items[i].fn));
+    }
+    // The struct with its storage's pointers left out
+    sb_put(o, "static void tide_world_leave_storage(tide_world *w)\n{\n    memset(&w->entities, 0, sizeof w->entities);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (!arch_local(g, a)) sb_printf(o, "    memset(&w->%s, 0, sizeof w->%s);\n", arch_name(g, a), arch_name(g, a));
+    }
+    sb_put(o, "    memset(&w->commands, 0, sizeof w->commands);\n");
+    for (int i = 0; i < tasks.count; i++) {
+        sb_printf(o, "    memset(&w->tide_tasks_%s, 0, sizeof w->tide_tasks_%s);\n", tasks.items[i], tasks.items[i]);
+    }
+    if (prog->uses_heap) sb_put(o, "    memset(&w->heap, 0, sizeof w->heap);\n");
+    sb_put(o, "}\n\n");
+    sb_put(o, "static void tide_world_header(tide_world *header, const tide_world *w)\n{\n");
+    sb_put(o, "    memcpy(header, w, sizeof *header);\n    tide_world_leave_storage(header);\n}\n\n");
+
+    sb_put(o, "uint8_t *tide_world_pack_delta(const tide_world *w, const tide_world *base, const uint8_t *need,\n"
+              "                               const uint32_t need_size, uint32_t *size)\n{\n");
+    sb_put(o, "    tide_delta_writer d;\n    tide_delta_begin(&d, base != NULL, need, need_size, tide_world_hash(w));\n");
+    sb_put(o, "    if (need) base = NULL; // Only the receiver has it\n");
+    sb_put(o, "    tide_world header;\n    tide_world base_header;\n    tide_world_header(&header, w);\n");
+    sb_put(o, "    if (base) tide_world_header(&base_header, base);\n");
+    sb_put(o, "    tide_delta_region(&d, &header, sizeof header, base ? &base_header : NULL, base ? sizeof base_header : 0u, false);\n");
+    sb_put(o, "    tide_delta_close(&d);\n");
+    sb_put(o, "    tide_entities_pack_delta(&w->entities, base ? &base->entities : NULL, &d);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (arch_local(g, a)) continue;
+        const char *name = arch_name(g, a);
+        sb_printf(o, "    tide_table_pack_delta(&w->%s, base ? &base->%s : NULL, %s, &d);\n", name, name, arch_columns(g, a));
+    }
+    sb_put(o, "    tide_queue_pack(&w->commands, sizeof(tide_command), &d.bytes);\n");
+    for (int i = 0; i < tasks.count; i++) {
+        const char *id = tasks.items[i];
+        sb_printf(o, "    tide_table_pack_delta(&w->tide_tasks_%s, base ? &base->tide_tasks_%s : NULL, &tide_columns_tasks_%s, &d);\n",
+                  id, id, id);
+    }
+    if (prog->uses_heap) sb_put(o, "    tide_heap_pack_delta(&w->heap, base ? &base->heap : NULL, &d);\n");
+    sb_put(o, "    return tide_delta_end(&d, size);\n}\n\n");
+
+    sb_put(o, "bool tide_world_unpack_delta(tide_world *w, const tide_world *base, const uint8_t *data, const uint32_t size)\n{\n");
+    sb_put(o, "    tide_world_free(w);\n    tide_delta_reader d;\n    uint64_t hash;\n");
+    sb_put(o, "    bool ok = tide_delta_open(&d, data, size, base != NULL, &hash);\n");
+    sb_put(o, "    tide_world base_header;\n    if (base) tide_world_header(&base_header, base);\n");
+    sb_put(o, "    ok = ok && tide_delta_get(&d, w, sizeof *w, base ? &base_header : NULL, base ? sizeof base_header : 0u);\n");
+    sb_put(o, "    ok = ok && tide_delta_closed(&d);\n");
+    sb_put(o, "    tide_world_leave_storage(w); // Its storage comes next, whatever the bytes said\n");
+    sb_put(o, "    ok = ok && tide_entities_unpack_delta(&w->entities, base ? &base->entities : NULL, &d);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (arch_local(g, a)) continue;
+        const char *name = arch_name(g, a);
+        sb_printf(o, "    ok = ok && tide_table_unpack_delta(&w->%s, base ? &base->%s : NULL, %s, &d);\n", name, name,
+                  arch_columns(g, a));
+    }
+    sb_put(o, "    ok = ok && tide_queue_unpack(&w->commands, sizeof(tide_command), &d.bytes);\n");
+    for (int i = 0; i < tasks.count; i++) {
+        const char *id = tasks.items[i];
+        sb_printf(o, "    ok = ok && tide_table_unpack_delta(&w->tide_tasks_%s, base ? &base->tide_tasks_%s : NULL, &tide_columns_tasks_%s, &d);\n",
+                  id, id, id);
+    }
+    if (prog->uses_heap) sb_put(o, "    ok = ok && tide_heap_unpack_delta(&w->heap, base ? &base->heap : NULL, &d);\n");
+    sb_put(o, "    ok = ok && d.bytes.at == size && tide_world_placed(w) && tide_world_hash(w) == hash;\n");
+    sb_put(o, "    if (!ok) tide_world_free(w);\n    return ok;\n}\n\n");
+
+    sb_put(o, "uint8_t *tide_world_hash_pages(const tide_world *w, uint32_t *size)\n{\n");
+    sb_put(o, "    tide_writer out = {.grows = true};\n    tide_world header;\n    tide_world_header(&header, w);\n");
+    sb_put(o, "    tide_write_varint(&out, 1);\n    tide_write_u64(&out, tide_hash(&header, sizeof header));\n");
+    sb_put(o, "    tide_entities_hash_pages(&w->entities, &out);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (!arch_local(g, a)) sb_printf(o, "    tide_table_hash_pages(&w->%s, %s, &out);\n", arch_name(g, a), arch_columns(g, a));
+    }
+    for (int i = 0; i < tasks.count; i++) {
+        sb_printf(o, "    tide_table_hash_pages(&w->tide_tasks_%s, &tide_columns_tasks_%s, &out);\n", tasks.items[i], tasks.items[i]);
+    }
+    if (prog->uses_heap) sb_put(o, "    tide_heap_hash_pages(&w->heap, &out);\n");
+    sb_put(o, "    if (out.overflow) tide_out_of_memory();\n    *size = out.size;\n    return out.data;\n}\n\n");
+
+    sb_put(o, "uint32_t tide_world_need_pages(const tide_world *base, const uint8_t *hashes, const uint32_t size, uint8_t *out,\n"
+              "                               const uint32_t capacity)\n{\n");
+    sb_put(o, "    tide_needs n;\n    tide_needs_begin(&n, hashes, size, out, capacity);\n");
+    sb_put(o, "    tide_world header;\n    tide_world_header(&header, base);\n    tide_needs_one(&n, &header, sizeof header);\n");
+    sb_put(o, "    tide_entities_need_pages(&base->entities, &n);\n");
+    for (int a = 0; a < prog->archetypes.count; a++) {
+        if (!arch_local(g, a)) sb_printf(o, "    tide_table_need_pages(&base->%s, %s, &n);\n", arch_name(g, a), arch_columns(g, a));
+    }
+    for (int i = 0; i < tasks.count; i++) {
+        sb_printf(o, "    tide_table_need_pages(&base->tide_tasks_%s, &tide_columns_tasks_%s, &n);\n", tasks.items[i], tasks.items[i]);
+    }
+    if (prog->uses_heap) sb_put(o, "    tide_heap_need_pages(&base->heap, &n);\n");
+    sb_put(o, "    return tide_needs_end(&n);\n}\n\n");
 }
 
 // Snapshots of the match: copying shares its pages, and the hash covers what's
@@ -6644,6 +6790,23 @@ static void gen_world_copy(gen *g)
 
     gen_world_bytes(g, false);
     gen_world_bytes(g, true);
+    gen_world_delta(g);
+}
+
+// Whether starting a match calls no C, and its start holds no text or lists:
+// then a machine joining one can start it too, as sessions do to be sent only
+// what it lacks. Starting runs its scene's handlers and what they send, no
+// systems, and defaults are constants.
+static bool start_is_pure(const program *prog)
+{
+    for (int i = 0; i < prog->start_scenes.count; i++) {
+        if (decl_has_text(prog->start_scenes.items[i])) return false;
+    }
+    for (int i = 0; i < prog->decls.count; i++) {
+        const decl *d = prog->decls.items[i];
+        if (d->kind == DECL_SYSTEM && d->is_handler && !d->is_view && !d->is_local && d->calls_c) return false;
+    }
+    return true;
 }
 
 // What sessions (tide/session.h) need: the local state's side, the input
@@ -6702,6 +6865,16 @@ static void gen_game_api(gen *g)
               "    return tide_world_pack(w, out, capacity);\n}\n\n");
     sb_put(o, "static bool tide_game_unpack(void *w, const uint8_t *data, uint32_t size)\n{\n"
               "    return tide_world_unpack(w, data, size);\n}\n\n");
+    sb_put(o, "static uint8_t *tide_game_pack_delta(const void *w, const void *base, const uint8_t *need, uint32_t need_size,\n"
+              "                                     uint32_t *size)\n{\n"
+              "    return tide_world_pack_delta(w, base, need, need_size, size);\n}\n\n");
+    sb_put(o, "static bool tide_game_unpack_delta(void *w, const void *base, const uint8_t *data, uint32_t size)\n{\n"
+              "    return tide_world_unpack_delta(w, base, data, size);\n}\n\n");
+    sb_put(o, "static uint8_t *tide_game_hash_pages(const void *w, uint32_t *size)\n{\n"
+              "    return tide_world_hash_pages(w, size);\n}\n\n");
+    sb_put(o, "static uint32_t tide_game_need_pages(const void *base, const uint8_t *hashes, uint32_t size, uint8_t *out,\n"
+              "                                     uint32_t capacity)\n{\n"
+              "    return tide_world_need_pages(base, hashes, size, out, capacity);\n}\n\n");
     sb_put(o, "static bool tide_game_ended(const void *w)\n{\n    return tide_world_ended(w);\n}\n\n");
     sb_put(o, "static void tide_game_joined(void *w, tide_player_id player)\n{\n    tide_world_player_joined(w, player);\n}\n\n");
     sb_put(o, "static void tide_game_left(void *w, tide_player_id player)\n{\n    tide_world_player_left(w, player);\n}\n\n");
@@ -6713,30 +6886,44 @@ static void gen_game_api(gen *g)
                      "    tide_world_set_input(w, player, *(const %s *)input);\n}\n\n", in);
         sb_printf(o, "static void tide_game_set_server_input(void *w, const void *input)\n{\n"
                      "    tide_world_set_server_input(w, *(const %s *)input);\n}\n\n", in);
-        // Packed field by field, in bits. Unpacking starts from zeros, so padding stays zero.
+        // Packed field by field, in bits, whole or as a delta from another
+        // input. Unpacking starts from zeros, so padding stays zero.
+        uint32_t ignored = 0;
         sb_printf(o, "static uint32_t tide_game_write_input(const void *input, uint8_t *out, uint32_t capacity)\n{\n"
                      "    const %s *in = input;\n    tide_bits b = {out, capacity, 0, false};\n", in);
         g->indent = 1;
         for (int i = 0; i < input->fields.count; i++) {
-            const field *f = &input->fields.items[i];
-            char at[256];
-            snprintf(at, sizeof at, "in->%s", field_cname(f));
-            gen_bits(g, at, f->type, true, &bits);
+            gen_bits(g, field_cname(&input->fields.items[i]), input->fields.items[i].type, BITS_WRITE, &ignored);
         }
         sb_put(o, "    return tide_bits_end(&b);\n}\n\n");
         sb_printf(o, "static bool tide_game_read_input(const uint8_t *data, uint32_t size, void *input)\n{\n"
                      "    %s *in = input;\n    *in = (%s){0};\n    tide_bits b = {(uint8_t *)data, size, 0, false};\n", in, in);
-        uint32_t read_bits = 0;
         for (int i = 0; i < input->fields.count; i++) {
-            const field *f = &input->fields.items[i];
-            char at[256];
-            snprintf(at, sizeof at, "in->%s", field_cname(f));
-            gen_bits(g, at, f->type, false, &read_bits);
+            gen_bits(g, field_cname(&input->fields.items[i]), input->fields.items[i].type, BITS_READ, &ignored);
+        }
+        sb_put(o, "    return !b.overflow;\n}\n\n");
+        sb_printf(o, "static uint32_t tide_game_write_input_delta(const void *input, const void *previous, uint8_t *out,\n"
+                     "                                            uint32_t capacity)\n{\n"
+                     "    const %s *in = input;\n    const %s *base = previous;\n    tide_bits b = {out, capacity, 0, false};\n",
+                  in, in);
+        for (int i = 0; i < input->fields.count; i++) {
+            gen_bits(g, field_cname(&input->fields.items[i]), input->fields.items[i].type, BITS_WRITE_DELTA, &bits);
+        }
+        sb_put(o, "    return tide_bits_end(&b);\n}\n\n");
+        sb_printf(o, "static bool tide_game_read_input_delta(const uint8_t *data, uint32_t size, const void *previous, void *input)\n{\n"
+                     "    const %s *base = previous;\n    %s *in = input;\n    *in = (%s){0};\n"
+                     "    tide_bits b = {(uint8_t *)data, size, 0, false};\n",
+                  in, in, in);
+        for (int i = 0; i < input->fields.count; i++) {
+            gen_bits(g, field_cname(&input->fields.items[i]), input->fields.items[i].type, BITS_READ_DELTA, &ignored);
         }
         g->indent = 0;
         sb_put(o, "    return !b.overflow;\n}\n\n");
+        sb_printf(o, "static void tide_game_world_input(const void *w, uint32_t slot, void *input)\n{\n"
+                     "    *(%s *)input = ((const tide_world *)w)->inputs[slot < TIDE_SERVER_INPUT ? slot : TIDE_SERVER_INPUT];\n}\n\n",
+                  in);
     }
-    const uint32_t bytes = (bits + 7u) / 8u;
+    const uint32_t bytes = (bits + 7u) / 8u; // As a delta, the most an input can take
     sb_put(o, "const tide_game tide_game_api = {\n");
     sb_printf(o, "    .hash = 0x%016llXull,\n", (unsigned long long)g->game_hash);
     sb_put(o, "    .world_size = sizeof(tide_world),\n");
@@ -6746,12 +6933,17 @@ static void gen_game_api(gen *g)
     sb_put(o, "    .start = tide_game_start,\n    .tick = tide_game_tick,\n");
     sb_put(o, "    .copy_world = tide_game_copy,\n    .hash_world = tide_game_hash,\n");
     sb_put(o, "    .free_world = tide_game_free,\n    .pack_world = tide_game_pack,\n    .unpack_world = tide_game_unpack,\n");
+    sb_put(o, "    .pack_delta = tide_game_pack_delta,\n    .unpack_delta = tide_game_unpack_delta,\n");
+    sb_put(o, "    .hash_pages = tide_game_hash_pages,\n    .need_pages = tide_game_need_pages,\n");
     sb_put(o, "    .player_joined = tide_game_joined,\n    .player_left = tide_game_left,\n");
     if (input) {
         sb_put(o, "    .set_input = tide_game_set_input,\n    .set_server_input = tide_game_set_server_input,\n");
         sb_put(o, "    .write_input = tide_game_write_input,\n    .read_input = tide_game_read_input,\n");
+        sb_put(o, "    .write_input_delta = tide_game_write_input_delta,\n    .read_input_delta = tide_game_read_input_delta,\n");
+        sb_put(o, "    .world_input = tide_game_world_input,\n");
     }
     sb_put(o, "    .ended = tide_game_ended,\n");
+    if (start_is_pure(prog)) sb_put(o, "    .pure_start = true,\n");
     // Its settings: here rather than in the header, so they don't change the game's hash
     if (prog->tick_rate) sb_printf(o, "    .tick_rate = %uu,\n", (unsigned)prog->tick_rate);
     if (prog->host_migration) sb_put(o, "    .host_migration = true,\n");

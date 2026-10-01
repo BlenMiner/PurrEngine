@@ -2,6 +2,7 @@
 // with a game written by hand in C (tide/session.h only needs its functions).
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tide/platform.h"
@@ -77,15 +78,23 @@ static bool read_input(const uint8_t *data, const uint32_t size, void *input)
     return true;
 }
 
-// The world as bytes, to send it: plain data, as it is.
-static uint32_t pack(const void *w, uint8_t *out, const uint32_t capacity)
+// The world as bytes, to send it: plain data, all of it, whatever the
+// receiver has.
+static uint8_t *pack(const void *w, const void *base, const uint8_t *need, const uint32_t need_size, uint32_t *size)
 {
-    if (out && capacity >= sizeof(world)) memcpy(out, w, sizeof(world));
-    return sizeof(world);
+    (void)base;
+    (void)need;
+    (void)need_size;
+    uint8_t *out = malloc(sizeof(world));
+    if (!out) abort();
+    memcpy(out, w, sizeof(world));
+    *size = sizeof(world);
+    return out;
 }
 
-static bool unpack(void *w, const uint8_t *data, const uint32_t size)
+static bool unpack(void *w, const void *base, const uint8_t *data, const uint32_t size)
 {
+    (void)base;
     if (size != sizeof(world)) return false;
     memcpy(w, data, size);
     return true;
@@ -100,8 +109,8 @@ static const tide_game game = {
     .tick = tick,
     .copy_world = copy,
     .hash_world = hash,
-    .pack_world = pack,
-    .unpack_world = unpack,
+    .pack_delta = pack,
+    .unpack_delta = unpack,
     .player_joined = joined,
     .player_left = left,
     .set_input = set_input,

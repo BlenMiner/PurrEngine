@@ -339,7 +339,7 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
         free(goes);
         return false;
     }
-    tide_writer w = {to, (uint32_t)size, tw->size, false};
+    tide_writer w = {to, (uint32_t)size, tw->size, false, false};
 
     for (uint32_t i = 0; i < tw->singleton_count; i++) {
         const tide_layout_place *ts = &tw->singletons[i];

@@ -130,7 +130,7 @@ TIDE_TEST(table_packs_and_unpacks)
     fill(&t, &entities, 37);
     const uint32_t size = tide_table_packed_size(&t, &columns);
     uint8_t *bytes = malloc(size);
-    tide_writer w = {bytes, size, 0, false};
+    tide_writer w = {bytes, size, 0, false, false};
     tide_table_pack(&t, &columns, &w);
     TIDE_CHECK(!w.overflow && w.size == size);
 

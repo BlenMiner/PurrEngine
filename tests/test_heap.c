@@ -119,7 +119,7 @@ TIDE_TEST(heap_snapshots_share_until_changed)
     // Packed and unpacked: the same heap
     const uint32_t size = tide_heap_packed_size(&world.heap);
     uint8_t *bytes = malloc(size);
-    tide_writer w = {bytes, size, 0, false};
+    tide_writer w = {bytes, size, 0, false, false};
     tide_heap_pack(&world.heap, &w);
     TIDE_CHECK(!w.overflow && w.size == size);
     tide_heap back = {0};

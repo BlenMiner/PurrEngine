@@ -24,6 +24,13 @@ static const Result *result(void)
     return tide_get_Result(&world, (tide_entity){1, 1});
 }
 
+// Starting a match calls C: a machine joining one never starts it itself
+// to be sent only what it lacks (tide_game.pure_start).
+TIDE_TEST(extern_starting_a_match_that_calls_c_isnt_pure)
+{
+    TIDE_CHECK(!tide_game_api.pure_start);
+}
+
 TIDE_TEST(extern_functions_call_c)
 {
     const Result *r = result();

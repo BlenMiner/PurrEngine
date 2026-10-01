@@ -1,0 +1,97 @@
+// Deltas: a world sent as what changed from another, page by page. Most of
+// it never changes once it's made (the ground, its names, a long list), a
+// few things move every tick, and some come and go.
+
+settings
+{
+    hostMigration = true;
+}
+
+component Ground
+{
+    int2 cell;
+    float height;
+    string name;
+}
+
+component Mover
+{
+    float2 position;
+    float2 velocity;
+}
+
+component Spark
+{
+    int life;
+}
+
+input Controls
+{
+    float2 push;
+}
+
+singleton Field
+{
+    int sparks;
+    int joined;
+    int pulses;
+    List<int> heights;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main, mut Field field)
+{
+    for (var i = 0; i < 3000; i++)
+    {
+        Spawn(Ground { cell = int2(i % 60, i / 60), height = float(i % 7), name = $"ground {i}" });
+    }
+    for (var i = 0; i < 8; i++)
+    {
+        Spawn(Mover { position = float2(i, 0), velocity = float2(1, 0.5) });
+    }
+    for (var i = 0; i < 20000; i++) field.heights.Add(i % 13);
+}
+
+// A task the match keeps, waiting in the world that's sent
+async event(Spawned) Pulse(with Main, mut Field field)
+{
+    while (true)
+    {
+        await Wait.Ticks(7);
+        field.pulses += 1;
+    }
+}
+
+event(PlayerJoined joined) Join(mut Field field)
+{
+    field.joined += 1;
+    Spawn(Mover { }, Owner { player = joined.player });
+}
+
+system Push(Controls input, mut Mover mover, with Owner)
+{
+    mover.velocity += input.push;
+}
+
+system Move(Time time, mut Mover mover)
+{
+    mover.position += mover.velocity * time.dt;
+    if (Math.Abs(mover.position.x) > 20) mover.velocity.x = -mover.velocity.x;
+    if (Math.Abs(mover.position.y) > 20) mover.velocity.y = -mover.velocity.y;
+}
+
+system Sparkle(Time time, mut Field field)
+{
+    if (time.tick % 3 == 0)
+    {
+        Spawn(Spark { life = 10 });
+        field.sparks += 1;
+    }
+}
+
+system Fade(mut Spark spark)
+{
+    spark.life -= 1;
+    if (spark.life <= 0) this.Destroy();
+}

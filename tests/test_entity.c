@@ -120,7 +120,7 @@ TIDE_TEST(entity_table_packs_and_unpacks)
     tide_entity_destroy(&t, (tide_entity){1200, 1});
     const uint32_t size = tide_entities_packed_size(&t);
     uint8_t *bytes = malloc(size);
-    tide_writer w = {bytes, size, 0, false};
+    tide_writer w = {bytes, size, 0, false, false};
     tide_entities_pack(&t, &w);
     TIDE_CHECK(!w.overflow && w.size == size);
 

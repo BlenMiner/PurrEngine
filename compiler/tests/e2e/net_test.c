@@ -180,6 +180,84 @@ TIDE_TEST(net_a_client_that_diverges_gets_the_world_again)
     finish();
 }
 
+// A player whose machine stopped for longer than the server keeps ticks, but
+// not so long that it timed out, gets the world again and plays on.
+TIDE_TEST(net_a_player_far_behind_gets_the_world_again)
+{
+    start((tide_net_conditions){.latency = 0.03}, 21);
+    join(0);
+    join(1);
+    run(1.0);
+    tide_client *stopped = clients[1];
+    clients[1] = NULL; // Not updated
+    run(5.5);
+    clients[1] = stopped;
+    run(8.0);
+    for (int i = 0; i < 2; i++) {
+        const tide_client_status s = tide_client_status_of(clients[i]);
+        TIDE_CHECK(s.state == TIDE_SESSION_CONNECTED);
+        TIDE_CHECK(s.verified_tick + 30u > tide_server_tick(server));
+    }
+    TIDE_CHECK(tide_client_status_of(clients[0]).resyncs == 0);
+    TIDE_CHECK(tide_client_status_of(clients[1]).resyncs == 1); // The world, once
+    finish();
+}
+
+// What a match costs to keep going, through transports that count it: two
+// players, 50 ms away, for ten seconds after joining.
+static tide_transport counted_inner[3];
+static uint64_t counted_bytes[3];
+
+static void counted_send(void *self, const tide_address to, const void *data, const uint32_t size)
+{
+    const intptr_t i = (intptr_t)self;
+    counted_bytes[i] += size;
+    counted_inner[i].send(counted_inner[i].self, to, data, size);
+}
+
+static uint32_t counted_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
+{
+    const intptr_t i = (intptr_t)self;
+    return counted_inner[i].receive(counted_inner[i].self, from, data, capacity);
+}
+
+static void counted_close(void *self)
+{
+    const intptr_t i = (intptr_t)self;
+    counted_inner[i].close(counted_inner[i].self);
+}
+
+static tide_transport counted(const intptr_t i, const uint32_t endpoint)
+{
+    counted_inner[i] = tide_loopback_endpoint(net, endpoint);
+    return (tide_transport){(void *)i, counted_send, counted_receive, counted_close, NULL};
+}
+
+TIDE_TEST(net_a_match_costs_little_to_keep_going)
+{
+    now = 0.0;
+    net = tide_loopback_create(3);
+    tide_loopback_set_conditions(net, (tide_net_conditions){.latency = 0.05});
+    const tide_server_desc desc = {.game = &tide_game_api, .tick_rate = 60, .transports = {counted(0, 1)}};
+    server = tide_server_create(&desc, now);
+    memset(clients, 0, sizeof clients);
+    for (int i = 0; i < 2; i++) {
+        const tide_client_desc client = {.game = &tide_game_api, .transport = counted(i + 1, (uint32_t)i + 2u),
+                                         .server = tide_loopback_address(1), .sample = sample, .user = &who[i], .lead = 2};
+        clients[i] = tide_client_create(&client, now);
+    }
+    run(1.0); // Joined, with the world
+    memset(counted_bytes, 0, sizeof counted_bytes);
+    run(11.0);
+    for (int i = 0; i < 2; i++) TIDE_CHECK(tide_client_status_of(clients[i]).resyncs == 0);
+    // About 6.5 KB a second to each player and 2.5 KB a second from each, at
+    // 60 ticks a second, most of it the hashes of ticks sent again until a
+    // round trip says they came: 316 KB and 45 KB before the frames shrank.
+    TIDE_CHECK(counted_bytes[0] < 140000u);
+    TIDE_CHECK(counted_bytes[1] < 28000u && counted_bytes[2] < 28000u);
+    finish();
+}
+
 // A player's cookie gets them their PlayerID back.
 static tide_client *join_as(const int number, const uint64_t cookie)
 {
@@ -948,4 +1026,26 @@ TIDE_TEST(net_input_packs_and_unpacks)
     TIDE_REQUIRE(tide_game_api.read_input(bytes, n, &out));
     TIDE_CHECK(memcmp(&in, &out, sizeof in) == 0);
     TIDE_CHECK(!tide_game_api.read_input(bytes, n - 1u, &out)); // Too short
+}
+
+// As what changed from another input, as frames and players send them: a bit
+// for each value that didn't, and back exactly.
+TIDE_TEST(net_input_packs_as_what_changed)
+{
+    const Controls was = {.move = {0.25f, 0.0f}, .jump = true};
+    uint8_t bytes[16];
+    Controls out;
+    uint32_t n = tide_game_api.write_input_delta(&was, &was, bytes, sizeof bytes);
+    TIDE_CHECK(n == 1u); // Three bits
+    TIDE_REQUIRE(tide_game_api.read_input_delta(bytes, n, &was, &out));
+    TIDE_CHECK(memcmp(&was, &out, sizeof out) == 0);
+
+    // A button let go, and a value whose bits changed, though -0 == 0
+    const Controls now = {.move = {0.25f, -0.0f}, .jump = false};
+    n = tide_game_api.write_input_delta(&now, &was, bytes, sizeof bytes);
+    TIDE_CHECK(n == 5u); // 1 + 33 + 1 bits
+    TIDE_CHECK(n <= tide_game_api.max_input_bytes);
+    TIDE_REQUIRE(tide_game_api.read_input_delta(bytes, n, &was, &out));
+    TIDE_CHECK(memcmp(&now, &out, sizeof out) == 0);
+    TIDE_CHECK(!tide_game_api.read_input_delta(bytes, 0, &was, &out)); // Too short
 }

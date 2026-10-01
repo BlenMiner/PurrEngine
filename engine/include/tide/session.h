@@ -23,9 +23,10 @@
 // arrives as it was predicted only has its hash checked; one that went
 // otherwise runs on the verified world, and the ticks after it run again. A
 // hash that differs means the client went wrong somewhere, and it asks for the
-// whole world again.
+// world again: the server sends the hashes of its world's pages, and then the
+// pages the client's own world lacks (tide/delta.h).
 //
-// A player joining gets the server's world, packed, then plays on from there,
+// A player joining gets the server's world, whole, then plays on from there,
 // and a cookie: coming back with it, the player gets their PlayerID back. If
 // the server still has them connected, the new connection takes over with no
 // events; if they'd left, PlayerJoined comes again, with the same PlayerID.
@@ -38,7 +39,8 @@
 // the server leaves or stops answering, its players go to the room: one takes
 // the match over from the last tick it verified (tide_session_take_over), and
 // the others join it again, as the same players, since it knows their
-// cookies' digests. The server's player leaves the match. Nothing else
+// cookies' digests, getting only what their last worlds lack of its world.
+// The server's player leaves the match. Nothing else
 // changes hands: what the server kept of its own, the others never had.
 //
 // A match whose last scene unloads, when Main is local, ends: the server stops
@@ -50,7 +52,7 @@ typedef struct tide_game {
     uint64_t hash;            // Tells builds apart: servers only take players of the same game
     uint32_t world_size;      // sizeof(tide_world): a world starts as that many zeros
     uint32_t input_size;      // sizeof(tide_input), or 0
-    uint32_t max_input_bytes; // The most write_input writes
+    uint32_t max_input_bytes; // The most write_input or write_input_delta writes
     uint32_t start_size;      // sizeof(tide_start)
     // Clears the world and starts the match: `start` is a tide_start, the scene
     // it starts in, or NULL for Main.
@@ -65,20 +67,44 @@ typedef struct tide_game {
     // Lets go of what a world has, before its memory goes; NULL for worlds of
     // plain data.
     void (*free_world)(void *world);
-    // The world as bytes, to send it: written into `out` when they fit in
-    // `capacity` (NULL to ask), and how many there are. Unpacking makes a
-    // world from them, false if they aren't one.
+    // The world as bytes, to carry it over to another build: written into
+    // `out` when they fit in `capacity` (NULL to ask), and how many there are.
+    // Unpacking makes a world from them, false if they aren't one.
     uint32_t (*pack_world)(const void *world, uint8_t *out, uint32_t capacity);
     bool (*unpack_world)(void *world, const uint8_t *data, uint32_t size);
+    // The world as a delta (tide/delta.h), to send it: what differs from
+    // `base`, a world the receiver has too, or from the receiver's own world,
+    // which lacks the pages `need` says, or neither: all of it. The bytes are
+    // to free(). Unpacking makes `world` from them and the base they were made
+    // from (NULL for none, never `world`): false if they don't make the world
+    // they say.
+    uint8_t *(*pack_delta)(const void *world, const void *base, const uint8_t *need, uint32_t need_size, uint32_t *size);
+    bool (*unpack_delta)(void *world, const void *base, const uint8_t *data, uint32_t size);
+    // The hashes of a world's pages (bytes to free()), and which of them
+    // `base` lacks, into `out`: its size, as much as fits in `capacity`, past
+    // which it lacks the rest. NULL: worlds always go whole.
+    uint8_t *(*hash_pages)(const void *world, uint32_t *size);
+    uint32_t (*need_pages)(const void *base, const uint8_t *hashes, uint32_t size, uint8_t *out, uint32_t capacity);
     void (*player_joined)(void *world, tide_player_id player);
     void (*player_left)(void *world, tide_player_id player);
     void (*set_input)(void *world, tide_player_id player, const void *input);
     void (*set_server_input)(void *world, const void *input);
     uint32_t (*write_input)(const void *input, uint8_t *out, uint32_t capacity); // Bytes written, 0 if it didn't fit
     bool (*read_input)(const uint8_t *data, uint32_t size, void *input);
+    // The same as what differs from `previous`, field by field: an input that
+    // changed little takes a few bits. NULL: inputs always go whole.
+    uint32_t (*write_input_delta)(const void *input, const void *previous, uint8_t *out, uint32_t capacity);
+    bool (*read_input_delta)(const uint8_t *data, uint32_t size, const void *previous, void *input);
+    // A slot's input as the world keeps it: players' by index, then the
+    // server's (TIDE_MAX_PLAYERS). What ticks' inputs go as deltas from.
+    void (*world_input)(const void *world, uint32_t slot, void *input);
     // Whether the match is over: its last scene unloaded, and Main is local,
     // so it can't come back. The server ends it then. NULL: it never is.
     bool (*ended)(const void *world);
+    // Starting a match calls no C, and its start holds no text or lists: a
+    // machine joining a match can start it too, and be sent only what the
+    // match's world has that the one it started lacks.
+    bool pure_start;
     // The game's settings (`settings { ... }`), 0 or NULL where it sets none
     uint32_t tick_rate;  // tickRate: what servers run its matches at, unless their desc says
     const char *title;   // title: the window's, unless the host says
@@ -170,6 +196,10 @@ typedef struct tide_client_desc {
     uint64_t cookie;       // From an earlier connection to this server, to be the same player again; 0 for none
     bool knew_kick;        // ...which kicked it, as it heard: the server lets it in again (see tide_server_kick)
     const tide_jobs *jobs; // Threads to run ticks on (tide/jobs.h), or NULL: this one
+    // A world like the match's, such as the last one it had of a match that
+    // changed hands (the game's tide_world, copied): the server only sends what
+    // it lacks. NULL: the whole world comes.
+    const void *base;
 } tide_client_desc;
 
 typedef struct tide_client_status {
@@ -180,6 +210,7 @@ typedef struct tide_client_status {
     uint32_t verified_tick;        // Ticks the server has confirmed
     uint32_t predicted_tick;       // Ticks run, predicted ones included
     uint32_t resyncs;              // Times its world diverged and the server sent it again
+    uint64_t world_bytes;          // Bytes the server sent of worlds so far: whole, as deltas, and the hashes of their pages
     uint64_t cookie;               // What makes this player this player again, on the next connection
     char message[TIDE_MESSAGE_BYTES]; // With TIDE_DISCONNECT_KICKED: the server's message
 } tide_client_status;

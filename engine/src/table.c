@@ -176,6 +176,16 @@ void tide_table_pack(const tide_table *t, const tide_columns *c, tide_writer *w)
     }
 }
 
+// The room `count` rows' chunks have, as adding them one by one would have
+// made: all but the first, alone, have room for 1 << shift.
+static uint32_t room_for(const tide_columns *c, const uint32_t count)
+{
+    if (count > full_room(c)) return full_room(c);
+    uint32_t room = FIRST_ROOM < full_room(c) ? FIRST_ROOM : full_room(c);
+    while (room < count) room *= 2u;
+    return room;
+}
+
 bool tide_table_unpack(tide_table *t, const tide_columns *c, tide_reader *r)
 {
     const uint32_t count = tide_read_u32(r);
@@ -184,12 +194,7 @@ bool tide_table_unpack(tide_table *t, const tide_columns *c, tide_reader *r)
     if (r->failed || (uint64_t)count * row > r->size - r->at) return false;
     const uint32_t chunks = (uint32_t)(((uint64_t)count + full_room(c) - 1u) >> c->shift);
     make_room(t, c, chunks);
-    // Room as adding the rows one by one would have made
-    uint32_t room = full_room(c);
-    if (chunks == 1) {
-        room = FIRST_ROOM < full_room(c) ? FIRST_ROOM : full_room(c);
-        while (room < count) room *= 2u;
-    }
+    const uint32_t room = room_for(c, count);
     for (uint32_t chunk = 0; chunk < chunks; chunk++) {
         for (uint32_t k = 0; k < c->count; k++) {
             t->pages[chunk * c->count + k] = tide_page_new(bytes_of((uint64_t)room * c->sizes[k]));
@@ -205,6 +210,79 @@ bool tide_table_unpack(tide_table *t, const tide_columns *c, tide_reader *r)
         }
     }
     return !r->failed;
+}
+
+// Packed as part of a delta: its count, then each chunk's columns as regions,
+// in the order of `pages`.
+
+void tide_table_pack_delta(const tide_table *t, const tide_table *base, const tide_columns *c, tide_delta_writer *d)
+{
+    tide_delta_number(d, t->count);
+    for (uint32_t chunk = 0; chunk < t->chunks; chunk++) {
+        const bool based = base && chunk < base->chunks;
+        for (uint32_t k = 0; k < c->count; k++) {
+            const tide_page *p = t->pages[chunk * c->count + k];
+            const tide_page *b = based ? base->pages[chunk * c->count + k] : NULL;
+            tide_delta_region(d, tide_page_data(p), tide_table_rows(t, c->shift, chunk) * c->sizes[k],
+                              b ? tide_page_data(b) : NULL, b ? tide_table_rows(base, c->shift, chunk) * c->sizes[k] : 0u,
+                              b == p);
+        }
+    }
+    tide_delta_close(d);
+}
+
+bool tide_table_unpack_delta(tide_table *t, const tide_table *base, const tide_columns *c, tide_delta_reader *d)
+{
+    const uint32_t count = tide_delta_get_number(d);
+    if (d->bytes.failed) return false;
+    // Each page is the base's, or bytes of the delta
+    const uint32_t chunks = (uint32_t)(((uint64_t)count + full_room(c) - 1u) >> c->shift);
+    const uint64_t pages = (uint64_t)chunks * c->count;
+    if (pages > (uint64_t)(base ? base->chunks * c->count : 0u) + (d->bytes.size - d->bytes.at)) return false;
+    make_room(t, c, chunks);
+    const uint32_t room = room_for(c, count);
+    t->count = count; // For tide_table_rows: its chunks follow
+    t->last_room = chunks ? room : 0u;
+    for (uint32_t chunk = 0; chunk < chunks; chunk++) {
+        const bool based = base && chunk < base->chunks;
+        for (uint32_t k = 0; k < c->count; k++) {
+            tide_page *b = based ? base->pages[chunk * c->count + k] : NULL;
+            const uint32_t page_size = bytes_of((uint64_t)room * c->sizes[k]);
+            tide_page *p = tide_delta_page(d, tide_table_rows(t, c->shift, chunk) * c->sizes[k], page_size, 1, b,
+                                           b ? tide_table_rows(base, c->shift, chunk) * c->sizes[k] : 0u,
+                                           b && b->size == page_size);
+            if (!p) { // Its chunks so far stay, for tide_table_free
+                for (uint32_t m = 0; m < k; m++) tide_page_release(t->pages[chunk * c->count + m], 1);
+                return false;
+            }
+            t->pages[chunk * c->count + k] = p;
+        }
+        t->chunks = chunk + 1u;
+    }
+    return tide_delta_closed(d);
+}
+
+void tide_table_hash_pages(const tide_table *t, const tide_columns *c, tide_writer *w)
+{
+    tide_write_varint(w, t->chunks * c->count);
+    for (uint32_t chunk = 0; chunk < t->chunks; chunk++) {
+        const uint32_t rows = tide_table_rows(t, c->shift, chunk);
+        for (uint32_t k = 0; k < c->count; k++) {
+            tide_write_u64(w, tide_page_hash(t->pages[chunk * c->count + k], rows * c->sizes[k]));
+        }
+    }
+}
+
+void tide_table_need_pages(const tide_table *base, const tide_columns *c, tide_needs *n)
+{
+    const uint32_t count = tide_needs_count(n);
+    for (uint32_t i = 0; i < count; i++) {
+        const uint32_t chunk = i / c->count;
+        const uint32_t k = i % c->count;
+        const bool have = chunk < base->chunks;
+        const uint32_t bytes = have ? tide_table_rows(base, c->shift, chunk) * c->sizes[k] : 0u;
+        tide_needs_put(n, have, have ? tide_page_hash(base->pages[chunk * c->count + k], bytes) : 0u);
+    }
 }
 
 // ---------------------------------------------------------------------------

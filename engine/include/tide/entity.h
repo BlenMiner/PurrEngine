@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tide/delta.h"
 #include "tide/net.h"
 #include "tide/page.h"
 
@@ -93,6 +94,15 @@ void tide_entities_settle(tide_entities *t);
 uint32_t tide_entities_packed_size(const tide_entities *t);
 void tide_entities_pack(const tide_entities *t, tide_writer *w);
 bool tide_entities_unpack(tide_entities *t, tide_reader *r);
+
+// The same as part of a delta (tide/delta.h), from `base` (NULL for none):
+// its next_unused and free_head, then its pages of slots as regions.
+// Unpacking `t` (empty) shares the pages that are the same as the base's.
+void tide_entities_pack_delta(const tide_entities *t, const tide_entities *base, tide_delta_writer *d);
+bool tide_entities_unpack_delta(tide_entities *t, const tide_entities *base, tide_delta_reader *d);
+// Its pages' hashes, and which of them `base` lacks (tide_needs).
+void tide_entities_hash_pages(const tide_entities *t, tide_writer *w);
+void tide_entities_need_pages(const tide_entities *base, tide_needs *n);
 
 static inline bool tide_entity_is_null(const tide_entity e)
 {

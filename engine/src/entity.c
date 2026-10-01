@@ -173,6 +173,19 @@ void tide_entities_free(tide_entities *t)
     memset(t, 0, sizeof *t);
 }
 
+// Free slots lead to free slots in the table, without going round: true of
+// any table, so one that came as bytes isn't one without it.
+static bool free_slots_hold(const tide_entities *t)
+{
+    uint32_t free = t->free_head;
+    for (uint32_t n = 0; free; n++) {
+        const tide_entity_slot *slot = free <= t->next_unused ? slot_of(t, free - 1u) : NULL;
+        if (!slot || (slot->generation & 1u) || slot->row > t->next_unused || n == t->next_unused) return false;
+        free = slot->row;
+    }
+    return true;
+}
+
 uint32_t tide_entities_packed_size(const tide_entities *t)
 {
     return 8u + t->next_unused * (uint32_t)sizeof(tide_entity_slot);
@@ -203,12 +216,58 @@ bool tide_entities_unpack(tide_entities *t, tide_reader *r)
         memcpy(tide_page_data(t->page[p]), tide_read_bytes(r, bytes), bytes);
     }
     tide_entities_settle(t);
-    // Free slots lead to free slots in the table, without going round
-    uint32_t free = t->free_head;
-    for (uint32_t n = 0; free && !r->failed; n++) {
-        const tide_entity_slot *slot = free <= next_unused ? slot_of(t, free - 1u) : NULL;
-        r->failed = !slot || (slot->generation & 1u) || slot->row > next_unused || n == next_unused;
-        free = slot ? slot->row : 0u;
+    return !r->failed && free_slots_hold(t);
+}
+
+// Packed as part of a delta: its numbers, then each page as a region.
+
+#define SLOT ((uint32_t)sizeof(tide_entity_slot))
+
+void tide_entities_pack_delta(const tide_entities *t, const tide_entities *base, tide_delta_writer *d)
+{
+    tide_delta_number(d, t->next_unused);
+    tide_delta_number(d, t->free_head);
+    for (uint32_t p = 0; p < t->pages; p++) {
+        const tide_page *b = base && p < base->pages ? base->page[p] : NULL;
+        tide_delta_region(d, tide_page_data(t->page[p]), used_on(t, p) * SLOT, b ? tide_page_data(b) : NULL,
+                          b ? used_on(base, p) * SLOT : 0u, b == t->page[p]);
     }
-    return !r->failed;
+    tide_delta_close(d);
+}
+
+bool tide_entities_unpack_delta(tide_entities *t, const tide_entities *base, tide_delta_reader *d)
+{
+    const uint32_t next_unused = tide_delta_get_number(d);
+    const uint32_t free_head = tide_delta_get_number(d);
+    if (d->bytes.failed || free_head > next_unused) return false;
+    // Each page is the base's, or bytes of the delta
+    const uint32_t pages = (uint32_t)(((uint64_t)next_unused + SLOTS - 1u) >> TIDE_ENTITY_PAGE_SHIFT);
+    if (pages > (base ? base->pages : 0u) + (d->bytes.size - d->bytes.at)) return false;
+    t->next_unused = next_unused;
+    t->free_head = free_head;
+    make_room(t, pages);
+    bool ok = true;
+    for (uint32_t p = 0; ok && p < pages; p++) {
+        tide_page *b = base && p < base->pages ? base->page[p] : NULL;
+        tide_page *page = tide_delta_page(d, used_on(t, p) * SLOT, PAGE_BYTES, 1, b, b ? used_on(base, p) * SLOT : 0u, true);
+        ok = page != NULL;
+        if (ok) t->page[t->pages++] = page;
+    }
+    tide_entities_settle(t);
+    return ok && tide_delta_closed(d) && free_slots_hold(t);
+}
+
+void tide_entities_hash_pages(const tide_entities *t, tide_writer *w)
+{
+    tide_write_varint(w, t->pages);
+    for (uint32_t p = 0; p < t->pages; p++) tide_write_u64(w, tide_page_hash(t->page[p], used_on(t, p) * SLOT));
+}
+
+void tide_entities_need_pages(const tide_entities *base, tide_needs *n)
+{
+    const uint32_t count = tide_needs_count(n);
+    for (uint32_t p = 0; p < count; p++) {
+        const bool have = p < base->pages;
+        tide_needs_put(n, have, have ? tide_page_hash(base->page[p], used_on(base, p) * SLOT) : 0u);
+    }
 }

@@ -114,6 +114,17 @@ event(Spawned) Setup(with Main)
     Spawn(Result);
 }
 
+// Starting a match calls C, so a machine joining one never starts it itself
+component Started
+{
+    bool even;
+}
+
+event(Spawned) Begin(with Main)
+{
+    Spawn(Started { even = c_is_even(2) });
+}
+
 // A function that calls C
 float Triple(float x)
 {

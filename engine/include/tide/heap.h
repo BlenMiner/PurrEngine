@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "tide/delta.h"
 #include "tide/net.h"
 #include "tide/page.h"
 
@@ -64,6 +65,16 @@ void tide_heap_free(tide_heap *h);
 uint32_t tide_heap_packed_size(const tide_heap *h);
 void tide_heap_pack(const tide_heap *h, tide_writer *w);
 bool tide_heap_unpack(tide_heap *h, tide_reader *r);
+
+// The same as part of a delta (tide/delta.h), from `base` (NULL for none):
+// what it's handed out, how many places each page takes, then its pages as
+// regions, each paired with the base's page that starts at the same place.
+// Unpacking `h` (empty) shares the pages that are the same as the base's.
+void tide_heap_pack_delta(const tide_heap *h, const tide_heap *base, tide_delta_writer *d);
+bool tide_heap_unpack_delta(tide_heap *h, const tide_heap *base, tide_delta_reader *d);
+// Its pages' places and hashes, and which of them `base` lacks (tide_needs).
+void tide_heap_hash_pages(const tide_heap *h, tide_writer *w);
+void tide_heap_need_pages(const tide_heap *base, tide_needs *n);
 
 // Gives a block back. It's freed at the next tide_heap_flush.
 void tide_heap_release(tide_heap *h, uint32_t block);

@@ -95,6 +95,15 @@ uint32_t tide_table_packed_size(const tide_table *t, const tide_columns *c);
 void tide_table_pack(const tide_table *t, const tide_columns *c, tide_writer *w);
 bool tide_table_unpack(tide_table *t, const tide_columns *c, tide_reader *r);
 
+// The same as part of a delta (tide/delta.h), from `base` (NULL for none):
+// its count, then each chunk's columns as regions. Unpacking `t` (empty)
+// shares the pages that are the same as the base's.
+void tide_table_pack_delta(const tide_table *t, const tide_table *base, const tide_columns *c, tide_delta_writer *d);
+bool tide_table_unpack_delta(tide_table *t, const tide_table *base, const tide_columns *c, tide_delta_reader *d);
+// Its pages' hashes, and which of them `base` lacks (tide_needs).
+void tide_table_hash_pages(const tide_table *t, const tide_columns *c, tide_writer *w);
+void tide_table_need_pages(const tide_table *base, const tide_columns *c, tide_needs *n);
+
 // ---------------------------------------------------------------------------
 // The queue of structural changes and events a tick or frame records, applied
 // at its end. Items stay where they are as more are added, so the one being

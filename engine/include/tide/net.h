@@ -89,14 +89,16 @@ tide_address tide_loopback_address(uint32_t number);
 
 // ---------------------------------------------------------------------------
 // Bytes, little-endian. A writer that runs out of room sets `overflow` and
-// writes nothing more; a reader that runs past the end sets `failed` and reads
-// zeros.
+// writes nothing more, unless it `grows`: then it makes more room as it needs
+// (realloc, starting from NULL is fine), and its owner frees `data`. A reader
+// that runs past the end sets `failed` and reads zeros.
 
 typedef struct tide_writer {
     uint8_t *data;
     uint32_t capacity;
     uint32_t size;
     bool overflow;
+    bool grows;
 } tide_writer;
 
 typedef struct tide_reader {
@@ -111,11 +113,16 @@ void tide_write_u16(tide_writer *w, uint16_t v);
 void tide_write_u32(tide_writer *w, uint32_t v);
 void tide_write_u64(tide_writer *w, uint64_t v);
 void tide_write_bytes(tide_writer *w, const void *data, uint32_t size);
+// 7 bits a byte, the lowest first: small numbers take one.
+void tide_write_varint(tide_writer *w, uint32_t v);
+// Room for the next `size` bytes, to fill in place, or NULL when there isn't.
+uint8_t *tide_write_space(tide_writer *w, uint32_t size);
 
 uint8_t tide_read_u8(tide_reader *r);
 uint16_t tide_read_u16(tide_reader *r);
 uint32_t tide_read_u32(tide_reader *r);
 uint64_t tide_read_u64(tide_reader *r);
+uint32_t tide_read_varint(tide_reader *r);
 // Points at the next `size` bytes, or NULL if there aren't that many.
 const uint8_t *tide_read_bytes(tide_reader *r, uint32_t size);
 
@@ -143,22 +150,17 @@ static inline bool tide_bits_get_bool(tide_bits *b)
 // Floats go as their exact bits.
 void tide_bits_put_f32(tide_bits *b, float v);
 float tide_bits_get_f32(tide_bits *b);
+uint32_t tide_f32_bits(float v);
+
+// A value as part of a delta: whether it changed from `was`, then its 32
+// bits if it did.
+void tide_bits_put_changed(tide_bits *b, uint32_t now, uint32_t was);
 
 // Done writing: clears the rest of the last byte, so the same value always
 // packs to the same bytes, and returns how many there are (0 if out of room).
 uint32_t tide_bits_end(tide_bits *b);
 
 // ---------------------------------------------------------------------------
-// Snapshots: a world is mostly zeros (empty rows, unused entities), so runs of
-// zeros shrink to a few bytes. Any other byte is kept as it is.
-
-// The most packing `size` bytes can take.
-uint32_t tide_zeros_bound(uint32_t size);
-// Packs `size` bytes into `out`: its size, or 0 if it doesn't fit.
-uint32_t tide_zeros_pack(const void *data, uint32_t size, uint8_t *out, uint32_t capacity);
-// Unpacks into exactly `size` bytes; false if the packed bytes don't make that.
-bool tide_zeros_unpack(const uint8_t *packed, uint32_t packed_size, void *out, uint32_t size);
-
 // A 64-bit hash of `size` bytes, the same on every platform. Sessions compare
 // worlds by it to find divergence.
 uint64_t tide_hash(const void *data, size_t size);

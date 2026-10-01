@@ -47,7 +47,8 @@ The generated header is the API between the game and its host. Namespaced declar
 - `TIDE_AT(w, arch0_Body, Body, row)` reads a row's component in an archetype's storage, and `TIDE_ENTITY_AT(w, arch0_Body, row)` its entity: for tests and tools that go through every entity.
 - `tide_world_player_joined(w, player)` and `tide_world_player_left(w, player)` send `PlayerJoined` and `PlayerLeft`, handled at the end of the next tick.
 - `tide_world_copy(to, from)` and `tide_world_hash(w)`: snapshots and hashes. A snapshot shares the world's pages until one of them changes a page, so it costs the memory of what's different, and each page keeps its hash until it changes, so hashing reads what changed since the last time.
-- `tide_world_pack(w, out, capacity)` and `tide_world_unpack(w, data, size)`: the world as bytes, as sessions send it.
+- `tide_world_pack(w, out, capacity)` and `tide_world_unpack(w, data, size)`: the world as bytes, as hot reloading carries it over.
+- `tide_world_pack_delta(w, base, need, need_size, &size)` and `tide_world_unpack_delta(w, base, data, size)`: the world as a delta, as sessions send it: page by page, what differs from `base`, a world the receiver has too, or from the receiver's own world, which lacks the pages `need` says (`tide_world_hash_pages` lists the pages' hashes, and `tide_world_need_pages` says which of them a world lacks), or the whole world, with neither. The bytes are to `free()`. Unpacking checks the world's hash, and is false for bytes or a base that don't make it.
 - `tide_world_entity_count(w)` and `tide_world_print(w)`, for debugging.
 - Text fields are offsets into the world's heap: read one with `tide_text_read(&w->heap, field)`.
 

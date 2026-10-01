@@ -140,4 +140,6 @@ The compiler doesn't look inside C. It takes each call as touching nothing it tr
 - **State.** Variables C keeps aren't in the world, so they aren't sent, rolled back or hashed. Keep what the match depends on in components and singletons.
 - **Threads.** Once systems run in parallel, two that call the same C function can run at the same time.
 
+C also changes how players join. When starting a match calls no C (no match event handler does, through anything it calls), a player joining a big world starts the match on its own machine too, and only gets what changed since (see [Sending worlds](../engine/networking.md#sending-worlds)). C called while a match starts could do something outside the world on every joining machine, so a game whose match start calls C sends joining players the whole world instead.
+
 tidec declares each extern function from its Tide signature. If it doesn't match the C function, the call goes wrong the way it would in C.

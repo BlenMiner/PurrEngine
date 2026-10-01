@@ -217,8 +217,23 @@ tide_transport tide_loopback_endpoint(tide_loopback *net, const uint32_t number)
 // ---------------------------------------------------------------------------
 // Bytes
 
+// A writer that grows: room for `size` more bytes, doubling what it has.
+static void grow(tide_writer *w, const uint32_t size)
+{
+    const uint64_t needed = (uint64_t)w->size + size;
+    if (needed > UINT32_MAX) return;
+    uint64_t capacity = w->capacity ? w->capacity : 256u;
+    while (capacity < needed) capacity *= 2u;
+    if (capacity > UINT32_MAX) capacity = UINT32_MAX;
+    uint8_t *data = realloc(w->data, (size_t)capacity);
+    if (!data) return;
+    w->data = data;
+    w->capacity = (uint32_t)capacity;
+}
+
 static uint8_t *room(tide_writer *w, const uint32_t size)
 {
+    if (w->grows && !w->overflow && w->capacity - w->size < size) grow(w, size);
     if (w->overflow || w->capacity - w->size < size) {
         w->overflow = true;
         return NULL;
@@ -262,6 +277,23 @@ void tide_write_bytes(tide_writer *w, const void *data, const uint32_t size)
     if (at && size) memcpy(at, data, size);
 }
 
+void tide_write_varint(tide_writer *w, uint32_t v)
+{
+    uint8_t bytes[5];
+    uint32_t n = 0;
+    while (v >= 0x80u) {
+        bytes[n++] = (uint8_t)(v | 0x80u);
+        v >>= 7;
+    }
+    bytes[n++] = (uint8_t)v;
+    tide_write_bytes(w, bytes, n);
+}
+
+uint8_t *tide_write_space(tide_writer *w, const uint32_t size)
+{
+    return room(w, size);
+}
+
 static const uint8_t *take(tide_reader *r, const uint32_t size)
 {
     if (r->failed || r->size - r->at < size) {
@@ -301,6 +333,19 @@ uint64_t tide_read_u64(tide_reader *r)
     uint64_t v = 0;
     for (int i = 0; i < 8; i++) v |= (uint64_t)at[i] << (8 * i);
     return v;
+}
+
+uint32_t tide_read_varint(tide_reader *r)
+{
+    uint32_t v = 0;
+    for (uint32_t shift = 0; shift < 35; shift += 7) {
+        const uint8_t byte = tide_read_u8(r);
+        if (shift == 28 && byte > 0x0Fu) break; // More than 32 bits
+        v |= (uint32_t)(byte & 0x7Fu) << shift;
+        if (!(byte & 0x80u)) return v;
+    }
+    r->failed = true;
+    return 0;
 }
 
 const uint8_t *tide_read_bytes(tide_reader *r, const uint32_t size)
@@ -364,71 +409,17 @@ float tide_bits_get_f32(tide_bits *b)
     return v;
 }
 
-// ---------------------------------------------------------------------------
-// Snapshots: (zeros, literal count, literal bytes) repeated, the counts as
-// varints. A literal ends at two zeros in a row.
-
-static void put_varint(tide_writer *w, uint32_t v)
+uint32_t tide_f32_bits(const float v)
 {
-    while (v >= 0x80u) {
-        tide_write_u8(w, (uint8_t)(v | 0x80u));
-        v >>= 7;
-    }
-    tide_write_u8(w, (uint8_t)v);
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    return bits;
 }
 
-static uint32_t get_varint(tide_reader *r)
+void tide_bits_put_changed(tide_bits *b, const uint32_t now, const uint32_t was)
 {
-    uint32_t v = 0;
-    for (uint32_t shift = 0; shift < 35; shift += 7) {
-        const uint8_t byte = tide_read_u8(r);
-        v |= (uint32_t)(byte & 0x7Fu) << shift;
-        if (!(byte & 0x80u)) return v;
-    }
-    r->failed = true;
-    return 0;
-}
-
-uint32_t tide_zeros_bound(const uint32_t size)
-{
-    return size + size / 16u + 16u;
-}
-
-uint32_t tide_zeros_pack(const void *data, const uint32_t size, uint8_t *out, const uint32_t capacity)
-{
-    const uint8_t *p = data;
-    tide_writer w = {out, capacity, 0, false};
-    uint32_t i = 0;
-    while (i < size) {
-        const uint32_t zeros_from = i;
-        while (i < size && p[i] == 0) i++;
-        const uint32_t literal_from = i;
-        while (i < size && !(p[i] == 0 && (i + 1u >= size || p[i + 1u] == 0))) i++;
-        put_varint(&w, literal_from - zeros_from);
-        put_varint(&w, i - literal_from);
-        tide_write_bytes(&w, p + literal_from, i - literal_from);
-    }
-    return w.overflow ? 0 : w.size;
-}
-
-bool tide_zeros_unpack(const uint8_t *packed, const uint32_t packed_size, void *out, const uint32_t size)
-{
-    uint8_t *p = out;
-    tide_reader r = {packed, packed_size, 0, false};
-    uint32_t at = 0;
-    while (r.at < r.size) {
-        const uint32_t zeros = get_varint(&r);
-        if (r.failed || zeros > size - at) return false;
-        memset(p + at, 0, zeros);
-        at += zeros;
-        const uint32_t literal = get_varint(&r);
-        if (r.failed || literal > size - at) return false;
-        const uint8_t *bytes = tide_read_bytes(&r, literal);
-        if (!bytes) return false;
-        memcpy(p + at, bytes, literal);
-        at += literal;
-    }
-    return at == size;
+    tide_bits_put_bool(b, now != was);
+    if (now != was) tide_bits_put(b, now, 32);
 }
 
 // ---------------------------------------------------------------------------
