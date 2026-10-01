@@ -1,0 +1,12 @@
+// expect: 'Find' returns int?, a value or nothing, so it needs unwrapping first
+int? Find(int x)
+{
+    if (x > 0) return x;
+    return null;
+}
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.value = Find(1) + 1;
+}

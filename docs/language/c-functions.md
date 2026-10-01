@@ -124,7 +124,9 @@ bool RayCast(tide_float3 from, tide_float3 direction, Hit *hit)
 }
 ```
 
-Tide's types have no padding the compiler adds, so a C struct with the same fields lines up with them. Structs that hold text or lists can't go to C, and neither can lists of text.
+Tide's types have no padding the compiler adds, so a C struct with the same fields lines up with them. Structs that hold text or lists can't go to C, and neither can lists of text or `T?` values.
+
+C functions can't `fail` (see [Errors](./errors.md)): they return what C returns. To turn a C function's error code into an error, check it in a Tide function that fails, and call that.
 
 ## Order
 

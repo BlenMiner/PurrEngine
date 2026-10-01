@@ -165,8 +165,8 @@
           }
         },
         {
-          "comment": "Methods and functions: [mut] Type Name(, at the start of a line",
-          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|in|continue|namespace|using|extern)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "comment": "Methods and functions: [mut] Type Name(, or Type? Name(, at the start of a line",
+          "match": "^\\s*(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|in|continue|namespace|using|extern|fail|try|is|null)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.modifier.tide" },
             "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
@@ -179,7 +179,19 @@
       "patterns": [
         {
           "name": "keyword.control.tide",
-          "match": "\\b(if|else|return|switch|case|default|break|while|for|foreach|in|continue)\\b"
+          "match": "\\b(if|else|return|switch|case|default|break|while|for|foreach|in|continue|fail|try)\\b"
+        },
+        {
+          "comment": "int Parse(string text) fails ParseError: what a function can fail with",
+          "match": "(\\))\\s*(fails)\\b",
+          "captures": {
+            "2": { "name": "storage.modifier.fails.tide" }
+          }
+        },
+        {
+          "comment": "Parse(text) is int score",
+          "name": "keyword.operator.expression.is.tide",
+          "match": "\\bis\\b"
         },
         {
           "comment": "An input's Sample() and Sanitize()",
@@ -209,6 +221,10 @@
         {
           "name": "constant.language.boolean.tide",
           "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.tide",
+          "match": "\\bnull\\b"
         },
         {
           "name": "string.quoted.double.tide",
@@ -350,6 +366,16 @@
         {
           "name": "keyword.operator.assignment.tide",
           "match": "="
+        },
+        {
+          "comment": "Parse(text) ?? 0: the value, or a fallback",
+          "name": "keyword.operator.null-coalescing.tide",
+          "match": "\\?\\?"
+        },
+        {
+          "comment": "int? best: a value or nothing",
+          "name": "keyword.operator.optional.tide",
+          "match": "(?<=[A-Za-z0-9_>])\\?(?=\\s*[A-Za-z_][A-Za-z0-9_]*\\s*[=;,)(])"
         },
         {
           "name": "keyword.operator.ternary.tide",

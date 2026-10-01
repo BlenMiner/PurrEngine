@@ -1,0 +1,299 @@
+// Errors as values: functions that `fail`, and T?, unwrapped with ??, is, !
+// and try.
+
+enum ParseError
+{
+    Empty,
+    NotANumber,
+}
+
+// An error that carries more than which one it is.
+struct Refused
+{
+    int code;
+    string message;
+}
+
+struct Stats
+{
+    int hp = 10;
+    float speed = 1.5;
+
+    // A method can fail too.
+    int Spend(int cost) fails ParseError
+    {
+        if (cost > hp) fail ParseError.NotANumber;
+        return hp - cost;
+    }
+}
+
+// A non-negative int from its digits.
+int ParseScore(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    mut var value = 0;
+    for (var i = 0; i < text.Length; i++)
+    {
+        var digit = "0123456789".IndexOf(text.Substring(i, 1));
+        if (digit < 0) fail ParseError.NotANumber;
+        value = value * 10 + digit;
+    }
+    return value;
+}
+
+// `try` passes the error on to the caller.
+int Doubled(string text) fails ParseError
+{
+    var score = try ParseScore(text);
+    return score * 2;
+}
+
+int Sum(string a, string b) fails ParseError
+{
+    return try ParseScore(a) + try ParseScore(b);
+}
+
+// A function with no value fails the same way.
+void Validate(int value) fails ParseError
+{
+    if (value < 0) fail ParseError.NotANumber;
+}
+
+void Checked(int value) fails ParseError
+{
+    try Validate(value);
+}
+
+void Connect(int code) fails Refused
+{
+    if (code != 0) fail Refused { code = code, message = "busy" };
+}
+
+Stats Load(int hp) fails ParseError
+{
+    if (hp <= 0) fail ParseError.Empty;
+    return Stats { hp = hp };
+}
+
+List<int> Digits(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return [1, 2, 3];
+}
+
+// T?: a value or nothing, where nothing isn't an error.
+int? Find(List<int> items, int wanted)
+{
+    for (var i = 0; i < items.Count; i++)
+    {
+        if (items[i] == wanted) return i;
+    }
+    return null;
+}
+
+string? Name(int index)
+{
+    if (index == 0) return "zero";
+    return default;
+}
+
+int? Below(int n)
+{
+    if (n <= 0) return null;
+    return n - 1;
+}
+
+int OrZero(int? value)
+{
+    return value ?? 0;
+}
+
+// try and fail where only some of the code runs.
+int FirstValid(string a, string b) fails ParseError
+{
+    if (a != "" && try ParseScore(a) > 0) return 1;
+    return b == "" ? 0 : try ParseScore(b);
+}
+
+void Repeat(int times, Block body)
+{
+    for (var i = 0; i < times; i++) body();
+}
+
+// In a block after a call, fail and try leave the function it's written in.
+int CountTo(int limit) fails ParseError
+{
+    mut var count = 0;
+    Repeat(5)
+    {
+        if (count == limit) fail ParseError.Empty;
+        count += try ParseScore("1");
+    }
+    return count;
+}
+
+// A function that draws: leaving it closes the containers it opened.
+int Pick(string text) fails ParseError
+{
+    GUILayout.Vertical()
+    {
+        GUILayout.Label(text);
+        var n = try ParseScore(text);
+        if (n > 5) fail ParseError.NotANumber;
+    }
+    return 1;
+}
+
+local singleton Picked
+{
+    int good;
+    int bad;
+    int big;
+}
+
+view ShowPicks(mut Picked picked)
+{
+    picked.good = Pick("3") ?? -1;
+    picked.bad = Pick("x") ?? -1;
+    picked.big = Pick("9") ?? -1;
+}
+
+// Calls to C keep their order around what's unwrapped.
+extern int Tick();
+extern int TickFails(int n);
+
+int Counted(int n) fails ParseError
+{
+    if (TickFails(n) != 0) fail ParseError.NotANumber;
+    return n;
+}
+
+singleton Results
+{
+    int fallback;
+    int parsed;
+    int doubled;
+    int doubledBad;
+    int sum;
+    int sumBad;
+    bool emptyError;
+    int why;
+    int fromIs;
+    bool noValue;
+    int found;
+    int notFound;
+    bool missing;
+    bool present;
+    string name;
+    string noName;
+    int refusedCode;
+    string refusedMessage;
+    int statsHp;
+    int defaultHp;
+    float widened;
+    int loopSum;
+    int chained;
+    int optionalLocal;
+    int held;
+    int digits;
+    int noDigits;
+    int spent;
+    int overspent;
+    int validated;
+    int both;
+    int orZero;
+    int forFound;
+    int ticks;
+    int lazy;
+    int firstA;
+    int firstB;
+    int firstC;
+    int firstD;
+    int countTo;
+    int countFail;
+}
+
+scene Main { }
+
+system Unwrap(mut Results results)
+{
+    // ??: the value, or a fallback when it fails.
+    results.fallback = ParseScore("") ?? 7;
+    results.parsed = ParseScore("42") ?? 7;
+    results.doubled = Doubled("21") ?? -1;
+    results.doubledBad = Doubled("2x") ?? -1;
+    results.chained = ParseScore("") ?? ParseScore("9") ?? 0;
+    results.widened = ParseScore("x") ?? 0.5;
+
+    // !: the value, or its type's default.
+    results.sum = Sum("1", "2")!;
+    results.sumBad = Sum("1", "")!;
+    results.statsHp = Load(5)!.hp;
+    results.defaultHp = Load(0)!.hp;
+
+    // is: only on success, or only on failure.
+    results.emptyError = ParseScore("") is ParseError.Empty;
+    if (ParseScore("1a") is ParseError why) results.why = int(why);
+    if (ParseScore("5") is int score && score > 4) results.fromIs = score;
+    results.noValue = !(ParseScore("") is int);
+    if (Connect(3) is Refused refused)
+    {
+        results.refusedCode = refused.code;
+        results.refusedMessage = refused.message;
+    }
+    if (Validate(-1) is ParseError) results.validated += 1;
+    if (Checked(-2) is ParseError) results.validated += 10;
+    if (Checked(2) is ParseError) results.validated += 100;
+    if (ParseScore("3") is int a && ParseScore("4") is int b) results.both = a + b;
+
+    // A function with no value, carrying on whatever happens.
+    Validate(-5)!;
+
+    // T?
+    List<int> items = [5, 3, 8];
+    results.found = Find(items, 3) ?? -1;
+    results.notFound = Find(items, 4) ?? -1;
+    results.missing = Find(items, 4) == null;
+    results.present = Find(items, 8) != null;
+    results.name = Name(0) ?? "none";
+    results.noName = Name(1) ?? "none";
+    mut int? best = null;
+    best = 4;
+    results.optionalLocal = best ?? 0;
+    results.orZero = OrZero(6) + OrZero(null) + OrZero(Find(items, 8));
+
+    // A loop goes on while there's a value.
+    mut var n = 5;
+    mut var total = 0;
+    while (Below(n) is int next)
+    {
+        total += next;
+        n = next;
+    }
+    results.loopSum = total;
+    for (var i = 3; Find(items, i) is int at; i += 5) results.forFound += at + 1;
+
+    // var holds the result as it is, to unwrap later.
+    mut var held = ParseScore("8");
+    held = ParseScore("9");
+    results.held = held ?? 0;
+
+    var digits = Digits("123") ?? [];
+    results.digits = digits.Count;
+    results.noDigits = (Digits("") ?? []).Count;
+
+    var stats = Stats { hp = 20 };
+    results.spent = stats.Spend(5) ?? -1;
+    results.overspent = stats.Spend(50) ?? -1;
+
+    results.firstA = FirstValid("", "12") ?? -1;
+    results.firstB = FirstValid("x", "1") ?? -1;
+    results.firstC = FirstValid("", "")!;
+    results.firstD = FirstValid("5", "") ?? -1;
+    results.countTo = CountTo(10) ?? -1;
+    results.countFail = CountTo(3) ?? -1;
+
+    // C calls run in order, and ??'s right side only when the left fails.
+    results.ticks = Counted(Tick()) ?? Tick();
+    results.lazy = Counted(0) ?? Tick();
+}

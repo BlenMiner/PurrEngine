@@ -1,0 +1,13 @@
+// expect: 'Parse' fails with ParseError, and 'Load' fails with LoadError
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+enum LoadError { Missing }
+int Load(string name) fails LoadError
+{
+    return try Parse(name);
+}
+scene Main { }

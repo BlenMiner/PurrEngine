@@ -41,6 +41,8 @@ typedef enum type_kind {
     TY_STRUCT,     // A struct: plain data, copied like any value
     TY_EVENT,      // An event's value: what `Send` sends and a handler receives
     TY_ENUM,       // A value of an enum: one of its members, an int underneath
+    TY_OPTIONAL,   // T?: a value or nothing. decl is a DECL_RESULT whose field 0 is the value
+    TY_FAILABLE,   // What a function that `fails` gives: its value (field 0, maybe void) or its error (field 1)
 } type_kind;
 
 typedef struct type {
@@ -156,6 +158,7 @@ typedef enum decl_kind {
     DECL_EVENT,    // event Hit { fields }: something that happened, sent with Send
     DECL_ENUM,     // enum Page { Title, Options }: a type with named values
     DECL_LIST,     // List<T>, one per element type: its one field is the element; in program.lists
+    DECL_RESULT,   // T? or `T fails E`, one per combination: field 0 is the value, field 1 the error; in program.results
 } decl_kind;
 
 // One of an enum's members: `Options`, or `Options = 3`.
@@ -214,6 +217,12 @@ typedef struct decl {
     loc return_type_at;       // Its last part, if it's qualified
     loc return_type_qual_at;
     type return_type;
+    str fails_name;           // `int Parse(string text) fails ParseError`: the error type, or empty
+    loc fails_at;             // The `fails` keyword
+    loc fails_type_at;        // The error type's last part
+    loc fails_type_qual_at;
+    type fails;               // The error type; TY_VOID if it can't fail
+    type result;              // What a call gives: return_type, or `return_type fails E` (TY_FAILABLE)
 
     // Systems, views, methods, functions, and an input's Sample
     VEC(param) params;
@@ -268,7 +277,19 @@ typedef enum expr_kind {
     E_LIST,    // [a, b, c]: a list of `args`, whose type comes from where it goes
     E_THIS,    // this: the entity the code runs for
     E_DEFAULT, // `default`: the default value of the type where it goes
+    E_NULL,    // `null`: the nothing of the T? where it goes
+    E_COALESCE,  // lhs ?? rhs: lhs's value, or rhs when it failed or is nothing
+    E_IS,        // lhs is Type name: whether lhs holds a value (or error) of that type, which `binding` names
+    E_TRY,       // try lhs: lhs's value, or its error passed on to the caller
+    E_DEFAULTED, // lhs!: lhs's value, or its type's default when it failed or is nothing
 } expr_kind;
+
+// What `x is ...` looks for.
+typedef enum is_pattern {
+    IS_VALUE,  // is int score: the value
+    IS_ERROR,  // is ParseError why: the error
+    IS_MEMBER, // is ParseError.Empty: that error, one of an enum's members (enum_member)
+} is_pattern;
 
 typedef enum builtin_call {
     CALL_NONE,
@@ -400,6 +421,15 @@ struct expr {
     // E_LITERAL
     VEC(field_init) inits;
     loc qual_at; // Where a qualified name starts (Combat.Health { }); `at` is its last part
+
+    // E_IS: the type after `is` as written ("ParseError", or "ParseError.Empty"),
+    // and the local its name declares, an S_VAR with no value
+    str pattern;
+    loc pattern_at;      // Its last part
+    loc pattern_qual_at; // Where it starts
+    is_pattern looks_for;
+    struct stmt *binding;
+    bool binding_ok;     // In an if's or loop's condition, joined by &&: its name is in scope where it's true
 };
 
 // ---------------------------------------------------------------------------
@@ -418,6 +448,7 @@ typedef enum stmt_kind {
     S_FOR,      // for (init; cond; step) then_stmt: each part optional
     S_CONTINUE,
     S_FOREACH,  // foreach (var name in value) then_stmt: `type` is the element's, and it's the variable's declaration
+    S_FAIL,     // fail value;: ends a function that `fails` with an error
 } stmt_kind;
 
 // A switch's section: its labels, then the statements they run.
@@ -457,7 +488,8 @@ struct stmt {
     loc name_at;
     loc type_qual_at; // Where the type starts: its namespace if it's qualified
 
-    // S_VAR initializer, S_ASSIGN value, S_EXPR expression, S_RETURN value (or NULL)
+    // S_VAR initializer (NULL for the name after `is`), S_ASSIGN value, S_EXPR
+    // expression, S_RETURN value (or NULL), S_FAIL error
     expr *value;
 
     // S_ASSIGN
@@ -496,6 +528,7 @@ typedef struct program {
     bool uses_text;      // Some code makes text, in the scratch area the run functions clear
     bool uses_heap;      // Some field holds text or a list: the worlds have a heap
     VEC(decl *) lists;   // Every List<T> type the program uses, one per element type
+    VEC(decl *) results; // Every T? and `T fails E` it uses, one per combination
     decl *owner;         // The built-in Owner component.
     decl *devices;       // The built-in Devices record.
     VEC(decl *) records; // Built-in records: Devices, Keyboard, Mouse, Gamepad, Dpad, Button.

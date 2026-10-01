@@ -1,0 +1,12 @@
+// expect: 'try' passes the error to the caller, and a view has none
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+scene Main { }
+view Show()
+{
+    Draw.Text($"{try Parse("1")}", float2(0, 0), 10, Color.white);
+}

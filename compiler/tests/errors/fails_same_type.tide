@@ -1,0 +1,7 @@
+// expect: 'Parse' can't fail with int, the type it returns
+int Parse(string text) fails int
+{
+    if (text == "") fail 0;
+    return 1;
+}
+scene Main { }

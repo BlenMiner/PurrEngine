@@ -1,0 +1,13 @@
+// expect: 'Parse' can fail, but is never null
+enum ParseError { Empty }
+int Parse(string text) fails ParseError
+{
+    if (text == "") fail ParseError.Empty;
+    return 1;
+}
+singleton Score { bool missing; }
+scene Main { }
+system Count(mut Score score)
+{
+    score.missing = Parse("") == null;
+}

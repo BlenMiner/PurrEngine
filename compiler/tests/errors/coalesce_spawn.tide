@@ -1,0 +1,12 @@
+// expect: Spawn can't be on the right side of '??'
+enum ParseError { Empty }
+component Thing { }
+Entity Parse(string text) fails ParseError
+{
+    fail ParseError.Empty;
+}
+scene Main { }
+system Count()
+{
+    var e = Parse("") ?? Spawn(Thing);
+}

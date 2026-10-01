@@ -1,0 +1,7 @@
+// expect: the null entity is 'default'
+component Target { Entity entity; }
+scene Main { }
+system Aim(mut Target target)
+{
+    target.entity = null;
+}

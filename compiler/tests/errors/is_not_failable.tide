@@ -1,0 +1,8 @@
+// expect: 'is' unwraps a call that can fail or a T? value, and 'value' is int
+singleton Score { int value; }
+scene Main { }
+system Count(mut Score score)
+{
+    var value = score.value;
+    if (value is int) score.value = 1;
+}

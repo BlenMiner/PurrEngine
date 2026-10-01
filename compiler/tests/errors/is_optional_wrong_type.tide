@@ -1,0 +1,12 @@
+// expect: 'Find' is int or nothing, so 'is' takes 'int', not float
+int? Find(int x)
+{
+    if (x > 0) return x;
+    return null;
+}
+singleton Score { float value; }
+scene Main { }
+system Count(mut Score score)
+{
+    if (Find(1) is float value) score.value = value;
+}

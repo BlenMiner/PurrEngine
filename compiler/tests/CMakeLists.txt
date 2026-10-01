@@ -56,6 +56,7 @@ tide_e2e_test(crlf) # Windows line endings, kept by .gitattributes
 tide_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.tide e2e/multi_file/b_main.tide
     e2e/multi_file/c_combat.tide e2e/multi_file/d_items.tide)
 tide_e2e_test(extern SOURCES e2e/extern.tide e2e/extern_noise.tide e2e/extern_c.c) # C functions, from the game's C file
+tide_e2e_test(fails SOURCES e2e/fails.tide e2e/fails_c.c) # Errors as values, and T?
 
 # An endless chain of events stops the program, naming the event: here past
 # 1000 deep, so it stops quickly.

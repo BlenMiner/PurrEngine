@@ -817,6 +817,62 @@ TIDE_TEST(lsp_loops)
     TIDE_CHECK(has(request("textDocument/hover"), "int index"));
 }
 
+TIDE_TEST(lsp_errors_as_values)
+{
+    start();
+    // Formatted already, with no diagnostics but the warning for an ignored error.
+    static const char game[] =
+        "enum ParseError { Empty }\n\n"
+        "int Parse(string text) fails ParseError\n{\n    if (text == \"\") fail ParseError.Empty;\n    return 1;\n}\n\n"
+        "int? Find(int x)\n{\n    if (x > 0) return x;\n    return null;\n}\n\n"
+        "int Twice(string text) fails ParseError\n{\n    var n = try Parse(text);\n"
+        "    if (Parse(text) is int m && m > 0) return m;\n    return (Find(n) ?? 0) + Parse(text)! - 1;\n}\n\n"
+        "scene Main { }\nsystem S()\n{\n    Parse(\"1\");\n}\n";
+    open_document(game);
+    TIDE_CHECK(has(last_sent(), "'Parse' can fail, and nothing handles its error here"));
+    TIDE_CHECK(has(last_sent(), "\"severity\":2"));
+    TIDE_CHECK(count(last_sent(), "\"severity\"") == 1);
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]"));
+
+    // The name after `is` is in scope where the test is true.
+    TIDE_CHECK(offers(complete("enum E { A }\nint P() fails E { return 1; }\nscene Main { }\n"
+                               "system S()\n{\n    if (P() is int score)\n    {\n        var x = $\n    }\n}\n"),
+                      "score"));
+    TIDE_CHECK(!offers(complete("enum E { A }\nint P() fails E { return 1; }\nscene Main { }\n"
+                                "system S()\n{\n    if (P() is int score) { }\n    var x = $\n}\n"),
+                       "score"));
+    // try and fail in a function that can fail, and only there.
+    const char *in_failing = complete("enum E { A }\nint P() fails E\n{\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(in_failing, "fail"));
+    TIDE_CHECK(offers(in_failing, "try"));
+    TIDE_CHECK(!offers(complete("scene Main { }\nsystem S()\n{\n    $\n}\n"), "fail"));
+
+    // Hovers: what a call can fail with, the name `is` gives, and null.
+    open_document("enum E { A }\nint P() fails E { return 1; }\nscene Main { }\nsystem S()\n{\n    var x = P$() ?? 0;\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "int P() fails E"));
+    open_document("enum E { A }\nint P() fails E { return 1; }\nscene Main { }\n"
+                  "system S()\n{\n    if (P() is int sc$ore) { }\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "int score"));
+    open_document("int? F() { return nu$ll; }\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "null: int?"));
+}
+
+TIDE_TEST(lsp_format_errors_as_values)
+{
+    start();
+    static const char messy[] = "enum E { A }\nint ? Find(int x)\n{\nreturn null;\n}\n"
+                                "int P(int ? y) fails E\n{\nint ? z = y;\nvar a = try P(1)+1;\n"
+                                "return (z??Find(2) ??0)+P(3) ! -a;\n}\nscene Main { }\n";
+    static const char expected[] = "enum E { A }\nint? Find(int x)\n{\n    return null;\n}\n"
+                                   "int P(int? y) fails E\n{\n    int? z = y;\n    var a = try P(1) + 1;\n"
+                                   "    return (z ?? Find(2) ?? 0) + P(3)! - a;\n}\nscene Main { }\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    TIDE_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+    TIDE_CHECK(has(format_reply(expected), "\"result\":[]"));
+}
+
 TIDE_TEST(lsp_format_loops)
 {
     start();
@@ -1647,7 +1703,12 @@ TIDE_TEST(lsp_every_prefix_is_safe)
         "event(Hit hit) TakeHit(mut Body body)\n{\n    body.radius -= hit.damage;\n}\n"
         "view DrawBody(Body body, Arena arena)\n{\n"
         "    Draw.Text(\"hi \\\"there\\\"\", body.position, 12, Color(1, 0.5, 0));\n"
-        "    Draw.Circle(body.position, body.radius, Color.red);\n}\n";
+        "    Draw.Circle(body.position, body.radius, Color.red);\n}\n"
+        "enum ParseError { Empty }\n"
+        "int Parse(string t) fails ParseError\n{\n    if (t == \"\") fail ParseError.Empty;\n    return 1;\n}\n"
+        "int? Find(int x)\n{\n    if (x > 0) return x;\n    return null;\n}\n"
+        "int Twice(string t) fails ParseError\n{\n    var n = try Parse(t);\n"
+        "    if (Parse(t) is int m && m > 0) return m;\n    return (Find(n) ?? 0) + Parse(t)!;\n}\n";
     start();
     char text[sizeof program];
     for (size_t n = 0; n < sizeof program; n++) {
