@@ -1,0 +1,3 @@
+// expect: the title is text written out
+settings { title = "Space" + "ships"; }
+scene Main { }

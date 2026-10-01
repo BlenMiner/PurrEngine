@@ -70,6 +70,9 @@ typedef struct tide_game {
     // Whether the match is over: its last scene unloaded, and Main is local,
     // so it can't come back. The server ends it then. NULL: it never is.
     bool (*ended)(const void *world);
+    // The game's settings (`settings { ... }`), 0 or NULL where it sets none
+    uint32_t tick_rate; // tickRate: what servers run its matches at, unless their desc says
+    const char *title;  // title: the window's, unless the host says
 } tide_game;
 
 typedef enum tide_session_state {
@@ -104,7 +107,7 @@ typedef struct tide_server tide_server;
 
 typedef struct tide_server_desc {
     const tide_game *game;
-    uint32_t tick_rate;          // Ticks per second
+    uint32_t tick_rate;          // Ticks per second; 0 for the game's (tide_game.tick_rate), or else 60
     float dt;                    // Time.dt; 1 / tick_rate when 0
     const void *start;           // The game's tide_start, or NULL: Main
     tide_transport transports[2]; // Where players connect from; the ones with no `send` are unused
@@ -192,7 +195,7 @@ typedef struct tide_session tide_session;
 
 typedef struct tide_session_desc {
     const tide_game *game;
-    uint32_t tick_rate;
+    uint32_t tick_rate; // The matches it starts: 0 for the game's at the time (tide_game.tick_rate), or else 60
     tide_sample_fn sample;
     void *user;
     const tide_jobs *jobs; // Threads to run ticks on (tide/jobs.h), or NULL: this one

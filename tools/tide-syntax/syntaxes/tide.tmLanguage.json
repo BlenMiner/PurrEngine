@@ -165,6 +165,13 @@
           }
         },
         {
+          "comment": "settings { ... }: the engine's settings for the game",
+          "match": "^\\s*(settings)(?=\\s*(?:\\{|$))",
+          "captures": {
+            "1": { "name": "storage.type.tide" }
+          }
+        },
+        {
           "comment": "const int MAX_HEALTH = ...: a constant",
           "match": "^\\s*(const)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*=)",
           "captures": {

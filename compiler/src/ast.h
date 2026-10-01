@@ -157,6 +157,7 @@ typedef enum decl_kind {
     DECL_ENUM,     // enum Page { Title, Options }: a type with named values
     DECL_LIST,     // List<T>, one per element type: its one field is the element; in program.lists
     DECL_CONST,    // const int MAX_HEALTH = 100;: a value code reads by name, the same on every machine
+    DECL_SETTINGS, // settings { tickRate = 30; }: the engine's settings, as fields; in program.settings
 } decl_kind;
 
 // One of an enum's members: `Options`, or `Options = 3`.
@@ -519,6 +520,11 @@ typedef struct program {
     uint64_t removed_mask;     // Components that appear in Remove.
     bool uses_destroy;
     VEC(struct fix) fixes;     // Quick fixes for editors
+
+    // The engine's settings for the game (builtins.h), from `settings { ... }`
+    VEC(decl *) settings;      // Each block written, though a game has one
+    uint32_t tick_rate;        // tickRate, or 0 where it isn't set
+    const expr *title;         // title, the text it's set to, or NULL
 } program;
 
 // A change that fixes a diagnostic, which editors offer as a quick fix.

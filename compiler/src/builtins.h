@@ -45,3 +45,19 @@ bool builtin_describe(str owner, str name, sb *out);
 // Calls `visit` with each signature of owner.name, like
 // "Draw.Circle(float2 center, float radius, Color color)", and its doc (or NULL).
 void builtin_signatures(str owner, str name, void (*visit)(void *user, const char *label, const char *doc), void *user);
+
+// ---------------------------------------------------------------------------
+// Settings: the engine's, which a game sets in `settings { ... }`
+
+typedef struct setting {
+    const char *name;
+    type_kind kind;        // What it's set to: TY_INT, TY_STRING or TY_BOOL
+    const char *otherwise; // What it is when the game doesn't set it, in words: "60"
+    const char *doc;
+} setting;
+
+// The setting named `name`, or NULL.
+const setting *setting_named(str name);
+
+// Every setting, and how many there are.
+const setting *settings_list(int *count);

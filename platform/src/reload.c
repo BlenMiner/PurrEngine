@@ -184,8 +184,8 @@ static bool resume(void)
 
 _Noreturn void tide_host_run_web(const tide_run_desc *desc, const tide_host_game *game)
 {
-    tide_run_open(desc);
     tide_run_game = game;
+    tide_run_open(desc);
     if (!resume()) tide_run_begin();
     tide_platform_run(tide_run_frame, NULL);
 }
@@ -475,8 +475,8 @@ _Noreturn void tide_host_run_library(const tide_run_desc *desc, const char *dir)
     reload.running = 1;
     const tide_host_game *game = load(1, &reload.library);
     if (!game) exit(1);
-    tide_run_open(desc);
     tide_run_game = game;
+    tide_run_open(desc);
     tide_run_begin();
     tide_platform_run(reload_frame, NULL);
 }

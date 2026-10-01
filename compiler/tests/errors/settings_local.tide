@@ -1,0 +1,3 @@
+// expect: the settings are the whole game's, so they can't be local
+local settings { tickRate = 30; }
+scene Main { }

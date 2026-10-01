@@ -38,6 +38,7 @@ typedef enum occ_kind {
     OCC_THIS,     // `this`, with `decl` the system, view, handler or method it's in
     OCC_DEFAULT,  // `default`, with the type it takes
     OCC_CONST,    // A constant the game declares, MAX_HEALTH, with `decl`
+    OCC_SETTING,  // One of the engine's settings, tickRate in settings { ... }
 } occ_kind;
 
 typedef struct occurrence {
@@ -681,6 +682,18 @@ static void index_program(void)
         walk_fields_of = NULL;
     }
 
+    for (int b = 0; b < A.prog->settings.count; b++) {
+        const decl *block = A.prog->settings.items[b];
+        for (int f = 0; f < block->fields.count; f++) {
+            const field *fl = &block->fields.items[f];
+            if (setting_named(fl->name)) {
+                add_occ((occurrence){.at = fl->at, .len = fl->name.len, .kind = OCC_SETTING, .name = fl->name,
+                                     .type = fl->type});
+            }
+            walk_expr(fl->default_value);
+        }
+    }
+
     // In source order, one per position.
     qsort(A.occs.items, (size_t)A.occs.count, sizeof(occurrence), occ_order);
     int n = 0;
@@ -811,6 +824,7 @@ static const char *decl_keyword(const decl *d)
     case DECL_ENUM: return "enum";
     case DECL_LIST: return "list";
     case DECL_CONST: return "const";
+    case DECL_SETTINGS: return "settings";
     case DECL_SYSTEM: return d->is_view ? "view" : d->is_handler ? "event" : "system";
     }
     return "";
@@ -1074,6 +1088,13 @@ static void describe(const occurrence *o, sb *out)
         }
         describe_order(o->decl, out);
         break;
+    case OCC_SETTING: {
+        const setting *st = setting_named(o->name);
+        sb_printf(&code, "%s %s", type_name((type){st->kind, NULL}), st->name);
+        code_block(out, code.data);
+        sb_printf(out, "\n\nSetting: %s Without it: %s.", st->doc, st->otherwise);
+        break;
+    }
     case OCC_CONST:
         sb_printf(&code, "const " STR_FMT " " STR_FMT, STR_ARG(o->decl->return_type_name), STR_ARG(o->decl->name));
         format_value_after(o->decl->at, &code);
@@ -1761,8 +1782,9 @@ void analysis_definition(const char *uri, const int line, const int character, j
 // ---------------------------------------------------------------------------
 // Document symbols: the outline
 
-enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_FIELD = 8, SYMBOL_ENUM = 10, SYMBOL_INTERFACE = 11,
-       SYMBOL_FUNCTION = 12, SYMBOL_CONSTANT = 14, SYMBOL_ENUM_MEMBER = 22, SYMBOL_STRUCT = 23, SYMBOL_EVENT = 24 };
+enum { SYMBOL_CLASS = 5, SYMBOL_METHOD = 6, SYMBOL_PROPERTY = 7, SYMBOL_FIELD = 8, SYMBOL_ENUM = 10, SYMBOL_INTERFACE = 11,
+       SYMBOL_FUNCTION = 12, SYMBOL_CONSTANT = 14, SYMBOL_OBJECT = 19, SYMBOL_ENUM_MEMBER = 22, SYMBOL_STRUCT = 23,
+       SYMBOL_EVENT = 24 };
 
 static int symbol_kind(const decl *d)
 {
@@ -1838,6 +1860,32 @@ void analysis_symbols(jbuf *out)
             write_position(out, (loc){m->end.line, m->end.col + 1, m->end.file});
             jb_put(out, "},\"selectionRange\":");
             write_range(out, m->at, m->name.len);
+            jb_put(out, "}");
+        }
+        jb_put(out, "]}");
+    }
+    // settings { ... }, with what it sets
+    for (int b = 0; b < A.prog->settings.count; b++) {
+        const decl *block = A.prog->settings.items[b];
+        if (block->at.file != A.doc) continue;
+        const loc end = block->end.line > 0 ? block->end : block->at;
+        if (written++) jb_put(out, ",");
+        jb_printf(out, "{\"name\":\"settings\",\"detail\":\"the engine's\",\"kind\":%d,\"range\":{\"start\":", SYMBOL_OBJECT);
+        write_position(out, block->at);
+        jb_put(out, ",\"end\":");
+        write_position(out, (loc){end.line, end.col + 1, end.file});
+        jb_put(out, "},\"selectionRange\":");
+        write_range(out, block->at, 8);
+        jb_put(out, ",\"children\":[");
+        for (int f = 0; f < block->fields.count; f++) {
+            const field *fl = &block->fields.items[f];
+            if (f) jb_put(out, ",");
+            jb_put(out, "{\"name\":");
+            jb_string_n(out, fl->name.ptr, (size_t)fl->name.len);
+            jb_printf(out, ",\"kind\":%d,\"range\":", SYMBOL_PROPERTY);
+            write_range(out, fl->at, fl->name.len);
+            jb_put(out, ",\"selectionRange\":");
+            write_range(out, fl->at, fl->name.len);
             jb_put(out, "}");
         }
         jb_put(out, "]}");
@@ -2073,6 +2121,7 @@ static void classify(const occurrence *o, int *type, int *mods)
         break;
     case OCC_CONSTANT: *type = ST_ENUM_MEMBER; *mods |= SM_DEFAULT_LIBRARY | SM_STATIC | SM_READONLY; break;
     case OCC_CONST: *type = ST_ENUM_MEMBER; *mods |= SM_STATIC | SM_READONLY; break; // Like Math.PI
+    case OCC_SETTING: *type = ST_PROPERTY; *mods |= SM_DEFAULT_LIBRARY; break;
     case OCC_METHOD:
         if (is_operator_decl(o->decl)) {
             *type = ST_KEYWORD;
@@ -2620,6 +2669,26 @@ static void complete_constants(completion *c)
     }
 }
 
+// In settings { ... } between tokens `open` and `last`: each setting it
+// doesn't set yet.
+static void complete_settings(completion *c, const int open, const int last)
+{
+    int count;
+    const setting *all = settings_list(&count);
+    for (int i = 0; i < count; i++) {
+        bool set = false;
+        for (int k = open + 1; k <= last && !set; k++) {
+            set = DOC->toks[k].kind == T_IDENT && DOC->toks[k + 1].kind == T_ASSIGN && str_eq_c(DOC->toks[k].text, all[i].name);
+        }
+        if (set) continue;
+        sb detail = {0};
+        sb_printf(&detail, "%s %s", type_name((type){all[i].kind, NULL}), all[i].name);
+        sb snippet = {0};
+        sb_printf(&snippet, "%s = $0;", all[i].name);
+        item(c, all[i].name, CK_PROPERTY, detail.data, all[i].doc, snippet.data);
+    }
+}
+
 // Systems or views, for [Before(...)] and [After(...)].
 static void complete_systems(completion *c, const bool views)
 {
@@ -2816,6 +2885,8 @@ static void complete_declarations(completion *c)
          "A function written in C, which the game's C files or libraries define.", "extern ${1:void} ${2:Name}($3);");
     item(c, "const", CK_SNIPPET, "const Type NAME = value;", "A value code reads by name, the same on every machine.",
          "const ${1:int} ${2:NAME} = $0;");
+    item(c, "settings", CK_SNIPPET, "settings { name = value; }", "The engine's settings for the game, like its tickRate.",
+         "settings\n{\n    $0\n}");
     item(c, "namespace", CK_KEYWORD, "namespace Name;", "The namespace of everything in this file. Goes at the top.",
          "namespace ${1:Name};");
     item(c, "using", CK_KEYWORD, "using Name;", "Names from another namespace, without writing it. Goes at the top.",
@@ -2871,6 +2942,9 @@ static bool starts_declaration(const int i)
     }
     if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_LPAREN && str_eq_c(t->text, "event")) {
         return true; // event(Hit hit) TakeHit(...)
+    }
+    if (t->kind == T_IDENT && t->at.col == 1 && DOC->toks[i + 1].kind == T_LBRACE && str_eq_c(t->text, "settings")) {
+        return true;
     }
     return starts_function(i);
 }
@@ -3058,6 +3132,17 @@ void analysis_completion(const int line, const int character, jbuf *out)
     }
 
     case CTX_DATA: {
+        // settings { ... }: the settings it doesn't set yet, and after '=', a constant
+        if (f.open >= 1 && DOC->toks[f.open - 1].kind == T_IDENT && str_eq_c(DOC->toks[f.open - 1].text, "settings")) {
+            if (pk == T_LBRACE || pk == T_SEMI) {
+                complete_settings(&c, f.open, last);
+            } else if (pk != T_IDENT || (last >= 1 && DOC->toks[last - 1].kind != T_LBRACE && DOC->toks[last - 1].kind != T_SEMI)) {
+                complete_value_types(&c, true);
+                complete_constants(&c);
+                item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
+            }
+            break;
+        }
         // What the body belongs to: `struct Name {`, `component Name {`, ...
         const token *keyword = f.open >= 2 ? &DOC->toks[f.open - 2] : NULL;
         const bool is_struct = keyword && keyword->kind == T_IDENT && str_eq_c(keyword->text, "struct");
@@ -3156,7 +3241,8 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
         return str_eq(a->name, b->name);
     case OCC_MEMBER:
     case OCC_NAMESPACE:
-    case OCC_ATTRIBUTE: return str_eq(a->name, b->name);
+    case OCC_ATTRIBUTE:
+    case OCC_SETTING: return str_eq(a->name, b->name);
     case OCC_ENUM_MEMBER: return a->decl == b->decl && str_eq(a->name, b->name);
     case OCC_THIS:
     case OCC_CONST: return a->decl == b->decl;
@@ -3231,6 +3317,8 @@ static const char *rename_target(const int line, const int character, const occu
         return "Built-in names can't be renamed.";
     case OCC_THIS:
         return "'this' is a keyword, so it can't be renamed.";
+    case OCC_SETTING:
+        return "Settings are the engine's, so they can't be renamed.";
     default:
         return "Built-in names can't be renamed.";
     }

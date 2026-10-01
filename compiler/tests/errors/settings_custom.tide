@@ -1,0 +1,3 @@
+// expect: a game's own values are constants, at the top of a file: 'const int lives = ...;'
+settings { lives = 3; }
+scene Main { }

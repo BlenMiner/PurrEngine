@@ -1,0 +1,3 @@
+// expect: tickRate is from 1 to 1000 ticks a second, not 0
+settings { tickRate = 0; }
+scene Main { }

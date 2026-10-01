@@ -734,3 +734,31 @@ bool builtin_describe(const str owner, const str name, sb *out)
     }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// Settings
+
+static const setting settings[] = {
+    {"title", TY_STRING, "the game's name",
+     "The window's title. Without it, it's the game's name: its folder's under tide, its target's under CMake. "
+     "`--title` and CMake's `TITLE` take precedence."},
+    {"tickRate", TY_INT, "60",
+     "How many times a second the match ticks, from 1 to 1000: `Time.dt` is 1 / tickRate. The machine that runs "
+     "the match decides, and every player ticks at its rate. A new rate takes effect when a match starts."},
+};
+
+#define SETTING_COUNT (sizeof settings / sizeof settings[0])
+
+const setting *setting_named(const str name)
+{
+    for (size_t i = 0; i < SETTING_COUNT; i++) {
+        if (str_eq_c(name, settings[i].name)) return &settings[i];
+    }
+    return NULL;
+}
+
+const setting *settings_list(int *count)
+{
+    *count = (int)SETTING_COUNT;
+    return settings;
+}

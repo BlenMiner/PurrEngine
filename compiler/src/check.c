@@ -3430,6 +3430,83 @@ static void check_constant(checker *c, decl *k)
     k->index = 2;
 }
 
+// The text a constant expression is, through the constants it names: the
+// "Asteroids" in title = NAME. NULL for text made some other way.
+static const expr *text_literal(const expr *e)
+{
+    if (e->kind == E_STRING) return e;
+    const decl *k = e->bind == BIND_CONST ? e->constant : NULL;
+    return k && k->index == 2 && k->return_type.kind == TY_STRING ? text_literal(k->value) : NULL;
+}
+
+// settings { tickRate = 30; }: the engine's settings for the game (builtins.h),
+// each set to a constant of its type. A game has one block.
+static void check_settings(checker *c)
+{
+    program *prog = c->prog;
+    for (int b = 0; b < prog->settings.count; b++) {
+        const decl *block = prog->settings.items[b];
+        c->unit = block->unit;
+        if (b > 0) {
+            diag_error(block->at, "a game has one 'settings' block");
+            const decl *first = prog->settings.items[0];
+            const source *src = diag_source(first->at.file);
+            if (src) diag_note("the other one is in %s, on line %d", src->path, first->at.line);
+        }
+        for (int i = 0; i < block->fields.count; i++) {
+            field *f = &block->fields.items[i];
+            const setting *s = setting_named(f->name);
+            if (!s) {
+                diag_error(f->at, "'" STR_FMT "' isn't one of the engine's settings", STR_ARG(f->name));
+                int count;
+                const setting *all = settings_list(&count);
+                suggestion sg = suggest_start(f->name);
+                for (int k = 0; k < count; k++) suggest_consider_c(&sg, all[k].name);
+                suggest_note(&sg);
+                diag_note("a game's own values are constants, at the top of a file: 'const int " STR_FMT " = ...;'",
+                          STR_ARG(f->name));
+                continue;
+            }
+            f->type = (type){s->kind, NULL};
+            bool twice = false;
+            for (int j = 0; j < i; j++) twice |= str_eq(block->fields.items[j].name, f->name);
+            if (twice) {
+                diag_error(f->at, "'" STR_FMT "' is set twice", STR_ARG(f->name));
+                continue;
+            }
+            expr *value = f->default_value;
+            if (!is_constant(c, value)) {
+                diag_error(value->at, "a setting's value must be a constant expression");
+                diag_note("use literals, constants and operators: settings are part of the build, the same on every machine");
+                suggest_constant(c, value);
+                continue;
+            }
+            const type t = check_constant_expr(c, value, true, f->type);
+            if (t.kind == TY_ERROR) continue;
+            if (!type_assignable(f->type, t)) {
+                diag_error(value->at, "'" STR_FMT "' is %s, not %s", STR_ARG(f->name), type_name(f->type), type_name(t));
+                continue;
+            }
+            if (b > 0) continue; // Only the first block counts
+            if (str_eq_c(f->name, "tickRate")) {
+                int64_t rate;
+                if (!fold_int(value, &rate)) {
+                    diag_error(value->at, "tickRate is an int known while compiling, like 'tickRate = 30;'");
+                } else if (rate < 1 || rate > 1000) {
+                    diag_error(value->at, "tickRate is from 1 to 1000 ticks a second, not %lld", (long long)rate);
+                } else {
+                    prog->tick_rate = (uint32_t)rate;
+                }
+            } else if (str_eq_c(f->name, "title")) {
+                prog->title = text_literal(value);
+                if (!prog->title) {
+                    diag_error(value->at, "the title is text written out, like 'title = \"Asteroids\";', or a constant that is");
+                }
+            }
+        }
+    }
+}
+
 // MAX_HEALTH, or Combat.MAX_HEALTH: a constant, which stands for its value.
 static type use_constant(checker *c, expr *e, decl *k)
 {
@@ -4751,6 +4828,7 @@ static void collect_decls(program *prog)
         case DECL_LIST:
         case DECL_FUNCTION:
         case DECL_CONST:
+        case DECL_SETTINGS: // Not in prog->decls
             break;
         case DECL_SYSTEM:
             if (d->is_view) {
@@ -5352,6 +5430,7 @@ bool check(program *prog)
     for (int i = 0; i < prog->decls.count; i++) {
         if (prog->decls.items[i]->kind == DECL_CONST) check_constant(&c, prog->decls.items[i]);
     }
+    check_settings(&c);
     for (int i = 0; i < prog->decls.count; i++) {
         if (prog->decls.items[i]->kind == DECL_STRUCT) order_struct(prog, prog->decls.items[i]);
         if (prog->decls.items[i]->kind == DECL_ENUM) {

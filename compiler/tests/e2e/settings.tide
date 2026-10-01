@@ -1,0 +1,12 @@
+// The engine's settings for the game, which can name constants.
+
+const int RATE = 20;
+const string NAME = "Tide \"settings\"";
+
+settings
+{
+    title = NAME;
+    tickRate = RATE + 10;
+}
+
+scene Main { }

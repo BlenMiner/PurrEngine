@@ -1110,8 +1110,6 @@ Implemented, awaiting approval:
 
 ## Settings
 
-Not built yet.
-
 ### Decided
 
 - `settings { ... }` sets the engine's settings for the game. Each is set without a type: `tickRate = 30;`. The game's own values are constants (see Constants).
@@ -1131,9 +1129,20 @@ settings
 }
 ```
 
+### Provisional
+
+Implemented, awaiting approval:
+
+- `title` and `tickRate` are built; `hostMigration` comes with host migration.
+- `tickRate` is an int from 1 to 1000, known while compiling. The machine that runs a match decides its rate (its desc's, or its game's), and the players who join tick at it. A new `tickRate` under `tide run` takes effect when a match starts.
+- `title` is text written out, or a constant that is. `--title` and CMake's `TITLE` go over it, and without any of them, the window has the game's name: its folder's under `tide`, its target's under CMake. Under `tide run`, a new title shows the next time the game runs.
+- A setting that's set twice, a name that isn't a setting, and a type written before one are errors. The last two say that a game's own values are constants.
+- In generated C, the settings are in `tide_game_api` (`tick_rate` and `title`), in the `.c` rather than the header, so they don't change the game's hash.
+
 ### Open
 
 - Changing settings when the game starts, from the command line or a file: the server would send its settings to the players who join.
+- The web page's title: it doesn't show the `title` setting yet.
 
 ## C functions
 

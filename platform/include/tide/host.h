@@ -20,10 +20,11 @@
 #include "tide/session.h"
 
 typedef struct tide_run_desc {
-    const char *title; // Default "Tide"
-    int width;         // Starting window size in pixels; default 960 x 540
+    const char *title;      // The window's title, over the game's title setting; NULL for that
+    const char *game_name;  // The title when neither says: the game's folder or target; default "Tide"
+    int width;              // Starting window size in pixels; default 960 x 540
     int height;
-    int tick_rate;     // Ticks per second; default 60
+    int tick_rate;          // Ticks per second, over the game's tickRate setting; 0 for that, or else 60
     bool stats;        // Show the tick, entity count, ping and frame rate in a corner
     int argc;          // The command line, for --host, --join and --connect
     char **argv;
@@ -194,21 +195,25 @@ static inline bool tide_run_arguments(tide_session_request *request)
     return false;
 }
 
-// Opens the window, with the defaults for what `desc` leaves out.
+// Opens tide_run_game's window, with the defaults for what `desc` and the
+// game's settings leave out.
 static inline void tide_run_open(const tide_run_desc *desc)
 {
     tide_run_settings = *desc;
+    if (!tide_run_settings.title) tide_run_settings.title = tide_run_game->game->title;
+    if (!tide_run_settings.title) tide_run_settings.title = tide_run_settings.game_name;
     if (!tide_run_settings.title) tide_run_settings.title = "Tide";
     if (tide_run_settings.width <= 0) tide_run_settings.width = 960;
     if (tide_run_settings.height <= 0) tide_run_settings.height = 540;
-    if (tide_run_settings.tick_rate <= 0) tide_run_settings.tick_rate = 60;
+    if (tide_run_settings.tick_rate < 0) tide_run_settings.tick_rate = 0; // The game's
 
     tide_platform_open(&(tide_window_desc){.title = tide_run_settings.title,
                                            .width = tide_run_settings.width,
                                            .height = tide_run_settings.height});
 }
 
-// A session for tide_run_game, in no match yet.
+// A session for tide_run_game, in no match yet. Its matches tick at the game's
+// rate unless the host said otherwise.
 static inline tide_session *tide_run_new_session(void)
 {
     return tide_session_create(&(tide_session_desc){
@@ -307,8 +312,8 @@ static inline int tide_run_frame(void *user, const float seconds)
 // Runs `game` in a window until it closes (see tide/run.h).
 _Noreturn static inline void tide_host_run(const tide_run_desc *desc, const tide_host_game *game)
 {
-    tide_run_open(desc);
     tide_run_game = game;
+    tide_run_open(desc);
     tide_run_begin();
     tide_platform_run(tide_run_frame, NULL);
 }

@@ -470,6 +470,7 @@ static bool at_decl_start_or_function(const parser *p, const bool functions)
     if (t->kind == T_LBRACKET && t->at.col == 1) return !attributes_before_field(p->toks, p->pos);
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_IDENT && is_decl_word(t->text)) return true;
     if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_LPAREN && str_eq_c(t->text, "event")) return true;
+    if (t->kind == T_IDENT && t->at.col == 1 && peek_at(p, 1)->kind == T_LBRACE && str_eq_c(t->text, "settings")) return true;
     if (t->kind == T_IDENT && t->at.col == 1 && str_eq_c(t->text, "local")
         && (peek_at(p, 1)->kind == T_COMPONENT || peek_at(p, 1)->kind == T_SINGLETON || peek_at(p, 1)->kind == T_SYSTEM)) {
         return true;
@@ -961,6 +962,48 @@ static decl *parse_const(parser *p)
     return d;
 }
 
+// name = value;: one of the settings in a settings block, which the checker
+// knows the types of.
+static void parse_setting(parser *p, decl *d)
+{
+    int past = 1; // `Type name =`: past a qualified type's parts
+    while (peek_at(p, past)->kind == T_DOT && peek_at(p, past + 1)->kind == T_IDENT) past += 2;
+    if (at(p, T_IDENT) && peek_at(p, past)->kind == T_IDENT) {
+        diag_error(peek(p)->at, "settings are set without a type: '" STR_FMT " = ...;'", STR_ARG(peek_at(p, past)->text));
+        diag_note("they're the engine's; a game's own values are constants, at the top of a file: 'const " STR_FMT
+                  " " STR_FMT " = ...;'", STR_ARG(peek(p)->text), STR_ARG(peek_at(p, past)->text));
+        longjmp(p->fail, 1);
+    }
+    const token *name = expect_ident(p, "a setting's name, like 'tickRate', or '}'");
+    field f = {0};
+    f.name = name->text;
+    f.at = name->at;
+    expect(p, T_ASSIGN, "'=' and its value, like 'tickRate = 30;'");
+    f.default_value = parse_expr(p);
+    expect(p, T_SEMI, "';' after the setting");
+    vec_push(d->fields, f);
+}
+
+// settings { tickRate = 30; }: the engine's settings for the game.
+static decl *parse_settings(parser *p, const token *keyword)
+{
+    decl *d = new_decl(DECL_SETTINGS, keyword);
+    d->unit = p->unit;
+    expect(p, T_LBRACE, "'{'");
+    while (!at(p, T_RBRACE)) {
+        if (p->recover && (at(p, T_EOF) || at_decl_start(p))) {
+            diag_error(peek(p)->at, "expected '}' to close 'settings'");
+            d->end = peek(p)->at;
+            return d;
+        }
+        if (p->recover) RECOVERING(p, parse_setting(p, d));
+        else parse_setting(p, d);
+    }
+    d->end = peek(p)->at;
+    advance(p);
+    return d;
+}
+
 // [mut] ReturnType Name(Type name, ...) { ... }: a method of `owner`, or with
 // no owner, a function. The checker says where methods are allowed.
 static decl *parse_method(parser *p, decl *owner)
@@ -1278,6 +1321,18 @@ bool parse_file(program *prog, const source *src, token *toks, const bool recove
         }
         if (t->kind == T_LBRACKET) {
             parse_attributes(&p);
+            continue;
+        }
+        // settings { ... }: kept apart from the declarations, as it names nothing
+        if (t->kind == T_IDENT && str_eq_c(t->text, "settings") && peek_at(&p, 1)->kind == T_LBRACE) {
+            advance(&p);
+            if (local) diag_error(local->at, "the settings are the whole game's, so they can't be local");
+            if (p.pending.count > 0) {
+                diag_error(p.pending.items[0].at, "settings take no attributes");
+                p.pending.count = 0;
+            }
+            vec_push(prog->settings, parse_settings(&p, t));
+            p.seen_decl = true;
             continue;
         }
         decl *d;

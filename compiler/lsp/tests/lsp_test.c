@@ -751,6 +751,41 @@ TIDE_TEST(lsp_constants)
     TIDE_CHECK(!has(renamed, "MAX"));
 }
 
+TIDE_TEST(lsp_settings)
+{
+    start();
+    static const char game[] = "const int RATE = 30;\n\nsettings\n{\n    title = \"Asteroids\";\n    tickRate = RATE;\n}\n\n"
+                               "scene Main { }\n";
+    open_document(game);
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Laid out as the formatter would
+
+    open_document("settings\n{\n    tick$Rate = 30;\n}\nscene Main { }\n");
+    const char *hover = request("textDocument/hover");
+    TIDE_CHECK(has(hover, "int tickRate"));
+    TIDE_CHECK(has(hover, "Without it: 60."));
+    TIDE_CHECK(has(request("textDocument/prepareRename"), "Settings are the engine's"));
+
+    const char *empty = complete("settings\n{\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(empty, "tickRate"));
+    TIDE_CHECK(offers(empty, "title"));
+    TIDE_CHECK(!offers(empty, "float3")); // Names, not values
+    const char *rest = complete("settings\n{\n    tickRate = 30;\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(!offers(rest, "tickRate")); // Set already
+    TIDE_CHECK(offers(rest, "title"));
+    TIDE_CHECK(offers(complete("const int RATE = 30;\nsettings\n{\n    tickRate = $\n}\nscene Main { }\n"), "RATE"));
+    TIDE_CHECK(offers(complete("scene Main { }\n$\n"), "settings"));
+
+    open_document(game);
+    const char *symbols = request("textDocument/documentSymbol");
+    TIDE_CHECK(has(symbols, "\"name\":\"settings\",\"detail\":\"the engine's\",\"kind\":19"));
+    TIDE_CHECK(has(symbols, "\"name\":\"tickRate\",\"kind\":7"));
+
+    // A name that isn't a setting says which one was meant.
+    open_document("settings { tickRat = 30; }\nscene Main { }\n");
+    TIDE_CHECK(has(last_sent(), "did you mean 'tickRate'?"));
+}
+
 TIDE_TEST(lsp_default_value)
 {
     start();

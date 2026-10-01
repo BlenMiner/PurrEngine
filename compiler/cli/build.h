@@ -7,7 +7,7 @@ typedef struct build_options {
     bool release;       // Optimized, no console window on Windows
     bool web;           // One self-contained .html, with clang's WebAssembly target
     const char *output; // Where the program goes; NULL for <folder>/build/<name>
-    const char *title;  // The window's title; NULL for the folder's name
+    const char *title;  // The window's title, over the game's title setting; NULL for that, or else the folder's name
     bool stats;         // Show the tick, entity count and frame rate
 } build_options;
 

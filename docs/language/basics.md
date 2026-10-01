@@ -75,6 +75,28 @@ system Regenerate(mut Health health, Time time)
 - A constant in a namespace belongs to it: code outside writes `Combat.CRIT_MULTIPLIER` (see [Namespaces and files](./namespaces.md)).
 - Changing a constant under `tide run` reloads the game and keeps the match where it is.
 
+## Settings
+
+`settings` sets the engine's settings for the game. It goes at the top level of any one of the game's files:
+
+```csharp
+settings
+{
+    title = "Asteroids";
+    tickRate = 30;
+}
+```
+
+| Setting | What it is | Without it |
+|---|---|---|
+| `title` | The window's title | The game's folder's name |
+| `tickRate` | How many times a second the match ticks, from 1 to 1000: `Time.dt` is 1 / `tickRate` | 60 |
+
+- Settings are set without a type, to constant expressions, which can name constants. A game's own values go in constants, not settings.
+- A game has one `settings` block. The editors complete the settings' names and show what each one does.
+- Settings are part of the build. The machine that runs a match decides its tick rate, and every player ticks at that rate. Under `tide run`, a new `tickRate` takes effect when a match starts.
+- `--title` goes over the `title` setting (see [The tide command](../guide/cli.md)).
+
 ## Default values
 
 `default` is the default value of the type where it goes, so the type doesn't have to be spelled out:

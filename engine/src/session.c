@@ -710,8 +710,8 @@ tide_server *tide_server_create(const tide_server_desc *desc, const double now)
     if (!s) return NULL;
     s->desc = *desc;
     s->game = desc->game;
-    if (s->desc.tick_rate == 0) s->desc.tick_rate = 60;
     const tide_game *g = s->game;
+    if (s->desc.tick_rate == 0) s->desc.tick_rate = g->tick_rate ? g->tick_rate : 60u;
     s->w = windows_for(s->desc.tick_rate);
     s->frames = calloc(s->w.history, sizeof *s->frames);
     s->world = calloc(1, g->world_size);
@@ -1530,8 +1530,7 @@ tide_session *tide_session_create(const tide_session_desc *desc)
 {
     tide_session *s = calloc(1, sizeof *s);
     if (!s) return NULL;
-    s->desc = *desc;
-    if (s->desc.tick_rate == 0) s->desc.tick_rate = 60;
+    s->desc = *desc; // A tick rate of 0 is the game's when a match starts, as builds can change
     return s;
 }
 
@@ -1671,7 +1670,7 @@ void tide_session_update(tide_session *s, const double now)
     // the server can run in one update, which it would drop anyway, that time
     // didn't pass for the match: neither side went quiet, and there's nothing
     // to catch up. A client of another machine keeps to the real time.
-    const double most = (double)MAX_TICKS / (double)s->desc.tick_rate;
+    const double most = s->server ? (double)MAX_TICKS / (double)s->server->desc.tick_rate : 0.0;
     if (s->server && now - s->last_now > most) s->paused += now - s->last_now - most;
     s->last_now = now;
     const double t = now - s->paused;
