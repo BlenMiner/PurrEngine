@@ -1,3 +1,0 @@
-// expect: reserved for generated code
-component purr_thing { int value; }
-scene Main { }

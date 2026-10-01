@@ -1,4 +1,4 @@
-// purrls: the PurrLang language server. Editors start it and talk to it over
+// tidels: the Tide language server. Editors start it and talk to it over
 // stdin and stdout (LSP's base protocol: a Content-Length header, then JSON).
 
 #include <stdio.h>
@@ -15,8 +15,8 @@
 #include "server.h"
 
 // Set by the build: the list of games and their files.
-#ifndef PURR_GAMES_MANIFEST
-#define PURR_GAMES_MANIFEST NULL
+#ifndef TIDE_GAMES_MANIFEST
+#define TIDE_GAMES_MANIFEST NULL
 #endif
 
 static void send_message(void *user, const char *message, const size_t len)
@@ -39,7 +39,7 @@ static long read_headers(void)
     }
 }
 
-// Installed, purrls is in <install>/bin and the engine headers are in
+// Installed, tidels is in <install>/bin and the engine headers are in
 // <install>/include. NULL if they aren't there, as in a build of the repo.
 static char *installed_include_dir(void)
 {
@@ -59,7 +59,7 @@ static char *installed_include_dir(void)
     char *probe = malloc(len);
     if (!dir || !probe) abort();
     snprintf(dir, len, "%s/include", bin);
-    snprintf(probe, len, "%s/purr/math.h", dir);
+    snprintf(probe, len, "%s/tide/math.h", dir);
     free(bin);
     FILE *f = fopen(probe, "rb");
     free(probe);
@@ -80,7 +80,7 @@ int main(void)
 #endif
     lsp_server server;
     lsp_init(&server, send_message, NULL);
-    server.manifest = PURR_GAMES_MANIFEST; // Written by purr_add_game (see cmake/PurrLang.cmake)
+    server.manifest = TIDE_GAMES_MANIFEST; // Written by tide_add_game (see cmake/Tide.cmake)
     char *include_dir = installed_include_dir();
     if (include_dir) cdefs_set_include_dir(include_dir);
 

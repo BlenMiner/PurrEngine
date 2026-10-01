@@ -1,4 +1,4 @@
 # Tests of Windows line endings (CRLF): git keeps them as they are, whatever
 # the checkout's settings.
-compiler/tests/errors/*_crlf.purr -text
-compiler/tests/e2e/crlf.purr -text
+compiler/tests/errors/*_crlf.tide -text
+compiler/tests/e2e/crlf.tide -text

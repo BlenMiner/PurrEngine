@@ -1,0 +1,35 @@
+{
+  "name": "tide",
+  "displayName": "Tide",
+  "description": "Syntax highlighting for Tide (.tide)",
+  "version": "0.1.0",
+  "publisher": "tide-engine",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "tide",
+        "aliases": [
+          "Tide",
+          "tide"
+        ],
+        "extensions": [
+          ".tide"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tide",
+        "scopeName": "source.tide",
+        "path": "./syntaxes/tide.tmLanguage.json"
+      }
+    ]
+  }
+}

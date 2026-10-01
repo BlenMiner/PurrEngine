@@ -23,7 +23,7 @@ void *arena_alloc(size_t size)
         const size_t cap = size > 1u << 20 ? size : 1u << 20;
         arena_block *block = malloc(sizeof(arena_block) + cap);
         if (!block) {
-            fprintf(stderr, "purrc: out of memory\n");
+            fprintf(stderr, "tidec: out of memory\n");
             exit(1);
         }
         block->next = arena_head;
@@ -146,7 +146,7 @@ void diag_reset(void)
 void diag_add_source(source *src)
 {
     if (source_count == MAX_SOURCES) {
-        fprintf(stderr, "purrc: more than %d source files\n", MAX_SOURCES);
+        fprintf(stderr, "tidec: more than %d source files\n", MAX_SOURCES);
         exit(1);
     }
     src->file = source_count;
@@ -198,7 +198,7 @@ static void report(const loc at, const char *kind, const char *fmt, va_list args
 {
     const source *src = diag_source(at.file);
     if (src) fprintf(stderr, "%s:%d:%d: %s: ", src->path, at.line, at.col, kind);
-    else fprintf(stderr, "purrc: %s: ", kind);
+    else fprintf(stderr, "tidec: %s: ", kind);
     vfprintf(stderr, fmt, args);
     fputc('\n', stderr);
     if (src && at.line > 0) print_excerpt(src, at);

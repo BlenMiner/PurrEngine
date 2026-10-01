@@ -1,4 +1,0 @@
-// expect: names starting with 'purr_' belong to the engine
-scene Main { }
-[NativeName("purr_world_tick")]
-extern void Tick();

@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "purr_test.h"
+#include "tide_test.h"
 #include "rtc/rtc.h"
 
 static size_t unhex(const char *text, uint8_t *out)
@@ -32,7 +32,7 @@ static void pattern(uint8_t *out, const size_t n)
     for (size_t i = 0; i < n; i++) out[i] = (uint8_t)(i * 7 + 3);
 }
 
-PURR_TEST(rtc_hashes)
+TIDE_TEST(rtc_hashes)
 {
     static const struct {
         size_t size;
@@ -60,7 +60,7 @@ PURR_TEST(rtc_hashes)
         pattern(data, cases[c].size);
         uint8_t out[32];
         rtc_sha256_of(data, cases[c].size, out);
-        PURR_CHECK(same(out, cases[c].sha256));
+        TIDE_CHECK(same(out, cases[c].sha256));
         // In pieces too, split where blocks don't
         rtc_sha256 s;
         rtc_sha256_init(&s);
@@ -68,18 +68,18 @@ PURR_TEST(rtc_hashes)
         rtc_sha256_add(&s, data, half);
         rtc_sha256_add(&s, data + half, cases[c].size - half);
         rtc_sha256_end(&s, out);
-        PURR_CHECK(same(out, cases[c].sha256));
+        TIDE_CHECK(same(out, cases[c].sha256));
         rtc_sha1 s1;
         rtc_sha1_init(&s1);
         rtc_sha1_add(&s1, data, cases[c].size);
         rtc_sha1_end(&s1, out);
-        PURR_CHECK(same(out, cases[c].sha1));
+        TIDE_CHECK(same(out, cases[c].sha1));
         rtc_md5(data, cases[c].size, out);
-        PURR_CHECK(same(out, cases[c].md5));
+        TIDE_CHECK(same(out, cases[c].md5));
     }
 }
 
-PURR_TEST(rtc_hmac_and_prf)
+TIDE_TEST(rtc_hmac_and_prf)
 {
     static const struct {
         size_t key;
@@ -99,24 +99,24 @@ PURR_TEST(rtc_hmac_and_prf)
         rtc_hmac256_init(&h, key, cases[c].key);
         rtc_hmac256_add(&h, data, sizeof data);
         rtc_hmac256_end(&h, out);
-        PURR_CHECK(same(out, cases[c].sha256));
+        TIDE_CHECK(same(out, cases[c].sha256));
         rtc_hmac1 h1;
         rtc_hmac1_init(&h1, key, cases[c].key);
         rtc_hmac1_add(&h1, data, sizeof data);
         rtc_hmac1_end(&h1, out);
-        PURR_CHECK(same(out, cases[c].sha1));
+        TIDE_CHECK(same(out, cases[c].sha1));
     }
 
     uint8_t secret[48], seed[64], out[100];
     pattern(secret, sizeof secret);
     pattern(seed, sizeof seed);
     rtc_prf(secret, sizeof secret, "master secret", seed, 20, seed + 20, 44, out, sizeof out);
-    PURR_CHECK(same(out, "e310350d417bd405e4e88b7cde891fbb55fdcaa5c1f5884b33f7eaae1970ffa77bd40f2e444bf30e48b120752bf58e04"
+    TIDE_CHECK(same(out, "e310350d417bd405e4e88b7cde891fbb55fdcaa5c1f5884b33f7eaae1970ffa77bd40f2e444bf30e48b120752bf58e04"
                          "1b4e4352c0b9c8dfed9672d9c4d05059963a1a1410cca680c34b6d2769fd8451962116f605f504b69009b3a08f3f2525"
                          "de3aec99"));
 }
 
-PURR_TEST(rtc_chacha20_poly1305)
+TIDE_TEST(rtc_chacha20_poly1305)
 {
     uint8_t key[32], nonce[12], ad[13], text[300], sealed[316], opened[300];
     pattern(key, sizeof key);
@@ -125,7 +125,7 @@ PURR_TEST(rtc_chacha20_poly1305)
     pattern(ad, sizeof ad);
     pattern(text, sizeof text);
     rtc_seal(key, nonce, ad, sizeof ad, text, sizeof text, sealed);
-    PURR_CHECK(same(sealed,
+    TIDE_CHECK(same(sealed,
                     "f8006bd555535db2a21cad8f2bd4cdbb79710694884f16b1abf21b3b225bfa320605e8fe76457bc31a500c53711d0c85"
                     "8577338c0678f81ca18ab62ca8b2c277c0e0f87a29d6a3f8cae951dae26021be7afeb29cf7f657be4f8feb0b1faa934c"
                     "5048af030bc121c17f1dfc47aa7ed6bc94ed8951740dc8de560ec568ba4dd6f537085eb2e1de4f631318de89d98f0752"
@@ -133,16 +133,16 @@ PURR_TEST(rtc_chacha20_poly1305)
                     "d6144efa148a57d4ca7a10df4eb83792c72990ca45cf0528f2786b1458f2571d9e7a899209c9aa57d234ae3ae0f97673"
                     "c69c2e4b427f5ef57b9c446884eba1ab6fd603b8fd83040326121b566702cccbf08bd6863f0eccada2d48fca00672baa"
                     "5c9c9e96bb6d8a0a8bc726a3f342e56d3d9a427de48d873cbfc10bd2"));
-    PURR_CHECK(rtc_open(key, nonce, ad, sizeof ad, sealed, sizeof sealed, opened));
-    PURR_CHECK(memcmp(opened, text, sizeof text) == 0);
+    TIDE_CHECK(rtc_open(key, nonce, ad, sizeof ad, sealed, sizeof sealed, opened));
+    TIDE_CHECK(memcmp(opened, text, sizeof text) == 0);
     sealed[100] ^= 1; // Tampered: refused
-    PURR_CHECK(!rtc_open(key, nonce, ad, sizeof ad, sealed, sizeof sealed, opened));
+    TIDE_CHECK(!rtc_open(key, nonce, ad, sizeof ad, sealed, sizeof sealed, opened));
     sealed[100] ^= 1;
     ad[0] ^= 1;
-    PURR_CHECK(!rtc_open(key, nonce, ad, sizeof ad, sealed, sizeof sealed, opened));
+    TIDE_CHECK(!rtc_open(key, nonce, ad, sizeof ad, sealed, sizeof sealed, opened));
 }
 
-PURR_TEST(rtc_p256)
+TIDE_TEST(rtc_p256)
 {
     uint8_t d[32], e[32], public_key[65], secret[32];
     unhex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", d);
@@ -157,70 +157,70 @@ PURR_TEST(rtc_p256)
           e_public);
     // ECDH both ways, which also proves each public key is right (d times the
     // curve's base point, through e's side)
-    PURR_REQUIRE(rtc_p256_ecdh(d, e_public, secret));
-    PURR_CHECK(same(secret, "cf551a5f5d50b264e06ee9c4f7f541aa0318be11d12577b3857c8b5c625f935a"));
-    PURR_REQUIRE(rtc_p256_ecdh(e, d_public, secret));
-    PURR_CHECK(same(secret, "cf551a5f5d50b264e06ee9c4f7f541aa0318be11d12577b3857c8b5c625f935a"));
+    TIDE_REQUIRE(rtc_p256_ecdh(d, e_public, secret));
+    TIDE_CHECK(same(secret, "cf551a5f5d50b264e06ee9c4f7f541aa0318be11d12577b3857c8b5c625f935a"));
+    TIDE_REQUIRE(rtc_p256_ecdh(e, d_public, secret));
+    TIDE_CHECK(same(secret, "cf551a5f5d50b264e06ee9c4f7f541aa0318be11d12577b3857c8b5c625f935a"));
 
     // RFC 6979, A.2.5: SHA-256 of "sample", signed deterministically
     uint8_t hash[32], sig[64];
     rtc_sha256_of("sample", 6, hash);
-    PURR_REQUIRE(rtc_p256_sign(e, hash, sig));
-    PURR_CHECK(same(sig, "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716"
+    TIDE_REQUIRE(rtc_p256_sign(e, hash, sig));
+    TIDE_CHECK(same(sig, "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716"
                          "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"));
-    PURR_CHECK(rtc_p256_verify(e_public, hash, sig));
+    TIDE_CHECK(rtc_p256_verify(e_public, hash, sig));
 
-    // A signature Node made with d, over SHA-256 of "purr"
-    rtc_sha256_of("purr", 4, hash);
-    unhex("b69eef4e5f40e8319d9d4a2282a80d7dbafd6f8b9647d02a99faf1bf6af544b63b9cec7c81baab3a3574ccc9793a28d4424e38a7cefa14"
-          "34d64ef3b26b07c5c9",
+    // A signature Node made with d, over SHA-256 of "tide"
+    rtc_sha256_of("tide", 4, hash);
+    unhex("7943bf15f5013f032890d0c60f9a7115ff16e2ee3b91a88ae5ddc807c6d2bb7370903874feeebce47bdba4523c2fc6b36819d6721143cd"
+          "50d209645acdb33caa",
           sig);
-    PURR_CHECK(rtc_p256_verify(d_public, hash, sig));
-    PURR_CHECK(!rtc_p256_verify(e_public, hash, sig)); // Someone else's key
+    TIDE_CHECK(rtc_p256_verify(d_public, hash, sig));
+    TIDE_CHECK(!rtc_p256_verify(e_public, hash, sig)); // Someone else's key
     sig[5] ^= 1;
-    PURR_CHECK(!rtc_p256_verify(d_public, hash, sig));
+    TIDE_CHECK(!rtc_p256_verify(d_public, hash, sig));
 
     // Fresh keys: their own signatures verify, and ECDH agrees
     uint8_t a[32], a_public[65], b[32], b_public[65], s1[32], s2[32];
-    PURR_REQUIRE(rtc_p256_keys(a, a_public) && rtc_p256_keys(b, b_public));
-    PURR_CHECK(rtc_p256_ecdh(a, b_public, s1) && rtc_p256_ecdh(b, a_public, s2) && memcmp(s1, s2, 32) == 0);
-    PURR_CHECK(rtc_p256_sign(a, hash, sig) && rtc_p256_verify(a_public, hash, sig));
+    TIDE_REQUIRE(rtc_p256_keys(a, a_public) && rtc_p256_keys(b, b_public));
+    TIDE_CHECK(rtc_p256_ecdh(a, b_public, s1) && rtc_p256_ecdh(b, a_public, s2) && memcmp(s1, s2, 32) == 0);
+    TIDE_CHECK(rtc_p256_sign(a, hash, sig) && rtc_p256_verify(a_public, hash, sig));
 
     // A point that isn't on the curve is refused
     public_key[0] = 4;
     memcpy(public_key + 1, d_public + 1, 64);
     public_key[64] ^= 1;
-    PURR_CHECK(!rtc_p256_ecdh(a, public_key, secret));
+    TIDE_CHECK(!rtc_p256_ecdh(a, public_key, secret));
 }
 
-PURR_TEST(rtc_crcs)
+TIDE_TEST(rtc_crcs)
 {
-    PURR_CHECK(rtc_crc32("123456789", 9) == 0xcbf43926u);
-    PURR_CHECK(rtc_crc32c("123456789", 9) == 0xe3069283u);
+    TIDE_CHECK(rtc_crc32("123456789", 9) == 0xcbf43926u);
+    TIDE_CHECK(rtc_crc32c("123456789", 9) == 0xe3069283u);
     uint8_t r[64] = {0};
-    PURR_CHECK(rtc_random(r, sizeof r));
+    TIDE_CHECK(rtc_random(r, sizeof r));
     uint8_t any = 0;
     for (size_t i = 0; i < sizeof r; i++) any |= r[i];
-    PURR_CHECK(any != 0);
+    TIDE_CHECK(any != 0);
 }
 
-PURR_TEST(rtc_certificates)
+TIDE_TEST(rtc_certificates)
 {
     rtc_identity id;
-    PURR_REQUIRE(rtc_identity_new(&id));
-    // For a look with other tools: PURR_RTC_CERT=<file> writes it out
-    const char *path = getenv("PURR_RTC_CERT");
+    TIDE_REQUIRE(rtc_identity_new(&id));
+    // For a look with other tools: TIDE_RTC_CERT=<file> writes it out
+    const char *path = getenv("TIDE_RTC_CERT");
     FILE *f = path ? fopen(path, "wb") : NULL;
     if (f) {
         fwrite(id.cert, 1, id.cert_size, f);
         fclose(f);
     }
     uint8_t key[65];
-    PURR_REQUIRE(rtc_cert_key(id.cert, id.cert_size, key));
-    PURR_CHECK(memcmp(key, id.public_key, 65) == 0);
+    TIDE_REQUIRE(rtc_cert_key(id.cert, id.cert_size, key));
+    TIDE_CHECK(memcmp(key, id.public_key, 65) == 0);
     uint8_t fingerprint[32];
     rtc_sha256_of(id.cert, id.cert_size, fingerprint);
-    PURR_CHECK(memcmp(fingerprint, id.fingerprint, 32) == 0);
+    TIDE_CHECK(memcmp(fingerprint, id.fingerprint, 32) == 0);
 
     // Signatures through DER and back, including ones whose numbers have
     // their top bit set or start with zeros
@@ -230,27 +230,27 @@ PURR_TEST(rtc_certificates)
     sig[32] = 0;
     sig[33] = 0;
     const size_t n = rtc_sig_to_der(sig, der);
-    PURR_REQUIRE(n > 0);
-    PURR_CHECK(rtc_sig_from_der(der, n, back) && memcmp(sig, back, 64) == 0);
-    PURR_CHECK(!rtc_sig_from_der(der, n - 1, back));
+    TIDE_REQUIRE(n > 0);
+    TIDE_CHECK(rtc_sig_from_der(der, n, back) && memcmp(sig, back, 64) == 0);
+    TIDE_CHECK(!rtc_sig_from_der(der, n - 1, back));
 
 }
 
 // RFC 5769, 2.1: a request with MESSAGE-INTEGRITY and FINGERPRINT
-PURR_TEST(rtc_stun_sample_request)
+TIDE_TEST(rtc_stun_sample_request)
 {
     uint8_t message[108];
     const size_t n = unhex("000100582112a442b7e7a701bc34d686fa87dfae802200105354554e207465737420636c69656e74"
                            "002400046e0001ff80290008932ff9b151263b36000600096576746a3a68367659202020"
                            "000800149aeaa70cbfd8cb56781ef2b5b2d3f249c1b571a280280004e57a3bcf",
                            message);
-    PURR_REQUIRE(n == sizeof message);
+    TIDE_REQUIRE(n == sizeof message);
     rtc_stun m;
-    PURR_REQUIRE(rtc_stun_parse(message, n, &m));
-    PURR_CHECK(m.type == RTC_STUN_BINDING_REQUEST && m.priority == 0x6e0001ffu && m.controlled);
-    PURR_CHECK(m.username.size == 9 && memcmp(m.username.data, "evtj:h6vY", 9) == 0);
-    PURR_CHECK(rtc_stun_check(&m, "VOkJxbRl1RmTxUk/WvJxBt", 22));
-    PURR_CHECK(!rtc_stun_check(&m, "VOkJxbRl1RmTxUk/WvJxBu", 22));
+    TIDE_REQUIRE(rtc_stun_parse(message, n, &m));
+    TIDE_CHECK(m.type == RTC_STUN_BINDING_REQUEST && m.priority == 0x6e0001ffu && m.controlled);
+    TIDE_CHECK(m.username.size == 9 && memcmp(m.username.data, "evtj:h6vY", 9) == 0);
+    TIDE_CHECK(rtc_stun_check(&m, "VOkJxbRl1RmTxUk/WvJxBt", 22));
+    TIDE_CHECK(!rtc_stun_check(&m, "VOkJxbRl1RmTxUk/WvJxBu", 22));
 
     // Written by us, read back
     uint8_t out[200];
@@ -259,27 +259,27 @@ PURR_TEST(rtc_stun_sample_request)
     rtc_stun_attr_addr(&w, RTC_STUN_XOR_MAPPED_ADDRESS, (rtc_addr){0xc0a80105u, 32853});
     rtc_stun_integrity(&w, "secret", 6);
     rtc_stun_fingerprint(&w);
-    PURR_REQUIRE(!w.overflow);
+    TIDE_REQUIRE(!w.overflow);
     rtc_stun back;
-    PURR_REQUIRE(rtc_stun_parse(out, w.size, &back));
-    PURR_CHECK(back.has_mapped && back.mapped.ip == 0xc0a80105u && back.mapped.port == 32853);
-    PURR_CHECK(rtc_stun_check(&back, "secret", 6));
+    TIDE_REQUIRE(rtc_stun_parse(out, w.size, &back));
+    TIDE_CHECK(back.has_mapped && back.mapped.ip == 0xc0a80105u && back.mapped.port == 32853);
+    TIDE_CHECK(rtc_stun_check(&back, "secret", 6));
     out[w.size - 1] ^= 1; // A broken FINGERPRINT fails the check too
-    PURR_REQUIRE(rtc_stun_parse(out, w.size, &back));
-    PURR_CHECK(!rtc_stun_check(&back, "secret", 6));
+    TIDE_REQUIRE(rtc_stun_parse(out, w.size, &back));
+    TIDE_CHECK(!rtc_stun_check(&back, "secret", 6));
 }
 
-PURR_TEST(rtc_json)
+TIDE_TEST(rtc_json)
 {
     static const char text[] = " {\"relay\": 1, \"ice\": [{\"urls\": [\"stun:a:3478\", \"turn:b:3478?transport=udp\"]},"
                                " {\"urls\": \"stun:c\", \"username\": \"u\\\"s\\n\\u00e9\"}], \"nested\": {\"x\": [1, {}]},"
                                " \"from\": 3} ";
     const rtc_json m = rtc_json_of(text, sizeof text - 1);
-    PURR_REQUIRE(m.text != NULL);
+    TIDE_REQUIRE(m.text != NULL);
     double n = 0;
-    PURR_CHECK(rtc_json_number(rtc_json_get(m, "relay"), &n) && n == 1);
-    PURR_CHECK(rtc_json_number(rtc_json_get(m, "from"), &n) && n == 3);
-    PURR_CHECK(rtc_json_get(m, "missing").text == NULL);
+    TIDE_CHECK(rtc_json_number(rtc_json_get(m, "relay"), &n) && n == 1);
+    TIDE_CHECK(rtc_json_number(rtc_json_get(m, "from"), &n) && n == 3);
+    TIDE_CHECK(rtc_json_get(m, "missing").text == NULL);
     const rtc_json ice = rtc_json_get(m, "ice");
     const char *at = NULL;
     rtc_json server;
@@ -291,30 +291,30 @@ PURR_TEST(rtc_json)
         if (servers == 1) {
             const char *u = NULL;
             rtc_json url;
-            PURR_CHECK(rtc_json_next(urls, &u, &url) && rtc_json_string(url, s, sizeof s) && strcmp(s, "stun:a:3478") == 0);
-            PURR_CHECK(rtc_json_next(urls, &u, &url) && rtc_json_string(url, s, sizeof s)
+            TIDE_CHECK(rtc_json_next(urls, &u, &url) && rtc_json_string(url, s, sizeof s) && strcmp(s, "stun:a:3478") == 0);
+            TIDE_CHECK(rtc_json_next(urls, &u, &url) && rtc_json_string(url, s, sizeof s)
                        && strcmp(s, "turn:b:3478?transport=udp") == 0);
-            PURR_CHECK(!rtc_json_next(urls, &u, &url));
+            TIDE_CHECK(!rtc_json_next(urls, &u, &url));
         } else {
-            PURR_CHECK(rtc_json_string(urls, s, sizeof s) && strcmp(s, "stun:c") == 0);
-            PURR_CHECK(rtc_json_string(rtc_json_get(server, "username"), s, sizeof s)
+            TIDE_CHECK(rtc_json_string(urls, s, sizeof s) && strcmp(s, "stun:c") == 0);
+            TIDE_CHECK(rtc_json_string(rtc_json_get(server, "username"), s, sizeof s)
                        && strcmp(s, "u\"s\n\xc3\xa9") == 0);
         }
     }
-    PURR_CHECK(servers == 2);
-    PURR_CHECK(rtc_json_of("{\"a\": ", 6).text == NULL); // Cut short
+    TIDE_CHECK(servers == 2);
+    TIDE_CHECK(rtc_json_of("{\"a\": ", 6).text == NULL); // Cut short
 
     char buffer[64];
     rtc_text t = {buffer, 0, sizeof buffer, false};
     rtc_text_put(&t, "{\"sdp\":");
     rtc_text_json_string(&t, "v=0\r\n\"quoted\"");
     rtc_text_put(&t, "}");
-    PURR_CHECK(!t.overflow && strcmp(buffer, "{\"sdp\":\"v=0\\r\\n\\\"quoted\\\"\"}") == 0);
+    TIDE_CHECK(!t.overflow && strcmp(buffer, "{\"sdp\":\"v=0\\r\\n\\\"quoted\\\"\"}") == 0);
     const rtc_json back = rtc_json_of(buffer, t.size);
-    PURR_CHECK(rtc_json_string(rtc_json_get(back, "sdp"), s, sizeof s) && strcmp(s, "v=0\r\n\"quoted\"") == 0);
+    TIDE_CHECK(rtc_json_string(rtc_json_get(back, "sdp"), s, sizeof s) && strcmp(s, "v=0\r\n\"quoted\"") == 0);
 }
 
-PURR_TEST(rtc_sdp)
+TIDE_TEST(rtc_sdp)
 {
     // What Chrome writes for a data channel (its candidate lines shortened)
     static const char chrome[] = "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
@@ -329,33 +329,33 @@ PURR_TEST(rtc_sdp)
                                  "24:C2:43:F0:A1:58:D0:A1:2C:19:08\r\n"
                                  "a=setup:actpass\r\na=mid:0\r\na=sctp-port:5000\r\na=max-message-size:262144\r\n";
     rtc_description d;
-    PURR_REQUIRE(rtc_sdp_parse(chrome, &d));
-    PURR_CHECK(strcmp(d.ufrag, "SZzk") == 0 && strcmp(d.pwd, "CZjoUwvw/U4XnFw95ItXGrfQ") == 0);
-    PURR_CHECK(d.fingerprint[0] == 0x7b && d.fingerprint[31] == 0x08);
-    PURR_CHECK(d.setup == RTC_SETUP_ACTPASS && strcmp(d.mid, "0") == 0 && d.sctp_port == 5000);
-    PURR_REQUIRE(d.candidate_count == 2); // Not the .local one: its checks will show where it is
-    PURR_CHECK(d.candidates[0].addr.ip == 0xc0a80105u && d.candidates[0].addr.port == 46243);
-    PURR_CHECK(d.candidates[1].type == RTC_SRFLX && d.candidates[1].priority == 1686052607u);
+    TIDE_REQUIRE(rtc_sdp_parse(chrome, &d));
+    TIDE_CHECK(strcmp(d.ufrag, "SZzk") == 0 && strcmp(d.pwd, "CZjoUwvw/U4XnFw95ItXGrfQ") == 0);
+    TIDE_CHECK(d.fingerprint[0] == 0x7b && d.fingerprint[31] == 0x08);
+    TIDE_CHECK(d.setup == RTC_SETUP_ACTPASS && strcmp(d.mid, "0") == 0 && d.sctp_port == 5000);
+    TIDE_REQUIRE(d.candidate_count == 2); // Not the .local one: its checks will show where it is
+    TIDE_CHECK(d.candidates[0].addr.ip == 0xc0a80105u && d.candidates[0].addr.port == 46243);
+    TIDE_CHECK(d.candidates[1].type == RTC_SRFLX && d.candidates[1].priority == 1686052607u);
 
     // Ours, read back
     char buffer[2048];
     rtc_text t = {buffer, 0, sizeof buffer, false};
     d.setup = RTC_SETUP_ACTIVE;
     rtc_sdp_write(&t, &d, 42);
-    PURR_REQUIRE(!t.overflow);
+    TIDE_REQUIRE(!t.overflow);
     rtc_description back;
-    PURR_REQUIRE(rtc_sdp_parse(buffer, &back));
-    PURR_CHECK(strcmp(back.ufrag, d.ufrag) == 0 && strcmp(back.pwd, d.pwd) == 0);
-    PURR_CHECK(memcmp(back.fingerprint, d.fingerprint, 32) == 0 && back.setup == RTC_SETUP_ACTIVE);
-    PURR_CHECK(back.candidate_count == 2 && rtc_addr_equal(back.candidates[1].addr, d.candidates[1].addr));
+    TIDE_REQUIRE(rtc_sdp_parse(buffer, &back));
+    TIDE_CHECK(strcmp(back.ufrag, d.ufrag) == 0 && strcmp(back.pwd, d.pwd) == 0);
+    TIDE_CHECK(memcmp(back.fingerprint, d.fingerprint, 32) == 0 && back.setup == RTC_SETUP_ACTIVE);
+    TIDE_CHECK(back.candidate_count == 2 && rtc_addr_equal(back.candidates[1].addr, d.candidates[1].addr));
 }
 
 // Two agents on this machine find each other and carry datagrams both ways.
-PURR_TEST(rtc_ice_on_this_machine)
+TIDE_TEST(rtc_ice_on_this_machine)
 {
     const rtc_ice_config none = {0};
     rtc_ice a, b;
-    PURR_REQUIRE(rtc_ice_start(&a, true, &none) && rtc_ice_start(&b, false, &none));
+    TIDE_REQUIRE(rtc_ice_start(&a, true, &none) && rtc_ice_start(&b, false, &none));
     rtc_ice_set_remote(&a, b.ufrag, b.pwd);
     rtc_ice_set_remote(&b, a.ufrag, a.pwd);
     rtc_candidate c;
@@ -380,8 +380,8 @@ PURR_TEST(rtc_ice_on_this_machine)
         rtc_ice_send(&a, "ping", 4);
         rtc_ice_send(&b, "pong", 4);
     }
-    PURR_CHECK(a.state == RTC_ICE_CONNECTED && b.state == RTC_ICE_CONNECTED);
-    PURR_CHECK(a_got && b_got);
+    TIDE_CHECK(a.state == RTC_ICE_CONNECTED && b.state == RTC_ICE_CONNECTED);
+    TIDE_CHECK(a_got && b_got);
     rtc_ice_close(&a);
     rtc_ice_close(&b);
 }
@@ -423,13 +423,13 @@ static void deliver(wire *from, rtc_dtls *to, const double now)
 static void dtls_pair(const int lose_every)
 {
     rtc_identity client_id, server_id;
-    PURR_REQUIRE(rtc_identity_new(&client_id) && rtc_identity_new(&server_id));
+    TIDE_REQUIRE(rtc_identity_new(&client_id) && rtc_identity_new(&server_id));
     wire to_server = {.lose_every = lose_every}, to_client = {.lose_every = lose_every};
     rtc_dtls client, server;
     double now = 0.0;
     // Each sends to the other's wire; each wire records what arrives for its end
-    PURR_REQUIRE(rtc_dtls_start(&server, false, &server_id, client_id.fingerprint, wire_send, wire_data, &to_client, now));
-    PURR_REQUIRE(rtc_dtls_start(&client, true, &client_id, server_id.fingerprint, wire_send, wire_data, &to_server, now));
+    TIDE_REQUIRE(rtc_dtls_start(&server, false, &server_id, client_id.fingerprint, wire_send, wire_data, &to_client, now));
+    TIDE_REQUIRE(rtc_dtls_start(&client, true, &client_id, server_id.fingerprint, wire_send, wire_data, &to_server, now));
     for (int step = 0; step < 400 && !(client.state == RTC_DTLS_OPEN && server.state == RTC_DTLS_OPEN); step++) {
         now += 0.05;
         deliver(&to_server, &server, now);
@@ -437,24 +437,24 @@ static void dtls_pair(const int lose_every)
         rtc_dtls_update(&client, now);
         rtc_dtls_update(&server, now);
     }
-    PURR_REQUIRE(client.state == RTC_DTLS_OPEN && server.state == RTC_DTLS_OPEN);
-    PURR_CHECK(memcmp(client.master, server.master, 48) == 0);
+    TIDE_REQUIRE(client.state == RTC_DTLS_OPEN && server.state == RTC_DTLS_OPEN);
+    TIDE_CHECK(memcmp(client.master, server.master, 48) == 0);
     to_server.lose_every = to_client.lose_every = 0;
     rtc_dtls_send(&client, "hello", 5);
     rtc_dtls_send(&server, "world", 5);
     // The wires hold what each end sent; each end's `got` is filled by the other's
     deliver(&to_server, &server, now);
     deliver(&to_client, &client, now);
-    PURR_CHECK(strcmp(to_client.got, "hello") == 0); // The server's data callback writes into its user: to_client
-    PURR_CHECK(strcmp(to_server.got, "world") == 0);
+    TIDE_CHECK(strcmp(to_client.got, "hello") == 0); // The server's data callback writes into its user: to_client
+    TIDE_CHECK(strcmp(to_server.got, "world") == 0);
 }
 
-PURR_TEST(rtc_dtls_handshake)
+TIDE_TEST(rtc_dtls_handshake)
 {
     dtls_pair(0);
 }
 
-PURR_TEST(rtc_dtls_handshake_losing_datagrams)
+TIDE_TEST(rtc_dtls_handshake_losing_datagrams)
 {
     dtls_pair(3);
 }
@@ -506,7 +506,7 @@ static void sctp_run(sctp_end *a, sctp_end *b, double *now, const int steps)
     }
 }
 
-PURR_TEST(rtc_sctp_channel)
+TIDE_TEST(rtc_sctp_channel)
 {
     static sctp_end a, b;
     memset(&a, 0, sizeof a);
@@ -519,8 +519,8 @@ PURR_TEST(rtc_sctp_channel)
     rtc_sctp_start(&b.sctp, false, 5000, sctp_wire, sctp_message, &b, now);
     rtc_sctp_open_channel(&a.sctp, 0, now); // The one who joins opens it
     sctp_run(&a, &b, &now, 300);
-    PURR_REQUIRE(a.sctp.state == RTC_SCTP_OPEN && b.sctp.state == RTC_SCTP_OPEN);
-    PURR_REQUIRE(a.sctp.channel && b.sctp.channel);
+    TIDE_REQUIRE(a.sctp.state == RTC_SCTP_OPEN && b.sctp.state == RTC_SCTP_OPEN);
+    TIDE_REQUIRE(a.sctp.channel && b.sctp.channel);
 
     uint8_t message[1200] = {1, 2, 3};
     for (int i = 0; i < 100; i++) {
@@ -530,12 +530,12 @@ PURR_TEST(rtc_sctp_channel)
     }
     sctp_run(&a, &b, &now, 100);
     // One in five of a's packets is lost, and never sent again
-    PURR_CHECK(b.messages >= 70 && b.messages <= 90);
-    PURR_CHECK(a.messages == 100);
-    PURR_CHECK(b.last_size == 1200 && a.last_size == 20);
+    TIDE_CHECK(b.messages >= 70 && b.messages <= 90);
+    TIDE_CHECK(a.messages == 100);
+    TIDE_CHECK(b.last_size == 1200 && a.last_size == 20);
     // Nothing stays waiting: what a gave up on, b stopped waiting for
-    PURR_CHECK(b.sctp.cumulative == a.sctp.next_tsn - 1);
-    PURR_CHECK(a.sctp.sent_count == 0);
+    TIDE_CHECK(b.sctp.cumulative == a.sctp.next_tsn - 1);
+    TIDE_CHECK(a.sctp.sent_count == 0);
 }
 
 // Signals from one peer to the other, as the relay would carry them.
@@ -558,12 +558,12 @@ static void pass_signals(rtc_peer *from, rtc_peer *to)
 
 // Two peers on this machine: the whole of it, ICE, DTLS, SCTP and the
 // channel, over real UDP.
-PURR_TEST(rtc_peers_on_this_machine)
+TIDE_TEST(rtc_peers_on_this_machine)
 {
     const rtc_ice_config none = {0};
     rtc_peer *joiner = rtc_peer_new(true, &none);
     rtc_peer *host = rtc_peer_new(false, &none);
-    PURR_REQUIRE(joiner && host);
+    TIDE_REQUIRE(joiner && host);
     int to_host = 0, to_joiner = 0;
     const double start = rtc_now();
     while (rtc_now() - start < 10.0 && (to_host < 10 || to_joiner < 10)) {
@@ -580,23 +580,23 @@ PURR_TEST(rtc_peers_on_this_machine)
         rtc_peer_send(joiner, big, sizeof big);
         rtc_peer_send(host, "hey", 3);
     }
-    PURR_CHECK(joiner->state == RTC_PEER_OPEN && host->state == RTC_PEER_OPEN);
-    PURR_CHECK(to_host >= 10 && to_joiner >= 10);
-    PURR_CHECK(joiner->dtls_client != host->dtls_client);
+    TIDE_CHECK(joiner->state == RTC_PEER_OPEN && host->state == RTC_PEER_OPEN);
+    TIDE_CHECK(to_host >= 10 && to_joiner >= 10);
+    TIDE_CHECK(joiner->dtls_client != host->dtls_client);
     rtc_peer_free(joiner);
     rtc_peer_free(host);
 }
 
-PURR_TEST(rtc_dtls_refuses_the_wrong_certificate)
+TIDE_TEST(rtc_dtls_refuses_the_wrong_certificate)
 {
     rtc_identity client_id, server_id, someone;
-    PURR_REQUIRE(rtc_identity_new(&client_id) && rtc_identity_new(&server_id) && rtc_identity_new(&someone));
+    TIDE_REQUIRE(rtc_identity_new(&client_id) && rtc_identity_new(&server_id) && rtc_identity_new(&someone));
     wire to_server = {0}, to_client = {0};
     rtc_dtls client, server;
     double now = 0.0;
-    PURR_REQUIRE(rtc_dtls_start(&server, false, &server_id, client_id.fingerprint, wire_send, wire_data, &to_client, now));
+    TIDE_REQUIRE(rtc_dtls_start(&server, false, &server_id, client_id.fingerprint, wire_send, wire_data, &to_client, now));
     // The client expects someone else's certificate
-    PURR_REQUIRE(rtc_dtls_start(&client, true, &client_id, someone.fingerprint, wire_send, wire_data, &to_server, now));
+    TIDE_REQUIRE(rtc_dtls_start(&client, true, &client_id, someone.fingerprint, wire_send, wire_data, &to_server, now));
     for (int step = 0; step < 100; step++) {
         now += 0.05;
         deliver(&to_server, &server, now);
@@ -604,5 +604,5 @@ PURR_TEST(rtc_dtls_refuses_the_wrong_certificate)
         rtc_dtls_update(&client, now);
         rtc_dtls_update(&server, now);
     }
-    PURR_CHECK(client.state == RTC_DTLS_FAILED && server.state != RTC_DTLS_OPEN);
+    TIDE_CHECK(client.state == RTC_DTLS_FAILED && server.state != RTC_DTLS_OPEN);
 }

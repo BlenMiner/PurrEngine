@@ -1,12 +1,12 @@
 # Your first game
 
-This page builds a small game: a ball bouncing around, and a player for everyone who joins, which they steer with the keyboard. It takes a few minutes, and shows most of what a PurrEngine game is made of.
+This page builds a small game: a ball bouncing around, and a player for everyone who joins, which they steer with the keyboard. It takes a few minutes, and shows most of what a Tide game is made of.
 
-You'll need `purr` [installed](./install.md).
+You'll need `tide` [installed](./install.md).
 
 ## A folder of files
 
-A game is a folder of `.purr` files: every `.purr` file in it and its subfolders. Every declaration is visible from every file, with no imports. Make a new folder, and a file in it called `game.purr`.
+A game is a folder of `.tide` files: every `.tide` file in it and its subfolders. Every declaration is visible from every file, with no imports. Make a new folder, and a file in it called `game.tide`.
 
 ## Data: components
 
@@ -77,10 +77,10 @@ The camera starts at the origin, one world unit per pixel, with `y` up.
 In the folder:
 
 ```sh
-purr run
+tide run
 ```
 
-`purr` compiles the game and opens a window with the ball bouncing. It keeps its work in a hidden `.purr` folder, which you can delete any time. Leave the window open: whenever you save, `purr` rebuilds the game and the window picks up the new code (see [hot reload](./cli.md#hot-reload)). The next part adds players.
+`tide` compiles the game and opens a window with the ball bouncing. It keeps its work in a hidden `.tide` folder, which you can delete any time. Leave the window open: whenever you save, `tide` rebuilds the game and the window picks up the new code (see [hot reload](./cli.md#hot-reload)). The next part adds players.
 
 ## Players and input
 
@@ -132,41 +132,41 @@ view DrawPlayers(Body body, Owner owner, Session session)
 }
 ```
 
-Save, then type `r` and press Enter in `purr`'s terminal, and steer with `WASD`. The game carried over to the new code when you saved, but your player had joined before `AddPlayer` existed, so they had no body yet. Starting over makes them join again.
+Save, then type `r` and press Enter in `tide`'s terminal, and steer with `WASD`. The game carried over to the new code when you saved, but your player had joined before `AddPlayer` existed, so they had no body yet. Starting over makes them join again.
 
 ## Play together
 
 Single-player was already a match, on a server this machine ran for itself. So the same game plays with others. In one terminal:
 
 ```sh
-purr run --host
+tide run --host
 ```
 
 And in another, on this machine or another one on the network:
 
 ```sh
-purr run --connect localhost
+tide run --connect localhost
 ```
 
-Use the host's address instead of `localhost` from another machine, like `purr run --connect 192.168.1.5`. The host takes players on UDP port 7777; `--host 8000` picks another. Each player steers their own yellow body, with no input delay.
+Use the host's address instead of `localhost` from another machine, like `tide run --connect 192.168.1.5`. The host takes players on UDP port 7777; `--host 8000` picks another. Each player steers their own yellow body, with no input delay.
 
 ## Build it for the web
 
 ```sh
-purr run --web
+tide run --web
 ```
 
-This builds the game as a web page, using WebGL 2, and opens it in your browser. `purr` serves the page on your machine and keeps running, so saving reloads the game in the page too, until you stop `purr` with Ctrl+C. For a page to put online:
+This builds the game as a web page, using WebGL 2, and opens it in your browser. `tide` serves the page on your machine and keeps running, so saving reloads the game in the page too, until you stop `tide` with Ctrl+C. For a page to put online:
 
 ```sh
-purr build --release --web
+tide build --release --web
 ```
 
 It goes in `build/`, as one self-contained `.html` file with the game inside, which opens straight from disk. Web and desktop players play together in rooms, which they join by a code (see [Multiplayer](../language/multiplayer.md#rooms)).
 
 ## The whole game
 
-::: details game.purr
+::: details game.tide
 ```csharp
 component Body
 {
@@ -234,6 +234,6 @@ view DrawPlayers(Body body, Owner owner, Session session)
 
 ## Next
 
-- `purr schedule` shows which of these systems could run at the same time, and why the others wait. See [the schedule](../engine/schedule.md).
+- `tide schedule` shows which of these systems could run at the same time, and why the others wait. See [the schedule](../engine/schedule.md).
 - Learn the language a topic at a time, starting with [the basics](../language/basics.md).
 - The [demo](./demo.md) is a slightly bigger game, with firing and an options menu.

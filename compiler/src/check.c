@@ -5,7 +5,7 @@
 
 #include "ast.h"
 #include "builtins.h"
-#include "purr/devices.h"
+#include "tide/devices.h"
 #include "types.h"
 
 // Semantic analysis: resolves names and types, enforces access and mutability
@@ -258,8 +258,8 @@ static void suggest_fields(suggestion *s, const decl *d)
 
 static bool check_reserved(const str name, const loc at)
 {
-    if (str_starts_with_c(name, "purr_")) {
-        diag_error(at, "names starting with 'purr_' are reserved for generated code");
+    if (str_starts_with_c(name, "tide_")) {
+        diag_error(at, "names starting with 'tide_' are reserved for generated code");
         return false;
     }
     return true;
@@ -1785,7 +1785,7 @@ static bool text_can_hold(const type t)
     }
 }
 
-// A value's format in text, "F2" in $"{x:F2}", as purr/text.h takes it: 0
+// A value's format in text, "F2" in $"{x:F2}", as tide/text.h takes it: 0
 // for none, and after an error.
 static int32_t text_format(const expr *value, const str format)
 {
@@ -2108,10 +2108,10 @@ static type check_member(checker *c, expr *e)
     }
 
     // session.room: the code of the room the match is in. The host keeps it
-    // beside the local state (purr_local's purr_room), so it needs no heap.
+    // beside the local state (tide_local's tide_room), so it needs no heap.
     const bool session = has_fields(obj) && obj.decl == c->prog->session;
     if (session && str_eq_c(e->member, "room")) {
-        e->c_constant = "purr_str_from_cstr(purr_l->purr_room)";
+        e->c_constant = "tide_str_from_cstr(tide_l->tide_room)";
         return (type){TY_STRING, NULL};
     }
 
@@ -3469,7 +3469,7 @@ static void check_signature(const checker *c, decl *m)
         p->type = method_type(c, p->type_name, p->type_qual_at, false);
         if (p->mode == PARAM_IN && !m->is_extern) {
             diag_error(p->at, "only extern functions take 'in' parameters: C gets a read-only pointer to the value");
-            diag_note("a PurrLang %s's parameters are read-only already; drop 'in'", m->owner ? "method" : "function");
+            diag_note("a Tide %s's parameters are read-only already; drop 'in'", m->owner ? "method" : "function");
             p->mode = PARAM_READ;
         }
         if (p->type.kind == TY_RECORD && p->mode == PARAM_MUT) {
@@ -3687,8 +3687,8 @@ static const char *extern_c_name(const decl *fn)
         if (!native) diag_note("give the C function's name with [NativeName(\"...\")]");
         return NULL;
     }
-    if (native && str_starts_with_c(name, "purr_")) {
-        diag_error(at, "names starting with 'purr_' belong to the engine");
+    if (native && str_starts_with_c(name, "tide_")) {
+        diag_error(at, "names starting with 'tide_' belong to the engine");
         return NULL;
     }
     return str_to_cstr(name);
@@ -3723,7 +3723,7 @@ static void check_extern_param(const checker *c, decl *fn, const param *p)
     const char *refused = c_refuses(p->type);
     if (!refused) return;
     diag_error(p->type_at, "C functions can't take %s yet", refused);
-    if (p->type.kind == TY_BLOCK) diag_note("a Block is PurrLang code, which only PurrLang functions run");
+    if (p->type.kind == TY_BLOCK) diag_note("a Block is Tide code, which only Tide functions run");
     else diag_note("pass numbers, vectors, enums, text, lists, and structs of them");
     fn->takes_block = false; // It's no longer inlined
 }
@@ -4117,7 +4117,7 @@ static void add_builtins(program *prog)
     prog->scene_visibility = visibility;
 
     // enum Anchor { UpperLeft, ..., LowerRight }: where GUILayout.Area goes, as
-    // Unity's TextAnchor. purr/gui.h's purr_anchor has the same values.
+    // Unity's TextAnchor. tide/gui.h's tide_anchor has the same values.
     static const char *const anchors[] = {"UpperLeft", "UpperCenter", "UpperRight", "MiddleLeft", "MiddleCenter",
                                           "MiddleRight", "LowerLeft", "LowerCenter", "LowerRight"};
     decl *anchor = NEW(decl);
@@ -4130,7 +4130,7 @@ static void add_builtins(program *prog)
     }
     prog->anchor = anchor;
 
-    // This machine's part in a match (see purr/session.h, whose enums have the
+    // This machine's part in a match (see tide/session.h, whose enums have the
     // same values): local singleton Session { SessionState state; PlayerID
     // player; int ping; bool server; }, its room (see check_member), and local
     // events Connected and Disconnected { DisconnectReason reason; }.
@@ -4210,7 +4210,7 @@ static void record_field(decl *d, const char *name, const type t)
     vec_push(d->fields, f);
 }
 
-// Numbers the device values under record `d`, reached from purr_devices by
+// Numbers the device values under record `d`, reached from tide_devices by
 // `path`: its own first, then its records', so each record's are in a row.
 static void number_leaves(program *prog, decl *d, const char *path)
 {
@@ -4228,7 +4228,7 @@ static void number_leaves(program *prog, decl *d, const char *path)
                 continue;
             }
             if (prog->device_leaves.count == DEVICE_WORDS * 64) {
-                fprintf(stderr, "purrc: too many device values (raise DEVICE_WORDS)\n");
+                fprintf(stderr, "tidec: too many device values (raise DEVICE_WORDS)\n");
                 exit(1);
             }
             if (strcmp(at.data, "mouse.position") == 0) prog->position_leaf = prog->device_leaves.count;
@@ -4242,23 +4242,23 @@ static void number_leaves(program *prog, decl *d, const char *path)
 
 // The device records: `Devices`, which views and the input's Sample read, and
 // systems take as a parameter. Their members come from the X-macros in
-// purr/devices.h, so PurrLang and the C structs always match.
+// tide/devices.h, so Tide and the C structs always match.
 static void add_device_records(program *prog)
 {
     const type t_bool = {TY_BOOL, NULL};
     const type t_float = {TY_FLOAT, NULL};
     const type t_float2 = {TY_FLOAT2, NULL};
 
-    decl *button = new_record(prog, "Button", "purr_button");
+    decl *button = new_record(prog, "Button", "tide_button");
     record_field(button, "pressed", t_bool);
     record_field(button, "down", t_bool);
     record_field(button, "up", t_bool);
     const type t_button = {TY_RECORD, button};
 
-    decl *dpad = new_record(prog, "Dpad", "purr_dpad");
-    decl *keyboard = new_record(prog, "Keyboard", "purr_keyboard");
-    decl *mouse = new_record(prog, "Mouse", "purr_mouse");
-    decl *gamepad = new_record(prog, "Gamepad", "purr_gamepad");
+    decl *dpad = new_record(prog, "Dpad", "tide_dpad");
+    decl *keyboard = new_record(prog, "Keyboard", "tide_keyboard");
+    decl *mouse = new_record(prog, "Mouse", "tide_mouse");
+    decl *gamepad = new_record(prog, "Gamepad", "tide_gamepad");
 
 #define KEY(name) record_field(keyboard, #name, t_button);
 #define MOUSE_AXIS(name) record_field(mouse, #name, t_float2);
@@ -4267,14 +4267,14 @@ static void add_device_records(program *prog)
 #define STICK(name) record_field(gamepad, #name, t_float2);
 #define TRIGGER(name) record_field(gamepad, #name, t_float);
 #define GAMEPAD_BUTTON(name) record_field(gamepad, #name, t_button);
-    PURR_KEYBOARD_KEYS(KEY)
-    PURR_MOUSE_AXES(MOUSE_AXIS)
-    PURR_MOUSE_BUTTONS(MOUSE_BUTTON)
-    PURR_DPAD_BUTTONS(DPAD_BUTTON)
+    TIDE_KEYBOARD_KEYS(KEY)
+    TIDE_MOUSE_AXES(MOUSE_AXIS)
+    TIDE_MOUSE_BUTTONS(MOUSE_BUTTON)
+    TIDE_DPAD_BUTTONS(DPAD_BUTTON)
     record_field(gamepad, "connected", t_bool);
-    PURR_GAMEPAD_STICKS(STICK)
-    PURR_GAMEPAD_TRIGGERS(TRIGGER)
-    PURR_GAMEPAD_BUTTONS(GAMEPAD_BUTTON)
+    TIDE_GAMEPAD_STICKS(STICK)
+    TIDE_GAMEPAD_TRIGGERS(TRIGGER)
+    TIDE_GAMEPAD_BUTTONS(GAMEPAD_BUTTON)
     record_field(gamepad, "dpad", (type){TY_RECORD, dpad});
 #undef KEY
 #undef MOUSE_AXIS
@@ -4284,7 +4284,7 @@ static void add_device_records(program *prog)
 #undef TRIGGER
 #undef GAMEPAD_BUTTON
 
-    decl *devices = new_record(prog, "Devices", "purr_devices");
+    decl *devices = new_record(prog, "Devices", "tide_devices");
     record_field(devices, "keyboard", (type){TY_RECORD, keyboard});
     record_field(devices, "mouse", (type){TY_RECORD, mouse});
     record_field(devices, "gamepad", (type){TY_RECORD, gamepad});
@@ -4384,11 +4384,11 @@ static void collect_decls(program *prog)
             if (d->is_scene) {
                 // A scene's visibility and the players who see it, in generated C only.
                 field visibility = {0};
-                visibility.name = str_from("purr_visibility");
+                visibility.name = str_from("tide_visibility");
                 visibility.type_name = str_from("int");
                 visibility.hidden = true;
                 field players = visibility;
-                players.name = str_from("purr_players");
+                players.name = str_from("tide_players");
                 vec_push(d->fields, visibility);
                 vec_push(d->fields, players);
             }
@@ -4925,13 +4925,13 @@ static void collect_device_uses(checker *c)
     if (!input) {
         input = NEW(decl);
         input->kind = DECL_INPUT;
-        input->name = str_from("purr_devices_input");
+        input->name = str_from("tide_devices_input");
         input->qualified = input->name;
         input->builtin = true;
         prog->input = input;
     }
     field devices = {0};
-    devices.name = str_from("purr_dev");
+    devices.name = str_from("tide_dev");
     devices.type = (type){TY_RECORD, prog->devices};
     devices.hidden = true;
     vec_push(input->fields, devices);
@@ -5074,7 +5074,7 @@ bool check(program *prog)
         decl *d = prog->decls.items[i];
         if (d->kind != DECL_SINGLETON || !d->snapped) continue;
         field snaps = {0};
-        snaps.name = str_from("purr_snaps");
+        snaps.name = str_from("tide_snaps");
         snaps.type = (type){TY_INT, NULL};
         snaps.hidden = true;
         vec_push(d->fields, snaps);

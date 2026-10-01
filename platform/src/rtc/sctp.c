@@ -328,8 +328,8 @@ static void opened(rtc_sctp *s, const double now)
     if (s->state == RTC_SCTP_OPEN) return;
     s->state = RTC_SCTP_OPEN;
     if (s->opening) {
-        // DATA_CHANNEL_OPEN: unordered, never sent again, labelled "purr"
-        static const uint8_t open[] = {DCEP_OPEN, 0x81, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 'p', 'u', 'r', 'r'};
+        // DATA_CHANNEL_OPEN: unordered, never sent again, labelled "tide"
+        static const uint8_t open[] = {DCEP_OPEN, 0x81, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 't', 'i', 'd', 'e'};
         send_dcep(s, open, sizeof open, now);
     }
 }

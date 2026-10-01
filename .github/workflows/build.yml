@@ -1,4 +1,4 @@
-# Builds, tests and publishes purr (see AGENTS.md, Packaging).
+# Builds, tests and publishes tide (see AGENTS.md, Packaging).
 #
 # - Pull requests: build and test on Windows, Linux and macOS.
 # - Pushes to dev: also publish a nightly pre-release, like 0.2.0-nightly.3.
@@ -60,8 +60,8 @@ jobs:
     # macOS is new: until it's reliable, its failures don't hold back releases.
     continue-on-error: ${{ matrix.platform == 'macos-arm64' }}
     env:
-      PURR_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
-      PURR_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
+      TIDE_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+      TIDE_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
     defaults:
       run:
         shell: bash
@@ -94,13 +94,13 @@ jobs:
         with:
           path: build/llvm-mingw-*
           key: llvm-mingw-${{ hashFiles('cmake/mingw-toolchain.cmake') }}
-      # The package builds clang and lld into purr from LLVM's release (cmake/LLVM.cmake).
+      # The package builds clang and lld into tide from LLVM's release (cmake/LLVM.cmake).
       - uses: actions/cache@v4
         with:
           path: build/llvm-[0-9]*
           key: llvm-${{ runner.os }}-${{ hashFiles('cmake/LLVM.cmake') }}
       # On macOS, LLVM's libraries are bitcode, which lld compiles as it links
-      # purr (minutes); its cache keeps that work between runs. Only LLVM and
+      # tide (minutes); its cache keeps that work between runs. Only LLVM and
       # the code that calls it decide what's in it.
       - uses: actions/cache@v4
         if: runner.os == 'macOS'
@@ -118,7 +118,7 @@ jobs:
           ctest --preset release -E demo_smoke
       - name: Test (web)
         run: cmake --workflow --preset web-release
-      # The target purr builds Windows games for; its platform layer goes in the package.
+      # The target tide builds Windows games for; its platform layer goes in the package.
       - name: Test (MinGW)
         if: runner.os == 'Windows'
         run: |
@@ -128,38 +128,38 @@ jobs:
 
       - name: Package
         run: |
-          cmake --preset package -DPURR_VERSION="$PURR_VERSION" -DPURR_CHANNEL="$PURR_CHANNEL"
+          cmake --preset package -DTIDE_VERSION="$TIDE_VERSION" -DTIDE_CHANNEL="$TIDE_CHANNEL"
           cmake --build --preset package
-          cmake --preset web-package -DPURR_VERSION="$PURR_VERSION" -DPURR_CHANNEL="$PURR_CHANNEL"
+          cmake --preset web-package -DTIDE_VERSION="$TIDE_VERSION" -DTIDE_CHANNEL="$TIDE_CHANNEL"
           cmake --build --preset web-package
-          cmake -DNAME=purr-${{ matrix.platform }} -P cmake/package.cmake
+          cmake -DNAME=tide-${{ matrix.platform }} -P cmake/package.cmake
       # Build a game with the package, as a user would.
       - name: Try the package
         run: |
           mkdir -p build/try
-          cp demo/demo.purr build/try/
-          build/dist/purr/bin/purr version
-          build/dist/purr/bin/purr build build/try
-          build/dist/purr/bin/purr build build/try --release --web
+          cp demo/demo.tide build/try/
+          build/dist/tide/bin/tide version
+          build/dist/tide/bin/tide build build/try
+          build/dist/tide/bin/tide build build/try --release --web
 
       - uses: actions/upload-artifact@v4
         with:
-          name: purr-${{ matrix.platform }}
-          path: build/dist/purr-${{ matrix.platform }}.*
+          name: tide-${{ matrix.platform }}
+          path: build/dist/tide-${{ matrix.platform }}.*
           if-no-files-found: error
 
-  # The plugin for JetBrains IDEs (tools/purrlang-jetbrains), checked against
+  # The plugin for JetBrains IDEs (tools/tide-jetbrains), checked against
   # the oldest IDE it supports and the newest CLion.
   jetbrains:
     name: JetBrains plugin
     needs: version
     runs-on: ubuntu-latest
     env:
-      PURR_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+      TIDE_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
     defaults:
       run:
         shell: bash
-        working-directory: tools/purrlang-jetbrains
+        working-directory: tools/tide-jetbrains
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -170,12 +170,12 @@ jobs:
       - name: Build and verify
         run: |
           chmod +x gradlew
-          ./gradlew buildPlugin verifyPlugin -PpluginVersion="$PURR_VERSION"
-          mv build/distributions/purrlang-*.zip build/distributions/purrlang-jetbrains.zip
+          ./gradlew buildPlugin verifyPlugin -PpluginVersion="$TIDE_VERSION"
+          mv build/distributions/tide-*.zip build/distributions/tide-jetbrains.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: purrlang-jetbrains
-          path: tools/purrlang-jetbrains/build/distributions/purrlang-jetbrains.zip
+          name: tide-jetbrains
+          path: tools/tide-jetbrains/build/distributions/tide-jetbrains.zip
           if-no-files-found: error
 
   release:
@@ -204,7 +204,7 @@ jobs:
 
   # Stable releases also go to JetBrains Marketplace, once the repository has a
   # JETBRAINS_MARKETPLACE_TOKEN secret. Nightlies don't: the plugin only runs
-  # the purrls that purr installed, whichever version that is.
+  # the tidels that tide installed, whichever version that is.
   marketplace:
     name: JetBrains Marketplace
     needs: [version, release]
@@ -219,7 +219,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Publish
         shell: bash
-        working-directory: tools/purrlang-jetbrains
+        working-directory: tools/tide-jetbrains
         env:
           JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
         run: |

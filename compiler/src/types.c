@@ -10,22 +10,22 @@ static const struct {
 } builtins[] = {
     {"bool", TY_BOOL, "b", "bool"},
     {"int", TY_INT, "i", "int32_t"},
-    {"int2", TY_INT2, "i2", "purr_int2"},
-    {"int3", TY_INT3, "i3", "purr_int3"},
-    {"int4", TY_INT4, "i4", "purr_int4"},
+    {"int2", TY_INT2, "i2", "tide_int2"},
+    {"int3", TY_INT3, "i3", "tide_int3"},
+    {"int4", TY_INT4, "i4", "tide_int4"},
     {"float", TY_FLOAT, "f", "float"},
-    {"float2", TY_FLOAT2, "f2", "purr_float2"},
-    {"float3", TY_FLOAT3, "f3", "purr_float3"},
-    {"float4", TY_FLOAT4, "f4", "purr_float4"},
-    {"quaternion", TY_QUATERNION, "q", "purr_quaternion"},
-    {"float2x2", TY_FLOAT2X2, "f2x2", "purr_float2x2"},
-    {"float3x3", TY_FLOAT3X3, "f3x3", "purr_float3x3"},
-    {"float4x4", TY_FLOAT4X4, "f4x4", "purr_float4x4"},
-    {"Entity", TY_ENTITY, "e", "purr_entity"},
-    {"LocalEntity", TY_LOCAL_ENTITY, "le", "purr_entity"},
-    {"PlayerID", TY_PLAYER, "p", "purr_player_id"},
-    {"Color", TY_COLOR, "c", "purr_color"},
-    {"Rect", TY_RECT, "r", "purr_rect"},
+    {"float2", TY_FLOAT2, "f2", "tide_float2"},
+    {"float3", TY_FLOAT3, "f3", "tide_float3"},
+    {"float4", TY_FLOAT4, "f4", "tide_float4"},
+    {"quaternion", TY_QUATERNION, "q", "tide_quaternion"},
+    {"float2x2", TY_FLOAT2X2, "f2x2", "tide_float2x2"},
+    {"float3x3", TY_FLOAT3X3, "f3x3", "tide_float3x3"},
+    {"float4x4", TY_FLOAT4X4, "f4x4", "tide_float4x4"},
+    {"Entity", TY_ENTITY, "e", "tide_entity"},
+    {"LocalEntity", TY_LOCAL_ENTITY, "le", "tide_entity"},
+    {"PlayerID", TY_PLAYER, "p", "tide_player_id"},
+    {"Color", TY_COLOR, "c", "tide_color"},
+    {"Rect", TY_RECT, "r", "tide_rect"},
 };
 
 #define BUILTIN_COUNT (sizeof builtins / sizeof builtins[0])
@@ -164,8 +164,8 @@ const char *type_name(const type t)
 
 const char *type_c_name(const type t)
 {
-    if (t.kind == TY_STRING) return "purr_str";
-    if (t.kind == TY_LIST) return "purr_list";
+    if (t.kind == TY_STRING) return "tide_str";
+    if (t.kind == TY_LIST) return "tide_list";
     for (size_t i = 0; i < BUILTIN_COUNT; i++) {
         if (builtins[i].kind == t.kind) return builtins[i].c_name;
     }

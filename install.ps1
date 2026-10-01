@@ -1,21 +1,21 @@
-# Installs purr for this user, on Windows:
+# Installs tide for this user, on Windows:
 #
-#     irm https://raw.githubusercontent.com/BlenMiner/PurrEngine/release/install.ps1 | iex
+#     irm https://raw.githubusercontent.com/BlenMiner/tide-engine/release/install.ps1 | iex
 #
-# Nightly versions instead: set $env:PURR_CHANNEL = 'nightly' first.
-# purr goes in %LOCALAPPDATA%\Purr, and its bin folder on the user's PATH. No
-# admin rights needed. Once installed, `purr upgrade` keeps it up to date.
+# Nightly versions instead: set $env:TIDE_CHANNEL = 'nightly' first.
+# tide goes in %LOCALAPPDATA%\Tide, and its bin folder on the user's PATH. No
+# admin rights needed. Once installed, `tide upgrade` keeps it up to date.
 
 $ErrorActionPreference = 'Stop'
-$repo = 'BlenMiner/PurrEngine'
-$package = 'purr-windows-x64.zip'
-$channel = if ($env:PURR_CHANNEL -eq 'nightly') { 'nightly' } else { 'stable' }
-$root = Join-Path $env:LOCALAPPDATA 'Purr'
+$repo = 'BlenMiner/tide-engine'
+$package = 'tide-windows-x64.zip'
+$channel = if ($env:TIDE_CHANNEL -eq 'nightly') { 'nightly' } else { 'stable' }
+$root = Join-Path $env:LOCALAPPDATA 'Tide'
 $bin = Join-Path $root 'bin'
 
-if (Test-Path (Join-Path $bin 'purr.exe')) {
-    Write-Host "purr is already installed in $root; upgrading it."
-    & (Join-Path $bin 'purr.exe') upgrade "--$channel"
+if (Test-Path (Join-Path $bin 'tide.exe')) {
+    Write-Host "tide is already installed in $root; upgrading it."
+    & (Join-Path $bin 'tide.exe') upgrade "--$channel"
     return
 }
 
@@ -46,7 +46,7 @@ function Compare-Version([string]$a, [string]$b) {
     return [Math]::Sign($xs.Count - $ys.Count)
 }
 
-# The channel's highest version, not the last one published (as purr upgrade
+# The channel's highest version, not the last one published (as tide upgrade
 # picks, compiler/cli/release.c). Nightly takes stable releases too, when
 # they're newer. Stable also asks for GitHub's latest release, since nightly
 # ones can push it out of the list.
@@ -65,15 +65,15 @@ if ($channel -eq 'stable') {
     try { $releases += Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" } catch { }
 }
 $release = Select-Release $releases $channel
-if (-not $release) { throw "There's no $channel release of purr yet." }
+if (-not $release) { throw "There's no $channel release of tide yet." }
 $zipUrl = ($release.assets | Where-Object name -eq $package).browser_download_url
 $sumsUrl = ($release.assets | Where-Object name -eq 'SHA256SUMS').browser_download_url
 if (-not $zipUrl -or -not $sumsUrl) { throw "Release $($release.tag_name) has no $package." }
 
-$work = Join-Path ([IO.Path]::GetTempPath()) "purr-install-$([Guid]::NewGuid())"
+$work = Join-Path ([IO.Path]::GetTempPath()) "tide-install-$([Guid]::NewGuid())"
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
-    Write-Host "Downloading purr $($release.tag_name.TrimStart('v'))..."
+    Write-Host "Downloading tide $($release.tag_name.TrimStart('v'))..."
     $zip = Join-Path $work $package
     $sums = Join-Path $work 'SHA256SUMS'
     Invoke-WebRequest $zipUrl -OutFile $zip -UseBasicParsing
@@ -94,14 +94,14 @@ try {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 
-# purr's bin folder on the user's PATH, for new terminals.
+# tide's bin folder on the user's PATH, for new terminals.
 $path = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not (($path -split ';') -contains $bin)) {
     [Environment]::SetEnvironmentVariable('Path', ($(if ($path) { "$path;" } else { '' }) + $bin), 'User')
     $env:Path = "$env:Path;$bin"
 }
 
-Write-Host "Installed purr in $root."
-# PurrLang in VS Code and the editors like it.
-& (Join-Path $bin 'purr.exe') editors
-Write-Host 'Open a new terminal, go to a folder with .purr files and run: purr run'
+Write-Host "Installed tide in $root."
+# Tide in VS Code and the editors like it.
+& (Join-Path $bin 'tide.exe') editors
+Write-Host 'Open a new terminal, go to a folder with .tide files and run: tide run'

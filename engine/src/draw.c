@@ -1,8 +1,8 @@
-#include "purr/draw.h"
+#include "tide/draw.h"
 
 #include <string.h>
 
-void purr_draw_reset(purr_draw_list *d)
+void tide_draw_reset(tide_draw_list *d)
 {
     d->count = 0;
     d->text_used = 0;
@@ -10,81 +10,81 @@ void purr_draw_reset(purr_draw_list *d)
 }
 
 // A full list drops commands instead of failing: drawing never stops the game.
-static purr_draw_command *push(purr_draw_list *d, const purr_draw_kind kind, const purr_float2 a, const purr_float2 b,
-                               const purr_color color)
+static tide_draw_command *push(tide_draw_list *d, const tide_draw_kind kind, const tide_float2 a, const tide_float2 b,
+                               const tide_color color)
 {
-    if (d->count == PURR_DRAW_MAX_COMMANDS) {
+    if (d->count == TIDE_DRAW_MAX_COMMANDS) {
         d->dropped++;
         return NULL;
     }
-    purr_draw_command *c = &d->commands[d->count++];
-    *c = (purr_draw_command){(uint32_t)kind, 0, a, b, color};
+    tide_draw_command *c = &d->commands[d->count++];
+    *c = (tide_draw_command){(uint32_t)kind, 0, a, b, color};
     return c;
 }
 
-void purr_draw_clear(purr_draw_list *d, const purr_color color)
+void tide_draw_clear(tide_draw_list *d, const tide_color color)
 {
-    push(d, PURR_DRAW_CLEAR, purr_f2(0.0f, 0.0f), purr_f2(0.0f, 0.0f), color);
+    push(d, TIDE_DRAW_CLEAR, tide_f2(0.0f, 0.0f), tide_f2(0.0f, 0.0f), color);
 }
 
-void purr_draw_camera(purr_draw_list *d, const purr_float2 center, const float size)
+void tide_draw_camera(tide_draw_list *d, const tide_float2 center, const float size)
 {
-    push(d, PURR_DRAW_CAMERA, center, purr_f2(size, 0.0f), PURR_COLOR_CLEAR);
+    push(d, TIDE_DRAW_CAMERA, center, tide_f2(size, 0.0f), TIDE_COLOR_CLEAR);
 }
 
-void purr_draw_circle(purr_draw_list *d, const purr_float2 center, const float radius, const purr_color color)
+void tide_draw_circle(tide_draw_list *d, const tide_float2 center, const float radius, const tide_color color)
 {
-    push(d, PURR_DRAW_CIRCLE, center, purr_f2(radius, 0.0f), color);
+    push(d, TIDE_DRAW_CIRCLE, center, tide_f2(radius, 0.0f), color);
 }
 
-void purr_draw_wire_circle(purr_draw_list *d, const purr_float2 center, const float radius, const purr_color color)
+void tide_draw_wire_circle(tide_draw_list *d, const tide_float2 center, const float radius, const tide_color color)
 {
-    push(d, PURR_DRAW_WIRE_CIRCLE, center, purr_f2(radius, 0.0f), color);
+    push(d, TIDE_DRAW_WIRE_CIRCLE, center, tide_f2(radius, 0.0f), color);
 }
 
-void purr_draw_rect(purr_draw_list *d, const purr_float2 center, const purr_float2 size, const purr_color color)
+void tide_draw_rect(tide_draw_list *d, const tide_float2 center, const tide_float2 size, const tide_color color)
 {
-    push(d, PURR_DRAW_RECT, center, size, color);
+    push(d, TIDE_DRAW_RECT, center, size, color);
 }
 
-void purr_draw_wire_rect(purr_draw_list *d, const purr_float2 center, const purr_float2 size, const purr_color color)
+void tide_draw_wire_rect(tide_draw_list *d, const tide_float2 center, const tide_float2 size, const tide_color color)
 {
-    push(d, PURR_DRAW_WIRE_RECT, center, size, color);
+    push(d, TIDE_DRAW_WIRE_RECT, center, size, color);
 }
 
-void purr_draw_line(purr_draw_list *d, const purr_float2 from, const purr_float2 to, const purr_color color)
+void tide_draw_line(tide_draw_list *d, const tide_float2 from, const tide_float2 to, const tide_color color)
 {
-    push(d, PURR_DRAW_LINE, from, to, color);
+    push(d, TIDE_DRAW_LINE, from, to, color);
 }
 
-void purr_draw_gui(purr_draw_list *d)
+void tide_draw_gui(tide_draw_list *d)
 {
-    push(d, PURR_DRAW_GUI, purr_f2(0.0f, 0.0f), purr_f2(0.0f, 0.0f), PURR_COLOR_CLEAR);
+    push(d, TIDE_DRAW_GUI, tide_f2(0.0f, 0.0f), tide_f2(0.0f, 0.0f), TIDE_COLOR_CLEAR);
 }
 
-void purr_draw_append(purr_draw_list *d, const purr_draw_list *from)
+void tide_draw_append(tide_draw_list *d, const tide_draw_list *from)
 {
     for (uint32_t i = 0; i < from->count; i++) {
-        const purr_draw_command *c = &from->commands[i];
-        if (c->kind == PURR_DRAW_TEXT) {
-            purr_draw_text(d, from->text + c->text, c->a, c->b.x, c->color);
+        const tide_draw_command *c = &from->commands[i];
+        if (c->kind == TIDE_DRAW_TEXT) {
+            tide_draw_text(d, from->text + c->text, c->a, c->b.x, c->color);
         } else {
-            purr_draw_command *copy = push(d, (purr_draw_kind)c->kind, c->a, c->b, c->color);
+            tide_draw_command *copy = push(d, (tide_draw_kind)c->kind, c->a, c->b, c->color);
             if (copy) copy->text = 0;
         }
     }
     d->dropped += from->dropped;
 }
 
-void purr_draw_text(purr_draw_list *d, const char *text, const purr_float2 position, const float size,
-                    const purr_color color)
+void tide_draw_text(tide_draw_list *d, const char *text, const tide_float2 position, const float size,
+                    const tide_color color)
 {
     const size_t bytes = strlen(text) + 1;
-    if (bytes > PURR_DRAW_TEXT_BYTES - d->text_used) {
+    if (bytes > TIDE_DRAW_TEXT_BYTES - d->text_used) {
         d->dropped++;
         return;
     }
-    purr_draw_command *c = push(d, PURR_DRAW_TEXT, position, purr_f2(size, 0.0f), color);
+    tide_draw_command *c = push(d, TIDE_DRAW_TEXT, position, tide_f2(size, 0.0f), color);
     if (!c) return;
     c->text = d->text_used;
     memcpy(d->text + d->text_used, text, bytes);

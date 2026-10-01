@@ -1,5 +1,5 @@
 # The relay on Fly.io (see relay.mjs), at wss://purrengine-relay.fly.dev,
-# which platform/web/purr.js connects to. Deploy from this folder:
+# which platform/web/tide.js connects to. Deploy from this folder:
 #
 #   fly deploy --ha=false
 #

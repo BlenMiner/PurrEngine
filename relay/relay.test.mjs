@@ -119,7 +119,7 @@ test('messages past the size limit close the connection', async () => {
 test('answers plain HTTP, for health checks', async () => {
     const response = await fetch(url.replace('ws:', 'http:'));
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /PurrEngine relay/);
+    assert.match(await response.text(), /Tide relay/);
 });
 
 // Cloudflare's answer, as its docs show it, port 53 and all.

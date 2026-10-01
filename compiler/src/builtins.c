@@ -7,10 +7,10 @@
 
 #include "types.h"
 
-// Every built-in math function maps to a purr/math.h function named
-// purr_<lowercase name>_<type suffix>, for example Math.Dot on float3 is
-// purr_dot_f3. Formulas and semantics follow Unity.Mathematics. Draw functions
-// map to purr/draw.h, and GUI and GUILayout to purr/gui.h.
+// Every built-in math function maps to a tide/math.h function named
+// tide_<lowercase name>_<type suffix>, for example Math.Dot on float3 is
+// tide_dot_f3. Formulas and semantics follow Unity.Mathematics. Draw functions
+// map to tide/draw.h, and GUI and GUILayout to tide/gui.h.
 
 static const type T_F = {TY_FLOAT, NULL};
 static const type T_F2 = {TY_FLOAT2, NULL};
@@ -96,18 +96,18 @@ static const char *permanent(const char *s)
     const size_t n = strlen(s) + 1;
     char *out = malloc(n);
     if (!out) {
-        fprintf(stderr, "purrc: out of memory\n");
+        fprintf(stderr, "tidec: out of memory\n");
         exit(1);
     }
     memcpy(out, s, n);
     return out;
 }
 
-// purr_<lowercase name>_<suffix>, from the arena.
+// tide_<lowercase name>_<suffix>, from the arena.
 static const char *c_function(const char *name, const type t)
 {
     char buf[128];
-    int n = snprintf(buf, sizeof buf, "purr_");
+    int n = snprintf(buf, sizeof buf, "tide_");
     for (const char *p = name; *p && n < (int)sizeof buf - 1; p++) buf[n++] = (char)tolower((unsigned char)*p);
     snprintf(buf + n, sizeof buf - (size_t)n, "_%s", type_suffix(t));
     char *out = arena_alloc(strlen(buf) + 1);
@@ -119,7 +119,7 @@ static signature *add(const char *owner, const char *name, const type result, co
                       const int argc, const type p0, const type p1, const type p2)
 {
     if (signature_count == MAX_SIGNATURES) {
-        fprintf(stderr, "purrc: too many built-in signatures (raise MAX_SIGNATURES)\n");
+        fprintf(stderr, "tidec: too many built-in signatures (raise MAX_SIGNATURES)\n");
         exit(1);
     }
     signature *s = &signatures[signature_count++];
@@ -127,7 +127,7 @@ static signature *add(const char *owner, const char *name, const type result, co
     return s;
 }
 
-// A GUI function from its parameters as PurrLang writes them:
+// A GUI function from its parameters as Tide writes them:
 // "string label, mut float value, float min, float max".
 static void add_gui(const char *owner, const char *name, const type result, const char *c_name, const char *params,
                     const int gui, const char *doc)
@@ -157,17 +157,17 @@ static void add_gui(const char *owner, const char *name, const type result, cons
     s->param_names = permanent(names.data ? names.data : "");
 }
 
-// A widget in both GUI, at a rect, and GUILayout, laid out: purr_gui_<c> and
-// purr_gui_layout_<c>.
+// A widget in both GUI, at a rect, and GUILayout, laid out: tide_gui_<c> and
+// tide_gui_layout_<c>.
 static void add_widget(const char *name, const type result, const char *c, const char *params, const int gui,
                        const char *doc)
 {
     char c_name[64];
     char with_rect[256];
     snprintf(with_rect, sizeof with_rect, params[0] ? "Rect rect, %s" : "Rect rect", params);
-    snprintf(c_name, sizeof c_name, "purr_gui_%s", c);
+    snprintf(c_name, sizeof c_name, "tide_gui_%s", c);
     add_gui("GUI", name, result, c_name, with_rect, gui, doc);
-    snprintf(c_name, sizeof c_name, "purr_gui_layout_%s", c);
+    snprintf(c_name, sizeof c_name, "tide_gui_layout_%s", c);
     add_gui("GUILayout", name, result, c_name, params, gui, doc);
 }
 
@@ -195,98 +195,98 @@ static void build_signatures(void)
         add("Math", "Cmin", T_F, c_function("cmin", v), 1, v, T_NONE, T_NONE);
         add("Math", "Cmax", T_F, c_function("cmax", v), 1, v, T_NONE, T_NONE);
     }
-    add("Math", "Cross", T_F3, "purr_cross_f3", 2, T_F3, T_F3, T_NONE);
+    add("Math", "Cross", T_F3, "tide_cross_f3", 2, T_F3, T_F3, T_NONE);
 
     // Quaternions
-    add("Math", "Dot", T_F, "purr_dot_q", 2, T_Q, T_Q, T_NONE);
-    add("Math", "Normalize", T_Q, "purr_normalize_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "NormalizeSafe", T_Q, "purr_normalizesafe_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "Mul", T_Q, "purr_mul_q", 2, T_Q, T_Q, T_NONE);
-    add("Math", "Mul", T_F3, "purr_rotate_q", 2, T_Q, T_F3, T_NONE);
-    add("Math", "Rotate", T_F3, "purr_rotate_q", 2, T_Q, T_F3, T_NONE);
-    add("Math", "Inverse", T_Q, "purr_inverse_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "Conjugate", T_Q, "purr_conjugate_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "Slerp", T_Q, "purr_slerp_q", 3, T_Q, T_Q, T_F);
-    add("Math", "Nlerp", T_Q, "purr_nlerp_q", 3, T_Q, T_Q, T_F);
-    add("Math", "Forward", T_F3, "purr_forward_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "Up", T_F3, "purr_up_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "Right", T_F3, "purr_right_q", 1, T_Q, T_NONE, T_NONE);
-    add("Math", "Angle", T_F, "purr_angle_q", 2, T_Q, T_Q, T_NONE);
+    add("Math", "Dot", T_F, "tide_dot_q", 2, T_Q, T_Q, T_NONE);
+    add("Math", "Normalize", T_Q, "tide_normalize_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "NormalizeSafe", T_Q, "tide_normalizesafe_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "Mul", T_Q, "tide_mul_q", 2, T_Q, T_Q, T_NONE);
+    add("Math", "Mul", T_F3, "tide_rotate_q", 2, T_Q, T_F3, T_NONE);
+    add("Math", "Rotate", T_F3, "tide_rotate_q", 2, T_Q, T_F3, T_NONE);
+    add("Math", "Inverse", T_Q, "tide_inverse_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "Conjugate", T_Q, "tide_conjugate_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "Slerp", T_Q, "tide_slerp_q", 3, T_Q, T_Q, T_F);
+    add("Math", "Nlerp", T_Q, "tide_nlerp_q", 3, T_Q, T_Q, T_F);
+    add("Math", "Forward", T_F3, "tide_forward_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "Up", T_F3, "tide_up_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "Right", T_F3, "tide_right_q", 1, T_Q, T_NONE, T_NONE);
+    add("Math", "Angle", T_F, "tide_angle_q", 2, T_Q, T_Q, T_NONE);
 
     // Matrices
     for (int n = 2; n <= 4; n++) {
         const type m = matrix_type(n);
         const type v = vector_type(true, n);
         char mul_vec[64];
-        snprintf(mul_vec, sizeof mul_vec, "purr_mul_%s_%s", type_suffix(m), type_suffix(v));
+        snprintf(mul_vec, sizeof mul_vec, "tide_mul_%s_%s", type_suffix(m), type_suffix(v));
         add("Math", "Mul", m, c_function("mul", m), 2, m, m, T_NONE);
         add("Math", "Mul", v, mul_vec, 2, m, v, T_NONE);
         add("Math", "Transpose", m, c_function("transpose", m), 1, m, T_NONE, T_NONE);
         add("Math", "Inverse", m, c_function("inverse", m), 1, m, T_NONE, T_NONE);
         add("Math", "Determinant", T_F, c_function("determinant", m), 1, m, T_NONE, T_NONE);
     }
-    add("Math", "Transform", T_F3, "purr_transform_f4x4", 2, T_F4X4, T_F3, T_NONE);
-    add("Math", "Rotate", T_F3, "purr_rotate_f4x4", 2, T_F4X4, T_F3, T_NONE);
+    add("Math", "Transform", T_F3, "tide_transform_f4x4", 2, T_F4X4, T_F3, T_NONE);
+    add("Math", "Rotate", T_F3, "tide_rotate_f4x4", 2, T_F4X4, T_F3, T_NONE);
 
     // Ways to build quaternions and matrices
-    describe(add("quaternion", "AxisAngle", T_Q, "purr_axisangle_q", 2, T_F3, T_F, T_NONE),
+    describe(add("quaternion", "AxisAngle", T_Q, "tide_axisangle_q", 2, T_F3, T_F, T_NONE),
              "axis, angle", "A rotation of `angle` radians around `axis`.");
-    describe(add("quaternion", "Euler", T_Q, "purr_euler_q", 1, T_F3, T_NONE, T_NONE),
+    describe(add("quaternion", "Euler", T_Q, "tide_euler_q", 1, T_F3, T_NONE, T_NONE),
              "radians", "A rotation from Euler angles in radians: Z first, then X, then Y.");
-    describe(add("quaternion", "LookRotation", T_Q, "purr_lookrotation_q", 2, T_F3, T_F3, T_NONE),
+    describe(add("quaternion", "LookRotation", T_Q, "tide_lookrotation_q", 2, T_F3, T_F3, T_NONE),
              "forward, up", "A rotation that looks along `forward`, with `up` as up.");
-    describe(add("float4x4", "TRS", T_F4X4, "purr_trs_f4x4", 3, T_F3, T_Q, T_F3),
+    describe(add("float4x4", "TRS", T_F4X4, "tide_trs_f4x4", 3, T_F3, T_Q, T_F3),
              "translation, rotation, scale", "A transform: scale, then rotate, then translate.");
-    describe(add("float4x4", "Translate", T_F4X4, "purr_translate_f4x4", 1, T_F3, T_NONE, T_NONE),
+    describe(add("float4x4", "Translate", T_F4X4, "tide_translate_f4x4", 1, T_F3, T_NONE, T_NONE),
              "translation", "A translation matrix.");
 
-    // Drawing, in views: purr/draw.h. Codegen passes the view's draw list first.
-    describe(add("Draw", "Clear", T_NONE, "purr_draw_clear", 1, T_COLOR, T_NONE, T_NONE),
+    // Drawing, in views: tide/draw.h. Codegen passes the view's draw list first.
+    describe(add("Draw", "Clear", T_NONE, "tide_draw_clear", 1, T_COLOR, T_NONE, T_NONE),
              "color", "Fills the whole screen.");
-    describe(add("Draw", "Camera", T_NONE, "purr_draw_camera", 2, T_F2, T_F, T_NONE),
+    describe(add("Draw", "Camera", T_NONE, "tide_draw_camera", 2, T_F2, T_F, T_NONE),
              "center, size",
              "Sets the camera for the Draw calls after it. `center` is the world position at the middle of the "
              "screen and `size` is half the visible height, like Unity's orthographic size.");
-    describe(add("Draw", "Circle", T_NONE, "purr_draw_circle", 3, T_F2, T_F, T_COLOR),
+    describe(add("Draw", "Circle", T_NONE, "tide_draw_circle", 3, T_F2, T_F, T_COLOR),
              "center, radius, color", "A filled circle.");
-    describe(add("Draw", "WireCircle", T_NONE, "purr_draw_wire_circle", 3, T_F2, T_F, T_COLOR),
+    describe(add("Draw", "WireCircle", T_NONE, "tide_draw_wire_circle", 3, T_F2, T_F, T_COLOR),
              "center, radius, color", "A circle outline.");
-    describe(add("Draw", "Rect", T_NONE, "purr_draw_rect", 3, T_F2, T_F2, T_COLOR),
+    describe(add("Draw", "Rect", T_NONE, "tide_draw_rect", 3, T_F2, T_F2, T_COLOR),
              "center, size, color", "A filled rectangle.");
-    describe(add("Draw", "WireRect", T_NONE, "purr_draw_wire_rect", 3, T_F2, T_F2, T_COLOR),
+    describe(add("Draw", "WireRect", T_NONE, "tide_draw_wire_rect", 3, T_F2, T_F2, T_COLOR),
              "center, size, color", "A rectangle outline.");
-    describe(add("Draw", "Line", T_NONE, "purr_draw_line", 3, T_F2, T_F2, T_COLOR),
+    describe(add("Draw", "Line", T_NONE, "tide_draw_line", 3, T_F2, T_F2, T_COLOR),
              "from, to, color", "A line.");
-    signature *text = add("Draw", "Text", T_NONE, "purr_draw_text", 3, T_STR, T_F2, T_F);
+    signature *text = add("Draw", "Text", T_NONE, "tide_draw_text", 3, T_STR, T_F2, T_F);
     text->argc = 4;
     text->params[3] = T_COLOR;
     describe(text, "text, position, size, color", "Text: `position` is its top left corner and `size` its height.");
 
-    // Text's methods: purr/text.h, with the text first. Positions and lengths
+    // Text's methods: tide/text.h, with the text first. Positions and lengths
     // count characters, and are clamped to the text, never out of range.
     const type t_int = {TY_INT, NULL};
-    describe(add("string", "Contains", T_BOOL, "purr_str_contains", 1, T_STR, T_NONE, T_NONE),
+    describe(add("string", "Contains", T_BOOL, "tide_str_contains", 1, T_STR, T_NONE, T_NONE),
              "value", "Whether `value` is in the text.");
-    describe(add("string", "StartsWith", T_BOOL, "purr_str_starts_with", 1, T_STR, T_NONE, T_NONE),
+    describe(add("string", "StartsWith", T_BOOL, "tide_str_starts_with", 1, T_STR, T_NONE, T_NONE),
              "value", "Whether the text starts with `value`.");
-    describe(add("string", "EndsWith", T_BOOL, "purr_str_ends_with", 1, T_STR, T_NONE, T_NONE),
+    describe(add("string", "EndsWith", T_BOOL, "tide_str_ends_with", 1, T_STR, T_NONE, T_NONE),
              "value", "Whether the text ends with `value`.");
-    describe(add("string", "IndexOf", t_int, "purr_str_index_of", 1, T_STR, T_NONE, T_NONE),
+    describe(add("string", "IndexOf", t_int, "tide_str_index_of", 1, T_STR, T_NONE, T_NONE),
              "value", "Where `value` first is in the text, counting characters from 0, or -1.");
-    describe(add("string", "Substring", T_STR, "purr_str_substring_from", 1, t_int, T_NONE, T_NONE),
+    describe(add("string", "Substring", T_STR, "tide_str_substring_from", 1, t_int, T_NONE, T_NONE),
              "start", "The text from character `start` on.");
-    describe(add("string", "Substring", T_STR, "purr_str_substring", 2, t_int, t_int, T_NONE),
+    describe(add("string", "Substring", T_STR, "tide_str_substring", 2, t_int, t_int, T_NONE),
              "start, length", "`length` characters of the text, from character `start`.");
-    describe(add("string", "ToUpper", T_STR, "purr_str_to_upper", 0, T_NONE, T_NONE, T_NONE),
+    describe(add("string", "ToUpper", T_STR, "tide_str_to_upper", 0, T_NONE, T_NONE, T_NONE),
              NULL, "The text in upper case: ASCII letters only, for now.");
-    describe(add("string", "ToLower", T_STR, "purr_str_to_lower", 0, T_NONE, T_NONE, T_NONE),
+    describe(add("string", "ToLower", T_STR, "tide_str_to_lower", 0, T_NONE, T_NONE, T_NONE),
              NULL, "The text in lower case: ASCII letters only, for now.");
-    describe(add("string", "Trim", T_STR, "purr_str_trim", 0, T_NONE, T_NONE, T_NONE),
+    describe(add("string", "Trim", T_STR, "tide_str_trim", 0, T_NONE, T_NONE, T_NONE),
              NULL, "The text without spaces, tabs and new lines at its start and end.");
-    describe(add("string", "Replace", T_STR, "purr_str_replace", 2, T_STR, T_STR, T_NONE),
+    describe(add("string", "Replace", T_STR, "tide_str_replace", 2, T_STR, T_STR, T_NONE),
              "from, to", "The text with every `from` in it replaced by `to`.");
 
-    // The GUI, in views: purr/gui.h. Codegen passes the view's GUI first, then
+    // The GUI, in views: tide/gui.h. Codegen passes the view's GUI first, then
     // the widget's ID, then a mut argument's address.
     add_widget("Label", T_NONE, "label", "string text", 0, "Text.");
     add_widget("Button", T_BOOL, "button", "string text", GUI_ID, "A button. Returns whether it was pressed.");
@@ -310,17 +310,17 @@ static void build_signatures(void)
                "A color's swatch, and fields for its r, g, b and a. Returns whether they changed `value`.");
     add_widget("TextField", T_BOOL, "text_field", "string label, mut string value", GUI_ID,
                "A field to type text into. It changes `value` as the player types, and returns whether it did.");
-    add_gui("GUILayout", "Space", T_NONE, "purr_gui_layout_space", "float size", 0,
+    add_gui("GUILayout", "Space", T_NONE, "tide_gui_layout_space", "float size", 0,
             "Empty space: down in a vertical container, across in a horizontal one.");
-    add_gui("GUILayout", "Vertical", T_NONE, "purr_gui_begin_vertical", "", GUI_ID | GUI_CONTAINER,
+    add_gui("GUILayout", "Vertical", T_NONE, "tide_gui_begin_vertical", "", GUI_ID | GUI_CONTAINER,
             "Stacks the widgets in its block top to bottom.");
-    add_gui("GUILayout", "Horizontal", T_NONE, "purr_gui_begin_horizontal", "", GUI_ID | GUI_CONTAINER,
+    add_gui("GUILayout", "Horizontal", T_NONE, "tide_gui_begin_horizontal", "", GUI_ID | GUI_CONTAINER,
             "Puts the widgets in its block side by side.");
-    add_gui("GUILayout", "Area", T_NONE, "purr_gui_begin_area_at", "Anchor anchor", GUI_ID | GUI_CONTAINER,
+    add_gui("GUILayout", "Area", T_NONE, "tide_gui_begin_area_at", "Anchor anchor", GUI_ID | GUI_CONTAINER,
             "A panel on the screen, sized to its block's widgets, at one of nine anchors like `Anchor.MiddleCenter`.");
-    add_gui("GUILayout", "Area", T_NONE, "purr_gui_begin_area", "Rect rect", GUI_ID | GUI_CONTAINER,
+    add_gui("GUILayout", "Area", T_NONE, "tide_gui_begin_area", "Rect rect", GUI_ID | GUI_CONTAINER,
             "A panel on the screen at `rect`, with its block's widgets laid out inside.");
-    add_gui("GUILayout", "Modal", T_NONE, "purr_gui_begin_modal", "Anchor anchor, mut bool open",
+    add_gui("GUILayout", "Modal", T_NONE, "tide_gui_begin_modal", "Anchor anchor, mut bool open",
             GUI_ID | GUI_CONTAINER | GUI_SKIPS,
             "A panel over the whole screen while `open` is true, like a pause menu. While it's up, the widgets "
             "outside it don't work, the game and views get no input, and back (Escape or the east button) closes "
@@ -336,25 +336,25 @@ static const struct {
     type_kind kind;
     const char *c_constant;
 } members[] = {
-    {"Math", "PI", TY_FLOAT, "PURR_PI_F"},
-    {"Math", "TAU", TY_FLOAT, "PURR_TAU_F"},
-    {"Math", "E", TY_FLOAT, "PURR_E_F"},
-    {"quaternion", "identity", TY_QUATERNION, "purr_identity_q()"},
-    {"float2x2", "identity", TY_FLOAT2X2, "purr_identity_f2x2()"},
-    {"float3x3", "identity", TY_FLOAT3X3, "purr_identity_f3x3()"},
-    {"float4x4", "identity", TY_FLOAT4X4, "purr_identity_f4x4()"},
-    {"Color", "white", TY_COLOR, "PURR_COLOR_WHITE"},
-    {"Color", "black", TY_COLOR, "PURR_COLOR_BLACK"},
-    {"Color", "red", TY_COLOR, "PURR_COLOR_RED"},
-    {"Color", "green", TY_COLOR, "PURR_COLOR_GREEN"},
-    {"Color", "blue", TY_COLOR, "PURR_COLOR_BLUE"},
-    {"Color", "yellow", TY_COLOR, "PURR_COLOR_YELLOW"},
-    {"Color", "cyan", TY_COLOR, "PURR_COLOR_CYAN"},
-    {"Color", "magenta", TY_COLOR, "PURR_COLOR_MAGENTA"},
-    {"Color", "gray", TY_COLOR, "PURR_COLOR_GRAY"},
-    {"Color", "clear", TY_COLOR, "PURR_COLOR_CLEAR"},
-    {"Screen", "width", TY_FLOAT, "purr_ui->width"},
-    {"Screen", "height", TY_FLOAT, "purr_ui->height"},
+    {"Math", "PI", TY_FLOAT, "TIDE_PI_F"},
+    {"Math", "TAU", TY_FLOAT, "TIDE_TAU_F"},
+    {"Math", "E", TY_FLOAT, "TIDE_E_F"},
+    {"quaternion", "identity", TY_QUATERNION, "tide_identity_q()"},
+    {"float2x2", "identity", TY_FLOAT2X2, "tide_identity_f2x2()"},
+    {"float3x3", "identity", TY_FLOAT3X3, "tide_identity_f3x3()"},
+    {"float4x4", "identity", TY_FLOAT4X4, "tide_identity_f4x4()"},
+    {"Color", "white", TY_COLOR, "TIDE_COLOR_WHITE"},
+    {"Color", "black", TY_COLOR, "TIDE_COLOR_BLACK"},
+    {"Color", "red", TY_COLOR, "TIDE_COLOR_RED"},
+    {"Color", "green", TY_COLOR, "TIDE_COLOR_GREEN"},
+    {"Color", "blue", TY_COLOR, "TIDE_COLOR_BLUE"},
+    {"Color", "yellow", TY_COLOR, "TIDE_COLOR_YELLOW"},
+    {"Color", "cyan", TY_COLOR, "TIDE_COLOR_CYAN"},
+    {"Color", "magenta", TY_COLOR, "TIDE_COLOR_MAGENTA"},
+    {"Color", "gray", TY_COLOR, "TIDE_COLOR_GRAY"},
+    {"Color", "clear", TY_COLOR, "TIDE_COLOR_CLEAR"},
+    {"Screen", "width", TY_FLOAT, "tide_ui->width"},
+    {"Screen", "height", TY_FLOAT, "tide_ui->height"},
 };
 
 #define MEMBER_COUNT (sizeof members / sizeof members[0])

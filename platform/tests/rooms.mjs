@@ -5,15 +5,15 @@
 // - a browser hosting, and a desktop player joining its room.
 //
 // The browsers are headless Chrome (or Edge) and Firefox, whichever are
-// here, on a page of their own that speaks the relay's protocol as purr.js
+// here, on a page of their own that speaks the relay's protocol as tide.js
 // does and echoes every message on its data channel. So the desktop's WebRTC
 // (platform/src/rtc) is checked against each browser's, both ways round.
 // Without a browser, only the first runs.
 //
-//   node rooms.mjs <Chrome or Edge> <purr_platform_rooms> <scratch folder> [Firefox]
+//   node rooms.mjs <Chrome or Edge> <tide_platform_rooms> <scratch folder> [Firefox]
 //
-// With PURR_RELAY set, like ws://purrengine-relay.fly.dev, everyone meets
-// through that relay instead, to check a deployed one. PURR_ICE_POLICY=relay
+// With TIDE_RELAY set, like ws://purrengine-relay.fly.dev, everyone meets
+// through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
 // sends every packet through its TURN servers, both the browser's and ours.
 
 import { spawn } from 'node:child_process';
@@ -28,15 +28,15 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', re
 
 const relay = createRelay({ iceServers: [] }); // Players on one machine need no STUN
 await listen(relay);
-const relayUrl = process.env.PURR_RELAY || `ws://127.0.0.1:${relay.address().port}`;
-const relayOnly = process.env.PURR_ICE_POLICY === 'relay';
+const relayUrl = process.env.TIDE_RELAY || `ws://127.0.0.1:${relay.address().port}`;
+const relayOnly = process.env.TIDE_ICE_POLICY === 'relay';
 // On a relay here, desktop players stay on loopback, so no port opens to the
 // network, and Windows' firewall has nothing to ask. Except with Firefox on
 // Windows, which offers no loopback candidates: there they take a port the
 // system picks, as any game joining a match does.
-const local = !process.env.PURR_RELAY;
-const env = { ...process.env, PURR_RELAY: relayUrl, ...(relayOnly ? { PURR_RTC_RELAY_ONLY: '1' } : {}) };
-const loopback = { ...env, ...(local ? { PURR_RTC_LOCAL: '1' } : {}) };
+const local = !process.env.TIDE_RELAY;
+const env = { ...process.env, TIDE_RELAY: relayUrl, ...(relayOnly ? { TIDE_RTC_RELAY_ONLY: '1' } : {}) };
+const loopback = { ...env, ...(local ? { TIDE_RTC_LOCAL: '1' } : {}) };
 
 // A desktop player: its lines, as they come
 function player(args, name, anywhere = false) {
@@ -137,7 +137,7 @@ ws.onmessage = async e => {
     if (p) onSignal(p, m.signal, true);
   } else if (m.joined) {
     const p = peer(0, s => send({ signal: s }));
-    channel(p.pc.createDataChannel('purr', { ordered: false, maxRetransmits: 0 }));
+    channel(p.pc.createDataChannel('tide', { ordered: false, maxRetransmits: 0 }));
     await p.pc.setLocalDescription();
     send({ signal: { description: p.pc.localDescription.toJSON() } });
   } else if (m.signal) {
@@ -289,7 +289,7 @@ for (const which of found) {
         if (exit !== 0) throw new Error(`the desktop side exited with ${exit}`);
     });
 }
-if (!found.length) console.log('No browser found: skipping the browser tests. Set PURR_BROWSER to run them.');
+if (!found.length) console.log('No browser found: skipping the browser tests. Set TIDE_BROWSER to run them.');
 
 // Last, this run's browser folders, once the browsers have let go of them
 relay.close();

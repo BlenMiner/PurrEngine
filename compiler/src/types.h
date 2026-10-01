@@ -2,7 +2,7 @@
 
 #include "ast.h"
 
-// Helpers for PurrLang's built-in types.
+// Helpers for Tide's built-in types.
 
 // Looks up a built-in type by name: bool, int, float, float3, quaternion, ...
 bool builtin_type_named(str name, type *out);
@@ -36,7 +36,7 @@ type matrix_type(int dim);
 // they don't cascade.
 bool type_assignable(type to, type from);
 
-// Suffix of the purr/math.h functions for a type: f3, i2, q, f4x4, ...
+// Suffix of the tide/math.h functions for a type: f3, i2, q, f4x4, ...
 const char *type_suffix(type t);
 
 // Name for error messages.

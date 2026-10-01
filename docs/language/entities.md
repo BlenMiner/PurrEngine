@@ -1,6 +1,6 @@
 # Components and entities
 
-PurrEngine is an ECS: the world is made of **entities**, entities are made of **components**, and **systems** run code over them. This page is about the data; [Systems](./systems.md) is about the code.
+Tide is an ECS: the world is made of **entities**, entities are made of **components**, and **systems** run code over them. This page is about the data; [Systems](./systems.md) is about the code.
 
 ## Components
 
@@ -121,4 +121,4 @@ An archetype is a set of components that entities share, and entities with the s
 
 ## Limits
 
-For now, a game has at most 64 components, 256 archetypes, 16384 entities, 1024 entities per archetype, and 4096 structural changes and events per tick. A CMake build of the engine can raise the last three with compile definitions (see [C hosts](../engine/c-hosts.md#limits)); `purr` has no option for them yet.
+For now, a game has at most 64 components, 256 archetypes, 16384 entities, 1024 entities per archetype, and 4096 structural changes and events per tick. A CMake build of the engine can raise the last three with compile definitions (see [C hosts](../engine/c-hosts.md#limits)); `tide` has no option for them yet.

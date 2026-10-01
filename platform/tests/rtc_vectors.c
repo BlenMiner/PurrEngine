@@ -2,7 +2,7 @@
 // writes cases with what Node got, this checks each, and signs what it's
 // asked to for Node to verify.
 //
-//     purr_platform_rtc_vectors <cases> <signatures out>
+//     tide_platform_rtc_vectors <cases> <signatures out>
 //
 // A case is a line: its kind, then its fields in hex ("-" for none):
 //
@@ -41,7 +41,7 @@ static void hex(FILE *f, const uint8_t *data, const size_t size)
 
 int main(const int argc, char **argv)
 {
-    if (argc < 3) return fprintf(stderr, "usage: purr_platform_rtc_vectors <cases> <signatures out>\n"), 2;
+    if (argc < 3) return fprintf(stderr, "usage: tide_platform_rtc_vectors <cases> <signatures out>\n"), 2;
     FILE *in = fopen(argv[1], "r");
     FILE *out = fopen(argv[2], "w");
     if (!in || !out) return fprintf(stderr, "can't open the files\n"), 2;

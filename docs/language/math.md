@@ -1,6 +1,6 @@
 # Math
 
-PurrLang's math follows Unity.Mathematics, with PurrLang's naming: functions live on `Math`, in PascalCase. It's all deterministic: the same inputs give the same bits on every platform (see [Determinism](../engine/determinism.md)).
+Tide's math follows Unity.Mathematics, with Tide's naming: functions live on `Math`, in PascalCase. It's all deterministic: the same inputs give the same bits on every platform (see [Determinism](../engine/determinism.md)).
 
 ```csharp
 quaternion spin = quaternion.AxisAngle(float3(0, 1, 0), input.turn * time.dt);
@@ -81,4 +81,4 @@ Values can come from other players' input, so math avoids spreading NaN where it
 - `Math.Min` and `Math.Max` with one NaN argument return the other.
 - `Math.NormalizeSafe` gives zero for a zero vector, where `Math.Normalize` would give NaN.
 
-Everywhere else, results match Unity.Mathematics. The transcendental functions (`Sin`, `Exp`, `Pow` and the others) are PurrEngine's own, accurate to about 1 ulp, and give the same bits everywhere.
+Everywhere else, results match Unity.Mathematics. The transcendental functions (`Sin`, `Exp`, `Pow` and the others) are Tide's own, accurate to about 1 ulp, and give the same bits everywhere.

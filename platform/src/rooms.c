@@ -1,5 +1,5 @@
-// Rooms (see purr/platform.h): matches found by a code, through the relay.
-// On the web, the page's JavaScript does the work (platform/web/purr.js), on
+// Rooms (see tide/platform.h): matches found by a code, through the relay.
+// On the web, the page's JavaScript does the work (platform/web/tide.js), on
 // the browser's WebRTC. On desktop, this does the same on our own
 // (platform/src/rtc). Either way, a room is a transport: players are numbered
 // in it, the host 0 to those who join, and they 1 and up to the host.
@@ -8,7 +8,7 @@
 #define _DEFAULT_SOURCE
 #endif
 
-#include "purr/platform.h"
+#include "tide/platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,48 +19,48 @@
 static uint32_t backend_host(void);
 static uint32_t backend_join(const char *code);
 static void backend_close(uint32_t number);
-static void backend_code(char out[PURR_ROOM_CODE_LENGTH + 1]);
+static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1]);
 static bool backend_failed(void);
 static void backend_send(uint32_t number, uint32_t to, const void *data, uint32_t size);
 static uint32_t backend_receive(uint32_t number, uint32_t *from, void *data, uint32_t capacity);
 
 #if defined(__wasm__)
 
-#include "purr_web.h"
+#include "tide_web.h"
 
 static uint32_t backend_host(void)
 {
-    return purr_web_room_host();
+    return tide_web_room_host();
 }
 
 static uint32_t backend_join(const char *code)
 {
-    return purr_web_room_join(code);
+    return tide_web_room_join(code);
 }
 
 static void backend_close(const uint32_t number)
 {
-    purr_web_room_close(number);
+    tide_web_room_close(number);
 }
 
-static void backend_code(char out[PURR_ROOM_CODE_LENGTH + 1])
+static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1])
 {
-    purr_web_room_code(out);
+    tide_web_room_code(out);
 }
 
 static bool backend_failed(void)
 {
-    return purr_web_room_failed();
+    return tide_web_room_failed();
 }
 
 static void backend_send(const uint32_t number, const uint32_t to, const void *data, const uint32_t size)
 {
-    purr_web_room_send(number, to, data, size);
+    tide_web_room_send(number, to, data, size);
 }
 
 static uint32_t backend_receive(const uint32_t number, uint32_t *from, void *data, const uint32_t capacity)
 {
-    return purr_web_room_receive(number, from, data, capacity);
+    return tide_web_room_receive(number, from, data, capacity);
 }
 
 #else
@@ -84,7 +84,7 @@ typedef struct native_room {
     bool connected; // Joining: the host is reached
     double opened;
     double join_again; // Joining a room the relay doesn't know yet: when to ask again
-    char code[PURR_ROOM_CODE_LENGTH + 1];
+    char code[TIDE_ROOM_CODE_LENGTH + 1];
     rtc_ws ws;
     bool ws_live;
     double reconnect_at;
@@ -98,20 +98,20 @@ typedef struct native_room {
 static native_room *room;
 static uint32_t rooms_opened;
 
-// PURR_RELAY picks another relay, like one on this machine for tests, which
+// TIDE_RELAY picks another relay, like one on this machine for tests, which
 // can be plain ws://.
 static const char *relay_url(void)
 {
-    const char *env = getenv("PURR_RELAY");
+    const char *env = getenv("TIDE_RELAY");
     return env && env[0] ? env : RELAY;
 }
 
-static void new_code(char code[PURR_ROOM_CODE_LENGTH + 1])
+static void new_code(char code[TIDE_ROOM_CODE_LENGTH + 1])
 {
-    uint8_t r[PURR_ROOM_CODE_LENGTH];
+    uint8_t r[TIDE_ROOM_CODE_LENGTH];
     rtc_random(r, sizeof r);
-    for (int i = 0; i < PURR_ROOM_CODE_LENGTH; i++) code[i] = PURR_ROOM_CODE_LETTERS[r[i] & 31];
-    code[PURR_ROOM_CODE_LENGTH] = '\0';
+    for (int i = 0; i < TIDE_ROOM_CODE_LENGTH; i++) code[i] = TIDE_ROOM_CODE_LETTERS[r[i] & 31];
+    code[TIDE_ROOM_CODE_LENGTH] = '\0';
 }
 
 static void relay_send(native_room *r, const char *json)
@@ -137,7 +137,7 @@ static void relay_lost(native_room *r, const double now)
 {
     relay_close(r);
     if (r->hosting) {
-        if (r->reachable) fprintf(stderr, "purr: lost the relay; room %s opens again once it's back\n", r->code);
+        if (r->reachable) fprintf(stderr, "tide: lost the relay; room %s opens again once it's back\n", r->code);
         r->reachable = false;
         r->reconnect_at = now + 3.0;
         for (int i = r->peer_count - 1; i >= 0; i--) {
@@ -150,7 +150,7 @@ static void relay_lost(native_room *r, const double now)
         r->reconnect_at = now + 1.0;
     } else if (!r->connected && !r->failed) {
         r->failed = true;
-        fprintf(stderr, "purr: can't reach the relay at %s to join room %s\n", relay_url(), r->code);
+        fprintf(stderr, "tide: can't reach the relay at %s to join room %s\n", relay_url(), r->code);
     }
 }
 
@@ -263,9 +263,9 @@ static void on_relay(native_room *r, const char *text)
                || rtc_json_string(rtc_json_get(m, "closed"), code, sizeof code)) {
         if (!r->connected && !r->failed) {
             r->failed = true;
-            fprintf(stderr, "%s%s\n", rtc_json_get(m, "missing").text ? "purr: no room has the code "
-                                      : rtc_json_get(m, "full").text  ? "purr: too many players are joining room "
-                                                                      : "purr: the host closed room ",
+            fprintf(stderr, "%s%s\n", rtc_json_get(m, "missing").text ? "tide: no room has the code "
+                                      : rtc_json_get(m, "full").text  ? "tide: too many players are joining room "
+                                                                      : "tide: the host closed room ",
                     code);
         }
     } else if (rtc_json_get(m, "joined").text) {
@@ -317,7 +317,7 @@ static void pump(native_room *r)
         } else if (p->peer->state == RTC_PEER_FAILED) {
             if (!r->hosting && !r->connected && !r->failed) {
                 r->failed = true;
-                fprintf(stderr, "purr: couldn't connect to the host of room %s\n", r->code);
+                fprintf(stderr, "tide: couldn't connect to the host of room %s\n", r->code);
             }
             remove_peer(r, i);
         }
@@ -352,12 +352,12 @@ static uint32_t open_room(const bool hosting, const char *code)
         for (const char *c = code; *c && valid; c++) {
             if (*c == ' ') continue;
             const char upper = *c >= 'a' && *c <= 'z' ? (char)(*c - 'a' + 'A') : *c;
-            valid = n < PURR_ROOM_CODE_LENGTH && strchr(PURR_ROOM_CODE_LETTERS, upper) != NULL;
+            valid = n < TIDE_ROOM_CODE_LENGTH && strchr(TIDE_ROOM_CODE_LETTERS, upper) != NULL;
             if (valid) room->code[n++] = upper;
         }
-        if (!valid || n != PURR_ROOM_CODE_LENGTH) {
+        if (!valid || n != TIDE_ROOM_CODE_LENGTH) {
             room->failed = true;
-            fprintf(stderr, "purr: '%s' isn't a room code: they're 6 letters and digits, like K7QF2M\n", code);
+            fprintf(stderr, "tide: '%s' isn't a room code: they're 6 letters and digits, like K7QF2M\n", code);
             return room->number;
         }
     }
@@ -375,10 +375,10 @@ static uint32_t backend_join(const char *code)
     return open_room(false, code);
 }
 
-static void backend_code(char out[PURR_ROOM_CODE_LENGTH + 1])
+static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1])
 {
     const bool shown = room && !room->failed && room->reachable;
-    snprintf(out, PURR_ROOM_CODE_LENGTH + 1, "%s", shown ? room->code : "");
+    snprintf(out, TIDE_ROOM_CODE_LENGTH + 1, "%s", shown ? room->code : "");
 }
 
 static bool backend_failed(void)
@@ -420,24 +420,24 @@ static uint32_t backend_receive(const uint32_t number, uint32_t *from, void *dat
 
 // To those who join, the host's address also holds the room's code, so they
 // know it from another room's host (as sessions do when they join again, see
-// purr_session_join).
+// tide_session_join).
 typedef struct room_transport {
     uint32_t number;
-    uint32_t code; // Packed, with PURR_ROOM_CODE_BIT; 0 in a room this machine hosts
+    uint32_t code; // Packed, with TIDE_ROOM_CODE_BIT; 0 in a room this machine hosts
 } room_transport;
 
-static void room_send(void *self, const purr_address to, const void *data, const uint32_t size)
+static void room_send(void *self, const tide_address to, const void *data, const uint32_t size)
 {
     const room_transport *r = self;
-    if (to.kind == PURR_ADDRESS_ROOM && to.host == r->code) backend_send(r->number, to.port, data, size);
+    if (to.kind == TIDE_ADDRESS_ROOM && to.host == r->code) backend_send(r->number, to.port, data, size);
 }
 
-static uint32_t room_receive(void *self, purr_address *from, void *data, const uint32_t capacity)
+static uint32_t room_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
 {
     const room_transport *r = self;
     uint32_t player = 0;
     const uint32_t size = backend_receive(r->number, &player, data, capacity);
-    if (size) *from = (purr_address){.kind = PURR_ADDRESS_ROOM, .host = r->code, .port = (uint16_t)player};
+    if (size) *from = (tide_address){.kind = TIDE_ADDRESS_ROOM, .host = r->code, .port = (uint16_t)player};
     return size;
 }
 
@@ -449,7 +449,7 @@ static void room_close(void *self)
 }
 
 // A transport for room `number`: false, closing it, without the memory.
-static bool transport(const uint32_t number, const uint32_t code, purr_transport *out)
+static bool transport(const uint32_t number, const uint32_t code, tide_transport *out)
 {
     room_transport *r = number ? malloc(sizeof *r) : NULL;
     if (!r) {
@@ -457,7 +457,7 @@ static bool transport(const uint32_t number, const uint32_t code, purr_transport
         return false;
     }
     *r = (room_transport){number, code};
-    *out = (purr_transport){.self = r, .send = room_send, .receive = room_receive, .close = room_close};
+    *out = (tide_transport){.self = r, .send = room_send, .receive = room_receive, .close = room_close};
     return true;
 }
 
@@ -469,37 +469,37 @@ static bool pack(const char *code, uint32_t *out)
     for (const char *c = code; *c; c++) {
         if (*c == ' ') continue;
         const char upper = *c >= 'a' && *c <= 'z' ? (char)(*c - 'a' + 'A') : *c;
-        const char *at = strchr(PURR_ROOM_CODE_LETTERS, upper);
-        if (!at || n == PURR_ROOM_CODE_LENGTH) return false;
-        packed = packed << 5 | (uint32_t)(at - PURR_ROOM_CODE_LETTERS);
+        const char *at = strchr(TIDE_ROOM_CODE_LETTERS, upper);
+        if (!at || n == TIDE_ROOM_CODE_LENGTH) return false;
+        packed = packed << 5 | (uint32_t)(at - TIDE_ROOM_CODE_LETTERS);
         n++;
     }
-    *out = packed | PURR_ROOM_CODE_BIT;
-    return n == PURR_ROOM_CODE_LENGTH;
+    *out = packed | TIDE_ROOM_CODE_BIT;
+    return n == TIDE_ROOM_CODE_LENGTH;
 }
 
-bool purr_platform_room_host(purr_transport *out)
+bool tide_platform_room_host(tide_transport *out)
 {
     return transport(backend_host(), 0, out);
 }
 
-bool purr_platform_room_join(const char *code, purr_transport *out, purr_address *server)
+bool tide_platform_room_join(const char *code, tide_transport *out, tide_address *server)
 {
     // A code that isn't one fails in the backend, which says why
     uint32_t packed = 0;
-    if (!pack(code, &packed)) packed = PURR_ROOM_CODE_BIT;
-    *server = (purr_address){.kind = PURR_ADDRESS_ROOM, .host = packed, .port = 0};
+    if (!pack(code, &packed)) packed = TIDE_ROOM_CODE_BIT;
+    *server = (tide_address){.kind = TIDE_ADDRESS_ROOM, .host = packed, .port = 0};
     return transport(backend_join(code), packed, out);
 }
 
-void purr_platform_room_code(char *out, const size_t size)
+void tide_platform_room_code(char *out, const size_t size)
 {
-    char code[PURR_ROOM_CODE_LENGTH + 1] = {0};
+    char code[TIDE_ROOM_CODE_LENGTH + 1] = {0};
     backend_code(code);
     if (size) snprintf(out, size, "%s", code);
 }
 
-bool purr_platform_room_failed(void)
+bool tide_platform_room_failed(void)
 {
     return backend_failed();
 }
@@ -508,24 +508,24 @@ bool purr_platform_room_failed(void)
 // Hosting: on a UDP port and in a room at once, where there's both
 
 typedef struct both {
-    purr_transport udp;
-    purr_transport room;
+    tide_transport udp;
+    tide_transport room;
     bool room_first; // Taking turns, so neither waits on the other
 } both;
 
-static void both_send(void *self, const purr_address to, const void *data, const uint32_t size)
+static void both_send(void *self, const tide_address to, const void *data, const uint32_t size)
 {
     const both *b = self;
-    const purr_transport *t = to.kind == PURR_ADDRESS_ROOM ? &b->room : &b->udp;
+    const tide_transport *t = to.kind == TIDE_ADDRESS_ROOM ? &b->room : &b->udp;
     t->send(t->self, to, data, size);
 }
 
-static uint32_t both_receive(void *self, purr_address *from, void *data, const uint32_t capacity)
+static uint32_t both_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
 {
     both *b = self;
     b->room_first = !b->room_first;
-    const purr_transport *first = b->room_first ? &b->room : &b->udp;
-    const purr_transport *second = b->room_first ? &b->udp : &b->room;
+    const tide_transport *first = b->room_first ? &b->room : &b->udp;
+    const tide_transport *second = b->room_first ? &b->udp : &b->room;
     const uint32_t n = first->receive(first->self, from, data, capacity);
     return n ? n : second->receive(second->self, from, data, capacity);
 }
@@ -538,15 +538,15 @@ static void both_close(void *self)
     free(b);
 }
 
-bool purr_platform_host_open(const uint16_t port, purr_transport *out)
+bool tide_platform_host_open(const uint16_t port, tide_transport *out)
 {
-    purr_transport udp = {0}, in_room = {0};
-    const bool has_udp = purr_platform_udp_open(port, &udp);
-    const bool has_room = purr_platform_room_host(&in_room);
+    tide_transport udp = {0}, in_room = {0};
+    const bool has_udp = tide_platform_udp_open(port, &udp);
+    const bool has_room = tide_platform_room_host(&in_room);
     both *b = has_udp && has_room ? malloc(sizeof *b) : NULL;
     if (b) {
         *b = (both){udp, in_room, false};
-        *out = (purr_transport){.self = b, .send = both_send, .receive = both_receive, .close = both_close};
+        *out = (tide_transport){.self = b, .send = both_send, .receive = both_receive, .close = both_close};
         return true;
     }
     if (has_udp && has_room) {

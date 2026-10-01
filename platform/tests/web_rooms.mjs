@@ -4,10 +4,10 @@
 // packets go over WebRTC, as between two players' browsers. Passes once both
 // say "ok".
 //
-//   node web_rooms.mjs <browser> <purr_platform_web_rooms.html> <scratch folder>
+//   node web_rooms.mjs <browser> <tide_platform_web_rooms.html> <scratch folder>
 //
-// With PURR_RELAY set, like wss://purrengine-relay.fly.dev, the players meet
-// through that relay instead, to check a deployed one. PURR_ICE_POLICY=relay
+// With TIDE_RELAY set, like wss://purrengine-relay.fly.dev, the players meet
+// through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
 // sends their packets through its TURN servers, as for players whose networks
 // can't connect directly.
 
@@ -21,7 +21,7 @@ import { createRelay } from '../../relay/relay.mjs';
 
 const [browser, gamePage, profile] = process.argv.slice(2);
 if (!browser || !existsSync(browser)) {
-    console.log('SKIPPED: no Chrome or Edge found. Set PURR_BROWSER to run web tests.');
+    console.log('SKIPPED: no Chrome or Edge found. Set TIDE_BROWSER to run web tests.');
     process.exit(0);
 }
 
@@ -29,16 +29,16 @@ const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', re
 
 const relay = createRelay({ iceServers: [] }); // Players on one machine need no STUN
 await listen(relay);
-const relayUrl = process.env.PURR_RELAY || `ws://127.0.0.1:${relay.address().port}`;
+const relayUrl = process.env.TIDE_RELAY || `ws://127.0.0.1:${relay.address().port}`;
 const game = await readFile(gamePage);
 
 const page = `<!doctype html>
 <meta charset="utf-8">
-<title>PurrEngine rooms test</title>
+<title>Tide rooms test</title>
 <body>
 <script>
   const relay = ${JSON.stringify(relayUrl)};
-  const policy = ${JSON.stringify(process.env.PURR_ICE_POLICY || 'all')};
+  const policy = ${JSON.stringify(process.env.TIDE_ICE_POLICY || 'all')};
   function player(who, args) {
     const frame = document.createElement('iframe');
     frame.src = 'game.html?who=' + who + '&relay=' + encodeURIComponent(relay) + '&policy=' + policy + '&args=' + args;

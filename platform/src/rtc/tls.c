@@ -354,7 +354,7 @@ static bool load(void)
     void *lib = dlopen("libssl.so.3", RTLD_NOW);
     if (!lib) lib = dlopen("libssl.so.1.1", RTLD_NOW);
     if (!lib) {
-        fprintf(stderr, "purr: rooms need OpenSSL (libssl) to reach the relay securely, and it isn't here\n");
+        fprintf(stderr, "tide: rooms need OpenSSL (libssl) to reach the relay securely, and it isn't here\n");
         return false;
     }
 #define FIND(name) *(void **)&api.name = dlsym(lib, #name); if (!api.name) return false

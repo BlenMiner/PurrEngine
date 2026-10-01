@@ -8,7 +8,7 @@ The tick doesn't run on threads yet: systems run one after the other, in order. 
 
 ## Reading it
 
-`purr schedule` prints it. This is the [demo's](../guide/demo.md):
+`tide schedule` prints it. This is the [demo's](../guide/demo.md):
 
 ```
 demo: 5 systems each tick, 4 stages deep; 5 can run alongside others.
@@ -75,4 +75,4 @@ The other kind of parallelism, a system splitting its entities across threads, d
 
 ## In CMake builds
 
-In a CMake build of the engine's repo, `<game>_schedule` is a build target that prints it, and `purrc --schedule` prints it for any files.
+In a CMake build of the engine's repo, `<game>_schedule` is a build target that prints it, and `tidec --schedule` prints it for any files.

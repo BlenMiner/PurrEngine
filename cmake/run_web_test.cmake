@@ -5,7 +5,7 @@
 #       -P run_web_test.cmake
 
 if(NOT EXISTS "${BROWSER}")
-    message("SKIPPED: no Chrome or Edge found. Set PURR_BROWSER to run web tests.")
+    message("SKIPPED: no Chrome or Edge found. Set TIDE_BROWSER to run web tests.")
     return()
 endif()
 

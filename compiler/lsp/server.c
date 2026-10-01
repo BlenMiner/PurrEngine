@@ -91,7 +91,7 @@ static void close_doc(lsp_server *s, const char *uri)
 // ---------------------------------------------------------------------------
 // Games: the files analysed together
 
-// "file:///D:/a%20b.purr" -> "D:/a b.purr", malloc'd.
+// "file:///D:/a%20b.tide" -> "D:/a b.tide", malloc'd.
 static char *uri_to_path(const char *uri)
 {
     const char *p = strncmp(uri, "file://", 7) == 0 ? uri + 7 : uri;
@@ -113,7 +113,7 @@ static char *uri_to_path(const char *uri)
     return out;
 }
 
-// "D:/a b.purr" -> "file:///D:/a%20b.purr", malloc'd.
+// "D:/a b.tide" -> "file:///D:/a%20b.tide", malloc'd.
 static char *path_to_uri(const char *path)
 {
     jbuf b = {0};
@@ -187,11 +187,11 @@ static bool under(const char *path, const char *folder)
     return inside;
 }
 
-// Whether `path` is a .purr file in `folder` (ending in '/') or its subfolders.
+// Whether `path` is a .tide file in `folder` (ending in '/') or its subfolders.
 static bool in_folder(const char *path, const char *folder)
 {
     const size_t len = strlen(path);
-    return len >= 5 && same_path(path + len - 5, ".purr") && under(path, folder);
+    return len >= 5 && same_path(path + len - 5, ".tide") && under(path, folder);
 }
 
 static int compare_paths(const void *a, const void *b)
@@ -199,11 +199,11 @@ static int compare_paths(const void *a, const void *b)
     return path_compare(*(const char *const *)a, *(const char *const *)b);
 }
 
-// Every .purr file in `folder` and its subfolders, with new files the editor
+// Every .tide file in `folder` and its subfolders, with new files the editor
 // hasn't saved yet.
 static void add_folder(const lsp_server *s, path_list *list, const char *folder)
 {
-    folder_find(folder, ".purr", add_path, list);
+    folder_find(folder, ".tide", add_path, list);
     for (int k = 0; k < s->doc_count; k++) {
         char *open = uri_to_path(s->docs[k].uri);
         if (in_folder(open, folder)) add_path(list, open);
@@ -212,7 +212,7 @@ static void add_folder(const lsp_server *s, path_list *list, const char *folder)
 }
 
 // A line of a manifest: a game and one of its files, or a folder (ending in
-// '/') for every .purr file in it and its subfolders, as purr_add_game lists a
+// '/') for every .tide file in it and its subfolders, as tide_add_game lists a
 // game without SOURCES. Games of different manifests are different games.
 typedef struct manifest_line {
     int manifest;
@@ -266,13 +266,13 @@ static void free_manifests(manifests *m)
     free(m->lines);
 }
 
-// The paths of the game `path` belongs to, in the order purrc compiles them.
+// The paths of the game `path` belongs to, in the order tidec compiles them.
 // Returns how many; 0 if it's in no game. The paths are malloc'd.
 //
 // Games come from manifests: the one this server was built with, and the one
-// in any open folder that builds games with CMake, where purr_add_game writes
+// in any open folder that builds games with CMake, where tide_add_game writes
 // it. A file in none of them belongs to the open folder it's in, since that's
-// the game `purr run` builds there; unless a manifest lists games in that
+// the game `tide run` builds there; unless a manifest lists games in that
 // folder, whose other files stand alone (tests, for example).
 static int game_of(const lsp_server *s, const char *path, char ***out)
 {
@@ -495,7 +495,7 @@ static void initialize(lsp_server *s, const json *id, const json *params)
                "\"codeActionProvider\":{\"codeActionKinds\":[\"quickfix\",\"refactor.move\"]},"
                "\"semanticTokensProvider\":{\"legend\":");
     analysis_semantic_legend(&b);
-    jb_put(&b, ",\"full\":true}},\"serverInfo\":{\"name\":\"purrls\",\"version\":\"0.1\"}}}");
+    jb_put(&b, ",\"full\":true}},\"serverInfo\":{\"name\":\"tidels\",\"version\":\"0.1\"}}}");
     send_buf(s, &b);
     jb_free(&b);
 }

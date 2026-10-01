@@ -2,16 +2,16 @@
 
 Every match runs on a server, and this machine's player connects to it. When the server is on this machine, that's over a loopback transport, so single-player and multiplayer are the same game with the same code. The engine assumes nothing about what a game does with a match, like pausing: games build that from inputs and state.
 
-## Starting a match from `purr run`
+## Starting a match from `tide run`
 
-A game whose `Main` scene is the match's starts playing at once. `purr run` can host it or join one instead:
+A game whose `Main` scene is the match's starts playing at once. `tide run` can host it or join one instead:
 
 ```sh
-purr run --host                 # others can join: in a room, and on UDP port 7777
-purr run --host 8000            # on another port
-purr run --connect 192.168.1.5  # join another machine's match, by its address
-purr run --join K7QF2M          # join the room with this code
-purr run --web --host           # on the web, in a room only
+tide run --host                 # others can join: in a room, and on UDP port 7777
+tide run --host 8000            # on another port
+tide run --connect 192.168.1.5  # join another machine's match, by its address
+tide run --join K7QF2M          # join the room with this code
+tide run --web --host           # on the web, in a room only
 ```
 
 ## Starting a match from code
@@ -122,5 +122,5 @@ A player's own input applies at once: clients run ahead of the server, by about 
 ## Limits for now
 
 - Up to 16 players.
-- Under `purr run --web`, a reload plays on alone: the room closes, and the other players drop out.
+- Under `tide run --web`, a reload plays on alone: the room closes, and the other players drop out.
 - A match can't start in a scene that holds text or lists yet.

@@ -103,7 +103,7 @@ typedef enum param_mode {
 
 // One value the devices send, like keyboard.space or gamepad.leftStick.
 typedef struct device_leaf {
-    const char *path;          // Its C access from purr_devices: "keyboard.space"
+    const char *path;          // Its C access from tide_devices: "keyboard.space"
     const struct field *field; // Its field in the device records
 } device_leaf;
 
@@ -389,7 +389,7 @@ struct expr {
     expr *cond; // E_CONDITIONAL
 
     // E_INTERP: the text before, between and after the values (escapes as written),
-    // and each value's format as written ("F2") and as purr/text.h takes it
+    // and each value's format as written ("F2") and as tide/text.h takes it
     VEC(str) parts;
     VEC(str) formats;
     VEC(int32_t) format_codes;
@@ -553,7 +553,7 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
 // same namespace, qualified elsewhere, and always qualified without `from`.
 void put_decl_name(sb *out, const decl *d, const char *quote, const decl *from);
 
-// The whole tick's schedule as text, for `purrc --schedule`.
+// The whole tick's schedule as text, for `tidec --schedule`.
 void print_schedule(const program *prog, const char *game, sb *out);
 
 // Parses one file into `prog`. Without `recover`, stops at the first syntax

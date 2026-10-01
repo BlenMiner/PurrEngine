@@ -4,11 +4,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// What the purr command needs from the operating system: files, folders,
+// What the tide command needs from the operating system: files, folders,
 // processes and paths. Paths use forward slashes, which every OS accepts.
 // Strings returned are malloc'd.
 
-// The folder purr.exe is in.
+// The folder tide.exe is in.
 char *sys_exe_dir(void);
 
 bool sys_exists(const char *path);
@@ -67,7 +67,7 @@ bool sys_is_terminal(void);            // Whether stdout is a terminal, not a fi
 char *path_join(const char *a, const char *b);
 // The folder part of a path: "a/b/c" -> "a/b".
 char *path_dir(const char *path);
-// The last part of a path: "a/b/c.purr" -> "c.purr".
+// The last part of a path: "a/b/c.tide" -> "c.tide".
 const char *path_base(const char *path);
 // The absolute form of a path, with forward slashes.
 char *path_absolute(const char *path);

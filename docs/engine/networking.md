@@ -1,6 +1,6 @@
 # Networking
 
-PurrEngine uses rollback netcode with full server authority. The server is the source of truth, and clients predict ahead of it, rolling back when it disagrees. Since the simulation is [deterministic](./determinism.md), what goes over the network is mostly inputs.
+Tide uses rollback netcode with full server authority. The server is the source of truth, and clients predict ahead of it, rolling back when it disagrees. Since the simulation is [deterministic](./determinism.md), what goes over the network is mostly inputs.
 
 For how a game starts, hosts and joins matches, see [Multiplayer](../language/multiplayer.md). This page is about what happens underneath.
 
@@ -48,9 +48,9 @@ Everything is sent again until it's acknowledged. Nothing waits on a reliable st
 
 ## Transports
 
-On desktop, matches run over PurrEngine's own thin layer on UDP. On the web, they run over WebRTC data channels that neither order nor resend, like UDP, so a browser can host matches as well as join them. The protocol above the transport is the same.
+On desktop, matches run over Tide's own thin layer on UDP. On the web, they run over WebRTC data channels that neither order nor resend, like UDP, so a browser can host matches as well as join them. The protocol above the transport is the same.
 
-Players find each other in rooms, by a code (see [Multiplayer](../language/multiplayer.md#rooms)), whether they're in a browser or a desktop game: desktop games speak WebRTC too, with an implementation of PurrEngine's own. A relay of ours introduces them, passing along what WebRTC needs to connect them, and their packets then go straight between them. Players whose networks can't connect directly go through a TURN server, which carries their packets. Everything to and from the relay is encrypted (`wss://`), on desktop with the system's own TLS, and so are the matches, as WebRTC requires.
+Players find each other in rooms, by a code (see [Multiplayer](../language/multiplayer.md#rooms)), whether they're in a browser or a desktop game: desktop games speak WebRTC too, with an implementation of Tide's own. A relay of ours introduces them, passing along what WebRTC needs to connect them, and their packets then go straight between them. Players whose networks can't connect directly go through a TURN server, which carries their packets. Everything to and from the relay is encrypted (`wss://`), on desktop with the system's own TLS, and so are the matches, as WebRTC requires.
 
 ## Who sees what
 

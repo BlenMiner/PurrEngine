@@ -183,9 +183,9 @@ bool rtc_identity_new(rtc_identity *id)
 {
     if (!rtc_p256_keys(id->private_key, id->public_key)) return false;
 
-    // CN=purr, for issuer and subject alike
+    // CN=tide, for issuer and subject alike
     static const uint8_t name[] = {0x30, 0x0f, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55,
-                                   0x04, 0x03, 0x0c, 0x04, 'p',  'u',  'r',  'r'};
+                                   0x04, 0x03, 0x0c, 0x04, 't',  'i',  'd',  'e'};
     // Validity: WebRTC doesn't look, but it has to be there
     static const uint8_t validity[] = {0x30, 0x1e, 0x17, 0x0d, '2', '5', '0', '1', '0', '1', '0', '0', '0', '0', '0', '0',
                                        'Z',  0x17, 0x0d, '4',  '9', '1', '2', '3', '1', '2', '3', '5', '9', '5', '9', 'Z'};

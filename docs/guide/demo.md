@@ -6,7 +6,7 @@ import { withBase } from 'vitepress';
 
 The engine's demo, built for the web from the code below. Click it to give it the keyboard.
 
-<iframe class="demo-frame" :src="withBase('/demo/')" title="PurrEngine demo" allow="gamepad; fullscreen"></iframe>
+<iframe class="demo-frame" :src="withBase('/demo/')" title="Tide demo" allow="gamepad; fullscreen"></iframe>
 
 | | Keyboard | Gamepad |
 |---|---|---|
@@ -18,6 +18,6 @@ The engine's demo, built for the web from the code below. Click it to give it th
 
 ## The code
 
-The whole demo is one file, `demo/demo.purr` in the repo. Systems move and bounce the balls every tick, and views draw them every frame. The options are local state: they change how this machine draws the game, never the game itself.
+The whole demo is one file, `demo/demo.tide` in the repo. Systems move and bounce the balls every tick, and views draw them every frame. The options are local state: they change how this machine draws the game, never the game itself.
 
-<<< @/../demo/demo.purr
+<<< @/../demo/demo.tide

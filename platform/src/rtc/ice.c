@@ -77,7 +77,7 @@ bool rtc_ice_start(rtc_ice *ice, const bool controlling, const rtc_ice_config *c
     memset(ice, 0, sizeof *ice);
     ice->selected = -1;
     ice->controlling = controlling;
-    ice->relay_only = getenv("PURR_RTC_RELAY_ONLY") != NULL;
+    ice->relay_only = getenv("TIDE_RTC_RELAY_ONLY") != NULL;
     ice->config = *config;
     if (!rtc_random(&ice->tiebreaker, sizeof ice->tiebreaker)) return false;
     random_text(ice->ufrag, 8);

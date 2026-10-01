@@ -97,7 +97,7 @@ static void close_connection(connection *c)
 static bool send_all(const sock s, const char *data, size_t size)
 {
 #ifdef MSG_NOSIGNAL
-    const int flags = MSG_NOSIGNAL; // A page that went away mustn't end purr
+    const int flags = MSG_NOSIGNAL; // A page that went away mustn't end tide
 #else
     const int flags = 0;
 #endif

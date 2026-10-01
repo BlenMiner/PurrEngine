@@ -100,7 +100,7 @@ export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limi
 
     const server = createServer((request, response) => {
         response.writeHead(200, { 'content-type': 'text/plain' });
-        response.end(`PurrEngine relay: ${rooms.size} room${rooms.size === 1 ? '' : 's'}\n`);
+        response.end(`Tide relay: ${rooms.size} room${rooms.size === 1 ? '' : 's'}\n`);
     });
 
     server.on('upgrade', (request, socket) => {

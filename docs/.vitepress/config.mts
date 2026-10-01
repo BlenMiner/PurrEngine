@@ -2,28 +2,28 @@
 // `npm run dev` in docs/ serves it locally.
 
 import { defineConfig } from 'vitepress';
-import grammar from '../../tools/purrlang-syntax/syntaxes/purrlang.tmLanguage.json' with { type: 'json' };
+import grammar from '../../tools/tide-syntax/syntaxes/tide.tmLanguage.json' with { type: 'json' };
 
-const repo = 'https://github.com/BlenMiner/PurrEngine';
+const repo = 'https://github.com/BlenMiner/tide-engine';
 
 export default defineConfig({
-    title: 'PurrEngine',
-    description: 'A networking-first game engine: deterministic simulation, rollback netcode, and PurrLang, which compiles to C.',
-    base: '/PurrEngine/',
+    title: 'Tide',
+    description: 'A networking-first game engine: deterministic simulation, rollback netcode, and a language of its own that compiles to C.',
+    base: '/tide-engine/',
     cleanUrls: true,
-    head: [['link', { rel: 'icon', href: '/PurrEngine/favicon.svg' }]],
+    head: [['link', { rel: 'icon', href: '/tide-engine/favicon.svg' }]],
     // The web demo, which the workflow builds with CMake and copies to public/demo/.
     ignoreDeadLinks: [/^\/demo\/$/],
 
     markdown: {
         // The same grammar as the editors, so code looks the same here.
-        languages: [{ ...grammar, name: 'purr', aliases: ['purrlang'] } as any],
+        languages: [{ ...grammar, name: 'tide' } as any],
         config(md) {
-            // The repo's Markdown fences PurrLang as csharp, which GitHub
+            // The repo's Markdown fences Tide as csharp, which GitHub
             // highlights; the site has the real grammar.
             const fence = md.renderer.rules.fence!;
             md.renderer.rules.fence = (tokens, idx, ...rest) => {
-                if (tokens[idx].info.trim() === 'csharp') tokens[idx].info = 'purr';
+                if (tokens[idx].info.trim() === 'csharp') tokens[idx].info = 'tide';
                 return fence(tokens, idx, ...rest);
             };
             // Pages are Vue templates: `{{` in inline code would be one.
@@ -38,7 +38,7 @@ export default defineConfig({
             { text: 'Guide', link: '/guide/', activeMatch: '^/guide/' },
             { text: 'Language', link: '/language/basics', activeMatch: '^/language/' },
             { text: 'Engine', link: '/engine/determinism', activeMatch: '^/engine/' },
-            { text: 'Spec', link: '/purrlang' },
+            { text: 'Spec', link: '/spec' },
             { text: 'Demo', link: '/guide/demo' },
         ],
         sidebar: [
@@ -48,7 +48,7 @@ export default defineConfig({
                     { text: 'Introduction', link: '/guide/' },
                     { text: 'Install', link: '/guide/install' },
                     { text: 'Your first game', link: '/guide/first-game' },
-                    { text: 'The purr command', link: '/guide/cli' },
+                    { text: 'The tide command', link: '/guide/cli' },
                     { text: 'Editors', link: '/guide/editors' },
                     { text: 'Try the demo', link: '/guide/demo' },
                 ],
@@ -84,7 +84,7 @@ export default defineConfig({
             },
             {
                 text: 'Reference',
-                items: [{ text: 'Language spec', link: '/purrlang' }],
+                items: [{ text: 'Language spec', link: '/spec' }],
             },
         ],
         socialLinks: [{ icon: 'github', link: repo }],

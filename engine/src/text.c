@@ -1,34 +1,34 @@
-#include "purr/text.h"
+#include "tide/text.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-// See purr/text.h.
+// See tide/text.h.
 
 #if defined(__wasm__) && !defined(__wasm_atomics__)
-#define PURR_THREAD_LOCAL // Web builds are single-threaded
+#define TIDE_THREAD_LOCAL // Web builds are single-threaded
 #else
-#define PURR_THREAD_LOCAL _Thread_local
+#define TIDE_THREAD_LOCAL _Thread_local
 #endif
 
 // ---------------------------------------------------------------------------
 // The scratch area: a stack of bytes, one per thread, allocated on first use.
 
-static PURR_THREAD_LOCAL char *scratch;
-static PURR_THREAD_LOCAL uint32_t scratch_used;
+static TIDE_THREAD_LOCAL char *scratch;
+static TIDE_THREAD_LOCAL uint32_t scratch_used;
 
-uint32_t purr_scratch_mark(void)
+uint32_t tide_scratch_mark(void)
 {
     return scratch_used;
 }
 
-void purr_scratch_reset(const uint32_t mark)
+void tide_scratch_reset(const uint32_t mark)
 {
     if (mark < scratch_used) scratch_used = mark;
 }
 
-void purr_scratch_free(void)
+void tide_scratch_free(void)
 {
     free(scratch);
     scratch = NULL;
@@ -39,10 +39,10 @@ void purr_scratch_free(void)
 static char *scratch_alloc(const uint32_t bytes)
 {
     if (!scratch) {
-        scratch = malloc(PURR_SCRATCH_BYTES);
+        scratch = malloc(TIDE_SCRATCH_BYTES);
         if (!scratch) return NULL;
     }
-    if (bytes >= PURR_SCRATCH_BYTES - scratch_used) return NULL;
+    if (bytes >= TIDE_SCRATCH_BYTES - scratch_used) return NULL;
     char *p = scratch + scratch_used;
     scratch_used += bytes + 1;
     p[bytes] = '\0';
@@ -50,7 +50,7 @@ static char *scratch_alloc(const uint32_t bytes)
 }
 
 // Whether `a` is the newest text in the scratch area, so it can grow in place.
-static bool at_top(const purr_str a)
+static bool at_top(const tide_str a)
 {
     if (!scratch) return false;
     const uintptr_t start = (uintptr_t)scratch;
@@ -60,10 +60,10 @@ static bool at_top(const purr_str a)
 
 // Makes room for `more` bytes after `a`'s, in place or in a copy, and returns
 // where they go, or NULL when the area is full (then `a` is unchanged).
-static char *grow(purr_str *a, const uint32_t more)
+static char *grow(tide_str *a, const uint32_t more)
 {
     if (at_top(*a)) {
-        if (more >= PURR_SCRATCH_BYTES - scratch_used) return NULL;
+        if (more >= TIDE_SCRATCH_BYTES - scratch_used) return NULL;
         scratch_used += more;
         char *p = (char *)(uintptr_t)a->ptr;
         p[(uint32_t)a->bytes + more] = '\0';
@@ -78,7 +78,7 @@ static char *grow(purr_str *a, const uint32_t more)
 
 // `a` followed by `count` bytes holding `chars` characters. When the area is
 // full, `a` stays as it is.
-static purr_str append(purr_str a, const char *bytes, const int32_t count, const int32_t chars)
+static tide_str append(tide_str a, const char *bytes, const int32_t count, const int32_t chars)
 {
     if (count <= 0) return a;
     char *to = grow(&a, (uint32_t)count);
@@ -90,50 +90,50 @@ static purr_str append(purr_str a, const char *bytes, const int32_t count, const
 }
 
 // A copy of `count` bytes in the scratch area.
-static purr_str copy(const char *bytes, const int32_t count)
+static tide_str copy(const char *bytes, const int32_t count)
 {
-    return append(PURR_STR_EMPTY, bytes, count, purr_utf8_chars(bytes, count));
+    return append(TIDE_STR_EMPTY, bytes, count, tide_utf8_chars(bytes, count));
 }
 
-int32_t purr_utf8_chars(const char *bytes, const int32_t count)
+int32_t tide_utf8_chars(const char *bytes, const int32_t count)
 {
     int32_t chars = 0;
     for (int32_t i = 0; i < count; i++) chars += ((unsigned char)bytes[i] & 0xC0u) != 0x80u;
     return chars;
 }
 
-purr_str purr_str_from_cstr(const char *s)
+tide_str tide_str_from_cstr(const char *s)
 {
     const int32_t bytes = (int32_t)strlen(s);
-    return (purr_str){s, bytes, purr_utf8_chars(s, bytes)};
+    return (tide_str){s, bytes, tide_utf8_chars(s, bytes)};
 }
 
-const char *purr_str_c(const purr_str s)
+const char *tide_str_c(const tide_str s)
 {
     return s.ptr[s.bytes] == '\0' ? s.ptr : copy(s.ptr, s.bytes).ptr;
 }
 
-purr_str purr_str_copy_cstr(const char *s)
+tide_str tide_str_copy_cstr(const char *s)
 {
-    return s ? copy(s, (int32_t)strlen(s)) : PURR_STR_EMPTY;
+    return s ? copy(s, (int32_t)strlen(s)) : TIDE_STR_EMPTY;
 }
 
-purr_str purr_str_add(const purr_str a, const purr_str b)
+tide_str tide_str_add(const tide_str a, const tide_str b)
 {
     return append(a, b.ptr, b.bytes, b.chars);
 }
 
-purr_str purr_str_add_cstr(const purr_str a, const char *s)
+tide_str tide_str_add_cstr(const tide_str a, const char *s)
 {
-    return purr_str_add(a, purr_str_from_cstr(s));
+    return tide_str_add(a, tide_str_from_cstr(s));
 }
 
-static purr_str add_ascii(const purr_str a, const char *s, const int32_t count)
+static tide_str add_ascii(const tide_str a, const char *s, const int32_t count)
 {
     return append(a, s, count, count);
 }
 
-purr_str purr_str_add_bool(const purr_str a, const bool v)
+tide_str tide_str_add_bool(const tide_str a, const bool v)
 {
     return v ? add_ascii(a, "true", 4) : add_ascii(a, "false", 5);
 }
@@ -522,128 +522,128 @@ static int write_int(char *out, const int32_t v, const int32_t format)
     return len;
 }
 
-purr_str purr_str_add_int(const purr_str a, const int32_t v, const int32_t format)
+tide_str tide_str_add_int(const tide_str a, const int32_t v, const int32_t format)
 {
     char buf[64];
     return add_ascii(a, buf, write_int(buf, v, format));
 }
 
-purr_str purr_str_add_float(const purr_str a, const float v, const int32_t format)
+tide_str tide_str_add_float(const tide_str a, const float v, const int32_t format)
 {
     char buf[128];
     return add_ascii(a, buf, write_float(buf, v, format));
 }
 
-purr_str purr_str_add_entity(purr_str a, const purr_entity e, const bool local)
+tide_str tide_str_add_entity(tide_str a, const tide_entity e, const bool local)
 {
     a = add_ascii(a, local ? "LocalEntity(" : "Entity(", local ? 12 : 7);
-    if (purr_entity_is_null(e)) return add_ascii(a, "none)", 5);
-    a = purr_str_add_int(a, (int32_t)e.index, 0);
+    if (tide_entity_is_null(e)) return add_ascii(a, "none)", 5);
+    a = tide_str_add_int(a, (int32_t)e.index, 0);
     a = add_ascii(a, ":", 1);
-    a = purr_str_add_int(a, (int32_t)e.generation, 0);
+    a = tide_str_add_int(a, (int32_t)e.generation, 0);
     return add_ascii(a, ")", 1);
 }
 
-purr_str purr_str_add_player(purr_str a, const purr_player_id p)
+tide_str tide_str_add_player(tide_str a, const tide_player_id p)
 {
     a = add_ascii(a, "PlayerID(", 9);
-    if (purr_player_is_null(p)) return add_ascii(a, "none)", 5);
-    a = purr_str_add_int(a, (int32_t)(p.id - 1u), 0);
+    if (tide_player_is_null(p)) return add_ascii(a, "none)", 5);
+    a = tide_str_add_int(a, (int32_t)(p.id - 1u), 0);
     return add_ascii(a, ")", 1);
 }
 
 // "(1, 2, 3)", each number written with `format`.
-static purr_str add_floats(purr_str a, const char *open, const float *v, const int n, const int32_t format)
+static tide_str add_floats(tide_str a, const char *open, const float *v, const int n, const int32_t format)
 {
-    a = purr_str_add_cstr(a, open);
+    a = tide_str_add_cstr(a, open);
     for (int i = 0; i < n; i++) {
         if (i) a = add_ascii(a, ", ", 2);
-        a = purr_str_add_float(a, v[i], format);
+        a = tide_str_add_float(a, v[i], format);
     }
     return add_ascii(a, ")", 1);
 }
 
-static purr_str add_ints(purr_str a, const int32_t *v, const int n, const int32_t format)
+static tide_str add_ints(tide_str a, const int32_t *v, const int n, const int32_t format)
 {
     a = add_ascii(a, "(", 1);
     for (int i = 0; i < n; i++) {
         if (i) a = add_ascii(a, ", ", 2);
-        a = purr_str_add_int(a, v[i], format);
+        a = tide_str_add_int(a, v[i], format);
     }
     return add_ascii(a, ")", 1);
 }
 
-purr_str purr_str_add_i2(const purr_str a, const purr_int2 v, const int32_t format)
+tide_str tide_str_add_i2(const tide_str a, const tide_int2 v, const int32_t format)
 {
     const int32_t c[2] = {v.x, v.y};
     return add_ints(a, c, 2, format);
 }
 
-purr_str purr_str_add_i3(const purr_str a, const purr_int3 v, const int32_t format)
+tide_str tide_str_add_i3(const tide_str a, const tide_int3 v, const int32_t format)
 {
     const int32_t c[3] = {v.x, v.y, v.z};
     return add_ints(a, c, 3, format);
 }
 
-purr_str purr_str_add_i4(const purr_str a, const purr_int4 v, const int32_t format)
+tide_str tide_str_add_i4(const tide_str a, const tide_int4 v, const int32_t format)
 {
     const int32_t c[4] = {v.x, v.y, v.z, v.w};
     return add_ints(a, c, 4, format);
 }
 
-purr_str purr_str_add_f2(const purr_str a, const purr_float2 v, const int32_t format)
+tide_str tide_str_add_f2(const tide_str a, const tide_float2 v, const int32_t format)
 {
     const float c[2] = {v.x, v.y};
     return add_floats(a, "(", c, 2, format);
 }
 
-purr_str purr_str_add_f3(const purr_str a, const purr_float3 v, const int32_t format)
+tide_str tide_str_add_f3(const tide_str a, const tide_float3 v, const int32_t format)
 {
     const float c[3] = {v.x, v.y, v.z};
     return add_floats(a, "(", c, 3, format);
 }
 
-purr_str purr_str_add_f4(const purr_str a, const purr_float4 v, const int32_t format)
+tide_str tide_str_add_f4(const tide_str a, const tide_float4 v, const int32_t format)
 {
     const float c[4] = {v.x, v.y, v.z, v.w};
     return add_floats(a, "(", c, 4, format);
 }
 
-purr_str purr_str_add_q(const purr_str a, const purr_quaternion v, const int32_t format)
+tide_str tide_str_add_q(const tide_str a, const tide_quaternion v, const int32_t format)
 {
     const float c[4] = {v.value.x, v.value.y, v.value.z, v.value.w};
     return add_floats(a, "(", c, 4, format);
 }
 
-purr_str purr_str_add_color(const purr_str a, const purr_color v, const int32_t format)
+tide_str tide_str_add_color(const tide_str a, const tide_color v, const int32_t format)
 {
     const float c[4] = {v.r, v.g, v.b, v.a};
     return add_floats(a, "RGBA(", c, 4, format);
 }
 
-purr_str purr_str_add_rect(purr_str a, const purr_rect v, const int32_t format)
+tide_str tide_str_add_rect(tide_str a, const tide_rect v, const int32_t format)
 {
     a = add_ascii(a, "(x:", 3);
-    a = purr_str_add_float(a, v.x, format);
+    a = tide_str_add_float(a, v.x, format);
     a = add_ascii(a, ", y:", 4);
-    a = purr_str_add_float(a, v.y, format);
+    a = tide_str_add_float(a, v.y, format);
     a = add_ascii(a, ", width:", 8);
-    a = purr_str_add_float(a, v.width, format);
+    a = tide_str_add_float(a, v.width, format);
     a = add_ascii(a, ", height:", 9);
-    a = purr_str_add_float(a, v.height, format);
+    a = tide_str_add_float(a, v.height, format);
     return add_ascii(a, ")", 1);
 }
 
 // ---------------------------------------------------------------------------
 // Comparing and searching
 
-bool purr_str_eq(const purr_str a, const purr_str b)
+bool tide_str_eq(const tide_str a, const tide_str b)
 {
     return a.bytes == b.bytes && memcmp(a.ptr, b.ptr, (size_t)a.bytes) == 0;
 }
 
 // The byte where `b` first appears in `a`, or -1.
-static int32_t find(const purr_str a, const purr_str b)
+static int32_t find(const tide_str a, const tide_str b)
 {
     if (b.bytes == 0) return 0;
     for (int32_t i = 0; i + b.bytes <= a.bytes; i++) {
@@ -652,29 +652,29 @@ static int32_t find(const purr_str a, const purr_str b)
     return -1;
 }
 
-bool purr_str_contains(const purr_str a, const purr_str b)
+bool tide_str_contains(const tide_str a, const tide_str b)
 {
     return find(a, b) >= 0;
 }
 
-bool purr_str_starts_with(const purr_str a, const purr_str b)
+bool tide_str_starts_with(const tide_str a, const tide_str b)
 {
     return b.bytes <= a.bytes && memcmp(a.ptr, b.ptr, (size_t)b.bytes) == 0;
 }
 
-bool purr_str_ends_with(const purr_str a, const purr_str b)
+bool tide_str_ends_with(const tide_str a, const tide_str b)
 {
     return b.bytes <= a.bytes && memcmp(a.ptr + a.bytes - b.bytes, b.ptr, (size_t)b.bytes) == 0;
 }
 
-int32_t purr_str_index_of(const purr_str a, const purr_str b)
+int32_t tide_str_index_of(const tide_str a, const tide_str b)
 {
     const int32_t at = find(a, b);
-    return at < 0 ? -1 : purr_utf8_chars(a.ptr, at);
+    return at < 0 ? -1 : tide_utf8_chars(a.ptr, at);
 }
 
 // The byte where character `index` starts, or a.bytes past the end.
-static int32_t byte_of_char(const purr_str a, const int32_t index)
+static int32_t byte_of_char(const tide_str a, const int32_t index)
 {
     int32_t chars = 0;
     for (int32_t i = 0; i < a.bytes; i++) {
@@ -686,7 +686,7 @@ static int32_t byte_of_char(const purr_str a, const int32_t index)
     return a.bytes;
 }
 
-purr_str purr_str_substring(const purr_str a, int32_t start, int32_t length)
+tide_str tide_str_substring(const tide_str a, int32_t start, int32_t length)
 {
     if (start < 0) start = 0;
     if (start > a.chars) start = a.chars;
@@ -694,18 +694,18 @@ purr_str purr_str_substring(const purr_str a, int32_t start, int32_t length)
     if (length > a.chars - start) length = a.chars - start;
     const int32_t from = byte_of_char(a, start);
     const int32_t to = byte_of_char(a, start + length);
-    if (to == a.bytes) return (purr_str){a.ptr + from, a.bytes - from, a.chars - start}; // Ends with a's NUL
+    if (to == a.bytes) return (tide_str){a.ptr + from, a.bytes - from, a.chars - start}; // Ends with a's NUL
     return copy(a.ptr + from, to - from);
 }
 
-purr_str purr_str_substring_from(const purr_str a, const int32_t start)
+tide_str tide_str_substring_from(const tide_str a, const int32_t start)
 {
-    return purr_str_substring(a, start, a.chars);
+    return tide_str_substring(a, start, a.chars);
 }
 
-static purr_str map_ascii(const purr_str a, const bool upper)
+static tide_str map_ascii(const tide_str a, const bool upper)
 {
-    purr_str out = copy(a.ptr, a.bytes);
+    tide_str out = copy(a.ptr, a.bytes);
     if (out.bytes != a.bytes) return a; // The area is full: unchanged
     char *p = (char *)(uintptr_t)out.ptr;
     for (int32_t i = 0; i < out.bytes; i++) {
@@ -715,12 +715,12 @@ static purr_str map_ascii(const purr_str a, const bool upper)
     return out;
 }
 
-purr_str purr_str_to_upper(const purr_str a)
+tide_str tide_str_to_upper(const tide_str a)
 {
     return map_ascii(a, true);
 }
 
-purr_str purr_str_to_lower(const purr_str a)
+tide_str tide_str_to_lower(const tide_str a)
 {
     return map_ascii(a, false);
 }
@@ -730,30 +730,30 @@ static bool is_space(const char c)
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-purr_str purr_str_trim(const purr_str a)
+tide_str tide_str_trim(const tide_str a)
 {
     int32_t from = 0;
     int32_t to = a.bytes;
     while (from < to && is_space(a.ptr[from])) from++;
     while (to > from && is_space(a.ptr[to - 1])) to--;
-    if (to == a.bytes) return (purr_str){a.ptr + from, a.bytes - from, a.chars - from}; // Spaces are one byte each
+    if (to == a.bytes) return (tide_str){a.ptr + from, a.bytes - from, a.chars - from}; // Spaces are one byte each
     return copy(a.ptr + from, to - from);
 }
 
-purr_str purr_str_replace(const purr_str a, const purr_str from, const purr_str to)
+tide_str tide_str_replace(const tide_str a, const tide_str from, const tide_str to)
 {
     if (from.bytes == 0 || find(a, from) < 0) return a;
-    purr_str out = PURR_STR_EMPTY;
+    tide_str out = TIDE_STR_EMPTY;
     int32_t i = 0;
     while (i < a.bytes) {
         if (i + from.bytes <= a.bytes && memcmp(a.ptr + i, from.ptr, (size_t)from.bytes) == 0) {
-            out = purr_str_add(out, to);
+            out = tide_str_add(out, to);
             i += from.bytes;
             continue;
         }
         int32_t run = i + 1; // Up to the next place `from` could start
         while (run < a.bytes && a.ptr[run] != from.ptr[0]) run++;
-        out = append(out, a.ptr + i, run - i, purr_utf8_chars(a.ptr + i, run - i));
+        out = append(out, a.ptr + i, run - i, tide_utf8_chars(a.ptr + i, run - i));
         i = run;
     }
     return out;
@@ -762,21 +762,21 @@ purr_str purr_str_replace(const purr_str a, const purr_str from, const purr_str 
 // ---------------------------------------------------------------------------
 // Text in fields
 
-#define TEXT_MATCH 0u // The top two bits of purr_text.at
+#define TEXT_MATCH 0u // The top two bits of tide_text.at
 #define TEXT_LOCAL 1u
 #define TEXT_SCRATCH 2u
 #define TEXT_WHERE(at) ((at) >> 30)
 #define TEXT_OFFSET(at) ((at) & 0x3FFFFFFFu)
 
 typedef struct text_world {
-    purr_heap *heap;
+    tide_heap *heap;
     uintptr_t begin;
     uintptr_t end;
 } text_world;
 
-static PURR_THREAD_LOCAL text_world text_worlds[2]; // The match's and the local world's
+static TIDE_THREAD_LOCAL text_world text_worlds[2]; // The match's and the local world's
 
-void purr_text_use(purr_heap *match_heap, const void *match, const size_t match_size, purr_heap *local_heap,
+void tide_text_use(tide_heap *match_heap, const void *match, const size_t match_size, tide_heap *local_heap,
                    const void *local, const size_t local_size)
 {
     text_worlds[TEXT_MATCH] = (text_world){match_heap, (uintptr_t)match, (uintptr_t)match + (match ? match_size : 0)};
@@ -793,51 +793,51 @@ static int world_of(const void *p)
     return -1;
 }
 
-static purr_str view_block(const purr_heap *heap, const uint32_t offset)
+static tide_str view_block(const tide_heap *heap, const uint32_t offset)
 {
-    const purr_block *b = purr_heap_block(heap, offset);
-    return (purr_str){(const char *)(b + 1), (int32_t)b->a, (int32_t)b->b};
+    const tide_block *b = tide_heap_block(heap, offset);
+    return (tide_str){(const char *)(b + 1), (int32_t)b->a, (int32_t)b->b};
 }
 
-purr_str purr_text_read(const purr_heap *heap, const purr_text t)
+tide_str tide_text_read(const tide_heap *heap, const tide_text t)
 {
-    return t.at ? view_block(heap, TEXT_OFFSET(t.at)) : PURR_STR_EMPTY;
+    return t.at ? view_block(heap, TEXT_OFFSET(t.at)) : TIDE_STR_EMPTY;
 }
 
-purr_str purr_text_view(const purr_text t)
+tide_str tide_text_view(const tide_text t)
 {
-    if (!t.at) return PURR_STR_EMPTY;
+    if (!t.at) return TIDE_STR_EMPTY;
     const uint32_t where = TEXT_WHERE(t.at);
     const uint32_t offset = TEXT_OFFSET(t.at);
     if (where == TEXT_SCRATCH) {
-        const purr_block *b = (const purr_block *)(uintptr_t)(scratch + offset);
-        return (purr_str){(const char *)(b + 1), (int32_t)b->a, (int32_t)b->b};
+        const tide_block *b = (const tide_block *)(uintptr_t)(scratch + offset);
+        return (tide_str){(const char *)(b + 1), (int32_t)b->a, (int32_t)b->b};
     }
-    const purr_heap *heap = text_worlds[where].heap;
-    return heap ? view_block(heap, offset) : PURR_STR_EMPTY;
+    const tide_heap *heap = text_worlds[where].heap;
+    return heap ? view_block(heap, offset) : TIDE_STR_EMPTY;
 }
 
-purr_text purr_text_temp(const purr_str value)
+tide_text tide_text_temp(const tide_str value)
 {
-    if (value.bytes == 0) return (purr_text){0};
+    if (value.bytes == 0) return (tide_text){0};
     // A header, like a heap block's, then the text and a NUL. Scratch
     // offsets are kept 4-aligned for the header.
     const uint32_t pad = (4u - scratch_used % 4u) % 4u;
-    char *p = scratch_alloc(pad + (uint32_t)sizeof(purr_block) + (uint32_t)value.bytes);
-    if (!p) return (purr_text){0};
-    purr_block *b = (purr_block *)(uintptr_t)(p + pad);
-    *b = (purr_block){0, 0, (uint32_t)value.bytes, (uint32_t)value.chars};
+    char *p = scratch_alloc(pad + (uint32_t)sizeof(tide_block) + (uint32_t)value.bytes);
+    if (!p) return (tide_text){0};
+    tide_block *b = (tide_block *)(uintptr_t)(p + pad);
+    *b = (tide_block){0, 0, (uint32_t)value.bytes, (uint32_t)value.chars};
     memcpy(b + 1, value.ptr, (size_t)value.bytes);
-    return (purr_text){TEXT_SCRATCH << 30 | (uint32_t)((char *)b - scratch)};
+    return (tide_text){TEXT_SCRATCH << 30 | (uint32_t)((char *)b - scratch)};
 }
 
 // A block in `w`'s heap holding `value`, or 0 when it's full.
-static uint32_t heap_copy(const int w, const purr_str value)
+static uint32_t heap_copy(const int w, const tide_str value)
 {
-    purr_heap *heap = text_worlds[w].heap;
-    const uint32_t block = purr_heap_alloc(heap, (uint32_t)value.bytes + 1u);
+    tide_heap *heap = text_worlds[w].heap;
+    const uint32_t block = tide_heap_alloc(heap, (uint32_t)value.bytes + 1u);
     if (!block) return 0;
-    purr_block *b = purr_heap_block(heap, block);
+    tide_block *b = tide_heap_block(heap, block);
     b->a = (uint32_t)value.bytes;
     b->b = (uint32_t)value.chars;
     char *bytes = (char *)(b + 1);
@@ -846,11 +846,11 @@ static uint32_t heap_copy(const int w, const purr_str value)
     return (uint32_t)w << 30 | block;
 }
 
-void purr_text_set(purr_text *field, const purr_str value)
+void tide_text_set(tide_text *field, const tide_str value)
 {
     const int w = world_of(field);
     if (w < 0) {
-        *field = purr_text_temp(value);
+        *field = tide_text_temp(value);
         return;
     }
     uint32_t at = 0;
@@ -858,29 +858,29 @@ void purr_text_set(purr_text *field, const purr_str value)
         at = heap_copy(w, value);
         if (!at) return; // The heap is full: it keeps its old text
     }
-    purr_text_release(field);
+    tide_text_release(field);
     field->at = at;
 }
 
-void purr_text_own(purr_text *field)
+void tide_text_own(tide_text *field)
 {
     const int w = world_of(field);
     if (w < 0 || !field->at) return;
-    field->at = heap_copy(w, purr_text_view(*field)); // Empty if the heap is full
+    field->at = heap_copy(w, tide_text_view(*field)); // Empty if the heap is full
 }
 
-void purr_text_release(purr_text *field)
+void tide_text_release(tide_text *field)
 {
     const int w = world_of(field);
     if (w < 0 || !field->at || TEXT_WHERE(field->at) != (uint32_t)w) return;
-    purr_heap_release(text_worlds[w].heap, TEXT_OFFSET(field->at));
+    tide_heap_release(text_worlds[w].heap, TEXT_OFFSET(field->at));
     field->at = 0;
 }
 
 // ---------------------------------------------------------------------------
-// For purr/list.h
+// For tide/list.h
 
-purr_heap *purr_heap_of(const void *p, uint32_t *where)
+tide_heap *tide_heap_of(const void *p, uint32_t *where)
 {
     const int w = world_of(p);
     if (w < 0) return NULL;
@@ -888,23 +888,23 @@ purr_heap *purr_heap_of(const void *p, uint32_t *where)
     return text_worlds[w].heap;
 }
 
-purr_block *purr_scratch_block(const uint32_t bytes, uint32_t *at)
+tide_block *tide_scratch_block(const uint32_t bytes, uint32_t *at)
 {
     const uint32_t pad = (16u - scratch_used % 16u) % 16u;
-    char *p = scratch_alloc(pad + (uint32_t)sizeof(purr_block) + bytes);
+    char *p = scratch_alloc(pad + (uint32_t)sizeof(tide_block) + bytes);
     if (!p) return NULL;
-    purr_block *b = (purr_block *)(uintptr_t)(p + pad);
-    *b = (purr_block){0, 0, 0, 0};
+    tide_block *b = (tide_block *)(uintptr_t)(p + pad);
+    *b = (tide_block){0, 0, 0, 0};
     *at = TEXT_SCRATCH << 30 | (uint32_t)((char *)b - scratch);
     return b;
 }
 
-purr_block *purr_block_at(const uint32_t at)
+tide_block *tide_block_at(const uint32_t at)
 {
     if (!at) return NULL;
     const uint32_t where = TEXT_WHERE(at);
     const uint32_t offset = TEXT_OFFSET(at);
-    if (where == TEXT_SCRATCH) return (purr_block *)(uintptr_t)(scratch + offset);
-    purr_heap *heap = text_worlds[where].heap;
-    return heap ? purr_heap_block(heap, offset) : NULL;
+    if (where == TEXT_SCRATCH) return (tide_block *)(uintptr_t)(scratch + offset);
+    tide_heap *heap = text_worlds[where].heap;
+    return heap ? tide_heap_block(heap, offset) : NULL;
 }
