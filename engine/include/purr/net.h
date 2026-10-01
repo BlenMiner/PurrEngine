@@ -17,7 +17,18 @@ typedef enum purr_address_kind {
     PURR_ADDRESS_NONE,
     PURR_ADDRESS_LOOPBACK, // An endpoint of a purr_loopback network: `host` is its number
     PURR_ADDRESS_IPV4,     // `host` in host byte order
+    // A player in a room (purr_platform_room_host): `port` is its number there,
+    // 0 for the room's host. To the players who join, `host` is also the room's
+    // code, packed (PURR_ROOM_CODE_BIT and 5 bits a character), so each room's
+    // host is a server of its own.
+    PURR_ADDRESS_ROOM,
 } purr_address_kind;
+
+#define PURR_ROOM_CODE_BIT 0x80000000u
+// A room's code: 6 of these characters, which leave out look-alikes (0 and O,
+// 1 and I).
+#define PURR_ROOM_CODE_LETTERS "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+#define PURR_ROOM_CODE_LENGTH 6
 
 typedef struct purr_address {
     uint32_t kind;
@@ -31,7 +42,7 @@ bool purr_address_equal(purr_address a, purr_address b);
 // layer (purr_platform_resolve).
 bool purr_address_parse(const char *text, uint16_t default_port, purr_address *out);
 
-// Writes "192.168.1.5:7777" or "loopback 2" into `out`.
+// Writes "192.168.1.5:7777", "loopback 2" or "room K7QF2M, player 0" into `out`.
 void purr_address_format(purr_address a, char *out, size_t size);
 
 // Carries datagrams, unreliably: they can be lost, duplicated or come out of

@@ -1013,7 +1013,8 @@ PURR_TEST(lsp_sessions)
     static const char game[] = "local scene Main { }\nscene Arena { int size = 20; }\n"
                                "view Menu(Session session)\n{\n"
                                "    if (GUILayout.Button(\"Host\") && session.state == SessionState.Offline) Session.Host(Arena, 7777);\n"
-                               "    if (GUILayout.Button(\"Join\")) Session.Join(\"127.0.0.1\");\n}\n"
+                               "    if (GUILayout.Button(\"Join\")) Session.Join(\"K7QF2M\");\n"
+                               "    if (GUILayout.Button(\"Connect\")) Session.Connect(\"127.0.0.1\");\n}\n"
                                "local event(Disconnected gone) Lost() { }\n";
     open_document(game);
     PURR_CHECK(has(last_sent(), "\"diagnostics\":[]"));
@@ -1030,10 +1031,12 @@ PURR_TEST(lsp_sessions)
     const char *calls = complete("local scene Main { }\nview Menu()\n{\n    Session.$\n}\n");
     PURR_CHECK(offers(calls, "Play"));
     PURR_CHECK(offers(calls, "Join"));
+    PURR_CHECK(offers(calls, "Connect"));
     PURR_CHECK(offers(calls, "Leave"));
     const char *fields = complete("local scene Main { }\nview Menu(Session session)\n{\n    var s = session.$\n}\n");
     PURR_CHECK(offers(fields, "state"));
     PURR_CHECK(offers(fields, "ping"));
+    PURR_CHECK(offers(fields, "room"));
 
     open_document("local scene Main { }\nview Menu()\n{\n    Session.Le$ave();\n}\n");
     PURR_CHECK(has(request("textDocument/hover"), "Leaves the match"));

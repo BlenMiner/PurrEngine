@@ -1229,21 +1229,39 @@ static decl *check_start_scene(checker *c, expr *arg, const char *call)
     return scene;
 }
 
-// Session.Play(Arena), Session.Host(Arena, port), Session.Join(address) and
-// Session.Leave(): which match this machine is in. Only local code decides.
+// Whether a literal is a room's code: 6 letters and digits, which leave out
+// look-alikes. Case and spaces don't matter.
+static bool room_code(const str text)
+{
+    int n = 0;
+    for (int i = 0; i < text.len; i++) {
+        const char ch = text.ptr[i];
+        if (ch == ' ') continue;
+        const char upper = ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
+        if (!upper || !strchr("23456789ABCDEFGHJKLMNPQRSTUVWXYZ", upper)) return false;
+        n++;
+    }
+    return n == 6;
+}
+
+// Session.Play(Arena), Session.Host(Arena, port), Session.Join(code),
+// Session.Connect(address, port) and Session.Leave(): which match this machine
+// is in. Only local code decides.
 static type check_session_call(checker *c, expr *e)
 {
     const bool play = str_eq_c(e->name, "Play");
     const bool host = str_eq_c(e->name, "Host");
     const bool join = str_eq_c(e->name, "Join");
+    const bool connect = str_eq_c(e->name, "Connect");
     const bool leave = str_eq_c(e->name, "Leave");
-    if (!play && !host && !join && !leave) {
+    if (!play && !host && !join && !connect && !leave) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
-        diag_error(e->at, "Session has no '" STR_FMT "'; it has Play, Host, Join and Leave", STR_ARG(e->name));
+        diag_error(e->at, "Session has no '" STR_FMT "'; it has Play, Host, Join, Connect and Leave", STR_ARG(e->name));
         suggestion s = suggest_start(e->name);
         suggest_consider_c(&s, "Play");
         suggest_consider_c(&s, "Host");
         suggest_consider_c(&s, "Join");
+        suggest_consider_c(&s, "Connect");
         suggest_consider_c(&s, "Leave");
         suggest_note(&s);
         return T_ERR;
@@ -1265,21 +1283,36 @@ static type check_session_call(checker *c, expr *e)
         diag_error(e->at, "Session." STR_FMT " is a statement of its own", STR_ARG(e->name));
     }
     e->call = CALL_SESSION;
-    const int least = play || host || join ? 1 : 0;
-    const int most = host ? 2 : least;
+    const int least = play || host || join || connect ? 1 : 0;
+    const int most = host || connect ? 2 : least;
     if (e->args.count < least || e->args.count > most) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
-        diag_error(e->at, "%s", play   ? "Session.Play takes the scene the match starts in: 'Session.Play(Arena)'"
-                               : host ? "Session.Host takes the scene the match starts in, and maybe a port: "
-                                        "'Session.Host(Arena)' or 'Session.Host(Arena, 7777)'"
-                               : join ? "Session.Join takes the server's address: 'Session.Join(\"192.168.1.5\")'"
-                                      : "Session.Leave takes nothing: 'Session.Leave()'");
+        diag_error(e->at, "%s", play      ? "Session.Play takes the scene the match starts in: 'Session.Play(Arena)'"
+                               : host    ? "Session.Host takes the scene the match starts in, and maybe a port: "
+                                           "'Session.Host(Arena)' or 'Session.Host(Arena, 7777)'"
+                               : join    ? "Session.Join takes the room's code: 'Session.Join(\"K7QF2M\")'"
+                               : connect ? "Session.Connect takes the server's address, and maybe a port: "
+                                           "'Session.Connect(\"192.168.1.5\")' or 'Session.Connect(\"192.168.1.5\", 7777)'"
+                                         : "Session.Leave takes nothing: 'Session.Leave()'");
         return T_ERR;
     }
-    if (join) {
+    if (join || connect) {
+        const expr *arg = e->args.items[0];
         const type t = check_expr(c, e->args.items[0]);
         if (t.kind != TY_ERROR && t.kind != TY_STRING) {
-            diag_error(e->args.items[0]->at, "Session.Join takes the server's address as text, like \"192.168.1.5:7777\"");
+            diag_error(arg->at, "%s", join ? "Session.Join takes the room's code as text, like \"K7QF2M\""
+                                           : "Session.Connect takes the server's address as text, like \"192.168.1.5\"");
+        } else if (join && arg->kind == E_STRING && !room_code(arg->text)) {
+            diag_error(arg->at, "\"" STR_FMT "\" isn't a room's code: they're 6 letters and digits, like \"K7QF2M\"",
+                       STR_ARG(arg->text));
+            if (memchr(arg->text.ptr, '.', (size_t)arg->text.len) || memchr(arg->text.ptr, ':', (size_t)arg->text.len)
+                || str_eq_c(arg->text, "localhost")) {
+                diag_note("to join a machine by its address, call Session.Connect(\"" STR_FMT "\")", STR_ARG(arg->text));
+            }
+        }
+        if (connect && e->args.count == 2) {
+            const type port = check_expr(c, e->args.items[1]);
+            if (port.kind != TY_ERROR && port.kind != TY_INT) diag_error(e->args.items[1]->at, "a port is an int, like 7777");
         }
         return T_VOID_;
     }
@@ -2074,6 +2107,14 @@ static type check_member(checker *c, expr *e)
         }
     }
 
+    // session.room: the code of the room the match is in. The host keeps it
+    // beside the local state (purr_local's purr_room), so it needs no heap.
+    const bool session = has_fields(obj) && obj.decl == c->prog->session;
+    if (session && str_eq_c(e->member, "room")) {
+        e->c_constant = "purr_str_from_cstr(purr_l->purr_room)";
+        return (type){TY_STRING, NULL};
+    }
+
     if (has_fields(obj)) {
         for (int i = 0; i < obj.decl->fields.count; i++) {
             field *f = &obj.decl->fields.items[i];
@@ -2090,6 +2131,7 @@ static type check_member(checker *c, expr *e)
         }
         suggestion s = suggest_start(e->member);
         suggest_fields(&s, obj.decl);
+        if (session) suggest_consider_c(&s, "room");
         suggest_note(&s);
         return T_ERR;
     }
@@ -4090,8 +4132,8 @@ static void add_builtins(program *prog)
 
     // This machine's part in a match (see purr/session.h, whose enums have the
     // same values): local singleton Session { SessionState state; PlayerID
-    // player; int ping; bool server; }, and local events Connected and
-    // Disconnected { DisconnectReason reason; }.
+    // player; int ping; bool server; }, its room (see check_member), and local
+    // events Connected and Disconnected { DisconnectReason reason; }.
     static const char *const states[] = {"Offline", "Connecting", "Connected"};
     static const char *const reasons[] = {"Left", "TimedOut", "Refused", "ServerLeft", "Failed"};
     decl *state = NEW(decl);

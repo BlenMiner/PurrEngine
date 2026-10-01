@@ -194,7 +194,8 @@ void purr_session_host(purr_session *s, const void *start, purr_transport networ
 // still has room for them.
 void purr_session_join(purr_session *s, purr_transport network, purr_address server, double now);
 void purr_session_leave(purr_session *s);
-// A session that couldn't start: reports Disconnected with the reason.
+// A session that couldn't start, or whose network gave out: leaves the match,
+// if it's in one, and reports Disconnected with the reason.
 void purr_session_fail(purr_session *s, purr_disconnect_reason reason);
 // Once per frame, with the host's time in seconds. When this machine runs the
 // server, a long gap since the last update is a pause (a browser tab in the
@@ -225,12 +226,13 @@ typedef bool (*purr_migrate_fn)(void *user, const void *from, void *to);
 // changing nothing, if `migrate` fails or there isn't the memory.
 bool purr_session_migrate(purr_session *s, const purr_game *game, purr_migrate_fn migrate, void *user);
 
-// What local code asked for, with Session.Play, Host, Join and Leave.
+// What local code asked for, with Session.Play, Host, Join, Connect and Leave.
 typedef enum purr_session_request_kind {
     PURR_REQUEST_NONE,
     PURR_REQUEST_PLAY,
     PURR_REQUEST_HOST,
-    PURR_REQUEST_JOIN,
+    PURR_REQUEST_JOIN,    // A room, by its code
+    PURR_REQUEST_CONNECT, // A machine, by its address
     PURR_REQUEST_LEAVE,
 } purr_session_request_kind;
 
@@ -238,6 +240,6 @@ typedef enum purr_session_request_kind {
 
 typedef struct purr_session_request {
     uint32_t kind;
-    uint32_t port;     // Host: the port to take players on
-    char address[256]; // Join: the server's, "host" or "host:port"
+    uint32_t port;     // Host: the port to take players on. Connect: the server's, unless `address` has one
+    char address[256]; // Join: the room's code. Connect: the server's address, "host" or "host:port"
 } purr_session_request;

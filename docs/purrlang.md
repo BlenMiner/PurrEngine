@@ -987,10 +987,11 @@ system Collapse(Arena arena)
 ### Decided
 
 - Single-player and multiplayer are the same: every match runs on a server, and this machine's player connects to it, over a loopback transport when the server is on this machine. The engine assumes nothing about what a game does with it, like pausing; games build that from inputs and state.
-- Local code decides which match this machine is in: `Session.Play(scene)` starts one on this machine alone, `Session.Host(scene)` one others can join, `Session.Join(address)` joins another machine's, and `Session.Leave()` leaves. `Play` and `Host` name the scene the match starts in, with its values like `Scene.Load`'s: `Session.Host(Arena { size = 30 })`. `Join` gets whatever the server runs.
+- Local code decides which match this machine is in: `Session.Play(scene)` starts one on this machine alone, `Session.Host(scene)` one others can join, `Session.Join(code)` joins the match in a room by its code, `Session.Connect(address, port)` joins another machine's by its address, and `Session.Leave()` leaves. `Play` and `Host` name the scene the match starts in, with its values like `Scene.Load`'s: `Session.Host(Arena { size = 30 })`. `Join` and `Connect` get whatever the server runs.
+- Players find each other's matches in rooms, by a code. The hosting machine picks its room's code itself, so local code has it at once, with nothing to wait for: `Session.room`.
 - Local code sees where this machine stands through a built-in local singleton, `Session` (taken as a parameter like any singleton), and the built-in local events `Connected` and `Disconnected`.
 - Clients have no input delay: their own input applies at once, and they run ahead of the server so it arrives in time. Only other players' inputs are ever guessed.
-- The desktop transport is our own thin layer on UDP.
+- The desktop transport is our own thin layer on UDP. The web's is WebRTC data channels that neither order nor resend, so browsers host matches as well as join them. A relay we host introduces players to each other; their packets go straight between them whenever their networks allow it (see AGENTS.md, Networking).
 
 ```csharp
 local scene Main { }
@@ -1007,7 +1008,8 @@ view Menu(Session session)
     {
         if (GUILayout.Button("Play")) Session.Play(Arena);
         if (GUILayout.Button("Host")) Session.Host(Arena { size = 40 });
-        if (GUILayout.Button("Join")) Session.Join("192.168.1.5");
+        if (GUILayout.Button("Join")) Session.Join("K7QF2M");
+        if (GUILayout.Button("Connect")) Session.Connect("192.168.1.5");
     }
 }
 
@@ -1021,26 +1023,30 @@ local event(Disconnected gone) BackToMenu()
 
 Implemented, awaiting approval:
 
-- `Session` has `state` (`SessionState.Offline`, `Connecting` or `Connected`), `player` (this machine's `PlayerID`, once connected), `ping` (the round trip to the server, in milliseconds) and `server` (whether this machine runs it). It's read-only.
-- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, or no room), `ServerLeft` (the server ended the match) or `Failed` (it couldn't start: no network, a port in use, an address that isn't one).
-- `Session.Host(scene, port)` takes players on `port`, 7777 without one. `Session.Join(address)` takes `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"`.
+- `Session` has `state` (`SessionState.Offline`, `Connecting` or `Connected`), `player` (this machine's `PlayerID`, once connected), `ping` (the round trip to the server, in milliseconds), `server` (whether this machine runs it) and `room` (the code of the room the match is in, or `""`). It's read-only.
+- `Connected` is sent once the match's world has arrived and this machine plays in it; `Disconnected { DisconnectReason reason; }` when it leaves: `Left` (it called `Leave`, or started another match), `TimedOut` (the server stopped answering, or never did), `Refused` (another build of the game, or no room), `ServerLeft` (the server ended the match) or `Failed` (it couldn't start: no network, a port in use, an address that isn't one, a room nobody has).
+- `Session.Host(scene, port)` takes players in a room, and on `port` too, 7777 without one, except on the web, which has no ports. `Session.Connect(address, port)` takes `"192.168.1.5"`, `"192.168.1.5:7777"` or a name like `"localhost"`, and the port is 7777 without one.
+- A room's code is 6 letters and digits, without look-alikes (no `0`, `O`, `1` or `I`), like `K7QF2M`: about a billion codes. Case and spaces don't matter when joining. `Session.Join` with text that can't be a code is an error, which points to `Connect` for an address.
+- A code another room already has is refused by the relay, and the host picks another at once, before anyone could have read it: `Session.room` changes. It's `""` while the relay can't be reached; the host keeps trying, and the room opens again under the same code if it's still free. Players already in keep playing: only joining needs the relay.
+- Joining a room that doesn't exist, or whose host can't be reached, ends with `Failed` at once. A room's host gets 15 seconds to answer for the first time, rather than 5, since WebRTC can take a while to find a way through routers.
+- Desktop and web players meet in the same rooms: desktop games speak WebRTC too, with an implementation of our own (no third-party code, so games carry no license terms for it). Everyone reaches the relay over `wss://`: desktop games with their system's TLS (on Linux, OpenSSL's libssl, which they load if it's there).
+- Under `purr run --web`, a reload plays on alone: the room closes, and the other players drop out.
 - Session calls are statements, in views and local handlers. Functions can't make them yet, nor can match code, which runs the same on every machine, nor `Sample`.
 - A match can't start in a scene that holds text or lists yet.
 - Starting a match leaves the one this machine is in first, which sends `Disconnected` with `Left` before the new one's `Connected`.
 - The server's player joins before the match's first tick, as `PlayerJoined` handled at the end of it; the server only starts ticking then.
-- When `Main` is the match's, `purr/run.h` plays it at once, or hosts or joins with `--host [port]` and `--join address` on the command line (and `purr run --host` and `--join`).
+- When `Main` is the match's, `purr/run.h` plays it at once, or hosts or joins with `--host [port]`, `--join code` and `--connect address` on the command line (and `purr run --host`, `--join` and `--connect`).
 - Up to 16 players.
 - A client predicts at most a second ahead of the last tick the server confirmed, however many ticks that is at the match's tick rate; beyond it, it waits for the server. The server keeps four seconds of ticks to send again; a player further behind gets the whole world again.
-- **Coming back:** joining a server gives this machine a cookie, and `Session.Join` to the same server again presents it, so the player gets their `PlayerID` back, and with it whatever the game kept for them. If the server still has them connected (their old connection went quiet), the new one takes over with no events at all; if they'd left, `PlayerJoined` comes again with the same `PlayerID`. A server keeps a slot for a player who left until it has no slot that was never used; then it gives away the one away longest, and that player's cookie stops working.
+- **Coming back:** joining a server gives this machine a cookie, and joining the same server again (the same room, or the same address) presents it, so the player gets their `PlayerID` back, and with it whatever the game kept for them. If the server still has them connected (their old connection went quiet), the new one takes over with no events at all; if they'd left, `PlayerJoined` comes again with the same `PlayerID`. A server keeps a slot for a player who left until it has no slot that was never used; then it gives away the one away longest, and that player's cookie stops working.
 - The cookie lives as long as the program: it doesn't survive a restart yet, and it's not safe against someone on the network guessing it.
-- Web games can only `Play` for now: `Host` and `Join` fail with `Failed`.
 
 ### Open
 
 - Keeping the cookie across restarts, and making it unguessable.
 - Servers with no window and no player of their own.
-- Browsers joining matches, over WebSocket, WebTransport or WebRTC.
-- Lobbies, finding matches, and reaching machines behind routers.
+- Keeping a room open across reloads under `purr run --web`.
+- Lobbies, and finding matches without a code.
 - Telling predicted state from verified state in game code (see AGENTS.md, Networking).
 
 ## C functions

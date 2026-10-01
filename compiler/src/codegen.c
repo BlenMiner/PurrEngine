@@ -1790,16 +1790,23 @@ static void hoist_unit(gen *g, expr *e, const char *name)
 static void gen_stmt(gen *g, const stmt *s);
 static void gen_body_stmt(gen *g, const stmt *s);
 
-// Session.Play(Arena { ... }), Host, Join and Leave: recorded in the local
-// state, for the host program to act on after the frame.
+// Session.Play(Arena { ... }), Host, Join, Connect and Leave: recorded in the
+// local state, for the host program to act on after the frame.
 static void gen_session_call(gen *g, const expr *e)
 {
     sb *o = &g->c;
-    if (str_eq_c(e->name, "Join")) {
+    const bool connect = str_eq_c(e->name, "Connect");
+    if (connect || str_eq_c(e->name, "Join")) {
         indent(g, o);
-        sb_put(o, "purr_request_join(purr_l, ");
+        sb_printf(o, "purr_request_join(purr_l, %s, ", connect ? "PURR_REQUEST_CONNECT" : "PURR_REQUEST_JOIN");
         gen_c_text(g, o, e->args.items[0]);
-        sb_put(o, ");\n");
+        if (e->args.count == 2) {
+            sb_put(o, ", (uint32_t)(");
+            gen_expr(g, o, e->args.items[1]);
+            sb_put(o, "));\n");
+        } else {
+            sb_put(o, ", PURR_DEFAULT_PORT);\n");
+        }
         return;
     }
     const bool host = str_eq_c(e->name, "Host");
@@ -2518,6 +2525,7 @@ static void gen_header(gen *g)
     if (prog->uses_heap) sb_put(o, "    purr_heap heap;\n");
     sb_put(o, "    purr_session_request purr_request; // What local code asked of the session: Session.Play and the like\n");
     sb_put(o, "    purr_start purr_request_start;\n");
+    sb_put(o, "    char purr_room[8]; // Session.room: the code of the room the match is in, or \"\"\n");
     sb_put(o, "} purr_local;\n\n");
 
     if (prog->main->is_local) {
@@ -2554,11 +2562,12 @@ static void gen_header(gen *g)
     sb_put(o, "void purr_world_player_joined(purr_world *w, purr_player_id player);\n");
     sb_put(o, "void purr_world_player_left(purr_world *w, purr_player_id player);\n\n");
     sb_put(o, "// What local code asked of the session since the last call (Session.Play, Host,\n");
-    sb_put(o, "// Join or Leave), and the match's start for Play and Host. False if nothing.\n");
+    sb_put(o, "// Join, Connect or Leave), and the match's start for Play and Host. False if nothing.\n");
     sb_put(o, "bool purr_local_take_request(purr_local *local, purr_session_request *request, purr_start *start);\n\n");
     sb_put(o, "// Where this machine stands, for local code: the Session singleton. `state` is a\n");
-    sb_put(o, "// purr_session_state.\n");
-    sb_put(o, "void purr_local_set_session(purr_local *local, uint32_t state, purr_player_id player, uint32_t ping, bool server);\n\n");
+    sb_put(o, "// purr_session_state, and `room` the code of the room the match is in, \"\" if none.\n");
+    sb_put(o, "void purr_local_set_session(purr_local *local, uint32_t state, purr_player_id player, uint32_t ping, bool server,\n"
+              "                            const char *room);\n\n");
     sb_put(o, "// Send the local events Connected and Disconnected (`reason` is a purr_disconnect_reason),\n");
     sb_put(o, "// handled at the end of the next purr_frame.\n");
     sb_put(o, "void purr_local_connected(purr_local *local);\n");
@@ -2878,9 +2887,10 @@ static void gen_blend_helpers(gen *g)
 static void gen_session_helpers(gen *g)
 {
     sb *o = &g->c;
-    sb_put(o, "// Session.Join(address): the address, cut short if it's too long to be one.\n");
-    sb_put(o, "PURR_HELPER void purr_request_join(purr_local *l, const char *address)\n{\n");
-    sb_put(o, "    l->purr_request = (purr_session_request){.kind = PURR_REQUEST_JOIN};\n");
+    sb_put(o, "// Session.Join(code) and Session.Connect(address, port): the room's code or the\n");
+    sb_put(o, "// server's address, cut short if it's too long to be one.\n");
+    sb_put(o, "PURR_HELPER void purr_request_join(purr_local *l, uint32_t kind, const char *address, uint32_t port)\n{\n");
+    sb_put(o, "    l->purr_request = (purr_session_request){.kind = kind, .port = port};\n");
     sb_put(o, "    size_t n = strlen(address);\n");
     sb_put(o, "    if (n >= sizeof l->purr_request.address) n = sizeof l->purr_request.address - 1u;\n");
     sb_put(o, "    memcpy(l->purr_request.address, address, n);\n}\n\n");
@@ -4537,11 +4547,16 @@ static void gen_game_api(gen *g)
 
     const decl *session = prog->session;
     const char *name = type_cname(session);
-    sb_put(o, "void purr_local_set_session(purr_local *local, uint32_t state, purr_player_id player, uint32_t ping, bool server)\n{\n");
+    sb_put(o, "void purr_local_set_session(purr_local *local, uint32_t state, purr_player_id player, uint32_t ping, bool server,\n"
+              "                            const char *room)\n{\n");
     sb_printf(o, "    local->%s.%s = (int32_t)state;\n", name, field_cname(&session->fields.items[0]));
     sb_printf(o, "    local->%s.%s = player;\n", name, field_cname(&session->fields.items[1]));
     sb_printf(o, "    local->%s.%s = (int32_t)ping;\n", name, field_cname(&session->fields.items[2]));
-    sb_printf(o, "    local->%s.%s = server;\n}\n\n", name, field_cname(&session->fields.items[3]));
+    sb_printf(o, "    local->%s.%s = server;\n", name, field_cname(&session->fields.items[3]));
+    sb_put(o, "    size_t n = room ? strlen(room) : 0u;\n");
+    sb_put(o, "    if (n >= sizeof local->purr_room) n = sizeof local->purr_room - 1u;\n");
+    sb_put(o, "    memcpy(local->purr_room, room ? room : \"\", n);\n");
+    sb_put(o, "    memset(local->purr_room + n, 0, sizeof local->purr_room - n);\n}\n\n");
     const char *connected = type_cname(prog->connected);
     const char *disconnected = type_cname(prog->disconnected);
     sb_printf(o, "void purr_local_connected(purr_local *local)\n{\n    purr_cmd_send_%s(local, (purr_entity){0}, (%s){0});\n}\n\n",

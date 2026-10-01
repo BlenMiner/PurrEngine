@@ -49,6 +49,7 @@ enum { EVENT_JOIN = 1, EVENT_LEAVE = 2 };
 #define PACKETS_PER_UPDATE 8u
 #define MAX_EVENTS (4u * PURR_MAX_PLAYERS)
 #define TIMEOUT 5.0     // Seconds of silence before giving up on the other side
+#define ROOM_TIMEOUT 15.0 // ...or on a room's host before it first answers: WebRTC can take a while to connect
 #define HELLO_EVERY 0.2 // Seconds between HELLOs until the server answers
 #define MAX_TICKS 8u    // Ticks a server runs in one update at most: after a stall it drops the time instead
 
@@ -1308,7 +1309,8 @@ void purr_client_update(purr_client *c, const double now)
     if (c->state == PURR_SESSION_OFFLINE) return;
     client_receive(c);
     if (c->state == PURR_SESSION_OFFLINE) return;
-    if (now - c->last_heard > TIMEOUT) {
+    const double patience = !c->welcomed && c->desc.server.kind == PURR_ADDRESS_ROOM ? ROOM_TIMEOUT : TIMEOUT;
+    if (now - c->last_heard > patience) {
         go_offline(c, PURR_DISCONNECT_TIMED_OUT);
         return;
     }
@@ -1418,6 +1420,7 @@ void purr_session_destroy(purr_session *s)
 
 void purr_session_fail(purr_session *s, const purr_disconnect_reason reason)
 {
+    tear_down(s);
     push_event(s, (purr_session_event){PURR_SESSION_DISCONNECTED_EVENT, reason});
 }
 

@@ -42,8 +42,9 @@ static void usage(void)
            "  --no-open          run --web: serve the page without opening a browser\n"
            "\n"
            "run, in a match with others (the game's Main must be the match's for --host):\n"
-           "  --host [port]      a match others can join (port 7777 by default)\n"
-           "  --join <address>   the match at an address, like 192.168.1.5 or localhost:7777\n"
+           "  --host [port]        a match others can join: in a room, and on a port (7777 by default; not on the web)\n"
+           "  --join <code>        the match in the room with this code, like K7QF2M\n"
+           "  --connect <address>  the match at an address, like 192.168.1.5 or localhost:7777\n"
            "\n"
            "upgrade:\n"
            "  --nightly          follow nightly versions from now on\n"
@@ -133,14 +134,14 @@ int main(const int argc, char **argv)
     }
 
     build_options opts = {.folder = "."};
-    const char *session[3] = {NULL, NULL, NULL}; // --host [port] or --join <address>, for the game
+    const char *session[3] = {NULL, NULL, NULL}; // --host [port], --join <code> or --connect <address>, for the game
     bool open_page = true;                        // run --web opens the page in a browser
     for (int i = 2; i < argc; i++) {
         const char *a = argv[i];
         if (run && strcmp(a, "--host") == 0) {
             session[0] = a;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') session[1] = argv[++i];
-        } else if (run && strcmp(a, "--join") == 0 && i + 1 < argc) {
+        } else if (run && (strcmp(a, "--join") == 0 || strcmp(a, "--connect") == 0) && i + 1 < argc) {
             session[0] = a;
             session[1] = argv[++i];
         } else if (run && strcmp(a, "--no-open") == 0) open_page = false;
@@ -162,8 +163,7 @@ int main(const int argc, char **argv)
     } else if (run && !opts.web) {
         code = purr_run_reloading(root, &opts, session);
     } else if (run) {
-        if (session[0]) fprintf(stderr, "purr: web games can't %s yet; playing it on its own\n", session[0] + 2);
-        code = purr_run_web(root, &opts, open_page);
+        code = purr_run_web(root, &opts, open_page, session);
     } else {
         char *program = purr_build(root, &opts);
         if (!program) code = 1;

@@ -1,0 +1,6 @@
+// expect: a port is an int, like 7777
+local scene Main { }
+view Start()
+{
+    Session.Connect("192.168.1.5", "7777");
+}

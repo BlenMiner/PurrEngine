@@ -1,0 +1,42 @@
+# The relay on Fly.io (see relay.mjs), at wss://purrengine-relay.fly.dev,
+# which platform/web/purr.js connects to. Deploy from this folder:
+#
+#   fly deploy --ha=false
+#
+# One machine only: rooms live in its memory, so with two, a player could
+# reach the one without their room. It stops when nobody's connected, and
+# starts again for the next one.
+#
+# Players who can't connect directly go through Cloudflare's TURN, once its
+# key is in the app's secrets (never in this file):
+#
+#   fly secrets set CLOUDFLARE_TURN_KEY_ID=<key ID> CLOUDFLARE_TURN_API_TOKEN=<API token> -a purrengine-relay
+app = 'purrengine-relay'
+primary_region = 'fra'
+
+[build]
+
+# Everyone reaches it at wss://: browsers, and desktop games with their
+# system's TLS.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = 'connections'
+    soft_limit = 10000
+    hard_limit = 20000
+
+  [[http_service.checks]]
+    grace_period = '10s'
+    interval = '30s'
+    method = 'GET'
+    path = '/'
+    timeout = '5s'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'

@@ -396,13 +396,14 @@ static void check(void)
     }
 }
 
-// A game started with --join joins again a second after its match ends
-// without it leaving: when the server starts over, has another build for a
-// moment, or went away and came back.
+// A game started with --join or --connect joins again a second after its
+// match ends without it leaving: when the server starts over, has another
+// build for a moment, or went away and came back.
 static void rejoin(const float seconds)
 {
     purr_session_request request;
-    if (!purr_run_dropped || !purr_run_arguments(&request) || request.kind != PURR_REQUEST_JOIN) {
+    if (!purr_run_dropped || !purr_run_arguments(&request)
+        || (request.kind != PURR_REQUEST_JOIN && request.kind != PURR_REQUEST_CONNECT)) {
         reload.dropped_for = 0.0f;
         return;
     }

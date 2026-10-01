@@ -145,10 +145,10 @@ purr run --host
 And in another, on this machine or another one on the network:
 
 ```sh
-purr run --join localhost
+purr run --connect localhost
 ```
 
-Use the host's address instead of `localhost` from another machine, like `purr run --join 192.168.1.5`. The host takes players on UDP port 7777; `--host 8000` picks another. Each player steers their own yellow body, with no input delay.
+Use the host's address instead of `localhost` from another machine, like `purr run --connect 192.168.1.5`. The host takes players on UDP port 7777; `--host 8000` picks another. Each player steers their own yellow body, with no input delay.
 
 ## Build it for the web
 
@@ -162,7 +162,7 @@ This builds the game as a web page, using WebGL 2, and opens it in your browser.
 purr build --release --web
 ```
 
-It goes in `build/`, as one self-contained `.html` file with the game inside, which opens straight from disk. Web games can only play single-player for now.
+It goes in `build/`, as one self-contained `.html` file with the game inside, which opens straight from disk. Web and desktop players play together in rooms, which they join by a code (see [Multiplayer](../language/multiplayer.md#rooms)).
 
 ## The whole game
 

@@ -1,9 +1,10 @@
 // The demo's host: runs the game in a session (purr/session.h), feeds it this
 // machine's input, and renders what the game's views draw.
 //
-//     demo                  on this machine alone
-//     demo --host [port]    a match others can join (port 7777 by default)
-//     demo --join address   the match at "192.168.1.5", "localhost:7777" and the like
+//     demo                     on this machine alone
+//     demo --host [port]       a match others can join: on a port (7777 by default) and in a room
+//     demo --join code         the match in the room with this code, like K7QF2M
+//     demo --connect address   the match at "192.168.1.5", "localhost:7777" and the like
 //
 // `demo --smoke` (`demo.html?smoke` on the web) replaces the player with a
 // script, then checks the simulation's result and a rendered pixel, and exits
@@ -60,7 +61,10 @@ static purr_view_worlds update(void)
         else purr_local_disconnected(&local, event.reason);
     }
     const purr_session_status status = purr_session_status_of(session);
-    purr_local_set_session(&local, status.client.state, status.client.player, status.client.ping_ms, status.server);
+    char room[PURR_ROOM_CODE_LENGTH + 1];
+    purr_platform_room_code(room, sizeof room);
+    purr_local_set_session(&local, status.client.state, status.client.player, status.client.ping_ms, status.server,
+                           room);
     return purr_session_view(session);
 }
 
@@ -194,26 +198,36 @@ int main(const int argc, char **argv)
 
     const char *host = NULL;
     const char *join = NULL;
+    const char *connect = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--host") == 0) host = i + 1 < argc ? argv[i + 1] : "";
         if (strcmp(argv[i], "--join") == 0 && i + 1 < argc) join = argv[i + 1];
+        if (strcmp(argv[i], "--connect") == 0 && i + 1 < argc) connect = argv[i + 1];
     }
-    purr_transport udp;
+    purr_transport network;
     purr_address server;
     if (host) {
         const unsigned long port = host[0] >= '0' && host[0] <= '9' ? strtoul(host, NULL, 10) : PURR_DEFAULT_PORT;
-        if (port > 65535u || !purr_platform_udp_open((uint16_t)port, &udp)) {
+        if (port > 65535u || !purr_platform_host_open((uint16_t)port, &network)) {
             fprintf(stderr, "demo: can't take players on port %lu\n", port);
             return 1;
         }
-        purr_session_host(session, NULL, udp, now);
-        printf("demo: hosting on port %lu\n", port);
+        char room[PURR_ROOM_CODE_LENGTH + 1];
+        purr_platform_room_code(room, sizeof room);
+        printf("demo: hosting on port %lu (not on the web), and in room %s\n", port, room);
+        purr_session_host(session, NULL, network, now);
     } else if (join) {
-        if (!purr_platform_resolve(join, PURR_DEFAULT_PORT, &server) || !purr_platform_udp_open(0, &udp)) {
-            fprintf(stderr, "demo: can't reach '%s'\n", join);
+        if (!purr_platform_room_join(join, &network, &server)) {
+            fprintf(stderr, "demo: can't join room '%s'\n", join);
             return 1;
         }
-        purr_session_join(session, udp, server, now);
+        purr_session_join(session, network, server, now);
+    } else if (connect) {
+        if (!purr_platform_resolve(connect, PURR_DEFAULT_PORT, &server) || !purr_platform_udp_open(0, &network)) {
+            fprintf(stderr, "demo: can't reach '%s'\n", connect);
+            return 1;
+        }
+        purr_session_join(session, network, server, now);
     } else {
         purr_session_play(session, NULL, now);
     }

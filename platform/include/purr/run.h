@@ -14,11 +14,14 @@
 // The game runs in a session (purr/session.h). If its Main scene is the
 // match's, a match starts right away: on this machine alone, or with others:
 //
-//     game --host [port]   a match others can join (port 7777 by default)
-//     game --join address  the match at "192.168.1.5", "localhost:7777" and the like
+//     game --host [port]      a match others can join (port 7777 by default)
+//     game --join code        the match in the room with this code, like K7QF2M
+//     game --connect address  the match at "192.168.1.5", "localhost:7777" and the like
 //
-// If Main is local, the program starts in it, with no match, and local code
-// starts one with Session.Play, Host or Join (--join works too). This machine's
+// A match others can join is in a room, whose code players join it with,
+// and on the desktop on a UDP port too. If Main is local, the program starts in it, with no match, and
+// local code starts one with Session.Play, Host, Join or Connect (--join and
+// --connect work too). This machine's
 // player joins before the match's first tick. If the game has an input, the
 // devices are sampled once per tick this machine runs, minus what the GUI is
 // using. The views draw every frame, and their GUI over the world. Close the
@@ -56,9 +59,9 @@ static inline bool purr_run_take_request(void *local, purr_session_request *requ
 }
 
 static inline void purr_run_set_session(void *local, const uint32_t state, const purr_player_id player,
-                                        const uint32_t ping, const bool server)
+                                        const uint32_t ping, const bool server, const char *room)
 {
-    purr_local_set_session(local, state, player, ping, server);
+    purr_local_set_session(local, state, player, ping, server, room);
 }
 
 static inline void purr_run_connected(void *local)

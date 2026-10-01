@@ -29,7 +29,16 @@ endif()
 
 include(cmake/PurrFlags.cmake)
 include(cmake/PurrLang.cmake)
+
+# For testing: AddressSanitizer and UndefinedBehaviorSanitizer on everything,
+# like the WebRTC stack's fuzzing (platform/tests/rtc_fuzz.c). Linux and macOS.
+option(PURR_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(PURR_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 include(cmake/WebTest.cmake)
+find_program(PURR_NODE NAMES node) # Tests that run Node: web builds need it anyway
 
 option(PURR_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
 option(PURR_TOOLS_ONLY "Build only purrc, as web builds do for their host (cmake/HostPurrc.cmake)" OFF)
@@ -71,6 +80,11 @@ add_subdirectory(engine)
 enable_testing()
 add_subdirectory(tests)
 add_subdirectory(compiler)
+
+# The relay (relay/), on Node's own test runner, wherever there's Node.
+if(PURR_NODE)
+    add_test(NAME relay COMMAND "${PURR_NODE}" --test "${CMAKE_CURRENT_SOURCE_DIR}/relay/relay.test.mjs")
+endif()
 
 if(PURR_PLATFORM)
     add_subdirectory(platform)

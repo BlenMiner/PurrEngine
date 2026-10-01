@@ -310,6 +310,237 @@
     };
 
     // -----------------------------------------------------------------------
+    // Rooms: matches players find by a code, through the relay (relay/). The
+    // relay only introduces players, passing along what WebRTC needs to
+    // connect them; their packets then go straight between them, on data
+    // channels that neither order nor resend, like UDP. A program is in one
+    // room at a time: the one it hosts, or the one it joined. Players in it are
+    // numbered: the host is 0 to those who join, and they're 1 and up to it.
+
+    const relayUrl = config.relay || 'wss://purrengine-relay.fly.dev';
+    const CODE_LETTERS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // No look-alikes: 0 and O, 1 and I
+    let room = null;
+    let rooms = 0; // Rooms opened so far, which numbers them
+
+    const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => CODE_LETTERS[b & 31]).join('');
+
+    function openRoom(hosting, code) {
+        closeRoom();
+        room = {
+            number: ++rooms, hosting, code, failed: false, reachable: true, connected: false, opened: performance.now(),
+            ws: null, ice: [], peers: new Map(), byRelay: new Map(), next: 1, inbox: [],
+        };
+        if (/^[2-9A-HJ-NP-Z]{6}$/.test(code)) {
+            connectRelay(room);
+        } else {
+            room.failed = true;
+            printErr(`purr: '${code}' isn't a room code: they're 6 letters and digits, like K7QF2M`);
+        }
+        return room.number;
+    }
+
+    function closeRoom() {
+        if (!room) return;
+        const r = room;
+        room = null;
+        if (r.ws) r.ws.close();
+        for (const peer of r.peers.values()) peer.pc.close();
+    }
+
+    // A host that loses the relay opens its room again once it's back, under
+    // the same code if it's still free. Players already in keep playing: only
+    // joining needs the relay.
+    function connectRelay(r) {
+        let ws;
+        try {
+            ws = new WebSocket(relayUrl);
+        } catch (error) {
+            printErr(`purr: can't reach the relay at ${relayUrl}: ${error.message}`);
+            r.failed = !r.hosting;
+            r.reachable = false;
+            return;
+        }
+        r.ws = ws;
+        const send = message => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); };
+        ws.onmessage = event => {
+            if (room !== r) return;
+            let m;
+            try {
+                m = JSON.parse(event.data);
+            } catch {
+                return;
+            }
+            if (m.relay) {
+                r.ice = m.ice || [];
+                send(r.hosting ? { host: r.code } : { join: r.code });
+            } else if (m.hosting) {
+                r.reachable = true;
+            } else if (m.taken) {
+                r.code = newCode();
+                send({ host: r.code });
+            } else if (m.missing && !r.hosting && performance.now() - r.opened < 5000) {
+                // A room its host just opened, which the relay may not know
+                // yet (it can take a few seconds to wake up): ask again soon
+                setTimeout(() => { if (room === r) send({ join: r.code }); }, 500);
+            } else if (m.missing || m.full || m.closed) {
+                if (!r.connected) {
+                    r.failed = true;
+                    printErr(m.missing ? `purr: no room has the code ${m.missing}`
+                        : m.full ? `purr: too many players are joining room ${m.full} at once`
+                        : `purr: room ${m.closed} closed`);
+                }
+            } else if (m.joined) {
+                offer(r, send);
+            } else if (m.peer) {
+                const peer = newPeer(r, r.next++, signal => send({ to: m.peer, signal }));
+                r.byRelay.set(m.peer, peer);
+            } else if (m.from) {
+                const peer = r.byRelay.get(m.from);
+                if (peer) onSignal(r, peer, m.signal, false);
+            } else if (m.signal) {
+                const peer = r.peers.get(0);
+                if (peer) onSignal(r, peer, m.signal, true);
+            } else if (m.left) {
+                const peer = r.byRelay.get(m.left);
+                r.byRelay.delete(m.left);
+                // It gave up before connecting, rather than hanging up once it had
+                if (peer && !peer.open && peer.pc.connectionState !== 'connected') dropPeer(r, peer);
+            }
+        };
+        ws.onclose = () => {
+            if (room !== r || r.ws !== ws) return;
+            r.ws = null;
+            if (!r.hosting) {
+                if (!r.connected && !r.failed && !r.peers.size && performance.now() - r.opened < 10000) {
+                    // Not introduced yet: the relay may be waking up (it
+                    // refuses connections for a moment then), so try again
+                    setTimeout(() => { if (room === r && !r.ws) connectRelay(r); }, 1000);
+                } else if (!r.connected && !r.failed) {
+                    r.failed = true;
+                    printErr(`purr: lost the relay at ${relayUrl} while joining room ${r.code}`);
+                }
+                return;
+            }
+            if (r.reachable) printErr(`purr: lost the relay at ${relayUrl}; room ${r.code} opens again once it's back`);
+            r.reachable = false;
+            // Players still connecting can't finish without it, and the relay
+            // numbers those who join from scratch when it's back.
+            for (const peer of r.byRelay.values()) if (!peer.open) dropPeer(r, peer);
+            r.byRelay.clear();
+            setTimeout(() => { if (room === r) connectRelay(r); }, 3000);
+        };
+    }
+
+    // A player on the other end of a data channel: the host, to one who joins,
+    // and each one who joins, to the host.
+    function newPeer(r, number, sendSignal) {
+        // Purr.iceTransportPolicy 'relay' makes every connection go through
+        // TURN, to test it: normally they're direct whenever they can be.
+        const pc = new RTCPeerConnection({ iceServers: r.ice, iceTransportPolicy: config.iceTransportPolicy || 'all' });
+        const peer = { number, pc, channel: null, open: false, sendSignal, chain: Promise.resolve() };
+        pc.onicecandidate = event => { if (event.candidate) sendSignal({ candidate: event.candidate.toJSON() }); };
+        pc.onconnectionstatechange = () => {
+            if (pc.connectionState === 'failed' || pc.connectionState === 'closed') dropPeer(r, peer);
+        };
+        pc.ondatachannel = event => useChannel(r, peer, event.channel);
+        r.peers.set(number, peer);
+        return peer;
+    }
+
+    function useChannel(r, peer, channel) {
+        channel.binaryType = 'arraybuffer';
+        channel.onopen = () => {
+            peer.open = true;
+            if (!r.hosting) {
+                r.connected = true;
+                if (r.ws) r.ws.close(); // Joined: the relay's part is done
+            }
+        };
+        channel.onmessage = event => {
+            if (room === r && r.inbox.length < 4096 && event.data instanceof ArrayBuffer) {
+                r.inbox.push([peer.number, new Uint8Array(event.data)]);
+            }
+        };
+        channel.onclose = () => dropPeer(r, peer);
+        peer.channel = channel;
+    }
+
+    function dropPeer(r, peer) {
+        if (r.peers.get(peer.number) !== peer) return;
+        r.peers.delete(peer.number);
+        peer.pc.close();
+        if (!r.hosting && !r.connected && !r.failed) {
+            r.failed = true;
+            printErr(`purr: couldn't connect to the host of room ${r.code}`);
+        }
+    }
+
+    // Joining: this end offers, and the host answers.
+    async function offer(r, send) {
+        const peer = newPeer(r, 0, signal => send({ signal }));
+        useChannel(r, peer, peer.pc.createDataChannel('purr', { ordered: false, maxRetransmits: 0 }));
+        try {
+            await peer.pc.setLocalDescription();
+            send({ signal: { description: peer.pc.localDescription.toJSON() } });
+        } catch (error) {
+            printErr('purr: ' + error.message);
+            dropPeer(r, peer);
+        }
+    }
+
+    // Signals are handled one at a time, in order, since each waits on WebRTC:
+    // a candidate only goes in after the description before it.
+    function onSignal(r, peer, signal, joining) {
+        if (!signal || typeof signal !== 'object') return;
+        peer.chain = peer.chain.then(async () => {
+            if (room !== r || r.peers.get(peer.number) !== peer) return;
+            if (signal.description) {
+                await peer.pc.setRemoteDescription(signal.description);
+                if (!joining && signal.description.type === 'offer') {
+                    await peer.pc.setLocalDescription();
+                    peer.sendSignal({ description: peer.pc.localDescription.toJSON() });
+                }
+            } else if (signal.candidate) {
+                await peer.pc.addIceCandidate(signal.candidate);
+            }
+        }).catch(error => printErr('purr: ' + error.message));
+    }
+
+    Object.assign(platform, {
+        room_host: () => openRoom(true, newCode()),
+        room_join: codePtr => openRoom(false, string(codePtr).replace(/\s+/g, '').toUpperCase()),
+        room_close(number) { if (room && room.number === number) closeRoom(); },
+        // The code into `out` (7 bytes), "" while there's none: never a room
+        // that failed, nor one the relay can't be told about.
+        room_code(outPtr) {
+            const code = room && !room.failed && room.reachable ? room.code : '';
+            u8().set(encoder.encode(code), outPtr);
+            u8()[outPtr + code.length] = 0;
+        },
+        room_failed: () => room && room.failed ? 1 : 0,
+        room_send(number, to, ptr, size) {
+            const peer = room && room.number === number ? room.peers.get(to) : null;
+            const channel = peer && peer.open ? peer.channel : null;
+            // Like UDP, what can't go now is lost, and so is what would queue up
+            if (channel && channel.readyState === 'open' && channel.bufferedAmount < 262144) {
+                channel.send(u8().slice(ptr, ptr + size));
+            }
+        },
+        room_receive(number, fromPtr, ptr, capacity) {
+            if (!room || room.number !== number) return 0;
+            for (;;) {
+                const next = room.inbox.shift();
+                if (!next) return 0;
+                const [from, bytes] = next;
+                if (bytes.length > capacity || bytes.length === 0) continue; // Longer ones are dropped
+                view().setUint32(fromPtr, from, true);
+                u8().set(bytes, ptr);
+                return bytes.length;
+            }
+        },
+    });
+
+    // -----------------------------------------------------------------------
     // OpenGL ES 3 on WebGL 2: what rlgl calls. GL names objects with numbers,
     // WebGL with objects, so each kind has a table from number to object.
 
@@ -633,6 +864,7 @@
             }
         }
         if (gl) forgetGL();
+        closeRoom(); // The new build plays on alone, like any web game for now
         stopped = false;
         begin(instance);
         resumeWith = null;

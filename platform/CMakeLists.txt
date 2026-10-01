@@ -3,6 +3,11 @@
 include("${PROJECT_SOURCE_DIR}/cmake/Raylib.cmake")
 
 file(GLOB PURR_PLATFORM_SOURCES CONFIGURE_DEPENDS src/*.c)
+if(NOT PURR_WEB)
+    # WebRTC for rooms on desktop (src/rtc/rtc.h); the web has the browser's.
+    file(GLOB PURR_RTC_SOURCES CONFIGURE_DEPENDS src/rtc/*.c)
+    list(APPEND PURR_PLATFORM_SOURCES ${PURR_RTC_SOURCES})
+endif()
 
 add_library(purr_platform STATIC ${PURR_PLATFORM_SOURCES})
 target_include_directories(purr_platform PUBLIC include)
@@ -10,7 +15,9 @@ target_include_directories(purr_platform PUBLIC include)
 # header can't include raylib.h, whose names clash with components.
 target_link_libraries(purr_platform PUBLIC purr PRIVATE raylib)
 if(WIN32)
-    target_link_libraries(purr_platform PUBLIC ws2_32) # UDP, for sessions
+    target_link_libraries(purr_platform PUBLIC ws2_32 secur32) # UDP, for sessions; TLS, for the relay
+elseif(APPLE)
+    target_link_libraries(purr_platform PUBLIC "-framework Security") # TLS, for the relay
 endif()
 # Hot reloading loads the game's library (src/reload.c).
 target_link_libraries(purr_platform PUBLIC ${CMAKE_DL_LIBS})
@@ -71,7 +78,8 @@ elseif(MINGW)
     set(mingw_target "${PURR_MINGW_SYSROOT}/x86_64-w64-mingw32")
     install(DIRECTORY "${mingw_target}/include" DESTINATION mingw/sysroot/x86_64-w64-mingw32 COMPONENT purr)
     set(mingw_libs crt2.o dllcrt2.o crtbegin.o crtend.o)
-    foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 opengl32 winmm ws2_32)
+    foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 opengl32 winmm ws2_32
+                         secur32)
         list(APPEND mingw_libs lib${lib}.a)
     endforeach()
     list(TRANSFORM mingw_libs PREPEND "${mingw_target}/lib/")
@@ -94,6 +102,43 @@ target_link_libraries(purr_platform_migrate PRIVATE purr_platform)
 add_test(NAME purr_platform_migrate COMMAND purr_platform_migrate)
 
 if(NOT PURR_WEB)
+    # The WebRTC stack (src/rtc), piece by piece.
+    add_executable(purr_platform_rtc tests/rtc.c "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+    target_include_directories(purr_platform_rtc PRIVATE "${PROJECT_SOURCE_DIR}/tests" src)
+    target_link_libraries(purr_platform_rtc PRIVATE purr_platform)
+    add_test(NAME purr_platform_rtc COMMAND purr_platform_rtc)
+    set_tests_properties(purr_platform_rtc PROPERTIES ENVIRONMENT PURR_RTC_LOCAL=1) # Sockets on loopback only
+
+    # Everything in it that reads what other machines send, fed real messages
+    # broken at random. With PURR_SANITIZE, AddressSanitizer watches it too.
+    add_executable(purr_platform_rtc_fuzz tests/rtc_fuzz.c)
+    target_include_directories(purr_platform_rtc_fuzz PRIVATE src)
+    target_link_libraries(purr_platform_rtc_fuzz PRIVATE purr_platform)
+    add_test(NAME purr_platform_rtc_fuzz COMMAND purr_platform_rtc_fuzz 2000)
+    set_tests_properties(purr_platform_rtc_fuzz PROPERTIES ENVIRONMENT PURR_RTC_LOCAL=1)
+
+    # Its crypto against Node's (OpenSSL's), on random inputs every run.
+    add_executable(purr_platform_rtc_vectors tests/rtc_vectors.c)
+    target_include_directories(purr_platform_rtc_vectors PRIVATE src)
+    target_link_libraries(purr_platform_rtc_vectors PRIVATE purr_platform)
+    if(PURR_NODE)
+        add_test(NAME purr_platform_rtc_vectors
+            COMMAND "${PURR_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/rtc_vectors.mjs"
+                $<TARGET_FILE:purr_platform_rtc_vectors> "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+
+    # Rooms on desktop, through a relay on this machine: two desktop players,
+    # and a browser's WebRTC against ours, both ways round (tests/rooms.mjs).
+    add_executable(purr_platform_rooms tests/rooms_native.c)
+    target_link_libraries(purr_platform_rooms PRIVATE purr_platform)
+    if(PURR_NODE)
+        add_test(NAME purr_platform_rooms
+            COMMAND "${PURR_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/rooms.mjs" "${PURR_BROWSER}"
+                $<TARGET_FILE:purr_platform_rooms> "${CMAKE_CURRENT_BINARY_DIR}/purr_platform_rooms-browser"
+                "${PURR_FIREFOX}")
+        set_tests_properties(purr_platform_rooms PROPERTIES TIMEOUT 180)
+    endif()
+
     # Sessions over real UDP, on this machine.
     add_executable(purr_platform_udp tests/udp.c "${PROJECT_SOURCE_DIR}/tests/test_main.c")
     target_include_directories(purr_platform_udp PRIVATE "${PROJECT_SOURCE_DIR}/tests")
@@ -107,4 +152,15 @@ if(PURR_WEB)
     target_link_libraries(purr_platform_web_keys PRIVATE purr_platform)
     purr_web_page(purr_platform_web_keys SHELL web/test_shell.html)
     purr_add_web_test(purr_platform_web_keys TARGET purr_platform_web_keys)
+
+    # Two players in a room: a relay on this machine, and WebRTC between two
+    # frames of one page, in real time rather than the other tests' virtual time.
+    add_executable(purr_platform_web_rooms tests/web_rooms.c)
+    target_link_libraries(purr_platform_web_rooms PRIVATE purr_platform)
+    purr_web_page(purr_platform_web_rooms SHELL tests/web_rooms.html)
+    add_test(NAME purr_platform_web_rooms
+        COMMAND "${PURR_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/web_rooms.mjs" "${PURR_BROWSER}"
+            "$<TARGET_FILE_DIR:purr_platform_web_rooms>/purr_platform_web_rooms.html"
+            "${CMAKE_CURRENT_BINARY_DIR}/purr_platform_web_rooms-browser")
+    set_tests_properties(purr_platform_web_rooms PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT 120)
 endif()

@@ -25,7 +25,7 @@ typedef struct purr_run_desc {
     int height;
     int tick_rate;     // Ticks per second; default 60
     bool stats;        // Show the tick, entity count, ping and frame rate in a corner
-    int argc;          // The command line, for --host and --join
+    int argc;          // The command line, for --host, --join and --connect
     char **argv;
 } purr_run_desc;
 
@@ -42,7 +42,9 @@ typedef struct purr_host_game {
     void (*frame)(const void *world, const void *previous, float alpha, void *local, purr_draw_list *draw,
                   purr_gui *gui);
     bool (*take_request)(void *local, purr_session_request *request, void *start);
-    void (*set_session)(void *local, uint32_t state, purr_player_id player, uint32_t ping, bool server);
+    // `room`: the code of the room the match is in, "" if none
+    void (*set_session)(void *local, uint32_t state, purr_player_id player, uint32_t ping, bool server,
+                        const char *room);
     void (*connected)(void *local);
     void (*disconnected)(void *local, uint32_t reason);
     int32_t (*tick)(const void *world); // Time.tick
@@ -109,29 +111,41 @@ static inline void purr_run_sample(void *user, const uint32_t tick, void *input)
 static inline void purr_run_request(const purr_session_request *request, const void *start)
 {
     purr_session *s = purr_run_session;
-    purr_transport udp;
+    purr_transport network;
     purr_address server;
+    const bool port_ok = request->port <= 65535u;
+    const uint16_t port = port_ok ? (uint16_t)request->port : 0u;
     switch (request->kind) {
     case PURR_REQUEST_PLAY:
         purr_session_play(s, start, purr_run_now);
         break;
     case PURR_REQUEST_HOST:
-        if (request->port > 65535u || !purr_platform_udp_open((uint16_t)request->port, &udp)) {
-            fprintf(stderr, "purr: can't take players on port %u\n", (unsigned)request->port);
+        // Players join on a UDP port (not on the web), and in a room
+        if (port_ok && purr_platform_host_open(port, &network)) {
+            purr_session_host(s, start, network, purr_run_now);
+            break;
+        }
+        fprintf(stderr, "purr: can't take players on port %u\n", (unsigned)request->port);
+        purr_session_leave(s);
+        purr_session_fail(s, PURR_DISCONNECT_FAILED);
+        break;
+    case PURR_REQUEST_JOIN:
+        if (!purr_platform_room_join(request->address, &network, &server)) {
+            fprintf(stderr, "purr: can't join room '%s'\n", request->address);
             purr_session_leave(s);
             purr_session_fail(s, PURR_DISCONNECT_FAILED);
             break;
         }
-        purr_session_host(s, start, udp, purr_run_now);
+        purr_session_join(s, network, server, purr_run_now);
         break;
-    case PURR_REQUEST_JOIN:
-        if (!purr_platform_resolve(request->address, PURR_DEFAULT_PORT, &server) || !purr_platform_udp_open(0, &udp)) {
+    case PURR_REQUEST_CONNECT:
+        if (!port || !purr_platform_resolve(request->address, port, &server) || !purr_platform_udp_open(0, &network)) {
             fprintf(stderr, "purr: can't reach '%s'\n", request->address);
             purr_session_leave(s);
             purr_session_fail(s, PURR_DISCONNECT_FAILED);
             break;
         }
-        purr_session_join(s, udp, server, purr_run_now);
+        purr_session_join(s, network, server, purr_run_now);
         break;
     case PURR_REQUEST_LEAVE:
         purr_session_leave(s);
@@ -141,7 +155,7 @@ static inline void purr_run_request(const purr_session_request *request, const v
     }
 }
 
-// --host [port] or --join address, from the command line.
+// --host [port], --join code or --connect address, from the command line.
 static inline bool purr_run_arguments(purr_session_request *request)
 {
     for (int i = 1; i < purr_run_settings.argc; i++) {
@@ -152,8 +166,10 @@ static inline bool purr_run_arguments(purr_session_request *request)
             if (next && next[0] >= '0' && next[0] <= '9') request->port = (uint32_t)strtoul(next, NULL, 10);
             return true;
         }
-        if (strcmp(arg, "--join") == 0 && next) {
-            *request = (purr_session_request){.kind = PURR_REQUEST_JOIN};
+        const bool join = strcmp(arg, "--join") == 0;
+        if ((join || strcmp(arg, "--connect") == 0) && next) {
+            *request = (purr_session_request){.kind = join ? PURR_REQUEST_JOIN : PURR_REQUEST_CONNECT,
+                                              .port = PURR_DEFAULT_PORT};
             snprintf(request->address, sizeof request->address, "%s", next);
             return true;
         }
@@ -230,6 +246,9 @@ static inline int purr_run_frame(void *user, const float seconds)
     purr_run_now += seconds;
 
     purr_session *s = purr_run_session;
+    // A room joined that isn't one, or whose host can't be reached, fails now
+    // rather than timing out.
+    if (purr_platform_room_failed()) purr_session_fail(s, PURR_DISCONNECT_FAILED);
     purr_session_update(s, purr_run_now);
     purr_session_event event;
     while (purr_session_next_event(s, &event)) {
@@ -239,8 +258,10 @@ static inline int purr_run_frame(void *user, const float seconds)
         else game->disconnected(purr_run_local, event.reason);
     }
     const purr_session_status status = purr_session_status_of(s);
+    char room[PURR_ROOM_CODE_LENGTH + 1];
+    purr_platform_room_code(room, sizeof room);
     game->set_session(purr_run_local, status.client.state, status.client.player, status.client.ping_ms,
-                      status.server);
+                      status.server, room);
 
     // Views draw at the frame rate, the match blended between its last two ticks
     const purr_view_worlds view = purr_session_view(s);

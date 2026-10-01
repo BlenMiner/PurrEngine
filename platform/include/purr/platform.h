@@ -96,3 +96,28 @@ bool purr_platform_udp_open_local(uint16_t port, purr_transport *out);
 // An address from "192.168.1.5", "localhost:7777" or a name: its IPv4 address,
 // with `default_port` if it says none. False if there's none.
 bool purr_platform_resolve(const char *text, uint16_t default_port, purr_address *out);
+
+// Rooms: matches players find by a code, like "K7QF2M", through the relay
+// (relay/). The relay only introduces players; their datagrams go straight
+// between them, on WebRTC: the browser's on the web, and our own on desktop
+// (platform/src/rtc), so web and desktop players meet in the same rooms. A
+// program is in one room at a time: opening one closes the last. Desktop
+// games reach the relay at wss://purrengine-relay.fly.dev, with the system's
+// TLS (on Linux, OpenSSL's libssl), or at $PURR_RELAY.
+//
+// A room this machine hosts: a transport that takes the players who join it.
+// It picks the room's code itself, so it has one at once.
+bool purr_platform_room_host(purr_transport *out);
+// Joins the room with `code`: a transport to its host, at `server`.
+bool purr_platform_room_join(const char *code, purr_transport *out, purr_address *server);
+// The room's code into `out`, "" while there's none: the room closed or
+// failed, or its host can't reach the relay (it opens again once it can).
+// It changes only if another room had it first, before anyone could join.
+void purr_platform_room_code(char *out, size_t size);
+// The room joined turned out not to be one, or its host couldn't be reached.
+bool purr_platform_room_failed(void);
+
+// Takes the players who join a match this machine hosts: on UDP `port` (0 for
+// any), where there's UDP, and in a room, in one transport. False only if
+// there's neither.
+bool purr_platform_host_open(uint16_t port, purr_transport *out);

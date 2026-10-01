@@ -28,7 +28,7 @@ int main(int argc, char **argv)
 }
 ```
 
-It opens a window and runs the game in a session (`purr/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]` and `--join address` from the command line. `purr_run_desc` also has `width` and `height` (960 by 540 by default), `tick_rate` (60 by default) and `stats`.
+It opens a window and runs the game in a session (`purr/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]`, `--join code` and `--connect address` from the command line. `--host` opens a room (see [Multiplayer](../language/multiplayer.md#rooms)), and a UDP port too, except on the web. `purr_run_desc` also has `width` and `height` (960 by 540 by default), `tick_rate` (60 by default) and `stats`.
 
 Hosts include `purr/platform.h`, never raylib: the generated header names types after the game's components, and raylib defines many of the same names.
 
@@ -61,7 +61,7 @@ The generated header is the API between the game and its host. Namespaced declar
 **Sessions**
 
 - `purr_game_api` is the game as a session runs it (`purr_game` in `purr/session.h`).
-- `purr_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Play`. `purr_local_set_session`, `purr_local_connected` and `purr_local_disconnected` tell local code where it stands.
+- `purr_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Play`. `purr_local_set_session`, `purr_local_connected` and `purr_local_disconnected` tell local code where it stands; `purr_local_set_session` takes the code of the room the match is in too (`purr_platform_room_code`), or `""`.
 
 ## A frame
 

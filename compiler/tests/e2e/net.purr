@@ -66,14 +66,30 @@ system Roll(Time time, mut Ball ball)
     if (Math.Abs(ball.position.y) > 20) ball.velocity.y = -ball.velocity.y;
 }
 
-// Starting a match from local code.
+// Starting a match from local code, and joining one.
 local singleton Menu
 {
     bool play;
+    bool join;
+    bool connect;
+    bool inRoom; // Session.room, as the view read it
+    int roomLength;
 }
 
-view Start(mut Menu menu)
+view Start(mut Menu menu, Session session)
 {
+    menu.inRoom = session.room == "K7QF2M";
+    menu.roomLength = session.room.Length;
+    if (menu.join)
+    {
+        menu.join = false;
+        Session.Join("k7qf2m");
+    }
+    if (menu.connect)
+    {
+        menu.connect = false;
+        Session.Connect("192.168.1.5", 7000);
+    }
     if (!menu.play) return;
     menu.play = false;
     Session.Play(Arena { size = 3 });

@@ -363,6 +363,41 @@ PURR_TEST(net_local_code_starts_a_match)
     purr_session_destroy(s);
 }
 
+static void run_views(void)
+{
+    purr_devices devices = {0};
+    purr_draw_reset(&draw);
+    purr_gui_begin(&gui, &devices, purr_f2(1920.0f, 1080.0f), NULL);
+    purr_frame(NULL, NULL, 1.0f, &local, &draw, &gui);
+    purr_gui_end(&gui, &draw);
+}
+
+// Session.Join takes a room's code, Session.Connect an address, and local
+// code reads the room the match is in from Session.room.
+PURR_TEST(net_local_code_joins_rooms_and_connects_to_addresses)
+{
+    purr_local_init(&local);
+    purr_local_set_session(&local, PURR_SESSION_CONNECTED, (purr_player_id){1}, 20, true, "K7QF2M");
+    run_views();
+    PURR_CHECK(local.Menu.inRoom && local.Menu.roomLength == 6);
+    purr_local_set_session(&local, PURR_SESSION_OFFLINE, (purr_player_id){0}, 0, false, "");
+    run_views();
+    PURR_CHECK(!local.Menu.inRoom && local.Menu.roomLength == 0);
+
+    purr_session_request request;
+    purr_start start;
+    local.Menu.join = true;
+    run_views();
+    PURR_REQUIRE(purr_local_take_request(&local, &request, &start));
+    PURR_CHECK(request.kind == PURR_REQUEST_JOIN && strcmp(request.address, "k7qf2m") == 0);
+
+    local.Menu.connect = true;
+    run_views();
+    PURR_REQUIRE(purr_local_take_request(&local, &request, &start));
+    PURR_CHECK(request.kind == PURR_REQUEST_CONNECT && strcmp(request.address, "192.168.1.5") == 0);
+    PURR_CHECK(request.port == 7000u);
+}
+
 // This machine stops for a while (a browser tab in the background, a
 // breakpoint), and its server with it: for the match, that time didn't pass.
 PURR_TEST(net_a_session_survives_a_pause)

@@ -55,6 +55,22 @@ PURR_WEB_IMPORT(stop) void purr_web_stop(void);
 // Runs JavaScript, for tests that need to fake browser events.
 PURR_WEB_IMPORT(eval) void purr_web_eval(const char *script);
 
+// Rooms (platform/src/rooms.c): matches players find by a code, through the
+// relay, with WebRTC data channels between them. One at a time: opening one
+// closes the last. Each has a number, which the calls about it take; the host
+// is player 0 to those who join, and they're 1 and up to it.
+PURR_WEB_IMPORT(room_host) uint32_t purr_web_room_host(void);
+PURR_WEB_IMPORT(room_join) uint32_t purr_web_room_join(const char *code);
+PURR_WEB_IMPORT(room_close) void purr_web_room_close(uint32_t room);
+// The room's code into `out` (7 bytes), "" while it has none.
+PURR_WEB_IMPORT(room_code) void purr_web_room_code(char *out);
+// The room joined isn't one, or it couldn't be reached.
+PURR_WEB_IMPORT(room_failed) bool purr_web_room_failed(void);
+PURR_WEB_IMPORT(room_send) void purr_web_room_send(uint32_t room, uint32_t to, const void *data, uint32_t size);
+// The next datagram that arrived: its size, or 0 when there's none.
+PURR_WEB_IMPORT(room_receive) uint32_t purr_web_room_receive(uint32_t room, uint32_t *from, void *data,
+                                                             uint32_t capacity);
+
 // Hot reloading, under purr run --web: what the page's last program left this
 // one (purr_reload_save in platform/src/reload.c), 0 bytes if nothing, and a
 // copy of it.

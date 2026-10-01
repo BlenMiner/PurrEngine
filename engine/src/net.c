@@ -56,6 +56,15 @@ void purr_address_format(const purr_address a, char *out, const size_t size)
                  (unsigned)(a.host >> 8 & 255u), (unsigned)(a.host & 255u), (unsigned)a.port);
     } else if (a.kind == PURR_ADDRESS_LOOPBACK) {
         snprintf(out, size, "loopback %u", (unsigned)a.host);
+    } else if (a.kind == PURR_ADDRESS_ROOM && a.host & PURR_ROOM_CODE_BIT) {
+        char code[PURR_ROOM_CODE_LENGTH + 1];
+        for (int i = 0; i < PURR_ROOM_CODE_LENGTH; i++) {
+            code[i] = PURR_ROOM_CODE_LETTERS[a.host >> (5 * (PURR_ROOM_CODE_LENGTH - 1 - i)) & 31u];
+        }
+        code[PURR_ROOM_CODE_LENGTH] = '\0';
+        snprintf(out, size, "room %s, player %u", code, (unsigned)a.port);
+    } else if (a.kind == PURR_ADDRESS_ROOM) {
+        snprintf(out, size, "room player %u", (unsigned)a.port);
     } else {
         snprintf(out, size, "nowhere");
     }

@@ -191,14 +191,14 @@ static const char *const release_flags[] = {"-O2", "-DNDEBUG", NULL};
 #define NATIVE_RUNTIME "mingw"
 static const char *const native_libs[] = {"-lmingw32", "-lmingwex", "-lmoldname", "-lmsvcrt", "-lkernel32",
                                           "-luser32", "-lgdi32", "-lshell32", "-ladvapi32", "-lopengl32",
-                                          "-lwinmm", "-lws2_32", NULL};
+                                          "-lwinmm", "-lws2_32", "-lsecur32", NULL};
 #define EXE_SUFFIX ".exe"
 #define LIBRARY_SUFFIX ".dll"
 #elif defined(__APPLE__)
-// What raylib and its GLFW link on macOS.
+// What raylib and its GLFW link on macOS, and Security, for TLS to the relay.
 static const char *const native_libs[] = {"-framework", "Cocoa", "-framework", "IOKit", "-framework", "CoreFoundation",
                                           "-framework", "CoreVideo", "-framework", "OpenGL", "-framework", "CoreAudio",
-                                          "-framework", "AudioToolbox", NULL};
+                                          "-framework", "AudioToolbox", "-framework", "Security", NULL};
 #define EXE_SUFFIX ""
 #define LIBRARY_SUFFIX ".dylib"
 #else
@@ -1187,8 +1187,9 @@ static bool write_web_main(const run *r)
 }
 
 // The page: the package's shell, and purr.js as it is, hot reloading and all,
-// which loads the program from purr.
-static char *web_page(const char *root)
+// which loads the program from purr. `args` (--host, --join, --connect, ending with NULL)
+// go to the game.
+static char *web_page(const char *root, const char *const *args)
 {
     char *shell_path = path_join(root, "web/shell.html");
     char *script_path = path_join(root, "web/purr.js");
@@ -1201,7 +1202,21 @@ static char *web_page(const char *root)
         fprintf(stderr, "purr: the web page's files are missing from %s/web; reinstall purr\n", root);
         return NULL;
     }
-    const char *before = "<script>\nPurr.reload = true;\n";
+    // Purr.arguments = ["--join", "K7QF2M"]: letters, digits and dots, so
+    // anything else is left out rather than escaped.
+    char before[512] = "<script>\nPurr.reload = true;\nPurr.arguments = [";
+    for (int i = 0; args && args[i]; i++) {
+        size_t at = strlen(before);
+        if (at + strlen(args[i]) + 8 >= sizeof before) break;
+        before[at++] = i ? ',' : ' ';
+        before[at++] = '"';
+        for (const char *c = args[i]; *c; c++) {
+            if (*c != '"' && *c != '\\' && *c != '<' && (unsigned char)*c >= ' ') before[at++] = *c;
+        }
+        before[at++] = '"';
+        before[at] = '\0';
+    }
+    strcat(before, "];\n");
     const char *after = "</script>";
     const size_t n = (size_t)(slot - shell) + strlen(before) + strlen(script) + strlen(after)
                    + strlen(slot + strlen("{{{ SCRIPT }}}")) + 1;
@@ -1235,14 +1250,14 @@ static void answer_web(void *user, const char *path, serve_reply *reply)
     }
 }
 
-int purr_run_web(const char *root, const build_options *opts, const bool open_page)
+int purr_run_web(const char *root, const build_options *opts, const bool open_page, const char *const *args)
 {
     web_run w = {0};
     run *r = &w.r;
     r->web = true;
     if (!build_setup(&r->b, root, opts, false)) return 1;
     open_run(r);
-    w.page = web_page(root);
+    w.page = web_page(root, args);
     if (!w.page || !write_web_main(r) || !build_library(r)) return 1;
 
     uint16_t port = 0;

@@ -921,9 +921,13 @@ static const struct {
 } session_calls[] = {
     {"Play", "Session.Play(scene)", "Starts a match on this machine alone, in `scene`. It leaves the match it's in first."},
     {"Host", "Session.Host(scene, int port)",
-     "Starts a match others can join, in `scene`, taking players on `port` (7777 unless it says). It leaves the match it's in first."},
-    {"Join", "Session.Join(string address)",
-     "Joins the match at `address`, like \"192.168.1.5\" or \"localhost:7777\". It leaves the match it's in first."},
+     "Starts a match others can join, in `scene`: in a room, whose code is `Session.room`, and on `port` too (7777 "
+     "unless it says), except on the web. It leaves the match it's in first."},
+    {"Join", "Session.Join(string code)",
+     "Joins the match in the room with `code`, like \"K7QF2M\": its host's `Session.room`. It leaves the match it's in first."},
+    {"Connect", "Session.Connect(string address, int port)",
+     "Joins the match at `address`, like \"192.168.1.5\" or \"localhost\", on `port` (7777 unless it says). It leaves the "
+     "match it's in first."},
     {"Leave", "Session.Leave()", "Leaves the match: `Disconnected` follows, and views stop seeing it."},
 };
 
@@ -1059,7 +1063,7 @@ static void describe(const occurrence *o, sb *out)
                                                      "per frame, and the input's Sample once per tick. Systems take a "
                                                      "`Devices` parameter instead: the devices of the entity's owner."
                   : str_eq_c(o->name, "Scene")     ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
-                  : str_eq_c(o->name, "Session")   ? "\n\nWhich match this machine is in: Play, Host, Join and Leave, from views "
+                  : str_eq_c(o->name, "Session")   ? "\n\nWhich match this machine is in: Play, Host, Join, Connect and Leave, from views "
                                                      "and local handlers. Take `Session session` to read where it stands."
                                                    : "\n\nMath functions and constants, deterministic on every platform.");
         break;
@@ -2267,6 +2271,12 @@ static void list_members(completion *c, const type t, const bool edges, const sc
             const field *f = &t.decl->fields.items[i];
             if (f->hidden) continue;
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
+        }
+        if (t.kind == TY_SINGLETON && t.decl->builtin && str_eq_c(t.decl->name, "Session")) {
+            item(c, "room", CK_FIELD, "string",
+                 "The code of the room the match is in, like \"K7QF2M\", or \"\" if it's in none. Others join it with "
+                 "`Session.Join(code)`.",
+                 NULL);
         }
         for (int i = 0; i < t.decl->methods.count; i++) {
             const decl *m = t.decl->methods.items[i];
