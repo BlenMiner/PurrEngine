@@ -299,6 +299,8 @@ static inline void tide_run_migrate(void)
         tide_session_take_over(s, network, tide_run_now);
     } else if (moved == 2) {
         tide_session_join(s, network, server, tide_run_now);
+    } else if (moved == -2) {
+        tide_session_fail(s, TIDE_DISCONNECT_ENDED); // Its host ended it: the goodbye was lost
     } else if (moved < 0 || tide_run_now - tide_run_migrating_since > 30.0) {
         tide_session_fail(s, TIDE_DISCONNECT_TIMED_OUT);
     }

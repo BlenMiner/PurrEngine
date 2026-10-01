@@ -10,7 +10,7 @@ import { cloudflareTurn, createRelay, DEFAULT_ICE } from './relay.mjs';
 
 let relay, url;
 before(async () => {
-    relay = createRelay({ limits: { loneSeconds: 0.5, messageBurst: 20, messagesPerSecond: 1, probeSeconds: 0.3 } });
+    relay = createRelay({ limits: { loneSeconds: 0.5, messageBurst: 20, messagesPerSecond: 1, probeSeconds: 0.3, endedSeconds: 0.5 } });
     await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve));
     url = `ws://127.0.0.1:${relay.address().port}`;
 });
@@ -183,6 +183,27 @@ test('a host that doesn\'t answer loses its room to its players', async () => {
     host.socket.destroy();
     a.ws.close();
     b.ws.close();
+});
+
+test('a match its host ended isn\'t taken over, for a while', async () => {
+    const host = await connect();
+    host.send({ host: 'ENDEDX', key: 'k5' });
+    assert.deepEqual(await host.next(), { hosting: 'ENDEDX' });
+    host.send({ end: 'ENDEDX' });
+    while (relay.rooms.has('ENDEDX')) await sleep(10);
+    const a = await connect();
+    a.send({ migrate: 'ENDEDX', key: 'k5' }); // A player who missed the host's goodbye
+    assert.deepEqual(await a.next(), { ended: 'ENDEDX' });
+    const b = await connect();
+    b.send({ migrate: 'ENDEDX', key: 'other' });
+    assert.deepEqual(await b.next(), { taken: 'ENDEDX' });
+    b.send({ host: 'ENDEDX' });
+    assert.deepEqual(await b.next(), { taken: 'ENDEDX' });
+    await sleep(600); // endedSeconds, here
+    const c = await connect();
+    c.send({ host: 'ENDEDX' });
+    assert.deepEqual(await c.next(), { hosting: 'ENDEDX' });
+    for (const p of [host, a, b, c]) p.ws.close();
 });
 
 test('another key is another match', async () => {

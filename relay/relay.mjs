@@ -31,6 +31,10 @@
 //                                                answered a ping after all: introduced to it
 //                     {taken: "K7QF2M"}          The room has another key: not the same match
 //   relay -> host     {lost: "K7QF2M"}           The host didn't answer: the room is someone else's
+//   host  -> relay    {end: "K7QF2M"}            Its match ended for good: it closes the room, and
+//                                                for a while the relay tells its players who come
+//                                                back {ended: "K7QF2M"} rather than let them take it
+//                                                over, whatever goodbye of the host's they missed
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later.
@@ -53,6 +57,7 @@ const LIMITS = {
     loneSeconds: 30,        // A connection that isn't in a room by then is closed
     pingSeconds: 25,        // Keeps connections through proxies, and finds dead ones
     probeSeconds: 3,        // How long a host has to answer a ping when its players come to take its room over
+    endedSeconds: 300,      // How long a room whose match ended stays so, for its players who missed it
 };
 
 // STUN only: players find their own addresses, and connect directly or not at all.
@@ -106,6 +111,7 @@ export function cloudflareTurn(keyId, token, options = {}) {
 export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limits = {} } = {}) {
     const limit = { ...LIMITS, ...limits };
     const rooms = new Map(); // Code -> room
+    const ended = new Map(); // Code -> {key, until}: rooms whose match ended, which no one takes over
     const perAddress = new Map();
     const sockets = new Set();
     let connections = 0;
@@ -164,8 +170,11 @@ export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limi
             const code = message.host;
             const key = typeof message.key === 'string' && KEY.test(message.key) ? message.key : null;
             if (!CODE.test(code)) peer.ws.close(1008, 'not a room code');
-            else if (rooms.has(code)) peer.ws.send({ taken: code });
+            else if (rooms.has(code) || endedRoom(code)) peer.ws.send({ taken: code });
             else host(peer, code, key);
+        } else if (typeof message.end === 'string' && room && room.host === peer && message.end === room.code) {
+            if (room.key) ended.set(room.code, { key: room.key, until: Date.now() + limit.endedSeconds * 1000 });
+            leave(peer);
         } else if (typeof message.join === 'string' && !room && !peer.claiming) {
             const code = message.join;
             const joined = rooms.get(code);
@@ -214,7 +223,12 @@ export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limi
     // first of the players asking hosts the room, which the others join.
     function migrate(peer, code, key) {
         const room = rooms.get(code);
-        if (!room) {
+        const gone = endedRoom(code);
+        if (gone && gone.key === key) {
+            peer.ws.send({ ended: code });
+        } else if (gone) {
+            peer.ws.send({ taken: code });
+        } else if (!room) {
             host(peer, code, key);
         } else if (room.key !== key) {
             peer.ws.send({ taken: code });
@@ -248,6 +262,14 @@ export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limi
         for (const p of claims) migrate(p, room.code, room.key); // The first hosts it again, the others join
     }
 
+    // A room whose match ended a moment ago, or null
+    function endedRoom(code) {
+        const gone = ended.get(code);
+        if (gone && gone.until > Date.now()) return gone;
+        ended.delete(code);
+        return null;
+    }
+
     function closeJoiners(room) {
         for (const joiner of room.joining.values()) {
             joiner.room = null;
@@ -273,7 +295,10 @@ export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limi
         }
     }
 
-    const pings = setInterval(() => { for (const ws of sockets) ws.ping(); }, limit.pingSeconds * 1000);
+    const pings = setInterval(() => {
+        for (const ws of sockets) ws.ping();
+        for (const code of [...ended.keys()]) endedRoom(code); // Forgets those whose time is up
+    }, limit.pingSeconds * 1000);
     pings.unref();
     server.on('close', () => clearInterval(pings));
     server.rooms = rooms;

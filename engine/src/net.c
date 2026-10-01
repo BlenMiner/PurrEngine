@@ -211,7 +211,7 @@ tide_transport tide_loopback_endpoint(tide_loopback *net, const uint32_t number)
     if (number < 1 || number > LOOPBACK_ENDPOINTS) return (tide_transport){0};
     endpoint *e = &net->endpoints[number - 1u];
     e->open = true;
-    return (tide_transport){e, loopback_send, loopback_receive, loopback_close};
+    return (tide_transport){e, loopback_send, loopback_receive, loopback_close, NULL};
 }
 
 // ---------------------------------------------------------------------------

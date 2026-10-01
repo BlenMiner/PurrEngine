@@ -130,7 +130,8 @@ void tide_platform_room_key(char *out, size_t size);
 void tide_platform_room_migrate(const char *code, const char *key);
 // ...and which it was, once the relay says: 1, this machine hosts the room
 // now, and `out` takes the players who join it; 2, it joins the room's host,
-// whom `out` reaches at `server`; -1, the room can't be reached; 0, not yet.
+// whom `out` reaches at `server`; -2, the match ended there (its host ended
+// it, see tide_transport.end); -1, the room can't be reached; 0, not yet.
 int tide_platform_room_migrated(tide_transport *out, tide_address *server);
 
 // Takes the players who join a match this machine hosts: on UDP `port` (0 for

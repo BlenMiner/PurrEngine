@@ -134,7 +134,7 @@ static bool udp_open(const uint32_t host, const uint16_t port, tide_transport *o
         return false;
     }
     u->socket = s;
-    *out = (tide_transport){u, udp_send, udp_receive, udp_close};
+    *out = (tide_transport){u, udp_send, udp_receive, udp_close, NULL};
     return true;
 }
 

@@ -44,7 +44,7 @@ A player who joins gets the whole world, packed, and a cookie. Joining the same 
 
 ## Host migration
 
-With the game's `hostMigration` setting, the server tells every player what they need for its match to go on without it: its room's code, the room's key (which lets only them take the room over), which players are in the match, and the SHA-256 of each one's cookie. When the server leaves or stops answering, its players go to the room again. The relay pings the room's host: if it's gone, the first player there hosts the room, and the relay introduces the others to it. That machine runs the server from the last tick it verified, with the players already in its world, and the others join it with their cookies, which it checks against the hashes. See [Multiplayer](../language/multiplayer.md#host-migration).
+With the game's `hostMigration` setting, the server tells every player what they need for its match to go on without it: its room's code, the room's key (which lets only them take the room over), which players are in the match, and the SHA-256 of each one's cookie. When the server leaves or stops answering, its players go to the room again. The relay pings the room's host: if it's gone, the first player there hosts the room, and the relay introduces the others to it. That machine runs the server from the last tick it verified, with the players already in its world, and the others join it with their cookies, which it checks against the hashes. A match that ends says so at the relay too, which keeps its room as ended for five minutes: a player who missed the goodbye and comes back to take the match over is told it ended. See [Multiplayer](../language/multiplayer.md#host-migration).
 
 ## Reliability
 

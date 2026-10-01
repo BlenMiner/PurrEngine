@@ -139,7 +139,7 @@ Then, when the machine running a room's match leaves or stops answering, another
 - Local code sees no `Connected` or `Disconnected` while the match changes hands: `Session.state` is `Connecting` meanwhile, and views keep showing the last world they had. On the new host, `Session.server` becomes true.
 - A player who doesn't come back to the new host within 20 seconds leaves the match.
 - A host that leaves says so, and the match changes hands at once. One that stops answering is noticed after a few seconds.
-- `Session.End()` ends the match for everyone instead: every player gets `Disconnected` with `Ended`.
+- `Session.End()` ends the match for everyone instead: every player gets `Disconnected` with `Ended`, even one who missed the goodbye, as the relay keeps the room as ended for a while. So does a match whose last scene unloads.
 - Only matches in a room change hands, as the room is where the players meet again. A closed match stays closed: its players come back, but no one new joins.
 
 The new host only has what its machine could see: [private scenes](./scenes.md#private-scenes) it wasn't in are lost. A game that uses host migration shouldn't keep secrets. Players can't pass for each other: they only ever get each other's cookies hashed (see [Coming back](#players-in-the-match)).

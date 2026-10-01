@@ -277,6 +277,19 @@ await test('a desktop match changes hands when its host leaves', async () => {
     if (after.filter(line => line.endsWith('hosting')).length !== 1) throw new Error('not one of them hosts');
 });
 
+// A match its host ended stays ended, even for a player who missed the
+// goodbye: the relay tells them so, rather than let them take the room over.
+await test('a match its host ended isn\'t taken over', async () => {
+    const host = player(['end-host'], 'host');
+    players.push(host);
+    const [, code, , key] = (await within(host.line(/^room /), 15, 'hosting')).split(' ');
+    if ((await within(host.exited, 15, 'the host ending the match')) !== 0) throw new Error('the host failed');
+    const late = player(['migrate', code, key], 'late');
+    players.push(late);
+    const answer = await within(late.line(/^migrated /), 30, 'the relay answering');
+    if (answer !== 'migrated -2') throw new Error(`the relay said ${answer}, not that the match ended`);
+});
+
 // Chrome (or Edge) and Firefox: two WebRTC implementations of their own.
 // Each shows its address, then hides it behind a .local name, as it does for
 // players: the desktop side then learns where it is from the checks it sends

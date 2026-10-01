@@ -439,6 +439,10 @@
                     r.hosting = true;
                     r.moved = 1;
                 }
+            } else if (m.ended && r.moving) { // Its host ended the match there
+                r.moving = false;
+                r.failed = true;
+                r.moved = -2;
             } else if (m.taken && r.moving) { // Another key: not the match it was in
                 r.moving = false;
                 r.failed = true;
@@ -597,6 +601,11 @@
             u8()[outPtr + key.length] = 0;
         },
         room_close(number) { if (room && room.number === number) closeRoom(); },
+        // The match ended: the relay keeps the room as ended a while, so its players don't take it over
+        room_end(number) {
+            const r = room && room.number === number && room.hosting ? room : null;
+            if (r && r.ws && r.ws.readyState === WebSocket.OPEN) r.ws.send(JSON.stringify({ end: r.code }));
+        },
         // The code into `out` (7 bytes), "" while there's none: never a room
         // that failed, nor one the relay can't be told about.
         room_code(outPtr) {

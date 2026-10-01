@@ -263,7 +263,9 @@ void tide_session_kick_all(tide_session *s, const char *message);
 void tide_session_join(tide_session *s, tide_transport network, tide_address server, double now);
 // Ends the match this machine runs, for everyone: every player goes offline
 // with TIDE_DISCONNECT_ENDED, this machine's too, and no other machine takes
-// it over. The server tells them for a moment. Nothing on a client.
+// it over: the server's transports hear it ended (tide_transport.end), which
+// a room tells its relay, for players who missed the goodbye. Nothing on a
+// client.
 void tide_session_end(tide_session *s);
 
 // Host migration (tide_game.host_migration), on the machine that runs the

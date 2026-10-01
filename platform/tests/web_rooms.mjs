@@ -9,7 +9,9 @@
 //
 // With `handover`, three frames check host migration: the host leaves once
 // both players joined, and passes once both say "ok after", each the same
-// player as before, one of them hosting the room now.
+// player as before, one of them hosting the room now. With `ended`, a host
+// ends its match, and a frame that goes to its room again afterwards, as a
+// player who missed the goodbye, has to hear from the relay that it ended.
 //
 // With TIDE_RELAY set, like wss://relay.tide-engine.dev, the players meet
 // through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
@@ -26,6 +28,7 @@ import { createRelay } from '../../relay/relay.mjs';
 
 const [browser, gamePage, profile, mode] = process.argv.slice(2);
 const handover = mode === 'handover';
+const ended = mode === 'ended';
 if (!browser || !existsSync(browser)) {
     console.log('SKIPPED: no Chrome or Edge found. Set TIDE_BROWSER to run web tests.');
     process.exit(0);
@@ -45,6 +48,8 @@ const page = `<!doctype html>
 <script>
   const relay = ${JSON.stringify(relayUrl)};
   const handover = ${JSON.stringify(handover)};
+  const ended = ${JSON.stringify(ended)};
+  let hosted = null; // Its code and key, with \`ended\`
   const policy = ${JSON.stringify(process.env.TIDE_ICE_POLICY || 'all')};
   function player(who, args) {
     const frame = document.createElement('iframe');
@@ -63,6 +68,13 @@ const page = `<!doctype html>
   addEventListener('message', ({ data }) => {
     log.push(data.who + ': ' + data.line);
     fetch('say', { method: 'POST', body: data.who + ': ' + data.line }); // As it happens, in case the page hangs
+    const keyed = /^room ([0-9A-Z]{6}) key ([0-9a-f]+)$/.exec(data.line);
+    if (keyed) hosted = keyed;
+    if (ended && data.who === 'host' && data.line === 'ended') player('late', 'migrate,' + hosted[1] + ',' + hosted[2]);
+    if (ended && data.who === 'late' && data.line.startsWith('migrated')) {
+      if (data.line !== 'migrated -2') log.push('the relay never said the match ended');
+      report(data.line === 'migrated -2');
+    }
     const room = /^room ([0-9A-Z]{6})$/.exec(data.line);
     if (room && data.who === 'host' && !handover) player('joiner', 'join,' + room[1]);
     if (room && data.who === 'host' && handover) {
@@ -88,7 +100,7 @@ const page = `<!doctype html>
     }
     if (/^(FAIL|exit|abort)/.test(data.line)) report(false);
   });
-  player('host', handover ? 'handover-host' : 'host');
+  player('host', ended ? 'end-host' : handover ? 'handover-host' : 'host');
 </script>
 `;
 
@@ -147,7 +159,8 @@ const { passed, log } = await result;
 clearTimeout(timeout);
 child.kill();
 for (const line of log) console.log(line);
-if (handover) console.log(passed ? 'The match changed hands.' : 'The match didn\'t change hands.');
+if (ended) console.log(passed ? 'The match stayed ended.' : 'The match didn\'t stay ended.');
+else if (handover) console.log(passed ? 'The match changed hands.' : 'The match didn\'t change hands.');
 else console.log(passed ? 'Both players met in a room, and played on while the host\'s page was hidden.'
                         : 'The players didn\'t meet, or the match didn\'t go on while the host\'s page was hidden.');
 process.exit(passed ? 0 : 1);

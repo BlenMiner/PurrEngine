@@ -78,6 +78,8 @@ TIDE_WEB_IMPORT(room_migrate) uint32_t tide_web_room_migrate(const char *code, c
 TIDE_WEB_IMPORT(room_migrated) int32_t tide_web_room_migrated(uint32_t number);
 // The key of the room this program hosts, into `out` (TIDE_ROOM_KEY_LENGTH + 1 bytes)
 TIDE_WEB_IMPORT(room_key) void tide_web_room_key(char *out);
+// The match in room `number`, which this program hosts, ended: the relay keeps it as ended a while
+TIDE_WEB_IMPORT(room_end) void tide_web_room_end(uint32_t number);
 TIDE_WEB_IMPORT(room_close) void tide_web_room_close(uint32_t room);
 // The room's code into `out` (7 bytes), "" while it has none.
 TIDE_WEB_IMPORT(room_code) void tide_web_room_code(char *out);

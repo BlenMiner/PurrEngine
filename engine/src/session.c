@@ -801,8 +801,12 @@ void tide_server_destroy(tide_server *s)
         send_bye(s, c->transport, c->address);
         free_connection(c);
     }
+    // A goodbye can be lost: a match that ended says so where its players
+    // would meet to take it over, so that none does (host migration)
     for (uint32_t i = 0; i < 2; i++) {
-        if (s->desc.transports[i].close) s->desc.transports[i].close(s->desc.transports[i].self);
+        const tide_transport *t = &s->desc.transports[i];
+        if (s->ended && t->end) t->end(t->self);
+        if (t->close) t->close(t->self);
     }
     for (uint32_t i = 0; s->frames && i < s->w.history; i++) free(s->frames[i].data);
     free(s->frames);
@@ -1656,9 +1660,6 @@ struct tide_session {
     // machine took it over yet, or this machine joined the one that did.
     tide_client *stale;
     bool migrating;
-    // A match it ended, whose server tells the others so for a moment
-    tide_server *ending;
-    double ending_until;
 };
 
 // The session's own time starts over with each match.
@@ -1694,11 +1695,7 @@ static void tear_down(tide_session *s)
     s->open = false;
 }
 
-static void drop_ending(tide_session *s)
-{
-    tide_server_destroy(s->ending);
-    s->ending = NULL;
-}
+
 
 tide_session *tide_session_create(const tide_session_desc *desc)
 {
@@ -1712,7 +1709,6 @@ void tide_session_destroy(tide_session *s)
 {
     if (!s) return;
     tear_down(s);
-    drop_ending(s);
     free(s);
 }
 
@@ -1863,10 +1859,6 @@ static void begin_migration(tide_session *s)
 
 void tide_session_update(tide_session *s, const double now)
 {
-    if (s->ending) {
-        tide_server_update(s->ending, now - s->paused);
-        if (s->ending->now >= s->ending_until || s->ending->now < s->ending_until - KICK_SECONDS) drop_ending(s);
-    }
     if (!s->client) return;
     // This machine's server stops whenever the machine does (a breakpoint, a
     // browser that froze the page), and its player with it. Beyond the ticks
@@ -1947,18 +1939,8 @@ bool tide_session_next_event(tide_session *s, tide_session_event *event)
 void tide_session_end(tide_session *s)
 {
     if (!s->server) return;
-    // Its server tells everyone the match ended, every update for a moment,
-    // after this machine's player has gone
-    tide_server *server = s->server;
-    s->server = NULL;
-    server->ended = true;
-    server->desc.transports[0] = (tide_transport){0}; // This machine's player, on the loopback that goes now
-    for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
-        if (server->connections[i].used && server->connections[i].local) free_connection(&server->connections[i]);
-    }
-    drop_ending(s);
-    s->ending = server;
-    s->ending_until = server->now + KICK_SECONDS;
+    // Its goodbyes say the match ended, and so does its transports' `end`
+    s->server->ended = true;
     tear_down(s);
     push_event(s, (tide_session_event){TIDE_SESSION_DISCONNECTED_EVENT, TIDE_DISCONNECT_ENDED});
 }

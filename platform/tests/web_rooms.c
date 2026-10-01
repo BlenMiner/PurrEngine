@@ -6,7 +6,9 @@
 // the match has to go on: the joiner's verified tick keeps up. Each prints
 // "ok" then, and keeps playing so the other can finish; anything else ends it
 // with "FAIL". With `handover-host` and `handover-join <code> <n>`, three of
-// them check host migration instead.
+// them check host migration instead; with `end-host`, a host ends its match
+// and says its room's code and key, and `migrate <code> <key>` goes to that
+// room again and says what the relay answered.
 
 #include <stdio.h>
 #include <string.h>
@@ -204,6 +206,47 @@ static void migrate(void)
     }
 }
 
+// A host that ends its match, and a player who missed the goodbye.
+static bool end_host;
+static const char *migrate_code;
+static const char *migrate_key;
+static double said_at = -1.0;
+
+static int frame_ended(void)
+{
+    if (now > 30.0 && !done) return fail("not done within 30 seconds");
+    if (migrate_code) {
+        if (now == 0.0 || done) return TIDE_KEEP_RUNNING;
+        if (!moved) {
+            tide_platform_room_migrate(migrate_code, migrate_key);
+            moved = true;
+        }
+        tide_transport network;
+        tide_address server;
+        const int answer = tide_platform_room_migrated(&network, &server);
+        if (answer != 0) {
+            printf("migrated %d\n", answer);
+            done = true;
+        }
+        return TIDE_KEEP_RUNNING;
+    }
+    tide_session_update(session, now);
+    char code[TIDE_ROOM_CODE_LENGTH + 1];
+    char key[TIDE_ROOM_KEY_LENGTH + 1];
+    tide_platform_room_code(code, sizeof code);
+    tide_platform_room_key(key, sizeof key);
+    if (said_at < 0.0 && code[0] && key[0]) {
+        printf("room %s key %s\n", code, key);
+        said_at = now;
+    }
+    if (said_at >= 0.0 && now - said_at > 0.5 && !done) {
+        tide_session_end(session);
+        printf("ended\n");
+        done = true;
+    }
+    return TIDE_KEEP_RUNNING;
+}
+
 // Three players: the host leaves once both others are in, and they go on.
 static int frame_handover(void)
 {
@@ -254,6 +297,7 @@ static int frame(void *user, const float seconds)
 {
     (void)user;
     now += seconds;
+    if (end_host || migrate_code) return frame_ended();
     if (handover) return frame_handover();
     if (now > 45.0) return fail(met_at < 0.0 ? "the players didn't meet within 45 seconds" : "the test didn't finish within 45 seconds");
     if (tide_platform_room_failed()) tide_session_fail(session, TIDE_DISCONNECT_FAILED);
@@ -313,8 +357,15 @@ static int frame(void *user, const float seconds)
 
 int main(const int argc, char **argv)
 {
-    handover = argc > 1 && strncmp(argv[1], "handover-", 9) == 0;
-    const char *mode = argc > 1 ? argv[1] + (handover ? 9 : 0) : "";
+    if (argc > 3 && strcmp(argv[1], "migrate") == 0) {
+        migrate_code = argv[2];
+        migrate_key = argv[3];
+        tide_platform_open(&(tide_window_desc){.title = "web rooms", .width = 64, .height = 64, .hidden = true});
+        tide_platform_run(frame, NULL);
+    }
+    end_host = argc > 1 && strcmp(argv[1], "end-host") == 0;
+    handover = end_host || (argc > 1 && strncmp(argv[1], "handover-", 9) == 0);
+    const char *mode = end_host ? "host" : argc > 1 ? argv[1] + (handover ? 9 : 0) : "";
     const bool host = strcmp(mode, "host") == 0;
     const bool join = argc > 2 && strcmp(mode, "join") == 0;
     if (!host && !join) return fail("run it with 'host', 'join <code>', 'handover-host' or 'handover-join <code> <n>'");

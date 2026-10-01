@@ -1184,7 +1184,7 @@ Implemented, awaiting approval:
 - The new host runs the match at its tick rate, and goes on from the last tick it verified. The last host's player gets `PlayerLeft` at the first tick. A player who doesn't come back within 20 seconds gets `PlayerLeft` too; one who comes back later is the same player, with `PlayerJoined` again.
 - A closed match changes hands closed: its players come back, but no one new joins. The room keeps its code, and its key (128 random bits) only goes to the match's players, so no one else can take the room over.
 - A host that's still running but doesn't answer the relay in time, like one stopped at a breakpoint, loses the room to its players. When it carries on, its match fails on its own machine (`Failed`).
-- `Session.End()` on a client does nothing. The server tells its players for two seconds, so a lost packet doesn't make it a time-out, which would hand the match over.
+- `Session.End()` on a client does nothing. A match that ends, by `Session.End()` or by its last scene unloading, ends at the relay too: for five minutes, players who come back to its room to take it over are told it ended, and go offline with `Ended`, whatever goodbye they missed. The room's code stays taken that long.
 
 ### Open
 

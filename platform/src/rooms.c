@@ -21,6 +21,7 @@ static uint32_t backend_join(const char *code);
 static uint32_t backend_migrate(const char *code, const char *key);
 static int backend_moved(uint32_t number); // tide_platform_room_migrated's answer, for room `number`
 static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1]);
+static void backend_end(uint32_t number); // The match in room `number`, which this program hosts, ended
 static void backend_close(uint32_t number);
 static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1]);
 static bool backend_failed(void);
@@ -54,6 +55,11 @@ static int backend_moved(const uint32_t number)
 static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1])
 {
     tide_web_room_key(out);
+}
+
+static void backend_end(const uint32_t number)
+{
+    tide_web_room_end(number);
 }
 
 static void backend_close(const uint32_t number)
@@ -286,6 +292,10 @@ static void on_relay(native_room *r, const char *text)
             r->hosting = true;
             r->moved = 1;
         }
+    } else if (rtc_json_get(m, "ended").text && r->moving) { // Its host ended the match there
+        r->moving = false;
+        r->failed = true;
+        r->moved = -2;
     } else if (rtc_json_get(m, "taken").text && r->moving) { // Another key: not the match it was in
         r->moving = false;
         r->failed = true;
@@ -448,6 +458,16 @@ static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1])
     snprintf(out, TIDE_ROOM_KEY_LENGTH + 1, "%s", room && room->hosting && !room->failed ? room->key : "");
 }
 
+// The relay keeps the room as ended a while, so its players don't take it
+// over: it goes out with the close that follows.
+static void backend_end(const uint32_t number)
+{
+    if (!room || room->number != number || !room->hosting) return;
+    char json[64];
+    snprintf(json, sizeof json, "{\"end\":\"%s\"}", room->code);
+    relay_send(room, json);
+}
+
 static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1])
 {
     const bool shown = room && !room->failed && room->reachable;
@@ -521,6 +541,12 @@ static void room_close(void *self)
     free(r);
 }
 
+static void room_end(void *self)
+{
+    const room_transport *r = self;
+    backend_end(r->number);
+}
+
 // A transport for room `number`: false, closing it, without the memory.
 static bool transport(const uint32_t number, const uint32_t code, tide_transport *out)
 {
@@ -530,7 +556,7 @@ static bool transport(const uint32_t number, const uint32_t code, tide_transport
         return false;
     }
     *r = (room_transport){number, code};
-    *out = (tide_transport){.self = r, .send = room_send, .receive = room_receive, .close = room_close};
+    *out = (tide_transport){.self = r, .send = room_send, .receive = room_receive, .close = room_close, .end = room_end};
     return true;
 }
 
@@ -643,6 +669,12 @@ static void both_close(void *self)
     free(b);
 }
 
+static void both_end(void *self)
+{
+    const both *b = self;
+    if (b->room.end) b->room.end(b->room.self);
+}
+
 bool tide_platform_host_open(const uint16_t port, tide_transport *out)
 {
     tide_transport udp = {0}, in_room = {0};
@@ -651,7 +683,7 @@ bool tide_platform_host_open(const uint16_t port, tide_transport *out)
     both *b = has_udp && has_room ? malloc(sizeof *b) : NULL;
     if (b) {
         *b = (both){udp, in_room, false};
-        *out = (tide_transport){.self = b, .send = both_send, .receive = both_receive, .close = both_close};
+        *out = (tide_transport){.self = b, .send = both_send, .receive = both_receive, .close = both_close, .end = both_end};
         return true;
     }
     if (has_udp && has_room) {

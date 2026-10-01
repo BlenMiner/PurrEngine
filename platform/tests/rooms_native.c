@@ -5,6 +5,8 @@
 //     tide_platform_rooms join <code>       joins it
 //     tide_platform_rooms handover-host     hosts a match with host migration, and leaves it
 //     tide_platform_rooms handover-join <code> <n>  plays in it, as player n, until it changed hands
+//     tide_platform_rooms end-host          ends a match with host migration, says its room's code and key
+//     tide_platform_rooms migrate <code> <key>  goes to that room again, and says what the relay answered
 //     tide_platform_rooms echo-host         hosts a room, for a browser that echoes
 //     tide_platform_rooms echo-join <code>  joins a browser's room that echoes
 //
@@ -325,6 +327,63 @@ static int handover(const bool host, const char *code, const int number)
     }
 }
 
+// A host that ends its match, in a room with host migration, and quits at
+// once: says the room's code and key first.
+static int end_host(void)
+{
+    static tide_game migrating;
+    migrating = game;
+    migrating.hash = 8;
+    migrating.host_migration = true;
+    tide_session *session = tide_session_create(&(tide_session_desc){.game = &migrating, .tick_rate = 60, .sample = sample});
+    tide_transport network;
+    if (!tide_platform_host_open(0, &network)) return printf("FAIL: no room to host\n"), 1;
+    tide_session_start(session, NULL, 0.0);
+    tide_session_open(session, network);
+    const double begin = clock_seconds();
+    bool said = false;
+    double said_at = 0.0;
+    for (;;) {
+        const double now = clock_seconds() - begin;
+        if (now > 30.0) return printf("FAIL: the relay didn't open the room within 30 seconds\n"), 1;
+        tide_session_update(session, now);
+        char code[TIDE_ROOM_CODE_LENGTH + 1];
+        char key[TIDE_ROOM_KEY_LENGTH + 1];
+        tide_platform_room_code(code, sizeof code);
+        tide_platform_room_key(key, sizeof key);
+        if (!said && code[0] && key[0]) {
+            printf("room %s key %s\n", code, key);
+            said = true;
+            said_at = now;
+        }
+        if (said && now - said_at > 0.5) {
+            tide_session_end(session); // Then quits: no time to say goodbye again
+            printf("ended\n");
+            return 0;
+        }
+        nap();
+    }
+}
+
+// A player who missed the goodbye, going to the room again: says what the
+// relay answered (see tide_platform_room_migrated).
+static int migrate_to(const char *code, const char *key)
+{
+    tide_platform_room_migrate(code, key);
+    const double begin = clock_seconds();
+    while (clock_seconds() - begin < 30.0) {
+        tide_transport network;
+        tide_address server;
+        const int answer = tide_platform_room_migrated(&network, &server);
+        if (answer != 0) {
+            printf("migrated %d\n", answer);
+            return 0;
+        }
+        nap();
+    }
+    return printf("FAIL: no answer within 30 seconds\n"), 1;
+}
+
 // ---------------------------------------------------------------------------
 // Echoes: straight on the room's transport
 
@@ -396,6 +455,8 @@ int main(const int argc, char **argv)
     if (strcmp(mode, "host") == 0) return play(true, NULL);
     if (strcmp(mode, "join") == 0 && argc > 2) return play(false, code);
     if (strcmp(mode, "handover-host") == 0) return handover(true, NULL, 1);
+    if (strcmp(mode, "end-host") == 0) return end_host();
+    if (strcmp(mode, "migrate") == 0 && argc > 3) return migrate_to(code, argv[3]);
     if (strcmp(mode, "handover-join") == 0 && argc > 3) return handover(false, code, atoi(argv[3]));
     if (strcmp(mode, "echo-host") == 0) return echo(true, NULL);
     if (strcmp(mode, "echo-join") == 0 && argc > 2) return echo(false, code);

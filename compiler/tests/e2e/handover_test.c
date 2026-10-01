@@ -74,11 +74,42 @@ static const tide_world *server_world(const int i)
     return tide_session_server_world(machines[i]);
 }
 
+// The transport machine 0 takes players on: the loopback's, counting the
+// times the match on it ended (tide_transport.end), as a room tells its relay.
+static tide_transport wrapped;
+static int ends;
+
+static void counted_send(void *self, const tide_address to, const void *data, const uint32_t size)
+{
+    (void)self;
+    wrapped.send(wrapped.self, to, data, size);
+}
+
+static uint32_t counted_receive(void *self, tide_address *from, void *data, const uint32_t capacity)
+{
+    (void)self;
+    return wrapped.receive(wrapped.self, from, data, capacity);
+}
+
+static void counted_close(void *self)
+{
+    (void)self;
+    if (wrapped.close) wrapped.close(wrapped.self);
+}
+
+static void counted_end(void *self)
+{
+    (void)self;
+    ends++;
+}
+
 // Machine 0 runs a match in room ABCDEF, which machines 1 and 2 join.
 static void play_three(void)
 {
+    wrapped = tide_loopback_endpoint(net, 1);
+    ends = 0;
     tide_session_start(machines[0], NULL, now);
-    tide_session_open(machines[0], tide_loopback_endpoint(net, 1));
+    tide_session_open(machines[0], (tide_transport){NULL, counted_send, counted_receive, counted_close, counted_end});
     tide_session_set_room(machines[0], "ABCDEF", "key1");
     tide_session_join(machines[1], tide_loopback_endpoint(net, 2), tide_loopback_address(1), now);
     tide_session_join(machines[2], tide_loopback_endpoint(net, 3), tide_loopback_address(1), now);
@@ -122,6 +153,7 @@ TIDE_TEST(handover_a_player_takes_the_match_over_when_its_host_leaves)
     TIDE_CHECK(connected[1] == 1 && disconnected[1] == 0);
     TIDE_CHECK(connected[2] == 1 && disconnected[2] == 0);
     TIDE_CHECK(disconnected[0] == 1 && gone[0] == TIDE_DISCONNECT_LEFT);
+    TIDE_CHECK(ends == 0); // It left: the match goes on
 
     // The match is still closed: someone new is turned away
     tide_session_join(machines[3], tide_loopback_endpoint(net, 6), tide_loopback_address(4), now);
@@ -188,6 +220,7 @@ TIDE_TEST(handover_not_when_the_host_ends_the_match)
         TIDE_CHECK(disconnected[i] == 1 && gone[i] == TIDE_DISCONNECT_ENDED);
         TIDE_CHECK(status(i).client.state == TIDE_SESSION_OFFLINE);
     }
+    TIDE_CHECK(ends == 1); // ...where its players would meet again, which a room tells its relay
     teardown();
 }
 

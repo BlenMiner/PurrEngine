@@ -57,6 +57,10 @@ typedef struct tide_transport {
     // there's none. Longer ones are dropped.
     uint32_t (*receive)(void *self, tide_address *from, void *data, uint32_t capacity);
     void (*close)(void *self);
+    // The match on it ended for good, just before it closes: no one is to
+    // take it over (host migration), as a room's relay then makes sure.
+    // NULL where that means nothing.
+    void (*end)(void *self);
 } tide_transport;
 
 // ---------------------------------------------------------------------------
