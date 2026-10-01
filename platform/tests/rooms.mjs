@@ -80,8 +80,11 @@ const within = (promise, seconds, what) => Promise.race([
 const page = `<!doctype html><meta charset="utf-8"><title>rooms</title><script>
 const q = new URLSearchParams(location.search);
 const hosting = q.get('mode') === 'host';
-const say = line => fetch('/say', { method: 'POST', body: line });
+const say = line => fetch('/say?browser=' + q.get('browser'), { method: 'POST', body: line });
+say('loaded');
 const ws = new WebSocket(q.get('relay'));
+ws.onerror = () => say('relay error');
+ws.onclose = e => say('relay closed ' + e.code + ' ' + e.reason);
 const send = m => ws.send(JSON.stringify(m));
 let ice = [];
 const peers = new Map();
@@ -154,11 +157,13 @@ const server = createServer((request, response) => {
     if (request.url.startsWith('/page')) {
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         response.end(page);
-    } else if (request.url === '/say' && request.method === 'POST') {
+    } else if (request.url.startsWith('/say?') && request.method === 'POST') {
+        const from = Number(new URL(request.url, 'http://127.0.0.1').searchParams.get('browser'));
         let body = '';
         request.on('data', chunk => { body += chunk; });
         request.on('end', () => {
             response.end();
+            if (!running || from !== running.number) return; // A browser stopping, after its case
             console.log(`browser: ${body}`);
             said.push(body);
             for (const w of [...waiting]) {
@@ -193,44 +198,74 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 user_pref("app.update.enabled", false);
 `;
 
+// The browser running a case's page, which says when it's up: the case's own
+// deadlines start there. Starting a browser takes far longer on a busy
+// machine, or on one that never started it before (CI's first run, where a
+// case's 45 seconds sometimes weren't enough for both), and isn't what's tested.
 let running = null;
 let browsers = 0;
 function openBrowser(which, query) {
-    // A folder of its own, since a browser just stopped may still hold the
-    // last one. Absolute, and there already: otherwise Chrome shows a dialog
-    // about it, even headless.
-    const profile = resolve(`${scratch}-${process.pid}-${++browsers}`);
+    // A folder of its own. Absolute, and there already: otherwise Chrome
+    // shows a dialog about it, even headless.
+    const number = ++browsers;
+    const profile = resolve(`${scratch}-${process.pid}-${number}`);
     mkdirSync(profile, { recursive: true });
     const url = `http://127.0.0.1:${server.address().port}/page?relay=${encodeURIComponent(relayUrl)}`
-        + `&policy=${relayOnly ? 'relay' : 'all'}&${query}`;
+        + `&policy=${relayOnly ? 'relay' : 'all'}&browser=${number}&${query}`;
+    let child;
     if (which.firefox) {
         const hiding = `user_pref("media.peerconnection.ice.obfuscate_host_addresses", ${which.hidden});
 `;
         writeFileSync(`${profile}/user.js`, FIREFOX_PREFS + hiding);
         // --wait-for-browser: on Windows, the process started is only a
         // launcher, and without it, stopping it would leave the browser
-        running = spawn(which.path, ['--headless', '--no-remote', '--wait-for-browser', '--profile', profile, url],
+        child = spawn(which.path, ['--headless', '--no-remote', '--wait-for-browser', '--profile', profile, url],
             { stdio: 'ignore' });
     } else {
-        running = spawn(which.path, [
+        // --remote-debugging-pipe: DevTools on fds 3 and 4, which stopBrowser
+        // asks to close the browser
+        child = spawn(which.path, [
             '--headless',
             '--no-first-run',
             '--no-default-browser-check',
             '--disable-extensions',
+            '--remote-debugging-pipe',
             `--user-data-dir=${profile}`,
             ...(which.hidden ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns']),
             '--allow-loopback-in-peer-connection',
             url,
-        ], { stdio: 'ignore' });
+        ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+        child.stdio[3].on('error', () => {}); // Gone already
+        child.stdio[4].resume();
     }
+    const exited = new Promise(resolve => child.on('exit', code => resolve(code)));
+    running = { which, child, exited, number };
+    const up = Promise.race([
+        browserSaid(/^loaded$/),
+        exited.then(code => { throw new Error(`the browser exited with ${code} before opening the page`); }),
+    ]);
+    return within(up, 90, 'the browser opening the page');
 }
 
-// The browser and everything it started
-function stopBrowser() {
+// The browser and everything it started, gone before the next case starts.
+// Chrome closes itself: killing its processes from outside can miss one it
+// starts again meanwhile, which then keeps the browser from going.
+async function stopBrowser() {
     if (!running) return;
-    if (process.platform === 'win32') spawn('taskkill', ['/pid', String(running.pid), '/T', '/F'], { stdio: 'ignore' });
-    else running.kill();
+    const { which, child, exited } = running;
     running = null;
+    const kill = () => {
+        if (process.platform === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        else child.kill(which.firefox ? 'SIGTERM' : 'SIGKILL');
+    };
+    if (which.firefox) kill();
+    else child.stdio[3].end(JSON.stringify({ id: 1, method: 'Browser.close' }) + '\0');
+    try {
+        await within(exited, 60, 'the browser stopping');
+    } catch (error) {
+        if (!which.firefox) kill();
+        throw error;
+    }
 }
 
 let failed = false;
@@ -246,7 +281,12 @@ async function test(name, run) {
         failed = true;
     }
     for (const p of players.splice(0)) p.child.kill();
-    stopBrowser();
+    try {
+        await stopBrowser();
+    } catch (error) {
+        console.log(`--- ${name}: FAILED: ${error.message}`);
+        failed = true;
+    }
 }
 
 await test('two desktop players in a match', async () => {
@@ -306,14 +346,14 @@ for (const which of found) {
         const host = player(['echo-host'], 'desktop', anywhere);
         players.push(host);
         const code = (await within(host.line(/^room /), 15, 'hosting')).split(' ')[1];
-        openBrowser(which, `mode=join&code=${code}`);
+        await openBrowser(which, `mode=join&code=${code}`);
         const exit = await within(host.exited, 45, 'the echoes');
         if (exit !== 0) throw new Error(`the desktop side exited with ${exit}`);
     });
 
     await test(`a desktop player joins a room ${which.name} hosts`, async () => {
         const code = 'B' + Math.random().toString(36).slice(2, 7).toUpperCase().replace(/[01IO]/g, '2');
-        openBrowser(which, `mode=host&code=${code}`);
+        await openBrowser(which, `mode=host&code=${code}`);
         await within(browserSaid(/^room /), 30, 'hosting');
         const joiner = player(['echo-join', code], 'desktop', anywhere);
         players.push(joiner);
@@ -323,10 +363,9 @@ for (const which of found) {
 }
 if (!found.length) console.log('No browser found: skipping the browser tests. Set TIDE_BROWSER to run them.');
 
-// Last, this run's browser folders, once the browsers have let go of them
+// Last, this run's browser folders, which the browsers let go of as they stopped
 relay.close();
 server.close();
-await new Promise(r => setTimeout(r, 1000));
 for (let i = 1; i <= browsers; i++) {
     try {
         rmSync(resolve(`${scratch}-${process.pid}-${i}`), { recursive: true, force: true });

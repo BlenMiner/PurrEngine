@@ -80,6 +80,7 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
   - `tide_platform_rooms` (`platform/tests/rooms.mjs`) puts two desktop players in a match through a relay on this machine, and three in one whose host leaves (host migration), then each browser it finds (headless Chrome or Edge, and Firefox) in a desktop room and a desktop player in that browser's room, with the browser showing its address and hiding it. The same `TIDE_RELAY` (like `wss://relay.tide-engine.dev`) and `TIDE_ICE_POLICY` check a deployed relay and its TURN.
   - On a relay on this machine, desktop players' sockets stay on loopback (`TIDE_RTC_LOCAL`), so Windows' firewall has nothing to ask; Firefox on Windows offers no loopback candidates, so its cases use ordinary sockets. `TIDE_RTC_DEBUG=1` has the desktop side say what it does.
   - A browser's `--user-data-dir` (or Firefox's `--profile`) must be an absolute folder that exists, or the browser shows a dialog, even headless. Firefox needs `--wait-for-browser`, or stopping it leaves the browser running.
+  - Chrome is stopped by asking it to close (`Browser.close` on `--remote-debugging-pipe`): killing its processes from outside can miss one it starts again meanwhile, which keeps the browser from going. Each case starts once the last browser is gone, and its deadlines start once the page says it loaded, since a browser's first start on a fresh machine (CI) can take most of a minute.
 - Before finishing a change, the native and web test suites must both pass.
 
 ### MinGW builds

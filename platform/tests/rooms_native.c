@@ -396,16 +396,21 @@ static int echo(const bool host, const char *code)
     }
     const double begin = clock_seconds();
     bool said_code = false, found = !host; // A host learns the browser's address from its first datagram
+    double found_at = 0.0;                 // ...and the echoes have 45 seconds from there
     static bool back[1201];
     int sizes_back = 0;
     uint8_t datagram[1500];
     double last_round = -1.0;
     for (;;) {
         const double now = clock_seconds() - begin;
-        if (now > 45.0) {
+        if (found && now - found_at > 45.0) {
             printf("FAIL: %d of 120 sizes came back within 45 seconds\n", sizes_back);
             return 1;
         }
+        // rooms.mjs starts the browser that joins once the room is open, and
+        // decides how long it may take: this only keeps a host it forgot
+        // from running forever.
+        if (!found && now > 300.0) return printf("FAIL: no one joined within 300 seconds\n"), 1;
         if (tide_platform_room_failed()) return printf("FAIL: the room failed\n"), 1;
         char room[TIDE_ROOM_CODE_LENGTH + 1];
         tide_platform_room_code(room, sizeof room);
@@ -419,6 +424,7 @@ static int echo(const bool host, const char *code)
             if (!found) {
                 other = from;
                 found = true;
+                found_at = now;
                 printf("connected\n");
             } else if (n >= 2 && datagram[0] == 0xee && n <= 1200 && !back[n]) {
                 back[n] = true;
