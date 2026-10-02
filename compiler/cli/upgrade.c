@@ -101,7 +101,7 @@ static const json *newest(const char *work, const json *releases, const char *ch
 {
     const bool ask = strcmp(channel, "stable") == 0 && !sys_env("TIDE_RELEASES_URL");
     const json *latest = ask ? fetch_json(work, RELEASES_API "/latest", "latest.json") : NULL;
-    return tide_release_pick(releases, latest, channel);
+    return tide_release_pick(releases, latest, channel, PACKAGE);
 }
 
 // The release of `version`, in the list or, for an older one, asked by its tag.
@@ -115,25 +115,15 @@ static const json *exactly(const char *work, const json *releases, const char *v
     return tide_release_is(release, version) ? release : NULL;
 }
 
-static const json *find_asset(const json *release, const char *name)
-{
-    const json *assets = json_get(release, "assets");
-    for (int i = 0; assets && i < assets->count; i++) {
-        const char *asset = json_str(json_get(assets->items[i], "name"));
-        if (asset && strcmp(asset, name) == 0) return assets->items[i];
-    }
-    return NULL;
-}
-
 static const char *asset_url(const json *release, const char *name)
 {
-    return json_str(json_get(find_asset(release, name), "browser_download_url"));
+    return json_str(json_get(tide_release_asset(release, name), "browser_download_url"));
 }
 
 // The asset's size in bytes, as GitHub gives it; 0 if it doesn't.
 static int64_t asset_size(const json *release, const char *name)
 {
-    const json *size = json_get(find_asset(release, name), "size");
+    const json *size = json_get(tide_release_asset(release, name), "size");
     return size && size->kind == JSON_NUMBER && size->number > 0 ? (int64_t)size->number : 0;
 }
 
@@ -314,7 +304,7 @@ int tide_upgrade(const char *root, const char *channel, const char *version)
     const json *release = version ? exactly(work, releases, version) : newest(work, releases, channel);
     if (!release) {
         if (version) fprintf(stderr, "tide: there's no release called %s\n", version);
-        else fprintf(stderr, "tide: there's no %s release yet\n", channel);
+        else fprintf(stderr, "tide: there's no %s release with a package for this platform (%s) yet\n", channel, PACKAGE);
         return 1;
     }
     const char *next = tide_release_version(release);

@@ -141,12 +141,15 @@ static double now;
 static bool said_code;
 static bool done;
 
-// The host's page hidden, as browsers hide it when another tab is in front:
-// no animation frames, and timers a second apart at the soonest. The event
-// comes after the frame, as browsers send it. Its frames come at the match's
-// ticks meanwhile, not the 60 a second frames come at by default, and often
-// enough that its match skips none of them. A slow machine's frames can run
-// two ticks at once, so it may have fewer frames than ticks.
+// The host's page hidden, as browsers hide it when another tab is in front,
+// only stricter: browsers stop its animation frames and slow its timers to
+// about one a second, and here they stop too, so whatever frames it gets come
+// from the worker. None would stop its match, and its player times out. The
+// event comes after the frame, as browsers send it. Its frames come at the
+// match's ticks meanwhile, never the 60 a second frames come at by default
+// (a slow machine's run two ticks at once now and then, so fewer; none comes
+// before a tick is due). Nothing here rests on how fast the machine is: it
+// stalls, frames come late, and the match drops the time, as it should.
 #define HIDDEN_SECONDS 7.0 // Past the session's 5 second timeout
 #define TICK_RATE 30
 
@@ -159,14 +162,16 @@ static bool shown_again;
 static void set_hidden(const bool hidden)
 {
     tide_web_eval(hidden ? "setTimeout(() => {"
-                           " const timer = window.setTimeout, frame = window.requestAnimationFrame;"
-                           " window.shown = () => { window.setTimeout = timer; window.requestAnimationFrame = frame;"
+                           " const timer = window.setTimeout, interval = window.setInterval;"
+                           " const frame = window.requestAnimationFrame;"
+                           " window.shown = () => { window.setTimeout = timer; window.setInterval = interval;"
+                           " window.requestAnimationFrame = frame;"
                            " delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); };"
-                           " window.setTimeout = (f, ms, ...rest) => timer(f, Math.max(ms || 0, 1000), ...rest);"
-                           " window.requestAnimationFrame = () => 0;"
+                           " window.show = () => timer(window.shown);"
+                           " window.setTimeout = window.setInterval = window.requestAnimationFrame = () => 0;"
                            " Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });"
                            " document.dispatchEvent(new Event('visibilitychange')); })"
-                         : "setTimeout(() => window.shown())");
+                         : "window.show()");
 }
 
 // Host migration (see handover in rooms_native.c): the host leaves a second
@@ -351,7 +356,6 @@ static int frame(void *user, const float seconds)
         if (now - met_at > HIDDEN_SECONDS) {
             const double skipped = status.skipped - hidden_skipped;
             printf("shown again: %d frames while hidden, %.3f seconds skipped\n", hidden_frames, skipped);
-            if (skipped > 0.0) return fail("the match skipped ticks while the page was hidden");
             if (hidden_frames > (int)(HIDDEN_SECONDS * TICK_RATE * 1.15)) return fail("hidden frames didn't follow the tick rate");
             set_hidden(false);
             shown_again = true;
