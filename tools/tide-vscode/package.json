@@ -4,6 +4,7 @@
   "description": "The Tide language: errors as you type, completion, go to definition, rename, formatting and more, from tidels",
   "version": "0.0.0",
   "publisher": "tide-engine",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/BlenMiner/tide-engine"
@@ -30,6 +31,10 @@
         "extensions": [
           ".tide"
         ],
+        "icon": {
+          "light": "./icons/tide.svg",
+          "dark": "./icons/tide.svg"
+        },
         "configuration": "./language-configuration.json"
       }
     ],

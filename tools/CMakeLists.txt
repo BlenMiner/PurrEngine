@@ -23,6 +23,8 @@ if(TIDE_EDITOR_EXTENSIONS)
             tide-vscode/package.json
             tide-vscode/package-lock.json
             tide-vscode/README.md
+            tide-vscode/icon.png
+            tide-vscode/icons/tide.svg
             tide-vscode/src/extension.js
             tide-syntax/language-configuration.json
             tide-syntax/syntaxes/tide.tmLanguage.json
