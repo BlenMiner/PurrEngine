@@ -1,5 +1,5 @@
 // The relay's rooms and its WebSocket server, through Node's own WebSocket
-// client: node --test relay/
+// client: node --test relay/relay.test.mjs
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -204,6 +204,19 @@ test('a match its host ended isn\'t taken over, for a while', async () => {
     c.send({ host: 'ENDEDX' });
     assert.deepEqual(await c.next(), { hosting: 'ENDEDX' });
     for (const p of [host, a, b, c]) p.ws.close();
+});
+
+test('a match that ended before the relay said hello still ended', async () => {
+    const host = new WebSocket(url);
+    await new Promise((resolve, reject) => { host.onopen = resolve; host.onerror = reject; });
+    host.send(JSON.stringify({ host: 'EARLYE', key: 'k6' })); // Its room, asked for as it ends
+    host.send(JSON.stringify({ end: 'EARLYE' }));
+    host.close();
+    while (!relay.ended.has('EARLYE')) await sleep(10);
+    const a = await connect();
+    a.send({ migrate: 'EARLYE', key: 'k6' });
+    assert.deepEqual(await a.next(), { ended: 'EARLYE' });
+    a.ws.close();
 });
 
 test('another key is another match', async () => {

@@ -10,8 +10,9 @@
 // With `handover`, three frames check host migration: the host leaves once
 // both players joined, and passes once both say "ok after", each the same
 // player as before, one of them hosting the room now. With `ended`, a host
-// ends its match, and a frame that goes to its room again afterwards, as a
-// player who missed the goodbye, has to hear from the relay that it ended.
+// ends its match as soon as it has a room, which the relay may not know yet,
+// and a frame that goes to its room again once the relay heard, as a player
+// who missed the goodbye, has to hear from the relay that it ended.
 //
 // With TIDE_RELAY set, like wss://relay.tide-engine.dev, the players meet
 // through that relay instead, to check a deployed one. TIDE_ICE_POLICY=relay
@@ -70,7 +71,12 @@ const page = `<!doctype html>
     fetch('say', { method: 'POST', body: data.who + ': ' + data.line }); // As it happens, in case the page hangs
     const keyed = /^room ([0-9A-Z]{6}) key ([0-9a-f]+)$/.exec(data.line);
     if (keyed) hosted = keyed;
-    if (ended && data.who === 'host' && data.line === 'ended') player('late', 'migrate,' + hosted[1] + ',' + hosted[2]);
+    if (ended && data.who === 'host' && data.line === 'ended') {
+      fetch('heard?code=' + hosted[1]).then(r => r.text()).then(heard => {
+        if (heard === 'yes') player('late', 'migrate,' + hosted[1] + ',' + hosted[2]);
+        else log.push('the relay never heard the match ended'), report(false);
+      });
+    }
     if (ended && data.who === 'late' && data.line.startsWith('migrated')) {
       if (data.line !== 'migrated -2') log.push('the relay never said the match ended');
       report(data.line === 'migrated -2');
@@ -121,6 +127,18 @@ const server = createServer((request, response) => {
             response.end();
             said.push(body);
         });
+    } else if (request.url.startsWith('/heard?')) {
+        // Whether the relay heard the match in room `code` ended, once it did
+        // (or 15 seconds on), so the late player can't get there first. A
+        // relay elsewhere can't be asked: yes at once.
+        const code = new URL(request.url, 'http://here').searchParams.get('code');
+        const asked = Date.now();
+        const answer = () => {
+            if (process.env.TIDE_RELAY || relay.ended.has(code)) response.end('yes');
+            else if (Date.now() - asked > 15000) response.end('no');
+            else setTimeout(answer, 20);
+        };
+        answer();
     } else if (request.url === '/result' && request.method === 'POST') {
         let body = '';
         request.on('data', chunk => { body += chunk; });

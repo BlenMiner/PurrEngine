@@ -37,7 +37,10 @@
 //   host  -> relay    {end: "K7QF2M"}            Its match ended for good: it closes the room, and
 //                                                for a while the relay tells its players who come
 //                                                back {ended: "K7QF2M"} rather than let them take it
-//                                                over, whatever goodbye of the host's they missed
+//                                                over, whatever goodbye of the host's they missed.
+//                                                A host whose match ended before the relay knew the
+//                                                room (on this connection) sends {host} first, at
+//                                                once: messages are read in order, hello or not
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later.
@@ -305,6 +308,7 @@ export function createRelay({ iceServers = DEFAULT_ICE, trustProxy = false, limi
     pings.unref();
     server.on('close', () => clearInterval(pings));
     server.rooms = rooms;
+    server.ended = ended;
     return server;
 }
 

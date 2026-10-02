@@ -6,9 +6,9 @@
 // the match has to go on: the joiner's verified tick keeps up. Each prints
 // "ok" then, and keeps playing so the other can finish; anything else ends it
 // with "FAIL". With `handover-host` and `handover-join <code> <n>`, three of
-// them check host migration instead; with `end-host`, a host ends its match
-// and says its room's code and key, and `migrate <code> <key>` goes to that
-// room again and says what the relay answered.
+// them check host migration instead; with `end-host`, a host says its room's
+// code and key and ends its match at once, and `migrate <code> <key>` goes to
+// that room again and says what the relay answered.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,11 +220,11 @@ static void migrate(void)
     }
 }
 
-// A host that ends its match, and a player who missed the goodbye.
+// A host that ends its match as soon as it has a room, which the relay may
+// not know yet, and a player who missed the goodbye.
 static bool end_host;
 static const char *migrate_code;
 static const char *migrate_key;
-static double said_at = -1.0;
 
 static int frame_ended(void)
 {
@@ -249,11 +249,8 @@ static int frame_ended(void)
     char key[TIDE_ROOM_KEY_LENGTH + 1];
     tide_platform_room_code(code, sizeof code);
     tide_platform_room_key(key, sizeof key);
-    if (said_at < 0.0 && code[0] && key[0]) {
+    if (code[0] && key[0] && !done) {
         printf("room %s key %s\n", code, key);
-        said_at = now;
-    }
-    if (said_at >= 0.0 && now - said_at > 0.5 && !done) {
         tide_session_end(session);
         printf("ended\n");
         done = true;

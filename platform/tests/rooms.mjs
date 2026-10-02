@@ -39,8 +39,8 @@ const env = { ...process.env, TIDE_RELAY: relayUrl, ...(relayOnly ? { TIDE_RTC_R
 const loopback = { ...env, ...(local ? { TIDE_RTC_LOCAL: '1' } : {}) };
 
 // A desktop player: its lines, as they come
-function player(args, name, anywhere = false) {
-    const child = spawn(program, args, { env: anywhere ? env : loopback, stdio: ['ignore', 'pipe', 'pipe'] });
+function player(args, name, anywhere = false, more = {}) {
+    const child = spawn(program, args, { env: { ...(anywhere ? env : loopback), ...more }, stdio: ['ignore', 'pipe', 'pipe'] });
     const lines = [];
     const waiting = [];
     let buffer = '';
@@ -319,16 +319,29 @@ await test('a desktop match changes hands when its host leaves', async () => {
 
 // A match its host ended stays ended, even for a player who missed the
 // goodbye: the relay tells them so, rather than let them take the room over.
-await test('a match its host ended isn\'t taken over', async () => {
-    const host = player(['end-host'], 'host');
-    players.push(host);
-    const [, code, , key] = (await within(host.line(/^room /), 15, 'hosting')).split(' ');
-    if ((await within(host.exited, 15, 'the host ending the match')) !== 0) throw new Error('the host failed');
-    const late = player(['migrate', code, key], 'late');
-    players.push(late);
-    const answer = await within(late.line(/^migrated /), 30, 'the relay answering');
-    if (answer !== 'migrated -2') throw new Error(`the relay said ${answer}, not that the match ended`);
-});
+// The host ends it with its room at the relay and quits at once, or, early,
+// as soon as it has a room, which the relay may not know yet: then it goes on
+// until it told the relay (TIDE_RTC_DEBUG has it say so).
+for (const early of [false, true]) {
+    await test(`a match its host ended${early ? ' before the relay knew its room' : ''} isn't taken over`, async () => {
+        const host = player([early ? 'end-host-early' : 'end-host'], 'host', false, early ? { TIDE_RTC_DEBUG: '1' } : {});
+        players.push(host);
+        const [, code, , key] = (await within(host.line(/^room /), 15, 'hosting')).split(' ');
+        if (early) {
+            const told = await within(host.line(/the relay its match ended$/), 15, 'the host telling the relay');
+            if (!told.includes(': told the relay')) throw new Error('the host couldn\'t tell the relay its match ended');
+        } else if ((await within(host.exited, 15, 'the host ending the match')) !== 0) {
+            throw new Error('the host failed');
+        }
+        // Once the relay heard (one here: another can't be asked), so the late player can't get there first
+        const heard = async () => { while (local && !relay.ended.has(code)) await new Promise(r => setTimeout(r, 20)); };
+        await within(heard(), 15, 'the relay hearing the match ended');
+        const late = player(['migrate', code, key], 'late');
+        players.push(late);
+        const answer = await within(late.line(/^migrated /), 30, 'the relay answering');
+        if (answer !== 'migrated -2') throw new Error(`the relay said ${answer}, not that the match ended`);
+    });
+}
 
 // Chrome (or Edge) and Firefox: two WebRTC implementations of their own.
 // Each shows its address, then hides it behind a .local name, as it does for

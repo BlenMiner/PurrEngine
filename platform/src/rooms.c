@@ -114,6 +114,7 @@ typedef struct native_room {
     char key[TIDE_ROOM_KEY_LENGTH + 1]; // Lets its players meet in it again, with host migration
     rtc_ws ws;
     bool ws_live;
+    bool announced; // This connection asked the relay for the room already
     double reconnect_at;
     rtc_ice_config ice;
     room_peer peers[PEERS];
@@ -194,6 +195,7 @@ static void relay_connect(native_room *r, const double now)
 {
     relay_close(r);
     r->ws_live = rtc_ws_open(&r->ws, relay_url(), now);
+    r->announced = false;
     if (!r->ws_live) relay_lost(r, now);
 }
 
@@ -285,6 +287,7 @@ static void on_relay(native_room *r, const char *text)
         else if (r->hosting) snprintf(json, sizeof json, "{\"host\":\"%s\",\"key\":\"%s\"}", r->code, r->key);
         else snprintf(json, sizeof json, "{\"join\":\"%s\"}", r->code);
         relay_send(r, json);
+        r->announced = true;
     } else if (rtc_json_get(m, "hosting").text) {
         r->reachable = true;
         if (r->moving) { // The room's host was gone: this machine is now
@@ -384,6 +387,52 @@ static void pump(native_room *r)
     }
 }
 
+// A room whose match ended, telling the relay (see backend_end), on the
+// connection it had or a new one, which it keeps until what it said has gone,
+// or the relay can't be reached. Every call on a room moves them along, and
+// tide/host.h makes one each frame (tide_platform_room_failed).
+typedef struct goodbye {
+    struct goodbye *next;
+    rtc_ws ws;
+    bool announced; // The connection asked the relay for the room already
+    bool said;
+    char code[TIDE_ROOM_CODE_LENGTH + 1];
+    char key[TIDE_ROOM_KEY_LENGTH + 1];
+} goodbye;
+
+static goodbye *goodbyes;
+
+static void goodbyes_update(void)
+{
+    const double now = rtc_now();
+    for (goodbye **at = &goodbyes; *at;) {
+        goodbye *g = *at;
+        rtc_ws_update(&g->ws, now);
+        if (g->ws.state == RTC_WS_OPEN && !g->said) {
+            // The relay may not know the room yet: asked for first, as it
+            // reads a connection's messages in order
+            char json[128];
+            if (!g->announced) {
+                snprintf(json, sizeof json, "{\"host\":\"%s\",\"key\":\"%s\"}", g->code, g->key);
+                rtc_ws_send(&g->ws, json, strlen(json));
+            }
+            snprintf(json, sizeof json, "{\"end\":\"%s\"}", g->code);
+            rtc_ws_send(&g->ws, json, strlen(json));
+            g->said = true;
+            rtc_ws_update(&g->ws, now); // On its way at once
+        }
+        const bool told = g->said && g->ws.out_size == 0;
+        if (told || g->ws.state == RTC_WS_CLOSED) {
+            rtc_debug("room %s: %s the relay its match ended", g->code, told ? "told" : "couldn't tell");
+            rtc_ws_close(&g->ws);
+            *at = g->next;
+            free(g);
+        } else {
+            at = &g->next;
+        }
+    }
+}
+
 static void backend_close(const uint32_t number)
 {
     if (!room || room->number != number) return;
@@ -395,6 +444,7 @@ static void backend_close(const uint32_t number)
 
 static uint32_t open_room(const bool hosting, const char *code, const char *key)
 {
+    goodbyes_update();
     if (room) backend_close(room->number);
     room = calloc(1, sizeof *room);
     if (!room) return 0;
@@ -446,6 +496,7 @@ static uint32_t backend_migrate(const char *code, const char *key)
 
 static int backend_moved(const uint32_t number)
 {
+    goodbyes_update();
     if (!room || room->number != number) return -1;
     if (room->moving && !room->failed) pump(room);
     if (!room || room->number != number) return -1;
@@ -454,27 +505,43 @@ static int backend_moved(const uint32_t number)
 
 static void backend_key(char out[TIDE_ROOM_KEY_LENGTH + 1])
 {
+    goodbyes_update();
     snprintf(out, TIDE_ROOM_KEY_LENGTH + 1, "%s", room && room->hosting && !room->failed ? room->key : "");
 }
 
 // The relay keeps the room as ended a while, so its players don't take it
-// over: it goes out with the close that follows.
+// over. It hears so on a connection of the room's goodbye (see goodbye): the
+// room's own, open or opening, which its closing then leaves be, or a new one.
 static void backend_end(const uint32_t number)
 {
     if (!room || room->number != number || !room->hosting) return;
-    char json[64];
-    snprintf(json, sizeof json, "{\"end\":\"%s\"}", room->code);
-    relay_send(room, json);
+    goodbye *g = calloc(1, sizeof *g);
+    if (!g) return;
+    snprintf(g->code, sizeof g->code, "%s", room->code);
+    snprintf(g->key, sizeof g->key, "%s", room->key);
+    if (room->ws_live && room->ws.state != RTC_WS_CLOSED) {
+        g->ws = room->ws;
+        g->announced = room->announced;
+        room->ws_live = false;
+    } else if (!rtc_ws_open(&g->ws, relay_url(), rtc_now())) {
+        free(g);
+        return;
+    }
+    g->next = goodbyes;
+    goodbyes = g;
+    goodbyes_update();
 }
 
 static void backend_code(char out[TIDE_ROOM_CODE_LENGTH + 1])
 {
+    goodbyes_update();
     const bool shown = room && !room->failed && room->reachable;
     snprintf(out, TIDE_ROOM_CODE_LENGTH + 1, "%s", shown ? room->code : "");
 }
 
 static bool backend_failed(void)
 {
+    goodbyes_update();
     return room && room->failed;
 }
 
@@ -488,6 +555,7 @@ static void backend_send(const uint32_t number, const uint32_t to, const void *d
 
 static uint32_t backend_receive(const uint32_t number, uint32_t *from, void *data, const uint32_t capacity)
 {
+    goodbyes_update();
     if (!room || room->number != number) return 0;
     for (int attempt = 0; attempt < 2; attempt++) {
         for (int k = 0; k < room->peer_count; k++) {

@@ -428,7 +428,7 @@
         closeRoom();
         room = {
             number: ++rooms, hosting, code, failed: false, reachable: true, connected: false, opened: performance.now(),
-            ws: null, ice: [], peers: new Map(), byRelay: new Map(), next: 1, inbox: [],
+            ws: null, announced: false, ice: [], peers: new Map(), byRelay: new Map(), next: 1, inbox: [],
             key: key || (hosting ? newKey() : ''), moving: !!key, moved: 0,
         };
         if (/^[2-9A-HJ-NP-Z]{6}$/.test(code)) {
@@ -449,6 +449,37 @@
         for (const peer of r.peers.values()) peer.pc.close();
     }
 
+    // The match in room `r`, which this program hosts, ended: the relay keeps
+    // the room as ended a while, so its players don't take it over. It may not
+    // know the room yet (its hello hasn't come, or it's being reached again),
+    // so the room asks for it first: the relay reads a connection's messages
+    // in order. A connection still opening, or a new one, says it once open,
+    // and the room closing leaves it be.
+    function sayEnded(r) {
+        const say = (ws, announced) => {
+            if (!announced) ws.send(JSON.stringify({ host: r.code, key: r.key }));
+            ws.send(JSON.stringify({ end: r.code }));
+        };
+        if (r.ws && r.ws.readyState === WebSocket.OPEN) {
+            say(r.ws, r.announced);
+            return;
+        }
+        let ws = r.ws && r.ws.readyState === WebSocket.CONNECTING ? r.ws : null;
+        r.ws = null;
+        if (!ws) {
+            try {
+                ws = new WebSocket(relayUrl);
+            } catch {
+                return;
+            }
+        }
+        ws.onmessage = ws.onclose = null;
+        ws.onopen = () => {
+            say(ws, false);
+            ws.close();
+        };
+    }
+
     // A host that loses the relay opens its room again once it's back, under
     // the same code if it's still free. Players already in keep playing: only
     // joining needs the relay.
@@ -463,6 +494,7 @@
             return;
         }
         r.ws = ws;
+        r.announced = false; // Whether this connection asked the relay for the room yet
         const send = message => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); };
         ws.onmessage = event => {
             if (room !== r) return;
@@ -475,6 +507,7 @@
             if (m.relay) {
                 r.ice = m.ice || [];
                 send(r.moving ? { migrate: r.code, key: r.key } : r.hosting ? { host: r.code, key: r.key } : { join: r.code });
+                r.announced = true;
             } else if (m.hosting) {
                 r.reachable = true;
                 if (r.moving) { // The room's host was gone: this program is now
@@ -652,11 +685,7 @@
             u8()[outPtr + key.length] = 0;
         },
         room_close(number) { if (room && room.number === number) closeRoom(); },
-        // The match ended: the relay keeps the room as ended a while, so its players don't take it over
-        room_end(number) {
-            const r = room && room.number === number && room.hosting ? room : null;
-            if (r && r.ws && r.ws.readyState === WebSocket.OPEN) r.ws.send(JSON.stringify({ end: r.code }));
-        },
+        room_end(number) { if (room && room.number === number && room.hosting) sayEnded(room); },
         // The code into `out` (7 bytes), "" while there's none: never a room
         // that failed, nor one the relay can't be told about.
         room_code(outPtr) {
