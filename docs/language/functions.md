@@ -25,7 +25,7 @@ component Unit
 ```
 
 - A value is written like a component's: `Stats { health = 50 }`. Fields left out take their defaults.
-- Components, singletons, inputs and other structs can hold structs, and so can locals. System parameters stay components, singletons, the input and `Entity`.
+- Components, singletons, inputs and other structs can hold structs, and so can locals. System parameters stay components, singletons, the input and `Devices`.
 - A struct can't contain itself, even through other structs.
 
 A struct's fields change through whatever holds it, so the signature still says what a system writes: `unit.stats.health -= 5` needs `mut Unit unit`. A local copy changes if it's `mut var`.

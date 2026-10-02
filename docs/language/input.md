@@ -53,9 +53,26 @@ Input carries whether buttons are held, not whether they just went down: when a 
 
 `Devices` has a keyboard, a mouse and a gamepad for now. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up). On a device, `.pressed` means held at any point since the last sample, so a quick tap between ticks is never lost.
 
-- **Keyboard:** every key by its position, named after the US layout: `keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`. `WASD` is in the same place on AZERTY.
-- **Mouse:** `position`, `delta` and `scroll` (`float2`), and the buttons `left`, `right` and `middle`. `position` is in window pixels from the bottom left.
-- **Gamepad:** `connected`, `leftStick` and `rightStick` (`float2`), `leftTrigger` and `rightTrigger` (0 to 1), the face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`), `dpad.up` and the other directions, `leftShoulder`, `rightShoulder`, `start` and `select`.
+- **Keyboard:** every key by its position, named after the US layout, so `WASD` is in the same place on AZERTY:
+  - `a` to `z`, and `digit0` to `digit9`
+  - `space`, `enter`, `escape`, `tab`, `backspace`
+  - `insert`, `delete`, `home`, `end`, `pageUp`, `pageDown`
+  - `upArrow`, `downArrow`, `leftArrow`, `rightArrow`
+  - `leftShift`, `rightShift`, `leftCtrl`, `rightCtrl`, `leftAlt`, `rightAlt`, `capsLock`
+  - `f1` to `f12`
+  - `minus`, `equals`, `leftBracket`, `rightBracket`, `backslash`, `semicolon`, `quote`, `comma`, `period`, `slash`, `backquote`
+  - `numpad0` to `numpad9`, `numpadEnter`, `numpadPlus`, `numpadMinus`, `numpadMultiply`, `numpadDivide`, `numpadPeriod`
+- **Mouse:** `position`, `delta` and `scroll` (`float2`), and the buttons `left`, `right`, `middle`, `back` and `forward`. `position` is in window pixels from the bottom left.
+- **Gamepad:** `connected`, `leftStick` and `rightStick` (`float2`), `leftTrigger` and `rightTrigger` (0 to 1), the face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`, which is A, B, X and Y on Xbox), `dpad.up` and the other directions, `leftShoulder`, `rightShoulder`, `leftStickButton`, `rightStickButton`, `start` and `select`.
+
+Each part has a type of its own: `Keyboard`, `Mouse`, `Gamepad`, `Dpad` and `Button`. Functions take them, and `Devices`, as parameters to read:
+
+```csharp
+float2 Steer(Gamepad pad)
+{
+    return pad.leftStick + float2(pad.dpad.right.pressed ? 1 : 0, 0);
+}
+```
 
 Axes follow Unity: `y` is positive up, for sticks and the mouse, and `scroll.y` is positive scrolling away from you.
 
@@ -71,7 +88,9 @@ system Hop(Devices devices, mut Velocity velocity)
 }
 ```
 
-Match code can't read this machine's `Devices` directly; the error says to take the parameter.
+Match code can't read this machine's `Devices` directly; the error says to take the parameter. A system takes one `Devices` parameter, and one input parameter. Views read `Devices`, never a parameter, and can't read the input.
+
+The match can't read the mouse's `position` either: it's in this machine's window, which the other machines don't have. Work out what the match needs from it in `Sample`, like an aim direction, and read that from the input.
 
 ## Input is an attack point
 

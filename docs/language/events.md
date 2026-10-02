@@ -30,6 +30,8 @@ system EndRound(Round round)
 
 The sender isn't recorded. When handlers need it, put it in a field: the entity that sends is often not the one that matters, like a bomb sending a `Hit` for whoever threw it.
 
+An event is a value, so a local can hold one, and a handler can send its event on: `other.Send(hit)`. Fields and parameters can't hold events. The engine's own events, below, are only the engine's to send.
+
 ## Handling
 
 A handler is code that runs when an event is sent. It's declared with `event` too: the first parentheses hold the event that triggers it, and the second hold the same parameters as a system's.
@@ -60,7 +62,9 @@ Events are handled at the end of the tick, along with structural changes, in the
 
 Handlers can send events and change entities in turn. Those are handled next, until nothing is left, so everything settles within the tick. Systems later in the same tick don't see an event's effects yet, as with `Spawn`.
 
-The handlers of one event run in the order they're declared, and `[Before]` and `[After]` order them as they do systems.
+The handlers of one event run in the order they're declared, and `[Before]` and `[After]` order them as they do systems, among the handlers of the same event.
+
+A handler of an event nothing sends is a warning: it would never run. So is declared access a handler doesn't use, as for systems (see [Systems](./systems.md)).
 
 Events waiting to be handled are part of the world: a snapshot holds them, and running a tick again sends and handles them again the same way.
 

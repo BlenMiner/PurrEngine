@@ -25,10 +25,10 @@ system Paint(Brush brush, mut Canvas canvas)
 }
 ```
 
-Cells are plain values: numbers, bools, enums, vectors, colors, entities and structs of those. A cell is a copy, as a list's element is, so a struct cell is taken out, changed and put back:
+Cells are plain values: numbers, bools, enums, vectors, quaternions, matrices, colors, rects, entities, players and structs of those. Text, lists and grids can't be cells: keep them elsewhere, and a number for them in the cell. A cell is a copy, as a list's element is, so a struct cell is taken out, changed and put back:
 
 ```csharp
-var cell = field.cells[p];
+mut var cell = field.cells[p];
 cell.heat += 1;
 field.cells[p] = cell;
 ```
@@ -75,7 +75,17 @@ system Spread(mut Heat heat)
 
 Each step reads the grid as the loop found it, and changes only its own cell, `at`. So it doesn't matter which steps run first, or on which thread: the result is exactly the same on one thread as on many, on every machine. Code after the loop runs once every step is done.
 
-A step can declare variables, call functions and read any cell. What it can't do is change anything else: another cell, a variable from outside the loop, or anything whose order would count, like spawning or sending events. tidec says so, and what to write instead.
+A step can declare variables, call functions (and C) and read any cell. What it can't do is change anything else: another cell, a variable from outside the loop, the whole grid (`Clear`), or anything whose order would count. tidec says so, and what to write instead. So a step can't:
+
+- `break` out of the loop: `continue` ends the step.
+- `return`, wait, or start tasks.
+- Spawn, send events, add, remove or destroy, or load scenes.
+- Draw or use the GUI.
+- Hold another parallel loop.
+
+To add things up, use a `for` loop, or a foreach that goes in order (see below).
+
+A parallel loop goes in a system, a view, or an event handler that isn't async: not in functions, methods, async code or an input's `Sample`.
 
 ### Moving things: blocks
 
@@ -100,7 +110,7 @@ system Fall(Time time, mut Field field)
 }
 ```
 
-Blocks never overlap, so steps never fight over a cell. `offset` says where the blocks start, and changing it each tick moves where their edges are: a grain at the bottom of a block one tick is at the top of another the next, so it keeps falling. `by int2(1, 2)` gives blocks of 1 by 2. A block that would go past the grid's size is left out, so along a sized edge some cells are only in every other tick's blocks: walls around the field keep sand off it, as the [sand demo](../guide/sand.md) does.
+Blocks never overlap, so steps never fight over a cell. `offset` says where the blocks start, and changing it each tick moves where their edges are: a grain at the bottom of a block one tick is at the top of another the next, so it keeps falling. `by int2(1, 2)` gives blocks of 1 by 2, and `offset int2(0, 1)` moves them along one axis only. A block is 1 to 64 cells along each axis, a size known while compiling: numbers, or constants. The offset can be any int, or `int2` or `int3`, and can change every time. A block that would go past the grid's size is left out, so along a sized edge some cells are only in every other tick's blocks: walls around the field keep sand off it, as the [sand demo](../guide/sand.md) does.
 
 ### In order: foreach
 
@@ -122,4 +132,4 @@ When a foreach's steps only touch their own cell, and nothing outside the loop, 
 
 A grid with no size goes on forever, so a loop over it goes through the cells around what's been set: the chunks the grid has.
 
-`tidec --schedule` shows which systems have parallel loops: `Fall  (once, 1 parallel loop)`.
+`tide schedule` shows which systems have parallel loops: `Fall  (once, 1 parallel loop)`.

@@ -7,6 +7,7 @@ Tide's syntax is C#-like. If you know C#, C or Java, most of it will read as you
 - Types, systems and methods use PascalCase: `Transform`, `MovePlayer`, `Spawn(...)`.
 - Fields, parameters and locals use camelCase: `trs.position`, not `trs.Position`. So do public properties, even static ones: `Color.red`, `quaternion.identity`.
 - True constants use FULL_CASE: `Math.PI`, `Math.TAU`.
+- Names are ASCII. Other characters go in comments and text. Names starting with `tide_` are the engine's, for the C it generates.
 - Braces go on lines of their own, and so does an `else` after a block. A block that fits on one line can stay there: `scene Main { }`, `if (dead) { return; }`.
 
 The editors' formatter lays code out this way (see [Editors](../guide/editors.md)).
@@ -21,11 +22,16 @@ The editors' formatter lays code out this way (see [Editors](../guide/editors.md
 | `float2`, `float3`, `float4`, `int2`, `int3`, `int4` | Vectors (see [Math](./math.md)) |
 | `quaternion`, `float2x2`, `float3x3`, `float4x4` | Rotations and matrices (see [Math](./math.md)) |
 | `Color` | A color, with `r`, `g`, `b` and `a` from 0 to 1 (see [Views](./views.md)) |
+| `Rect` | A rectangle on the screen: `x`, `y`, `width` and `height` (see [GUI](./gui.md)) |
 | `string` | Text (see [Text and lists](./text-and-lists.md)) |
 | `List<T>` | A list of values (see [Text and lists](./text-and-lists.md)) |
+| `Grid2<T>`, `Grid3<T>` | Cells at `int2` or `int3` positions, in fields (see [Grids](./grids.md)) |
 | `Entity` | A handle to an entity (see [Components and entities](./entities.md)) |
+| `LocalEntity` | A handle to one of this machine's own entities (see [Local state](./local-state.md)) |
 | `PlayerID` | A player (see [Input](./input.md)) |
 | `T?`, like `int?` | A value or nothing (see [Errors](./errors.md)) |
+
+The engine has enums of its own too, on the pages they belong to: `Anchor` ([GUI](./gui.md)), `SceneVisibility` ([Scenes](./scenes.md)), `SessionState` and `DisconnectReason` ([Multiplayer](./multiplayer.md)).
 
 Everything is a value: assigning copies it, and nothing is shared, text and lists included. That's what keeps the whole world plain data, which the engine copies to take snapshots.
 
@@ -72,7 +78,7 @@ system Regenerate(mut Health health, Time time)
 - Constants are named in FULL_CASE.
 - A constant is the same on every machine. Any code can read one: systems, views, handlers, functions and other constants. Reading one never makes a system wait for another.
 - They work anywhere a constant value is needed: field defaults, `[Clamp]` bounds, `case` labels and the values of enum members. In the last two, int constants and operators on them work: `case MAX_LEVEL + 1:`.
-- A constant can be a number, vector, matrix, quaternion, `bool`, `Color`, `Rect`, text, struct or enum. It can't be a list or an entity.
+- A constant can be a number, vector, matrix, quaternion, `bool`, `Color`, `Rect`, `PlayerID`, text, struct or enum. It can't be a list or an entity.
 - A constant in a namespace belongs to it: code outside writes `Combat.CRIT_MULTIPLIER` (see [Namespaces and files](./namespaces.md)).
 - Changing a constant under `tide run` reloads the game and keeps the match where it is.
 
@@ -121,6 +127,8 @@ Operators and their precedence follow C#, including compound assignments (`+=`, 
 
 Expressions run left to right: operands, arguments and field values in the order they're written. That's part of what makes every machine spawn the same entities with the same IDs.
 
+So what happens in order, `Spawn`, `Scene.Load` and the GUI's widgets, can't go where it would only run sometimes, or again and again: on the right of `&&` or `||`, in a side of `?:`, or in a loop's condition or a `for`'s step. Spawn into a local first, or use `if` and `else`.
+
 ## Control flow
 
 `if` and `else`, `switch`, and the loops `for`, `foreach` and `while`, with `break`, `continue` and `return`, as in C#.
@@ -143,7 +151,7 @@ while (fuel > 0)
 }
 ```
 
-A `for` loop's variable is read-only in its body unless it's declared `mut var`; the loop's step can change it either way. `foreach` goes through a list in order, and each element is a read-only copy. There's no `do ... while` yet.
+A `for` loop's variable is read-only in its body unless it's declared `mut var`; the loop's step can change it either way. `foreach` goes through a list in order, and each element is a read-only copy; `foreach (int score in scores)` names their type. `foreach` and `parallel` go through a grid's cells too (see [Grids](./grids.md)). There's no `do ... while` yet.
 
 ## Enums and switch
 
@@ -173,7 +181,7 @@ system Advance(mut Match match)
 
 - A member without a value is one more than the one before it, and the first is 0. A value is an int, which can come from constants: `Playing = FIRST_LEVEL + 1`.
 - Members are always written with their enum: `Phase.Playing`.
-- `==` and `!=` compare two values of the same enum, and `int(phase)` gives a member's value.
+- `==` and `!=` compare two values of the same enum, and `int(phase)` gives a member's value. There's no way from an int to an enum yet.
 - An enum takes four bytes, like an int. `enum Voxel : byte { ... }` takes one, for members from 0 to 255, and `: ushort` two, for 0 to 65535: worth it where there are a lot of them, like a grid's cells.
 - `switch` works on ints and enums. A case is an int, an enum's member, or a constant. Every section ends with `break` or `return`, so none runs into the next.
 

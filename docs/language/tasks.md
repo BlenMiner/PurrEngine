@@ -55,6 +55,8 @@ async event(Spawned) Arm(mut Turret turret)
 }
 ```
 
+Local handlers can be async too: `local async event(...)` (see [Local state](./local-state.md)).
+
 Systems and views can't wait, as they run again every tick or frame: they start tasks instead, by calling an async function.
 
 ## What tasks wait for
@@ -68,6 +70,13 @@ Systems and views can't wait, as they run again every tick or frame: they start 
 | `await Wait.Seconds(s)` | `s` seconds: in the match, the nearest whole number of ticks (at least one), the same on every machine; in local code, this machine's time. |
 
 A wait of 0, or less, doesn't wait at all.
+
+For now:
+
+- Methods, extern functions and functions that take an `Action` can't be async.
+- `await` can't go in a block written after a call (an `Action`), and `Wait` only goes after `await`.
+- Tasks can't draw, or read this frame's `Devices`: that's what views do, every frame.
+- Only systems, views, handlers and async code start tasks. A plain function or method can't, as a task belongs to a world.
 
 ## Where tasks run
 

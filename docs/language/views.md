@@ -1,6 +1,6 @@
 # Views and drawing
 
-A **view** draws the game. It looks like a system and takes the same parameters, but it runs once per rendered frame instead of once per tick, and it never changes the match.
+A **view** draws the game. It looks like a system and takes the same parameters, components and singletons, but it runs once per rendered frame instead of once per tick, and it never changes the match. It reads this machine's devices as `Devices`, not as a parameter, and can't read the input (see [Input](./input.md#devices-in-the-match)).
 
 ```csharp
 view DrawBalls(Body body, Ball ball)
@@ -15,7 +15,7 @@ view DrawHud(Arena arena)
 }
 ```
 
-Drawing is immediate mode: views call `Draw` functions every frame, and nothing is kept between frames. Views run after the frame's ticks, in the order they're declared, and later ones draw on top. A frame can draw as much as it needs: shapes go to the GPU together, so tens of thousands of rects or circles a frame are cheap, on the web too.
+Drawing is immediate mode: views call `Draw` functions every frame, and nothing is kept between frames. Views run after the frame's ticks, in the order they're declared, and later ones draw on top. `[Before]` and `[After]` order views among themselves, as they do systems. A frame can draw as much as it needs: shapes go to the GPU together, so tens of thousands of rects or circles a frame are cheap, on the web too.
 
 A view's `mut` parameters, `Spawn`, `Add`, `Remove`, `Destroy` and `Send` are all local: views can change this machine's own state, like particles or a menu, but not the match (see [Local state](./local-state.md)). Only views, and the functions they call, can draw.
 

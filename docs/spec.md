@@ -76,7 +76,7 @@ component Health
 ### Structs
 
 - A struct is plain data, copied when it's assigned, with no references. The world stays plain data, so copying it is still a snapshot.
-- Structs are the types of fields (of components, singletons, inputs and other structs) and of locals. System parameters stay components, singletons, the input and `Entity`.
+- Structs are the types of fields (of components, singletons, inputs and other structs) and of locals. System parameters stay components, singletons, the input and `Devices`.
 - A value is written like a component's: `Stats { armor = 2 }`. Fields left out take their default, and a struct field without one takes its struct's defaults.
 - A struct's fields change through whatever holds it: `unit.stats.health -= 5` needs `mut Unit unit`, so a system's signature still says what it writes. A local copy changes with `mut var`.
 - A struct can't contain itself, even through other structs: it would be infinitely big.
@@ -327,10 +327,11 @@ tidec v0 needed answers to these to work end to end. They're implemented, but th
 - A function that takes an Action is copied into each call in generated C, with its locals renamed, so its names never hide the caller's in the block.
 - A `mut string` parameter is the caller's text, a local's or a field's, which the function changes.
 - Operators and their precedence follow C#. Comments are `//` and `/* */`.
+- Source files are UTF-8, and a byte order mark at the start is skipped. Names are ASCII: other characters only go in comments and text.
 
 ### Limits
 
-- 64 components, 256 archetypes, 16384 entities, 1024 entities per archetype and 4096 structural changes per tick. The last three can be raised with compile definitions.
+- 64 components and 256 archetypes. Everything else grows as it needs, with no limit but memory: entities, entities per archetype, and structural changes and events per tick.
 
 ### Namespaces
 
@@ -417,8 +418,8 @@ float2 flat = trs.position.xz;
 
 - Component-wise, on numbers and vectors: `Abs`, `Sign`, `Min`, `Max`, `Clamp` (ints too); `Floor`, `Ceil`, `Round` (ties to even), `Trunc`, `Frac`, `Sqrt`, `Rsqrt`, `Saturate`, `Radians`, `Degrees`, `Sin`, `Cos`, `Tan`, `Asin`, `Acos`, `Atan`, `Atan2`, `Exp`, `Exp2`, `Log`, `Log2`, `Log10`, `Pow`, `Step`, `Lerp`, `Unlerp`, `SmoothStep`.
 - Vectors: `Dot`, `Cross`, `Length`, `LengthSq`, `Distance`, `DistanceSq`, `Normalize`, `NormalizeSafe` (zero instead of NaN), `Reflect`, `Csum`, `Cmin`, `Cmax`.
-- Quaternions: `Mul`, `Rotate`, `Inverse`, `Conjugate`, `Normalize`, `NormalizeSafe`, `Dot`, `Slerp`, `Nlerp`, `Forward`, `Up`, `Right`, `Angle`.
-- Matrices: `Mul`, `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
+- Quaternions: `Mul` (two rotations, or a rotation and a `float3`, which it rotates), `Rotate`, `Inverse`, `Conjugate`, `Normalize`, `NormalizeSafe`, `Dot`, `Slerp`, `Nlerp`, `Forward`, `Up`, `Right`, `Angle`.
+- Matrices: `Mul` (two matrices, or a matrix and a vector of its size), `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
 - Everything is deterministic (see AGENTS.md). The transcendental functions are Tide's own, accurate to about 1 ulp but not correctly rounded.
 - `Math.Hash(value)` on an `int`, `int2`, `int3` or `int4` gives random numbers that keep no state: the same int for the same value on every machine, like `Math.Hash(int3(x, y, seed)) % 6`.
 
@@ -576,7 +577,7 @@ system Advance(mut Match match)
 - `==` and `!=` compare two values of the same enum. `int(phase)` gives a member's value; there's no way from an int to an enum yet.
 - An enum in an input that isn't one of its members, which only a bad client could send, becomes the field's default before `Sanitize`, like a NaN float.
 - `switch` works on ints and enums. A case is an int known while compiling (a literal, an int constant, or operators on them), or one of the enum's members, maybe through a constant of the enum. Labels in a row share a section, `default` handles the rest, and each value appears once.
-- Every section ends with `break;` or `return;` on every path, so none runs into the next, as in C#. `break` anywhere else is an error, since there are no loops yet.
+- Every section ends with `break;` or `return;` on every path, so none runs into the next, as in C#. Outside a switch, `break` ends a loop (see Loops); anywhere else it's an error.
 - Each section has its own scope for locals.
 - A function returns on every path when a switch with a `default` returns in every section.
 - `switch`, `case`, `default` and `break` are keywords.
@@ -615,7 +616,7 @@ system Advance(mut Match match)
 ### Provisional
 
 - Text is UTF-8. Literals can hold any UTF-8 character, and `\"`, `\\` and `\n`.
-- `$"score {score}"` puts values in text. After a value, a colon and a format, as in C#: `{x:F2}` for two decimals, `{n:D3}` for at least three digits (`007`), `{n:X}` for hex. Floats take F, and ints D, X and F. `{{` and `}}` are braces, and `?:` in a value goes in parentheses: `{(won ? 1 : 0)}`.
+- `$"score {score}"` puts values in text. After a value, a colon and a format, as in C#: `{x:F2}` for two decimals, `{n:D3}` for at least three digits (`007`), `{n:X}` for hex. Floats, vectors, quaternions, colors and rects take F, up to F9; ints and int vectors take D (up to D32), X (up to X8) and F. The letter can be lowercase. `{{` and `}}` are braces, and `?:` in a value goes in parentheses: `{(won ? 1 : 0)}`.
 - Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color` (`RGBA(1, 0, 0, 1)`), `Rect`, entities (`Entity(3:1)`, or `Entity(new)` for a temporary handle: see Entities) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, plainly from 1e-7 to 1e21 and with an exponent beyond (`1.5E+21`), the same on every platform: computed exactly, never with the platform's printf.
 - Text shows values with fields (structs, components, singletons, events and inputs) as C# shows records: `Stats { hp = 3, speed = 1.5 }`, `Nothing { }`, nested ones inside. Lists show as `[1, 2, 3]`. Text in them is in quotes, `name = "Bob"`, so `""` shows; it isn't escaped. Scenes show their own fields, not the engine's. `Session` shows its `room` last. The device records (`Devices` and the rest) don't show, nor does anything holding a matrix, which text can't show yet; the error names what's in the way.
 - `+` joins text with anything it can show: `"score " + score`, `1 + "st"`. `==` and `!=` compare text byte by byte. There's no `<` for text.
@@ -629,7 +630,7 @@ system Advance(mut Match match)
 ### Open
 
 - A `char` type, and indexing text by character.
-- Text with a caret that moves, selection, and pasting in text fields.
+- Text with a caret that moves, and selection, in text fields.
 - Case for letters past ASCII.
 
 ## Lists
@@ -828,7 +829,7 @@ async int Doubled(int x)
     return x * 2;
 }
 
-system Start(mut Round round)
+system Start(Round round)
 {
     if (round.count == 0) Doubled(2); // Starts a task; its value is dropped
 }
@@ -838,7 +839,7 @@ system Start(mut Round round)
 
 Implemented, awaiting approval:
 
-- `async` goes before a function or an event handler, after `local` if it has one (`local async event(...)`); before anything else it's an error that says where it goes. Methods can't be async yet, nor extern functions or functions that take an Action. `await` is a keyword, and binds like `try`: `await Doubled(3) + 1` adds 1 to the value. A `!` after an awaited call is the awaited value's: `await Fetch(name)!`.
+- `async` goes before a function or an event handler, before or after `local` if it has one (`local async event(...)`); before anything else it's an error that says where it goes. Methods can't be async yet, nor extern functions or functions that take an Action. `await` is a keyword, and binds like `try`: `await Doubled(3) + 1` adds 1 to the value. A `!` after an awaited call is the awaited value's: `await Fetch(name)!`.
 - An async call is awaited, from async code (async functions and handlers), or a statement of its own, which starts a task; using its value without `await` is an error that says which to write. A started task's value is dropped; one that can fail is warned about as a call that can fail is, and `Load(name)!;` starts it without the warning. Only systems, views, handlers and async code start tasks: a plain function or method can't, as a task belongs to a world.
 - `await` waits for an async call, or for `Wait.Ticks(n)` (the match's ticks; match code only), `Wait.Frames(n)` (this machine's frames; local code only) or `Wait.Seconds(s)`: in the match, the nearest whole number of ticks, at least one; in local code, this machine's time, which hosts give each frame (`tide_local_frame_time`) and a task counts down frame by frame, within a tenth of a millisecond. A wait of 0 or less doesn't wait. `Wait` only goes after `await`. `await` isn't allowed in a block written after a call.
 - Async code is a state machine, as in C#: a call of an async function runs until it first waits, inside the code that calls it. An awaited call's frame is part of the caller's, so a task is one frame however deep it awaits, and an async function can't await itself (it can start itself again, as a task of its own).
@@ -874,7 +875,7 @@ Implemented, awaiting approval:
 - **Input carries whether buttons are held, not whether they just went down,** because a missing remote input is guessed by repeating the last one. On a device, `.pressed` means down at any point since the last sample, so a quick tap between ticks is never lost. In the simulation, `bool` input fields get `.down` and `.up`, computed against the previous tick, inside structs too (`input.aim.fire.down`).
 - An input parameter in a system gives the input of the player who owns the entity, and so does a `Devices` parameter. Entities without an `Owner`, or whose owner isn't a known player, get the **server's input**, and so do systems that run once per tick. This is how the server controls what no player owns. An input parameter doesn't filter entities: add `with Owner` to only run on owned ones.
 - An input can have a `Sanitize()` method. Every input passes through it before the simulation reads it, including input from other players, so systems can rely on what it guarantees without checking again. It assigns the input's fields by name, like `Sample`, and reads nothing else.
-- Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`, and so can the fields of structs an input holds. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector.
+- Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`, and so can the fields of structs an input holds. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector. They go on input and struct fields only, for now: on a component's or singleton's field, they're an error.
 - **Input is an attack point,** so the engine is forgiving with it. Before `Sanitize` runs, NaN and infinite floats become the field's default. Nothing a client sends can put NaN in the simulation, and `Sanitize` only deals with values that are merely out of range.
 - `Devices` has a keyboard, mouse and gamepad for now; pen, touch, joysticks and sensors come later. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up), named as in Unity: the Input System's `isPressed`, and the old `GetKeyDown` and `GetKeyUp`.
   - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
@@ -947,7 +948,6 @@ input PlayerInput
 - On the server's machine, its own player's input is the server's too, so entities without an owner read it. A server with no player of its own keeps the defaults.
 ### Open
 
-- Players joining, leaving and reconnecting.
 - Pairing devices with players, for local multiplayer.
 - Compact input types (bytes, quantized floats) to save bandwidth.
 - The server's input computed from the game's state (AI) rather than from devices.
@@ -1159,8 +1159,8 @@ system Count(Spark spark) { }
 - **`LocalEntity`** is an entity of the local world. `Spawn` in local code returns one, and `this` is one in a view of local components, where in a view of match components it's an `Entity`. Local code can hold and read an `Entity` (the unit a player selected, say) but never change one. The match's declarations can't hold a `LocalEntity`, and neither can structs, which both sides share.
 - A view runs for the entities of one world: its components are all local or all the match's.
 - Local handlers handle local events, and `Spawned` and `Destroyed` of local entities. They only take local state for now.
-- The host keeps the local state and calls `tide_local_init(local)` once, then `tide_frame(w, local, draw)` every frame. `tide_frame` runs the views, then applies their local changes and events. Outside a match, `w` is NULL, and views that read the match don't run.
-- The local world has its own entity table and queue, the same size as the match's.
+- The host keeps the local state and calls `tide_local_init(local)` once, then `tide_frame(w, previous, alpha, local, draw, gui)` every frame. `tide_frame` runs the views, then applies their local changes and events. Outside a match, `w` is NULL, and views that read the match don't run.
+- The local world has its own entity table and queue, which grow as they need, as the match's do.
 
 ### Open
 
@@ -1417,7 +1417,7 @@ Implemented, awaiting approval:
 ## Open
 
 - How entities authored as data (levels, prefabs) feed into archetype derivation.
-- Archetype growth. Every `Add` and `Remove` can apply to any entity, so the compiler assumes every combination is reachable, and each archetype currently reserves a fixed 1024 slots. Narrowing this safely needs more analysis, and storage should grow on demand.
+- Archetype growth. Every `Add` and `Remove` can apply to any entity, so the compiler assumes every combination is reachable, and a game can have at most 256 archetypes. Storage grows on demand; narrowing the combinations safely needs more analysis.
 - How modules, such as the engine's built-in systems, initialize when there's a single `Main`.
 - Groups of systems (phases such as input, simulation, late), which Before and After could order as a whole.
 - Access control: whether a namespace can keep declarations to itself.

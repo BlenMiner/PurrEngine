@@ -50,7 +50,7 @@ What a failing call gives is its value or its error. Before its value can be use
 
 ```csharp
 // ?? falls back to another value when it fails.
-var score = ParseScore(text) ?? 0;
+var fallback = ParseScore(text) ?? 0;
 
 // is runs code only when it succeeds, with its value...
 if (ParseScore(text) is int score)
@@ -63,7 +63,7 @@ if (ParseScore(text) is ParseError why) { ... }
 if (ParseScore(text) is ParseError.Empty) { ... }
 
 // ! carries on with the type's default (0 for an int) when it fails.
-var score = ParseScore(text)!;
+var parsed = ParseScore(text)!;
 
 // try passes the error on to the caller, which fails with the same type.
 int Doubled(string text) fails ParseError
