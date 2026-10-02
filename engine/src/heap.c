@@ -67,10 +67,14 @@ tide_block *tide_heap_write_shared(tide_heap *h, const uint32_t block)
     tide_page *own = tide_page_own(p, places(p), in_use(h, p));
     if (own != p) { // Code reading the old page meanwhile reads the same bytes
         for (uint32_t k = 0; k < places(own); k++) __atomic_store_n(&h->page[own->first + k], own, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&h->moves, 1u, __ATOMIC_RELAXED);
     }
     return tide_heap_block(h, block);
 }
 
+// A chunk task's copy leaves `moves` alone: the threads that change blocks
+// at once only change their own chunks, and code that keeps an address meanwhile
+// (on another thread) only reads, and reads the same bytes in the old page.
 tide_block *tide_heap_write_parallel(tide_heap *h, const uint32_t block, tide_page **copied)
 {
     *copied = NULL;
@@ -125,6 +129,7 @@ void tide_heap_release(tide_heap *h, const uint32_t block)
     if (!block) return;
     tide_heap_write(h, block)->next = h->pending;
     h->pending = block;
+    __atomic_add_fetch(&h->moves, 1u, __ATOMIC_RELAXED);
 }
 
 void tide_heap_flush(tide_heap *h)

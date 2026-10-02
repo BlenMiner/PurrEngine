@@ -45,6 +45,12 @@ typedef struct tide_heap {
     // The tick its world is running, which grids mark the chunks they change
     // with (see tide/grid.h). Set as each tick starts; it's no state of its own.
     uint32_t tick;
+    // Counts the times a block may have moved or gone: a page copied to be
+    // changed, or blocks released. Code that keeps a block's address a while
+    // (a grid's chunk cache, see tide/grid.h) checks it didn't change. It's
+    // no state of its own either, and read atomically, as other threads may
+    // read it while one system changes the heap.
+    uint32_t moves;
     // The page each page-sized piece of the heap is in. A page bigger than
     // that is at each of its places, with a reference for each. Before the
     // first, page[-1] holds the table this one replaced, until it's settled.

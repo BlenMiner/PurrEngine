@@ -181,6 +181,79 @@ static inline void *tide_grid_poke(tide_grid *g, const int32_t x, const int32_t 
     return (uint8_t *)tide_heap_write(heap, r->block) + tide_grid_place(s, x, y, z);
 }
 
+// The chunk code last used in a grid, so a loop over its cells looks each
+// chunk up once, not at every cell: generated code keeps one for each grid
+// type in each function. It holds while the grid's heap hasn't moved or
+// released a block since (tide_heap.moves), so whatever else the code calls,
+// changing the grid too, it never reads or writes where it shouldn't.
+typedef struct tide_grid_cache {
+    uint32_t at;            // The grid (its tide_grid.at), 0 for none
+    uint32_t moves;         // Its heap's moves when the chunk was looked up
+    const tide_heap *heap;  // ...that heap, which stays the same while a function runs
+    int32_t chunk[3];       // The chunk, in chunks
+    int32_t size[3];        // The grid's size, 0 on open axes
+    const uint8_t *read;    // The chunk's cells, or NULL where it has none (zeros)
+    uint8_t *write;         // ...to change, once a write made them this world's own
+} tide_grid_cache;
+
+// Whether the cache holds the chunk of `g` at (cx, cy, cz), still where it was.
+static inline bool tide_grid_cache_holds(const tide_grid_cache *c, const uint32_t at, const int32_t cx, const int32_t cy,
+                                         const int32_t cz)
+{
+    return c->at == at && c->at && c->chunk[0] == cx && c->chunk[1] == cy && c->chunk[2] == cz
+        && __atomic_load_n(&c->heap->moves, __ATOMIC_RELAXED) == c->moves;
+}
+
+static inline bool tide_grid_cache_inside(const int32_t size[3], const int32_t x, const int32_t y, const int32_t z)
+{
+    return (!size[0] || (x >= 0 && x < size[0])) && (!size[1] || (y >= 0 && y < size[1]))
+        && (!size[2] || (z >= 0 && z < size[2]));
+}
+
+// tide_grid_peek, through a cache.
+static inline const void *tide_grid_cached_peek(tide_grid_cache *c, const tide_grid g, const int32_t x, const int32_t y,
+                                                const int32_t z, const tide_grid_shape *s)
+{
+    const int32_t cx = x >> s->shift[0], cy = y >> s->shift[1], cz = z >> s->shift[2];
+    if (!tide_grid_cache_holds(c, g.at, cx, cy, cz)) {
+        const tide_heap *heap = tide_heap_of(g.at >> 30);
+        if (!heap || !g.at) return tide_grid_peek(g, x, y, z, s); // The scratch area's, or empty
+        *c = (tide_grid_cache){.at = g.at, .moves = __atomic_load_n(&heap->moves, __ATOMIC_RELAXED), .heap = heap,
+                               .chunk = {cx, cy, cz}};
+        const tide_grid_dir *d = tide_grid_dir_of(g);
+        if (!d || !d->records) return NULL;
+        for (int i = 0; i < 3; i++) c->size[i] = d->size[i];
+        const uint32_t i = tide_grid_find(d, cx, cy, cz);
+        if (i) c->read = tide_grid_chunk_at(heap, tide_grid_records(d)[i - 1u].block);
+    }
+    if (!c->read || !tide_grid_cache_inside(c->size, x, y, z)) return NULL;
+    return c->read + tide_grid_place(s, x, y, z);
+}
+
+// tide_grid_poke, through a cache.
+static inline void *tide_grid_cached_poke(tide_grid_cache *c, tide_grid *g, const int32_t x, const int32_t y,
+                                          const int32_t z, const tide_grid_shape *s, const bool make, const uint32_t where)
+{
+    const int32_t cx = x >> s->shift[0], cy = y >> s->shift[1], cz = z >> s->shift[2];
+    if (c->write && tide_grid_cache_holds(c, g->at, cx, cy, cz) && tide_grid_cache_inside(c->size, x, y, z)) {
+        return c->write + tide_grid_place(s, x, y, z);
+    }
+    void *cell = tide_grid_poke(g, x, y, z, s, make, where);
+    tide_heap *heap = tide_heap_of(where);
+    if (!cell || !heap || g->at >> 30 != where) {
+        *c = (tide_grid_cache){0};
+        return cell;
+    }
+    // The chunk is this world's own now, marked changed this tick
+    const tide_grid_dir *d = tide_grid_dir_of(*g);
+    *c = (tide_grid_cache){.at = g->at, .moves = __atomic_load_n(&heap->moves, __ATOMIC_RELAXED), .heap = heap,
+                           .chunk = {cx, cy, cz}};
+    for (int i = 0; i < 3; i++) c->size[i] = d->size[i];
+    c->write = (uint8_t *)cell - tide_grid_place(s, x, y, z);
+    c->read = c->write;
+    return cell;
+}
+
 // A grid in the scratch area, as Grid2(...) and Grid3(...) make it: its size
 // (0 where it's open), which a world's field takes when it owns it.
 tide_grid tide_grid_new(uint32_t dims, int32_t x, int32_t y, int32_t z);

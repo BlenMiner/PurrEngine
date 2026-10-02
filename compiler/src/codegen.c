@@ -1548,7 +1548,7 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             if (is_chunk_view(e->object)) {
                 sb_printf(o, "tide_grid%d_vget(%s, ", e->object->type.decl->index, local_cname(g, e->object->name));
             } else {
-                sb_printf(o, "tide_grid%d_get(", e->object->type.decl->index);
+                sb_printf(o, "tide_grid%d_get(&tide_gc[%d], ", e->object->type.decl->index, e->object->type.decl->index);
                 gen_expr(g, o, e->object);
                 sb_put(o, ", ");
             }
@@ -3203,7 +3203,7 @@ static void gen_stmt(gen *g, const stmt *s)
             if (is_chunk_view(target->object)) {
                 sb_printf(o, "tide_grid%d_vset(%s, ", k, local_cname(g, target->object->name));
             } else {
-                sb_printf(o, "tide_grid%d_set(&(", k);
+                sb_printf(o, "tide_grid%d_set(&tide_gc[%d], &(", k, k);
                 gen_expr(g, o, target->object);
                 sb_put(o, "), ");
             }
@@ -4044,6 +4044,16 @@ void grid_shape(const decl *grid, int *cell, int shift[3])
 // Each grid type's shape, and its cells read and changed: by a system,
 // through its component or singleton, or by a chunk system's task, through
 // its view. Changing a cell to zero where there's no chunk makes none.
+// A chunk cache for each grid type, for the function whose body comes next:
+// grid code reads and writes through them (tide/grid.h). One the function
+// doesn't use costs nothing, as the compiler drops it.
+static void gen_grid_caches(gen *g)
+{
+    if (g->prog->grids.count == 0) return;
+    line(g, &g->c, "tide_grid_cache tide_gc[%d] = {{0}};", g->prog->grids.count);
+    line(g, &g->c, "(void)tide_gc;");
+}
+
 static void gen_grid_helpers(gen *g)
 {
     sb *o = &g->c;
@@ -4061,12 +4071,16 @@ static void gen_grid_helpers(gen *g)
         const char *shape = grid_shape_name(grid);
         sb_printf(o, " cells\nconst tide_grid_shape %s = {%du, %du, {%du, %du, %du}};\n\n", shape, size, grid->dims, shift[0],
                   shift[1], shift[2]);
-        sb_printf(o, "TIDE_HELPER %s tide_grid%d_get(const tide_grid g, const %s p)\n{\n", cell, k, at);
-        sb_printf(o, "    const %s *c = tide_grid_peek(g, p.x, p.y, %s, &%s);\n", cell, z, shape);
+        // Through the function's cache for this grid type (tide_gc), so a loop
+        // looks each chunk up once
+        sb_printf(o, "TIDE_HELPER %s tide_grid%d_get(tide_grid_cache *cache, const tide_grid g, const %s p)\n{\n", cell, k, at);
+        sb_printf(o, "    const %s *c = tide_grid_cached_peek(cache, g, p.x, p.y, %s, &%s);\n", cell, z, shape);
         sb_printf(o, "    return c ? *c : (%s){0};\n}\n\n", cell);
-        sb_printf(o, "TIDE_HELPER void tide_grid%d_set(tide_grid *g, const %s p, const %s v, const uint32_t where)\n{\n", k, at, cell);
+        sb_printf(o, "TIDE_HELPER void tide_grid%d_set(tide_grid_cache *cache, tide_grid *g, const %s p, const %s v, const uint32_t where)\n{\n",
+                  k, at, cell);
         sb_printf(o, "    static const %s zero;\n", cell);
-        sb_printf(o, "    %s *c = tide_grid_poke(g, p.x, p.y, %s, &%s, memcmp(&v, &zero, sizeof v) != 0, where);\n", cell, z, shape);
+        sb_printf(o, "    %s *c = tide_grid_cached_poke(cache, g, p.x, p.y, %s, &%s, memcmp(&v, &zero, sizeof v) != 0, where);\n",
+                  cell, z, shape);
         sb_put(o, "    if (c) *c = v;\n}\n\n");
         sb_printf(o, "TIDE_HELPER %s tide_grid%d_vget(const tide_grid_view *view, const %s p)\n{\n", cell, k, at);
         sb_printf(o, "    const %s *c = tide_grid_view_peek(view, p.x, p.y, %s, &%s);\n", cell, z, shape);
@@ -4992,6 +5006,7 @@ static void gen_system_body(gen *g, const decl *sys)
         if (p->name.len > 0 && p->mode != PARAM_EVENT) line(g, o, "(void)%s;", local_cname(g, p->name));
         if (p->type.kind == TY_INPUT) line(g, o, "(void)%s;", prev_input_name(g, p->name));
     }
+    gen_grid_caches(g);
     for (int i = 0; i < sys->body->stmts.count; i++) gen_stmt(g, sys->body->stmts.items[i]);
     g->has_scene = false;
     g->code = NULL;
@@ -5327,6 +5342,7 @@ static void gen_routine(gen *g, const decl *m)
         line(g, o, "(void)%s;", local_cname(g, m->params.items[i].name));
         if (takes_where(&m->params.items[i])) line(g, o, "(void)%s;", where_name(g, m->params.items[i].name));
     }
+    gen_grid_caches(g);
     for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);
     // A function that can fail and returns nothing succeeds at its end.
     if (m->result.kind == TY_FAILABLE && m->return_type.kind == TY_VOID) line(g, o, "return (%s){.ok = true};", c_type(m->result));
@@ -5401,6 +5417,7 @@ static void gen_task_resume(gen *g, task_info *ti, const bool local)
         gen_reload(g, name, slot.data, p->type);
         line(g, o, "(void)%s;", name);
     }
+    gen_grid_caches(g); // Before the jump, so a task that goes on has them too
     line(g, o, "goto tide_dispatch;");
     line(g, o, "tide_start:;");
     for (int i = 0; i < fn->body->stmts.count; i++) gen_stmt(g, fn->body->stmts.items[i]);
