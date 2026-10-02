@@ -92,6 +92,11 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 - On Windows, the `mingw-release` preset builds everything for the MinGW-w64 target (`x86_64-w64-windows-gnu`, with the UCRT), which tide builds Windows games for (see Packaging and releases): `cmake --workflow --preset mingw-release`. Everyday Windows builds keep Visual Studio's target.
 - Its headers, C runtime and compiler runtime come from llvm-mingw, downloaded once into `build/llvm-mingw-<version>`, pinned (`cmake/mingw-toolchain.cmake`). clang is the usual one, linking with lld.
 
+### Android builds
+
+- The `android-debug` and `android-release` presets build everything for Android on x86_64, the emulator's, and `android-arm64` for phones and tablets: `cmake --workflow --preset android-debug`. They're clang with Android's NDK (`cmake/android-toolchain.cmake`), whose C library, headers and compiler runtime Google's license keeps out of this repo and the package: the build finds the NDK installed (ANDROID_NDK_HOME, or the newest in the SDK: ANDROID_HOME, or where Android Studio puts it). Programs run on Android 8.0 (API 26) and up, with 16 KiB pages.
+- Tests run on a device or emulator through adb (`cmake/run_android.mjs`): each program goes to a folder of its own under `/data/local/tmp`, so they run at once. The emulator runs x86_64 on x86_64 machines; arm64 needs a device (or an arm64 machine). Games generate their C with a native tidec, as web builds do.
+
 ### Cross-platform determinism tests
 
 - `tests/test_crossplatform.c` and `compiler/tests/e2e/crossplatform` hash the exact bits of math results and of a full simulation. The hashes must be identical on every platform and in every configuration.

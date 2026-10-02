@@ -3,9 +3,9 @@
 file(GLOB TIDEC_SOURCES CONFIGURE_DEPENDS src/*.c)
 list(REMOVE_ITEM TIDEC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c")
 
-# Web builds use a native tidec instead (cmake/HostTidec.cmake), and the
-# language server and tide run natively, so only native builds have them.
-if(NOT TIDE_WEB)
+# Web and Android builds use a native tidec instead (cmake/HostTidec.cmake),
+# and the language server and tide run natively, so only native builds have them.
+if(NOT TIDE_WEB AND NOT TIDE_ANDROID)
     add_library(tidec_core STATIC ${TIDEC_SOURCES})
     target_link_libraries(tidec_core PUBLIC tide_flags)
     # tidec reads the device member lists from tide/devices.h so Tide and C agree.

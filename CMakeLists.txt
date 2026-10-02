@@ -37,6 +37,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
 else()
     set(TIDE_WEB OFF)
 endif()
+# Android builds: through clang with Android's NDK (cmake/android-toolchain.cmake).
+if(CMAKE_C_COMPILER_TARGET MATCHES "android")
+    set(TIDE_ANDROID ON)
+else()
+    set(TIDE_ANDROID OFF)
+endif()
 
 include(cmake/TideFlags.cmake)
 include(cmake/Tide.cmake)
@@ -54,9 +60,9 @@ find_program(TIDE_NODE NAMES node) # Tests that run Node: web builds need it any
 option(TIDE_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
 option(TIDE_TOOLS_ONLY "Build only tidec, as web builds do for their host (cmake/HostTidec.cmake)" OFF)
 
-# tide_add_game runs tidec: this build's, or in web builds a native one, since
-# a WebAssembly tidec can't run during the build.
-if(TIDE_WEB)
+# tide_add_game runs tidec: this build's, or in web and Android builds a native
+# one, since a WebAssembly or Android tidec can't run during the build.
+if(TIDE_WEB OR TIDE_ANDROID)
     include(cmake/HostTidec.cmake)
 else()
     set(TIDEC_COMMAND tidec)
@@ -82,7 +88,7 @@ set(TIDE_REPOSITORY "BlenMiner/tide-engine" CACHE STRING "The GitHub repository 
 # prebuilt platform layer.
 file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/package/VERSION" CONTENT "${TIDE_VERSION}\n")
 install(FILES "${CMAKE_BINARY_DIR}/package/VERSION" DESTINATION . COMPONENT tide)
-if(NOT TIDE_WEB)
+if(NOT TIDE_WEB AND NOT TIDE_ANDROID)
     add_subdirectory(tools) # Editor support
 endif()
 

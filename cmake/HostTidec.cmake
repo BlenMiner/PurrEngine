@@ -1,5 +1,5 @@
-# Web builds generate their games' C with a native tidec: a WebAssembly one
-# couldn't run during the build. This builds tidec from the same sources for
+# Web and Android builds generate their games' C with a native tidec: a
+# WebAssembly or Android one couldn't run during the build. This builds tidec from the same sources for
 # the machine doing the build, in <build>/host, before anything needs it.
 
 include(ExternalProject)
