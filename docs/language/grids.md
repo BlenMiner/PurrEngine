@@ -51,52 +51,75 @@ A match is snapshotted every tick and rolled back when a guess about another pla
 
 A grid is never copied, since every chunk would be: a local can't hold one, nor a component that has one, and functions can't take grids yet. Read and change cells through the component or singleton.
 
-## Chunk systems
+## Going through every cell
 
-A grid's cells can all change every tick, like sand falling everywhere at once. A chunk system runs once for each chunk, on threads: its `chunk` parameter names the grid field, and `min` and `max` are its chunk's cells.
+A grid's cells can all change every tick, like sand falling everywhere at once. A `parallel` loop goes through every cell at once, on threads:
 
 ```csharp
-singleton Field
+singleton Heat
 {
-    Grid2<int> cells = Grid2(2048, 2048);
+    Grid2<int> cells = Grid2(1024, 1024);
 }
 
-// Ones fall a cell a tick, into the chunk below too
-system Fall(chunk mut Field.cells cells)
+// Each cell becomes the average of itself and the four beside it
+system Spread(mut Heat heat)
 {
-    for (var y = Math.Max(cells.min.y, 1); y < cells.max.y; y++)
+    parallel (var at in heat.cells)
     {
-        for (var x = cells.min.x; x < cells.max.x; x++)
-        {
-            if (cells[x, y] != 1 || cells[x, y - 1] != 0) continue;
-            cells[x, y] = 0;
-            cells[x, y - 1] = 1;
-        }
+        var sum = heat.cells[at] * 4 + heat.cells[at + int2(1, 0)] + heat.cells[at + int2(-1, 0)]
+                + heat.cells[at + int2(0, 1)] + heat.cells[at + int2(0, -1)];
+        heat.cells[at] = sum / 8;
     }
 }
 ```
 
-Fall reads and writes `cells[x, y - 1]`, a cell below its own, so it reaches into the chunk below: tidec works that out from the cells it indexes. Chunks then run in phases, placed so no two that run together touch the same chunk: Fall's run in 2, every other row of chunks at a time. The result is exactly the same on one thread as on many, on every machine. Sand that also slides to the sides gets into 6 chunks, and runs in 6 phases. Heat that spreads to the four cells beside each one gets into the chunks beside its own but never those across a corner, and runs in 5, where a whole block of 9 would take 9. Work that stays inside each chunk, like filling it in, runs every chunk at once.
+Each step reads the grid as the loop found it, and changes only its own cell, `at`. So it doesn't matter which steps run first, or on which thread: the result is exactly the same on one thread as on many, on every machine. Code after the loop runs once every step is done.
 
-tidec works it out from `cells.min` and `cells.max`, constants, loop variables between them, and locals made from those. A cell it can't place from the chunk, like one at a position read from a singleton, is an error. Index it from the chunk instead, or say how far it reaches above the system: the cells around each cell it touches, or how many cells past its chunk it touches every way.
+A step can declare variables, call functions and read any cell. What it can't do is change anything else: another cell, a variable from outside the loop, or anything whose order would count, like spawning or sending events. tidec says so, and what to write instead.
 
-```csharp
-[Reach(int2(-1, 0), int2(1, 0))] // The cells to the left and right of each
-system Gust(Wind wind, chunk mut Field.cells cells) { ... }
+### Moving things: blocks
 
-[Reach(2)] // Up to 2 cells past its chunk, every way
-system Blur(Brush brush, chunk mut Field.cells cells) { ... }
-```
-
-`[Reach]` where tidec works the reach out is a warning, and the editor offers to remove it.
-
-A chunk system changes only the cells within its reach. It reads singletons, and the other components of its grid's entity (which is `this`), but it can't spawn, send or change entities yet, nor take the component or singleton its grid is in: the other chunks are changing meanwhile, so it reads the grid through its `chunk` parameter. It runs for the chunks that existed when the tick began; chunks made during a tick join in from the next one.
-
-`[Sleeps]` makes a chunk system skip chunks where nothing within its reach changed in the last tick: settled sand, or water that's still. It's for systems where a chunk whose surroundings didn't change can't change either, whatever else they read.
+Sand moves: a grain leaves its cell and lands in another. A step that only changes its own cell can't do that, so `by` gives each step a block of cells instead. Each step owns its block, reads any cell, and changes only the cells in its block, so things can move within it:
 
 ```csharp
-[Sleeps]
-system Flow(chunk mut World.water water) { ... }
+// 2 by 2 blocks: their corners are on even cells one tick, and odd ones the next
+system Fall(Time time, mut Field field)
+{
+    parallel (var at in field.cells by 2 offset time.tick % 2)
+    {
+        mut var top = field.cells[at + int2(0, 1)];
+        mut var bottom = field.cells[at];
+        if (top == Material.Sand && bottom == Material.Empty)
+        {
+            top = Material.Empty;
+            bottom = Material.Sand;
+        }
+        field.cells[at + int2(0, 1)] = top;
+        field.cells[at] = bottom;
+    }
+}
 ```
 
-`tidec --schedule` shows each chunk system's phases, how far it reaches, and what it waits for: `Fall  (per chunk, 2 phases, reaches y -1)`, or `Spread  (per chunk, 5 phases, reaches x -1..+1, y -1..+1, 5 of those 9 chunks)`.
+Blocks never overlap, so steps never fight over a cell. `offset` says where the blocks start, and changing it each tick moves where their edges are: a grain at the bottom of a block one tick is at the top of another the next, so it keeps falling. `by int2(1, 2)` gives blocks of 1 by 2. A block that would go past the grid's size is left out, so along a sized edge some cells are only in every other tick's blocks: walls around the field keep sand off it, as the [sand demo](../guide/sand.md) does.
+
+### In order: foreach
+
+`foreach (var at in cells)` goes through the cells in order, rows from the first, each from its lowest x. Each step sees what the ones before it changed, as in C#: adding up a row, or anything that runs along the grid.
+
+```csharp
+system Count(Field field, mut Stats stats)
+{
+    mut var sand = 0;
+    foreach (var at in field.cells)
+    {
+        if (field.cells[at] == Material.Sand) sand += 1;
+    }
+    stats.sand = sand;
+}
+```
+
+When a foreach's steps only touch their own cell, and nothing outside the loop, the order can't show, so tidec runs them at once, like a parallel loop.
+
+A grid with no size goes on forever, so a loop over it goes through the cells around what's been set: the chunks the grid has.
+
+`tidec --schedule` shows which systems have parallel loops: `Fall  (once, 1 parallel loop)`.

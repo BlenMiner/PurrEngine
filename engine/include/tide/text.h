@@ -172,6 +172,11 @@ tide_text tide_text_temp(tide_str value);
 
 // For tide/list.h, which keeps its blocks the way text does.
 
+// Memory for code as it runs, like the scratch area's but of any size,
+// 16-byte aligned: in the area when it has room, or else of its own, freed
+// once the area goes back to a mark from before it.
+void *tide_scratch_memory(size_t bytes);
+
 // A block in the scratch area with room for `bytes` after its header, 16-byte
 // aligned: its header, or NULL when the area is full. `at` gets its tagged
 // offset.

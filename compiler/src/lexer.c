@@ -26,6 +26,7 @@ static const struct {
     {"while", T_WHILE},
     {"for", T_FOR},
     {"foreach", T_FOREACH},
+    {"parallel", T_PARALLEL},
     {"continue", T_CONTINUE},
     {"this", T_THIS},
     {"fail", T_FAIL},
@@ -486,6 +487,7 @@ const char *tok_kind_name(const tok_kind kind)
     case T_WHILE: return "'while'";
     case T_FOR: return "'for'";
     case T_FOREACH: return "'foreach'";
+    case T_PARALLEL: return "'parallel'";
     case T_CONTINUE: return "'continue'";
     case T_THIS: return "'this'";
     case T_FAIL: return "'fail'";

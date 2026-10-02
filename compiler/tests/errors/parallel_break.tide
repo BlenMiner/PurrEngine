@@ -1,0 +1,11 @@
+// expect: a parallel loop's steps run at once, so one can't end the loop
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells)
+    {
+        if (field.cells[at] == 1) break;
+        field.cells[at] = 2;
+    }
+}
+scene Main { }

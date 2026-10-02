@@ -1,0 +1,10 @@
+// expect: a parallel loop's step changes only its own block: cells from 'at' up to the block's size
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells by 2)
+    {
+        field.cells[at + int2(2, 0)] = 1;
+    }
+}
+scene Main { }

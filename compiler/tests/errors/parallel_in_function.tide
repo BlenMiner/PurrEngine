@@ -1,0 +1,8 @@
+// expect: a parallel loop goes in a system, view or handler
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+void Fill(mut Field field)
+{
+    parallel (var at in field.cells) { field.cells[at] = 1; }
+}
+system Step(mut Field field) { Fill(field); }
+scene Main { }

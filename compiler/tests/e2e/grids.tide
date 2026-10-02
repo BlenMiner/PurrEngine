@@ -1,5 +1,5 @@
 // Grids: cells at positions, in chunks only where something's there, read and
-// changed by systems, and by chunk systems a chunk at a time.
+// changed by systems, and by parallel loops every cell at once.
 
 enum Voxel : byte
 {
@@ -112,45 +112,35 @@ system Look(Canvas canvas, mut Results results, Time time)
     Expect(results.tally, canvas.pixels[39, 29].id == (canvas.number == 1 ? 10 : 0));
 }
 
-// Ones fall a cell a tick, onto the floor at y = 0, never through each other.
-system Fall(chunk mut Field.cells cells)
+// Ones fall a cell a tick, onto the floor at y = 0, never through each other:
+// in blocks of a cell and the one above it, from even rows one tick and odd
+// ones the next.
+system Fall(mut Field field, Time time)
 {
-    for (var y = Math.Max(cells.min.y, 1); y < cells.max.y; y++)
+    parallel (var at in field.cells by int2(1, 2) offset int2(0, time.tick % 2))
     {
-        for (var x = cells.min.x; x < cells.max.x; x++)
-        {
-            if (cells[x, y] != 1 || cells[x, y - 1] != 0) continue;
-            cells[x, y] = 0;
-            cells[x, y - 1] = 1;
-        }
+        if (field.cells[at + int2(0, 1)] != 1 || field.cells[at] != 0) continue;
+        field.cells[at] = 1;
+        field.cells[at + int2(0, 1)] = 0;
     }
 }
 
-// Lamps light the cell next to them, and only wake where something changed.
-[Sleeps]
-system Glow(chunk mut Field.lamps lamps)
+// Lamps light the cell next to them: every cell of the grid at once, each
+// telling C it ran.
+system Glow(mut Field field)
 {
-    c_visit(lamps.min.x, lamps.min.y);
-    for (var y = lamps.min.y; y < lamps.max.y; y++)
+    parallel (var at in field.lamps)
     {
-        for (var x = lamps.min.x; x < lamps.max.x; x++)
-        {
-            if (lamps[x, y] == 2) lamps[x, y] = 3;
-        }
+        c_visit(at.x, at.y);
+        if (field.lamps[at] == 2) field.lamps[at] = 3;
     }
 }
 
-// 3D chunks, all at once.
-system Settle(chunk mut Field.blocks blocks)
+// An open grid's cells, in 3D: wherever it has chunks, all at once.
+system Settle(mut Field field)
 {
-    for (var z = blocks.min.z; z < blocks.max.z; z++)
+    foreach (var at in field.blocks)
     {
-        for (var y = blocks.min.y; y < blocks.max.y; y++)
-        {
-            for (var x = blocks.min.x; x < blocks.max.x; x++)
-            {
-                if (blocks[x, y, z] == Voxel.Water) blocks[x, y, z] = Voxel.Stone;
-            }
-        }
+        if (field.blocks[at] == Voxel.Water) field.blocks[at] = Voxel.Stone;
     }
 }

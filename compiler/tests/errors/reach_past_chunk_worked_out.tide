@@ -1,7 +1,0 @@
-// expect: this cell can be 66 cells after the chunk on x, and Field.cells's chunks are 64 cells across
-singleton Field { Grid2<int> cells; }
-system Step(chunk mut Field.cells cells)
-{
-    cells[cells.max.x + 65, cells.min.y] = 1;
-}
-scene Main { }

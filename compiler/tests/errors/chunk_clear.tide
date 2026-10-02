@@ -1,7 +1,0 @@
-// expect: a chunk system changes the cells within its reach, so it can't clear the whole grid
-singleton Field { Grid2<int> cells; }
-system Step(chunk mut Field.cells cells)
-{
-    cells.Clear();
-}
-scene Main { }

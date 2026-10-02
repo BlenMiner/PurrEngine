@@ -189,7 +189,7 @@
         },
         {
           "comment": "Methods and functions: [async] [mut] Type Name(, or Type? Name(, at the start of a line",
-          "match": "^\\s*(?:(async)\\s+)?(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|in|continue|namespace|using|extern|const|fail|try|is|null|async|await)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "match": "^\\s*(?:(async)\\s+)?(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|parallel|in|continue|namespace|using|extern|const|fail|try|is|null|async|await)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.modifier.tide" },
             "2": { "name": "storage.modifier.tide" },
@@ -202,8 +202,21 @@
     "keywords": {
       "patterns": [
         {
+          "comment": "A parallel loop's header, whose blocks go 'by' a size from an 'offset': parallel (var at in cells by 2 offset o)",
+          "begin": "\\b(parallel)\\s*(\\()",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.tide" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "name": "keyword.control.tide", "match": "\\b(by|offset)\\b" },
+            { "begin": "\\(", "end": "\\)", "patterns": [{ "include": "$self" }] },
+            { "include": "$self" }
+          ]
+        },
+        {
           "name": "keyword.control.tide",
-          "match": "\\b(if|else|return|switch|case|default|break|while|for|foreach|in|continue|fail|try|await)\\b"
+          "match": "\\b(if|else|return|switch|case|default|break|while|for|foreach|parallel|in|continue|fail|try|await)\\b"
         },
         {
           "comment": "int Parse(string text) fails ParseError: what a function can fail with",
@@ -228,11 +241,6 @@
           "comment": "Parameter and local modifiers",
           "name": "storage.modifier.tide",
           "match": "\\b(mut|with|without)\\b"
-        },
-        {
-          "comment": "A chunk system's grid parameter: chunk mut Field.cells cells",
-          "name": "storage.modifier.tide",
-          "match": "\\bchunk(?=\\s+(?:mut\\b|[A-Za-z_][A-Za-z0-9_]*\\.))"
         },
         {
           "comment": "The entity the code runs for",

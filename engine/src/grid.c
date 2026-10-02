@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "tide/jobs.h"
-
 // See tide/grid.h.
 //
 // A chunk is a heap block whose header is cells too while it's a chunk: the
@@ -95,8 +93,8 @@ static uint32_t make_room(tide_grid *g, tide_heap *heap)
     return grown;
 }
 
-// A new chunk at (cx, cy, cz), in chunks, with `cells` in it (NULL: zero),
-// made this tick. Returns its cells.
+// A new chunk at (cx, cy, cz), in chunks, with `cells` in it (NULL: zero).
+// Returns its cells.
 static uint8_t *add_chunk(tide_grid *g, tide_heap *heap, const int32_t cx, const int32_t cy, const int32_t cz,
                           const void *cells, const tide_grid_shape *s)
 {
@@ -107,8 +105,9 @@ static uint8_t *add_chunk(tide_grid *g, tide_heap *heap, const int32_t cx, const
     else memset(to, 0, sizeof(tide_block)); // Its header is cells now; the rest was zero
     const uint32_t block = make_room(g, heap);
     tide_grid_dir *d = dir_at(heap, block);
-    tide_grid_records(d)[d->records] = (tide_grid_record){{cx, cy, cz}, chunk, heap->tick, heap->tick};
+    tide_grid_records(d)[d->records] = (tide_grid_record){{cx, cy, cz}, chunk};
     insert(d, d->records++);
+    __atomic_add_fetch(&heap->moves, 1u, __ATOMIC_RELAXED); // A cache that found no chunk here is out of date
     return (uint8_t *)tide_heap_write(heap, chunk); // Making room can give the heap another page
 }
 
@@ -128,11 +127,7 @@ void *tide_grid_poke_slow(tide_grid *g, const int32_t x, const int32_t y, const 
     const int32_t cy = y >> s->shift[1];
     const int32_t cz = s->dims == 3 ? z >> s->shift[2] : 0;
     const uint32_t i = d->records ? tide_grid_find(d, cx, cy, cz) : 0u;
-    if (i) {
-        tide_grid_dir *w = dir_at(heap, OFFSET(g->at));
-        tide_grid_records(w)[i - 1u].changed = heap->tick;
-        return (uint8_t *)tide_heap_write(heap, tide_grid_records(w)[i - 1u].block) + tide_grid_place(s, x, y, z);
-    }
+    if (i) return (uint8_t *)tide_heap_write(heap, tide_grid_records(d)[i - 1u].block) + tide_grid_place(s, x, y, z);
     if (!make) return NULL;
     return add_chunk(g, heap, cx, cy, cz, NULL, s) + tide_grid_place(s, x, y, z);
 }
@@ -211,122 +206,378 @@ const void *tide_grid_read(const tide_heap *heap, const tide_grid g, const int32
 }
 
 // ---------------------------------------------------------------------------
-// Chunk systems
+// Loops over a grid's cells (see tide/grid.h)
 
-uint32_t tide_grid_chunks(const tide_grid g)
+static int32_t floor_div(const int32_t a, const int32_t b)
 {
-    tide_heap *heap = tide_heap_of(g.at >> 30);
-    if (!g.at || !heap) return 0;
-    return dir_at(heap, OFFSET(g.at))->records;
+    return a / b - (a % b != 0 && (a < 0) != (b < 0) ? 1 : 0);
 }
 
-bool tide_grid_view_start(tide_grid_view *v, const tide_grid g, const tide_entity entity, const uint32_t record,
-                          const tide_grid_shape *s, const tide_grid_reach *reach, const uint32_t phase, const bool sleeps)
+static const tide_grid_dir *dir_of(const tide_heap *heap, const tide_grid g)
 {
-    tide_heap *heap = tide_heap_of(g.at >> 30);
-    if (!g.at || !heap) return false;
-    const tide_grid_dir *d = (const tide_grid_dir *)(const void *)(tide_heap_block(heap, OFFSET(g.at)) + 1);
-    if (record >= d->records) return false;
-    const tide_grid_record *r = &tide_grid_records(d)[record];
-    if (r->born == heap->tick) return false; // Made this tick: from the next one on
-    if (reach->phases > 1) {
-        int64_t sum = 0;
-        for (uint32_t i = 0; i < s->dims; i++) sum += (int64_t)reach->weight[i] * r->chunk[i];
-        const int64_t phases = reach->phases;
-        if ((uint32_t)(((sum % phases) + phases) % phases) != phase) return false;
-    }
+    return (const tide_grid_dir *)(const void *)(tide_heap_block(heap, OFFSET(g.at)) + 1);
+}
 
-    memset(v, 0, sizeof *v);
-    v->g = g;
-    v->shape = s;
-    v->heap = heap;
-    v->tick = heap->tick;
-    v->entity = entity;
-    v->chunks = reach->chunks | 1u << 13; // Its own, always
-    bool awake = !sleeps;
-    for (uint32_t i = 0; i < 3; i++) {
-        const bool axis = i < s->dims;
-        // Never more than a chunk past its own, which tidec checks too
-        const int32_t span = (int32_t)(1u << s->shift[i]);
-        const int32_t before = reach->before[i] < span ? reach->before[i] : span;
-        const int32_t after = reach->after[i] < span ? reach->after[i] : span;
-        v->center[i] = r->chunk[i];
-        v->min[i] = axis ? r->chunk[i] << s->shift[i] : 0;
-        v->max[i] = axis ? v->min[i] + span : 1;
-        v->low[i] = axis ? v->min[i] - before : 0;
-        v->high[i] = axis ? v->max[i] + after : 1;
-        if (axis && d->size[i]) { // Never past the grid's size
-            if (v->low[i] < 0) v->low[i] = 0;
-            if (v->high[i] > d->size[i]) v->high[i] = d->size[i];
-            if (v->max[i] > d->size[i]) v->max[i] = d->size[i];
+// Chunk places, 3 ints each, in order: by z, then y, then x.
+static int compare_places(const void *a, const void *b)
+{
+    const int32_t *p = a;
+    const int32_t *q = b;
+    for (int i = 2; i >= 0; i--) {
+        if (p[i] != q[i]) return p[i] < q[i] ? -1 : 1;
+    }
+    return 0;
+}
+
+// Puts `count` places in order and drops the repeats: how many are left.
+static uint32_t order_places(int32_t *places, const uint32_t count)
+{
+    if (!count) return 0;
+    qsort(places, count, 3 * sizeof(int32_t), compare_places);
+    uint32_t kept = 1;
+    for (uint32_t i = 1; i < count; i++) {
+        if (compare_places(&places[3u * i], &places[3u * (kept - 1u)]) == 0) continue;
+        memcpy(&places[3u * kept++], &places[3u * i], 3 * sizeof(int32_t));
+    }
+    return kept;
+}
+
+// Chunks past a tile its blocks get into: as many tiles before a chunk have
+// blocks that get into it.
+static int32_t block_reach(const int32_t side, const int32_t block)
+{
+    return (side + block - 2) / side;
+}
+
+// The blocks that start in tile `t`, within the size, by index on each axis.
+static void tile_blocks(const tide_par_loop *l, const int32_t t[3], int32_t from[3], int32_t to[3])
+{
+    for (uint32_t a = 0; a < 3; a++) {
+        const int32_t side = (int32_t)(1u << l->shape->shift[a]);
+        const int32_t start = t[a] * side; // Its first cell
+        const int32_t o = l->offset[a], b = l->block[a];
+        from[a] = -floor_div(o - start, b); // The first block that starts in it...
+        to[a] = floor_div(start + side - 1 - o, b) + 1; // ...and past the last
+        if (from[a] < l->lo[a]) from[a] = l->lo[a];
+        if (to[a] > l->hi[a]) to[a] = l->hi[a];
+    }
+}
+
+void tide_par_begin(tide_par_loop *l, tide_grid *g, const tide_grid_shape *s, const uint32_t where, const int32_t block[3],
+                    const int32_t offset[3])
+{
+    *l = (tide_par_loop){.grid = g, .shape = s, .where = where};
+    if (!g->at || g->at >> 30 != where) return; // Not a world's: nothing to go through
+    const tide_heap *heap = tide_heap_of(where);
+    const tide_grid_dir *d = dir_of(heap, *g);
+    int32_t side[3], reach[3];
+    uint64_t per_tile = 1; // Blocks in a tile, about
+    for (uint32_t a = 0; a < 3; a++) {
+        const bool axis = a < s->dims;
+        const int32_t b = axis && block[a] > 0 ? block[a] : 1;
+        const int32_t o = axis ? offset[a] : 0;
+        l->block[a] = b;
+        l->offset[a] = o;
+        side[a] = (int32_t)(1u << s->shift[a]);
+        reach[a] = block_reach(side[a], b);
+        per_tile *= (uint64_t)((side[a] + b - 1) / b);
+        if (axis && !d->size[a]) {
+            l->open = true;
+            l->lo[a] = INT32_MIN;
+            l->hi[a] = INT32_MAX;
+        } else {
+            const int32_t size = axis ? d->size[a] : 1;
+            l->lo[a] = -floor_div(o, b);              // The first block from 0 on...
+            l->hi[a] = floor_div(size - o - b, b) + 1; // ...and past the last one wholly inside
+            if (l->lo[a] >= l->hi[a]) return;
         }
     }
-    for (uint32_t a = 0; a < 27; a++) {
-        if (!(v->chunks >> a & 1u)) continue;
-        const int32_t x = (int32_t)(a % 3u) - 1;
-        const int32_t y = (int32_t)(a / 3u % 3u) - 1;
-        const int32_t z = (int32_t)(a / 9u) - 1;
-        const uint32_t i = tide_grid_find(d, r->chunk[0] + x, r->chunk[1] + y, r->chunk[2] + z);
-        if (!i) continue;
-        const tide_grid_record *n = &tide_grid_records(d)[i - 1u];
-        v->record[a] = i;
-        v->cells[a] = tide_grid_chunk_at(heap, n->block);
-        if (n->changed + 1u >= v->tick) awake = true;
-    }
-    return awake;
-}
 
-uint8_t *tide_grid_view_take(tide_grid_view *v, const uint32_t around, const bool make)
-{
-    if (v->record[around]) {
-        // The directory is this world's own already (tide_grid_chunks), and no
-        // other task touches this record or this chunk
-        if (!v->dir) v->dir = dir_at(v->heap, OFFSET(v->g.at));
-        tide_grid_record *r = &tide_grid_records(v->dir)[v->record[around] - 1u];
-        r->changed = v->tick;
-        // Other tasks change other chunks, which can be in the same page
-        v->mine[around] = (uint8_t *)tide_heap_write_parallel(v->heap, r->block, &v->copied[around]);
+    // Its tiles: every chunk place that sized blocks start in, or with an
+    // open axis, the places of chunks the grid has and of those before them
+    // whose blocks get into them
+    uint32_t count = 0;
+    if (!l->open) {
+        int32_t first[3], last[3];
+        uint64_t total = 1;
+        for (uint32_t a = 0; a < 3; a++) {
+            first[a] = floor_div(l->offset[a] + l->lo[a] * l->block[a], side[a]);
+            last[a] = floor_div(l->offset[a] + (l->hi[a] - 1) * l->block[a], side[a]);
+            total *= (uint64_t)(last[a] - first[a] + 1);
+        }
+        l->tiles = tide_alloc((size_t)total * 3u * sizeof(int32_t));
+        for (int32_t z = first[2]; z <= last[2]; z++) {
+            for (int32_t y = first[1]; y <= last[1]; y++) {
+                for (int32_t x = first[0]; x <= last[0]; x++) {
+                    int32_t *t = &l->tiles[3u * count++];
+                    t[0] = x;
+                    t[1] = y;
+                    t[2] = z;
+                }
+            }
+        }
     } else {
-        if (!make) return NULL;
-        v->mine[around] = tide_alloc_zeroed(1, tide_grid_chunk_bytes(v->shape));
-    }
-    v->cells[around] = v->mine[around];
-    return v->mine[around];
-}
-
-void tide_grid_view_end(tide_grid_view *v)
-{
-    void **data = tide_task_data();
-    for (uint32_t a = 0; a < 27; a++) {
-        const bool made_one = !v->record[a] && v->mine[a];
-        if (!made_one && !v->copied[a]) continue;
-        if (!data) tide_out_of_memory();
-        tide_grid_made *made = tide_alloc(sizeof *made);
-        const int32_t offset[3] = {(int32_t)(a % 3u) - 1, (int32_t)(a / 3u % 3u) - 1, (int32_t)(a / 9u) - 1};
-        *made = (tide_grid_made){NULL, v->entity, {v->center[0] + offset[0], v->center[1] + offset[1], v->center[2] + offset[2]},
-                                 made_one ? v->mine[a] : NULL, v->copied[a]};
-        // At the end of the task's list, so they're made in the order the task made them
-        tide_grid_made **last = (tide_grid_made **)data;
-        while (*last) last = &(*last)->next;
-        *last = made;
-    }
-}
-
-void tide_grid_finish(void **data, const uint32_t tasks, tide_grid *(*field)(void *world, tide_entity entity), void *world,
-                      const tide_grid_shape *s)
-{
-    for (uint32_t k = 0; k < tasks; k++) {
-        tide_grid_made *made = data[k];
-        while (made) {
-            tide_grid_made *next = made->next;
-            tide_page_release(made->copied, 1u); // No task reads it any more
-            tide_grid *g = made->cells ? field(world, made->entity) : NULL;
-            tide_heap *heap = g ? tide_heap_of(g->at >> 30) : NULL;
-            if (heap && g->at) add_chunk(g, heap, made->chunk[0], made->chunk[1], made->chunk[2], made->cells, s);
-            free(made->cells);
-            free(made);
-            made = next;
+        const uint32_t around = (uint32_t)((reach[0] + 1) * (reach[1] + 1) * (reach[2] + 1));
+        l->tiles = tide_alloc(((size_t)d->records * around + 1u) * 3u * sizeof(int32_t));
+        for (uint32_t i = 0; i < d->records; i++) {
+            const int32_t *c = tide_grid_records(d)[i].chunk;
+            for (int32_t dz = 0; dz <= reach[2]; dz++) {
+                for (int32_t dy = 0; dy <= reach[1]; dy++) {
+                    for (int32_t dx = 0; dx <= reach[0]; dx++) {
+                        int32_t *t = &l->tiles[3u * count];
+                        t[0] = c[0] - dx;
+                        t[1] = c[1] - dy;
+                        t[2] = c[2] - dz;
+                        int32_t from[3], to[3];
+                        tile_blocks(l, t, from, to);
+                        if (from[0] < to[0] && from[1] < to[1] && from[2] < to[2]) count++; // Blocks within its size start there
+                    }
+                }
+            }
         }
-        data[k] = NULL;
+        count = order_places(l->tiles, count);
+    }
+    l->tasks = count;
+    l->steps = per_tile * count;
+
+    // The chunks its blocks can write in: each tile's, and those its reach gets into
+    const uint32_t around = (uint32_t)((reach[0] + 1) * (reach[1] + 1) * (reach[2] + 1));
+    l->chunk = tide_alloc(((size_t)count * around + 1u) * 3u * sizeof(int32_t));
+    uint32_t chunks = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        const int32_t *t = &l->tiles[3u * i];
+        for (int32_t dz = 0; dz <= reach[2]; dz++) {
+            for (int32_t dy = 0; dy <= reach[1]; dy++) {
+                for (int32_t dx = 0; dx <= reach[0]; dx++) {
+                    int32_t *c = &l->chunk[3u * chunks++];
+                    c[0] = t[0] + dx;
+                    c[1] = t[1] + dy;
+                    c[2] = t[2] + dz;
+                }
+            }
+        }
+    }
+    l->chunks = order_places(l->chunk, chunks);
+    l->buffers = tide_alloc_zeroed(l->chunks + 1u, sizeof(uint8_t *));
+}
+
+bool tide_par_tile(const tide_par_loop *l, const uint32_t task, int32_t from[3], int32_t to[3])
+{
+    const int32_t *t = &l->tiles[3u * task];
+    tile_blocks(l, t, from, to);
+    if (!l->open) return false;
+    const tide_grid_dir *d = dir_of(tide_heap_of(l->where), *l->grid);
+    return !tide_grid_find(d, t[0], t[1], t[2]);
+}
+
+bool tide_par_live(const tide_par_loop *l, const int32_t x, const int32_t y, const int32_t z)
+{
+    const tide_grid_shape *s = l->shape;
+    const tide_grid_dir *d = dir_of(tide_heap_of(l->where), *l->grid);
+    const int32_t at[3] = {x, y, z};
+    int32_t first[3], last[3];
+    for (uint32_t a = 0; a < 3; a++) {
+        first[a] = at[a] >> s->shift[a];
+        last[a] = (at[a] + l->block[a] - 1) >> s->shift[a];
+    }
+    for (int32_t cz = first[2]; cz <= last[2]; cz++) {
+        for (int32_t cy = first[1]; cy <= last[1]; cy++) {
+            for (int32_t cx = first[0]; cx <= last[0]; cx++) {
+                if (tide_grid_find(d, cx, cy, cz)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// The chunk at (cx, cy, cz) as it is, or NULL for none.
+static const uint8_t *chunk_now(const tide_par_loop *l, const int32_t cx, const int32_t cy, const int32_t cz)
+{
+    const tide_heap *heap = tide_heap_of(l->where);
+    const tide_grid_dir *d = dir_of(heap, *l->grid);
+    if (!d->records) return NULL;
+    const uint32_t i = tide_grid_find(d, cx, cy, cz);
+    return i ? tide_grid_chunk_at(heap, tide_grid_records(d)[i - 1u].block) : NULL;
+}
+
+uint8_t *tide_par_buffer(tide_par_loop *l, const int32_t cx, const int32_t cy, const int32_t cz)
+{
+    // Where it is among the chunks the loop's blocks can write in, which is
+    // every chunk its steps write in
+    const int32_t place[3] = {cx, cy, cz};
+    uint32_t low = 0, high = l->chunks;
+    while (low + 1u < high) {
+        const uint32_t middle = (low + high) / 2u;
+        if (compare_places(&l->chunk[3u * middle], place) <= 0) low = middle;
+        else high = middle;
+    }
+    uint8_t *made = __atomic_load_n(&l->buffers[low], __ATOMIC_ACQUIRE);
+    if (made) {
+        tide_memory_sync(); // Made on another thread, maybe
+        return made;
+    }
+    const uint32_t bytes = tide_grid_chunk_bytes(l->shape);
+    uint8_t *buffer = tide_alloc(bytes);
+    const uint8_t *now = chunk_now(l, cx, cy, cz);
+    if (now) memcpy(buffer, now, bytes);
+    else memset(buffer, 0, bytes);
+    if (__atomic_compare_exchange_n(&l->buffers[low], &made, buffer, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return buffer;
+    }
+    free(buffer); // Another task's got there first: `made` is that one
+    tide_memory_sync();
+    return made;
+}
+
+void tide_par_end(tide_par_loop *l)
+{
+    tide_memory_sync(); // What the steps made on other threads
+    const tide_grid_shape *s = l->shape;
+    tide_heap *heap = l->buffers ? tide_heap_of(l->where) : NULL;
+    for (uint32_t i = 0; i < l->chunks && l->buffers; i++) {
+        uint8_t *buffer = l->buffers[i];
+        if (!buffer) continue;
+        const uint32_t bytes = tide_grid_chunk_bytes(s);
+        const int32_t *c = &l->chunk[3u * i];
+        const uint8_t *now = chunk_now(l, c[0], c[1], c[2]);
+        bool same = now && memcmp(now, buffer, bytes) == 0;
+        if (!now) { // Nothing there before: only a chunk if something isn't zero
+            same = true;
+            for (uint32_t k = 0; k < bytes && same; k++) same = buffer[k] == 0;
+        }
+        if (!same) {
+            const tide_grid_dir *d = dir_of(heap, *l->grid);
+            const uint32_t found = d->records ? tide_grid_find(d, c[0], c[1], c[2]) : 0u;
+            if (found) memcpy(tide_heap_write(heap, tide_grid_records(d)[found - 1u].block), buffer, bytes);
+            else add_chunk(l->grid, heap, c[0], c[1], c[2], buffer, s);
+        }
+        free(buffer);
+    }
+    free(l->buffers);
+    free(l->chunk);
+    free(l->tiles);
+    l->buffers = NULL;
+    l->chunk = NULL;
+    l->tiles = NULL;
+}
+
+// In order, a row at a time
+
+// The cells of chunk place `c` along axis `a`, within the grid's size there:
+// false when there are none.
+static bool cells_along(const tide_grid_rows *r, const uint32_t a, const int32_t c, int32_t *from, int32_t *to)
+{
+    *from = c * r->side[a];
+    *to = *from + r->side[a];
+    if (r->size[a]) {
+        if (*from < 0) *from = 0;
+        if (*to > r->size[a]) *to = r->size[a];
+    }
+    return *from < *to;
+}
+
+// Past the chunks from `i` on that share its place on axes `a` and up.
+static uint32_t same_until(const tide_grid_rows *r, const uint32_t i, const uint32_t a)
+{
+    uint32_t k = i + 1u;
+    while (k < r->count && memcmp(&r->chunk[3u * k + a], &r->chunk[3u * i + a], (3u - a) * sizeof(int32_t)) == 0) k++;
+    return k;
+}
+
+// The first row of chunks from `i` on in the current layer that has cells
+// within the size, from its first row of cells. False when there's none.
+static bool enter_row(tide_grid_rows *r, uint32_t i)
+{
+    for (; i < r->layer_end; i = r->row_end) {
+        r->row = i;
+        r->row_end = same_until(r, i, 1);
+        r->next = i;
+        if (cells_along(r, 1, r->chunk[3u * i + 1u], &r->y, &r->y_end)) return true;
+    }
+    return false;
+}
+
+// The first layer of chunks from `i` on that has cells within the size, from
+// its first row. False when there's none.
+static bool enter_layer(tide_grid_rows *r, uint32_t i)
+{
+    for (; i < r->count; i = r->layer_end) {
+        r->layer = i;
+        r->layer_end = same_until(r, i, 2);
+        if (cells_along(r, 2, r->chunk[3u * i + 2u], &r->z, &r->z_end) && enter_row(r, i)) return true;
+    }
+    return false;
+}
+
+void tide_grid_rows_begin(tide_grid_rows *r, const tide_grid g, const tide_grid_shape *s)
+{
+    *r = (tide_grid_rows){.done = true};
+    const tide_heap *heap = tide_heap_of(g.at >> 30);
+    if (!heap || !g.at) return;
+    const tide_grid_dir *d = dir_of(heap, g);
+    bool open = false;
+    for (uint32_t a = 0; a < 3; a++) {
+        r->size[a] = a < s->dims ? d->size[a] : 1;
+        r->side[a] = (int32_t)(1u << s->shift[a]);
+        open |= r->size[a] == 0;
+    }
+    if (!open) { // Every cell within its size
+        r->y_end = r->size[1];
+        r->z_end = r->size[2];
+        r->done = false;
+        return;
+    }
+    if (!d->records) return;
+    int32_t *places = tide_scratch_memory((size_t)d->records * 3u * sizeof(int32_t));
+    for (uint32_t i = 0; i < d->records; i++) memcpy(&places[3u * i], tide_grid_records(d)[i].chunk, 3 * sizeof(int32_t));
+    r->count = order_places(places, d->records);
+    r->chunk = places;
+    r->done = !enter_layer(r, 0);
+}
+
+bool tide_grid_rows_next(tide_grid_rows *r, int32_t *x0, int32_t *x1, int32_t *y, int32_t *z)
+{
+    if (r->done) return false;
+    if (!r->chunk) { // Sized: a row at a time, each whole
+        if (r->y >= r->y_end) {
+            r->y = 0;
+            if (++r->z >= r->z_end || r->y_end == 0) {
+                r->done = true;
+                return false;
+            }
+        }
+        *x0 = 0;
+        *x1 = r->size[0];
+        *y = r->y++;
+        *z = r->z;
+        return true;
+    }
+    for (;;) {
+        if (r->next < r->row_end) { // Along the row: the chunks side by side from the next, as one run
+            const uint32_t first = r->next++;
+            while (r->next < r->row_end && r->chunk[3u * r->next] == r->chunk[3u * (r->next - 1u)] + 1) r->next++;
+            int32_t from, to, unused;
+            const bool starts = cells_along(r, 0, r->chunk[3u * first], &from, &unused);
+            const bool ends = cells_along(r, 0, r->chunk[3u * (r->next - 1u)], &unused, &to);
+            if (!starts || !ends || from >= to) continue;
+            *x0 = from;
+            *x1 = to;
+            *y = r->y;
+            *z = r->z;
+            return true;
+        }
+        if (r->y + 1 < r->y_end) { // The next row of cells in these chunks
+            r->y++;
+            r->next = r->row;
+            continue;
+        }
+        if (enter_row(r, r->row_end)) continue; // The next row of chunks in the layer
+        if (r->z + 1 < r->z_end && enter_row(r, r->layer)) { // The layer's next z, from its first row of chunks
+            r->z++;
+            continue;
+        }
+        if (enter_layer(r, r->layer_end)) continue;
+        r->done = true;
+        return false;
     }
 }

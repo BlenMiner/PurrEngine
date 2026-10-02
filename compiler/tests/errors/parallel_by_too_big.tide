@@ -1,0 +1,7 @@
+// expect: a block is 1 to 64 cells along each axis, not 65
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells by 65) { }
+}
+scene Main { }

@@ -12,6 +12,18 @@
 TIDE_THREAD_LOCAL char *tide_scratch_area;
 static TIDE_THREAD_LOCAL uint32_t scratch_used;
 
+// Memory the area hasn't room for (tide_scratch_memory), each with where the
+// area was when it was made, in that order: a byte of the area each, so a
+// mark taken after one is past it.
+typedef struct scratch_own {
+    uint32_t at;
+    void *memory;
+} scratch_own;
+
+static TIDE_THREAD_LOCAL scratch_own *owns;
+static TIDE_THREAD_LOCAL uint32_t own_count;
+static TIDE_THREAD_LOCAL uint32_t own_room;
+
 uint32_t tide_scratch_mark(void)
 {
     return scratch_used;
@@ -20,10 +32,15 @@ uint32_t tide_scratch_mark(void)
 void tide_scratch_reset(const uint32_t mark)
 {
     if (mark < scratch_used) scratch_used = mark;
+    while (own_count && owns[own_count - 1u].at >= mark) free(owns[--own_count].memory);
 }
 
 void tide_scratch_free(void)
 {
+    tide_scratch_reset(0);
+    free(owns);
+    owns = NULL;
+    own_room = 0;
     free(tide_scratch_area);
     tide_scratch_area = NULL;
     scratch_used = 0;
@@ -850,6 +867,25 @@ void tide_text_release(tide_text *field, const uint32_t where)
 
 // ---------------------------------------------------------------------------
 // For tide/list.h
+
+void *tide_scratch_memory(const size_t bytes)
+{
+    const uint32_t pad = (16u - scratch_used % 16u) % 16u;
+    if (bytes < TIDE_SCRATCH_BYTES / 4u) {
+        char *p = scratch_alloc(pad + (uint32_t)bytes);
+        if (p) return p + pad;
+    }
+    const uint32_t at = scratch_used;
+    if (!scratch_alloc(0)) tide_out_of_memory(); // Its byte
+    if (own_count == own_room) {
+        const uint32_t room = own_room ? own_room * 2u : 8u;
+        owns = tide_realloc(owns, own_room * sizeof *owns, room * sizeof *owns);
+        own_room = room;
+    }
+    void *memory = tide_alloc(bytes ? bytes : 1u);
+    owns[own_count++] = (scratch_own){at, memory};
+    return memory;
+}
 
 tide_block *tide_scratch_block(const uint32_t bytes, uint32_t *at)
 {

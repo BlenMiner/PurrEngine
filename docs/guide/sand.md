@@ -26,7 +26,7 @@ Only the brushes go over the network: where each one is, what it paints, and whe
 
 ## The code
 
-The game is `bench/sand/sand.tide` in the repo. Its cells are a [grid](../language/grids.md) of a byte each, and `Step` is a chunk system: the grid moves a chunk at a time, on every core the machine has. It's also one of the engine's benchmarks, which bots play to measure it.
+The game is `bench/sand/sand.tide` in the repo. Its cells are a [grid](../language/grids.md) of a byte each, and `Step` moves them with a parallel loop, in 2 by 2 blocks, on every core the machine has. It's also one of the engine's benchmarks, which bots play to measure it.
 
 <<< @/../bench/sand/sand.tide
 

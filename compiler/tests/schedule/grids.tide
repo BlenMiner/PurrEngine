@@ -1,5 +1,5 @@
-// Chunk systems: a grid's chunks on threads, in phases. Reading the grid
-// alongside waits, as for any component or singleton it writes.
+// Grids: a system with parallel loops is a system like any other, which waits
+// for those that use what it does. Its loops' steps run on threads.
 singleton Field
 {
     Grid2<int> cells = Grid2(256, 256);
@@ -17,43 +17,35 @@ system Paint(mut Field field)
     field.painted += 1;
 }
 
-// Reaches a cell down into the chunk below: chunks two apart on y run together
-[Sleeps]
-system Fall(chunk mut Field.cells cells)
+// Every cell at once, from the grid as it was
+system Blur(mut Field field)
 {
-    if (cells[cells.min.x, cells.min.y] == 1) cells[cells.min.x, cells.min.y - 1] = 1;
-}
-
-system Spread(chunk mut Field.cells cells)
-{
-    cells[cells.min.x, cells.min.y] = 2;
-}
-
-// Reaches the cells beside each one, never across corners: 5 phases, not 9
-system Blur(chunk mut Field.cells cells)
-{
-    for (var x = cells.min.x; x < cells.max.x; x++)
+    parallel (var at in field.cells)
     {
-        var y = cells.min.y;
-        cells[x, y] = cells[x - 1, y] + cells[x + 1, y] + cells[x, y - 1] + cells[x, cells.max.y];
+        field.cells[at] = (field.cells[at + int2(-1, 0)] + field.cells[at + int2(1, 0)]) / 2;
     }
 }
 
-singleton Wind
+// In 2x2 blocks, then a foreach that only touches its own cell, which runs as one
+system Fall(mut Field field, Time time)
 {
-    int dx;
+    parallel (var at in field.cells by 2 offset time.tick % 2)
+    {
+        if (field.cells[at + int2(0, 1)] == 1 && field.cells[at] == 0)
+        {
+            field.cells[at] = 1;
+            field.cells[at + int2(0, 1)] = 0;
+        }
+    }
+    foreach (var at in field.cells) field.cells[at] = Math.Min(field.cells[at], 1);
 }
 
-// Where tidec can't tell, [Reach] says: the cells around each cell it touches
-[Reach(int2(-1, 0), int2(1, 0))]
-system Gust(Wind wind, chunk mut Field.cells cells)
-{
-    cells[cells.min.x + wind.dx, cells.min.y] = 1;
-}
-
+// A foreach that adds to a total outside its cell goes in order
 system Count(Field field, mut Stats stats)
 {
-    stats.seen = field.cells[0, 0];
+    mut var seen = 0;
+    foreach (var at in field.cells) seen += field.cells[at];
+    stats.seen = seen;
 }
 
 scene Main { }

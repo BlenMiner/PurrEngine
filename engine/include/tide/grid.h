@@ -25,20 +25,11 @@
 //
 // The grid's own block, its directory, says where each chunk is: a table by
 // chunk position (by its index, for a grid with a size on every axis that
-// isn't too big, or else hashed), and each chunk's record: its position, its
-// block, the tick it was made and the last tick a cell of it changed.
+// isn't too big, or else hashed), and each chunk's record: its position and
+// its block.
 //
-// A chunk system (`chunk mut Field.cells cells`) runs once for each chunk
-// that existed when the tick began, on threads, in phases: with a reach (how
-// far before and after its chunk it touches cells on each axis, and which of
-// the chunks around its own it gets into, which tidec works out), a task
-// touches its chunk and those, so tasks in one phase are placed never to
-// touch the same chunk. Each task works through a view (tide_grid_view). Chunks it makes are its own
-// until its phase is done, when the system makes them in the heap in task
-// order (tide_grid_finish), so threads never change what's in the heap.
-//
-// Nothing fails: outside a grid's size, or past a chunk system's reach,
-// reads give zero and writes do nothing.
+// Nothing fails: outside a grid's size, reads give zero and writes do
+// nothing.
 
 typedef struct tide_grid {
     uint32_t at; // 0: an open grid with nothing in it. Otherwise its directory's offset, and where in the top two bits
@@ -61,8 +52,6 @@ static inline uint32_t tide_grid_chunk_bytes(const tide_grid_shape *s)
 typedef struct tide_grid_record {
     int32_t chunk[3]; // Its position, in chunks
     uint32_t block;   // Its cells
-    uint32_t born;    // The tick it was made
-    uint32_t changed; // The last tick a cell of it changed
 } tide_grid_record;
 
 typedef struct tide_grid_dir {
@@ -172,13 +161,7 @@ static inline void *tide_grid_poke(tide_grid *g, const int32_t x, const int32_t 
     const uint32_t i = tide_grid_find(d, x >> s->shift[0], y >> s->shift[1], z >> s->shift[2]);
     if (!i) return tide_grid_poke_slow(g, x, y, z, s, make, where);
     tide_heap *heap = tide_heap_of(g->at >> 30);
-    const tide_grid_record *r = &tide_grid_records(d)[i - 1u];
-    if (r->changed != heap->tick) { // Marked changed this tick, in the directory made this world's own
-        tide_grid_dir *w = (tide_grid_dir *)(void *)(tide_heap_write(heap, g->at & 0x3FFFFFFFu) + 1);
-        tide_grid_records(w)[i - 1u].changed = heap->tick;
-        r = &tide_grid_records(w)[i - 1u];
-    }
-    return (uint8_t *)tide_heap_write(heap, r->block) + tide_grid_place(s, x, y, z);
+    return (uint8_t *)tide_heap_write(heap, tide_grid_records(d)[i - 1u].block) + tide_grid_place(s, x, y, z);
 }
 
 // The chunk code last used in a grid, so a loop over its cells looks each
@@ -244,7 +227,7 @@ static inline void *tide_grid_cached_poke(tide_grid_cache *c, tide_grid *g, cons
         *c = (tide_grid_cache){0};
         return cell;
     }
-    // The chunk is this world's own now, marked changed this tick
+    // The chunk is this world's own now
     const tide_grid_dir *d = tide_grid_dir_of(*g);
     *c = (tide_grid_cache){.at = g->at, .moves = __atomic_load_n(&heap->moves, __ATOMIC_RELAXED), .heap = heap,
                            .chunk = {cx, cy, cz}};
@@ -253,6 +236,105 @@ static inline void *tide_grid_cached_poke(tide_grid_cache *c, tide_grid *g, cons
     c->read = c->write;
     return cell;
 }
+
+// ---------------------------------------------------------------------------
+// Loops over a grid's cells (see docs/spec.md, Grids)
+//
+// A grid with a size on every axis has every cell within it. A grid with an
+// open axis goes on forever, so a loop takes in the chunks it has: their
+// cells, or with blocks, every block that takes in part of one.
+//
+// Parallel loops: `parallel (var at in cells by 2 offset o)`, and a foreach
+// whose steps touch only their own cell. Their steps run at once, on threads
+// (tide_parallel_for): each reads the grid as the loop found it, and writes
+// only its own cell or block, into a buffer for its chunk, made from the chunk
+// as it was. The loop's end puts the buffers into the grid, chunk by chunk in
+// order, so the result is the same however the steps were shared out, and the
+// grid itself doesn't change while they run. Along a sized axis, its blocks
+// are those wholly inside the size, as the grid ends there.
+//
+// Its tasks are tiles: the blocks that start in a chunk's cells, each tile a
+// chunk's place, whether the grid has that chunk or not.
+
+typedef struct tide_par_loop {
+    tide_grid *grid;
+    const tide_grid_shape *shape;
+    uint32_t where;
+    int32_t block[3];  // Each step's block, in cells: 1 for a cell
+    int32_t offset[3]; // Where the blocks start
+    int32_t lo[3];     // Blocks within its size, by index: from lo up to hi (open axes: any)
+    int32_t hi[3];
+    uint32_t tasks;    // Tiles
+    int32_t *tiles;    // Each tile's chunk place, 3 each, in order (by z, then y, then x)
+    uint32_t chunks;   // The chunks its blocks can write in...
+    int32_t *chunk;    // ...their places, 3 each, in order
+    uint8_t **buffers; // ...and each one's buffer, once a step writes it
+    uint64_t steps;    // Blocks in all, about: how much work it is
+    bool open;         // The grid has an open axis
+} tide_par_loop;
+
+// The chunk a task last wrote in, and its buffer.
+typedef struct tide_par_cache {
+    int32_t chunk[3];
+    uint8_t *buffer; // NULL for none yet
+} tide_par_cache;
+
+// Sets `l` up to go over `g`'s blocks of `block` cells starting at `offset`
+// (on the axes the grid has).
+void tide_par_begin(tide_par_loop *l, tide_grid *g, const tide_grid_shape *s, uint32_t where, const int32_t block[3],
+                    const int32_t offset[3]);
+
+// Task `task`'s blocks, by index on each axis: from[i] up to to[i]. True when
+// the grid has no chunk at its tile's place, so a block there runs only if it
+// takes in part of a chunk the grid has (tide_par_live).
+bool tide_par_tile(const tide_par_loop *l, uint32_t task, int32_t from[3], int32_t to[3]);
+
+// Whether the block at `at` takes in part of a chunk the grid has.
+bool tide_par_live(const tide_par_loop *l, int32_t x, int32_t y, int32_t z);
+
+// The buffer of the chunk at (cx, cy, cz), made as the chunk was.
+uint8_t *tide_par_buffer(tide_par_loop *l, int32_t cx, int32_t cy, int32_t cz);
+
+// The cell at (x, y, z), to write: in its chunk's buffer.
+static inline void *tide_par_cell(tide_par_loop *l, tide_par_cache *c, const int32_t x, const int32_t y, const int32_t z)
+{
+    const tide_grid_shape *s = l->shape;
+    const int32_t cx = x >> s->shift[0], cy = y >> s->shift[1], cz = z >> s->shift[2];
+    if (!c->buffer || c->chunk[0] != cx || c->chunk[1] != cy || c->chunk[2] != cz) {
+        c->chunk[0] = cx;
+        c->chunk[1] = cy;
+        c->chunk[2] = cz;
+        c->buffer = tide_par_buffer(l, cx, cy, cz);
+    }
+    return c->buffer + tide_grid_place(s, x, y, z);
+}
+
+// Puts what the steps wrote into the grid and lets the buffers go.
+void tide_par_end(tide_par_loop *l);
+
+// Going through a grid's cells in order, as a foreach that isn't a parallel
+// loop does: rows from the first (by z, then y), and each from its lowest x.
+// Its memory is the scratch area's (tide/text.h).
+typedef struct tide_grid_rows {
+    int32_t size[3];      // The grid's, 0 where it's open
+    int32_t side[3];      // A chunk's cells along each axis
+    const int32_t *chunk; // Open: the chunks it has, 3 each, in order (by z, then y, then x)
+    uint32_t count;
+    uint32_t layer;       // Open: the chunks of the current layer (one cz) from here...
+    uint32_t layer_end;   // ...to here
+    uint32_t row;         // ...of the current row of chunks (one cy) from here...
+    uint32_t row_end;     // ...to here
+    uint32_t next;        // ...and the next of them along the current row of cells
+    int32_t y, y_end;     // The current row of cells, and past the last in its chunks
+    int32_t z, z_end;
+    bool done;
+} tide_grid_rows;
+
+void tide_grid_rows_begin(tide_grid_rows *r, tide_grid g, const tide_grid_shape *s);
+
+// The next run of cells along a row: x from *x0 up to *x1, at (*y, *z). False
+// once there are none.
+bool tide_grid_rows_next(tide_grid_rows *r, int32_t *x0, int32_t *x1, int32_t *y, int32_t *z);
 
 // A grid in the scratch area, as Grid2(...) and Grid3(...) make it: its size
 // (0 where it's open), which a world's field takes when it owns it.
@@ -281,113 +363,3 @@ static inline void tide_grid_size(const tide_grid g, int32_t size[3])
 
 // A world's grid, read from outside, like a host reading a component.
 const void *tide_grid_read(const tide_heap *heap, tide_grid g, int32_t x, int32_t y, int32_t z, const tide_grid_shape *s);
-
-// ---------------------------------------------------------------------------
-// Chunk systems
-
-// How many chunks a grid has, for a chunk system's tasks; its directory made
-// this world's own, so its tasks can mark the chunks they change on threads.
-uint32_t tide_grid_chunks(tide_grid g);
-
-// What a chunk system's task works through: its chunk, and the chunks
-// around it its reach touches, found as it starts.
-typedef struct tide_grid_view {
-    tide_grid g;
-    const tide_grid_shape *shape;
-    tide_heap *heap;
-    tide_grid_dir *dir;  // The grid's directory, this world's own (tide_grid_chunks)
-    uint32_t tick;
-    tide_entity entity;  // Whose grid it is; null for a singleton's
-    int32_t min[3];      // Its chunk's cells: what the system goes through
-    int32_t max[3];
-    int32_t low[3];      // ...and the cells it can touch: those and its reach
-    int32_t high[3];
-    int32_t center[3];   // Its chunk, in chunks
-    uint32_t chunks;     // The chunks around it its reach gets into, a bit each by tide_grid_around
-    // The chunks around it, by tide_grid_around: their records' index plus
-    // one (0 for none), their cells to read (NULL for none), and to change,
-    // once the task made one its own or made it where there was none
-    uint32_t record[27];
-    const uint8_t *cells[27];
-    uint8_t *mine[27];
-    // Pages it copied to change chunks in, which other tasks may still be
-    // reading: let go of at the finish (tide_heap_write_parallel)
-    tide_page *copied[27];
-} tide_grid_view;
-
-// How far a chunk system reaches past its chunk, in cells: before it (toward
-// lower positions) and after it, on each axis, never more than a chunk; and
-// which of the chunks around its own it gets into, a bit each by
-// tide_grid_around (its own is 13). Its chunks run in `phases`: a chunk's is
-// its position (in chunks) times `weight`, axis by axis, added up, modulo
-// `phases`, which tidec picks so two chunks in a phase never touch the same
-// chunk, with as few phases as it can.
-typedef struct tide_grid_reach {
-    int32_t before[3];
-    int32_t after[3];
-    uint32_t chunks;
-    int32_t weight[3];
-    uint32_t phases;
-} tide_grid_reach;
-
-// The chunk around the view's own at (cx, cy, cz), in chunks: 0 to 26, its own 13.
-static inline uint32_t tide_grid_around(const tide_grid_view *v, const int32_t cx, const int32_t cy, const int32_t cz)
-{
-    return (uint32_t)(cx - v->center[0] + 1) + 3u * (uint32_t)(cy - v->center[1] + 1) + 9u * (uint32_t)(cz - v->center[2] + 1);
-}
-
-// Whether a cell is within the cells the view reaches on each axis. A cell
-// there can still be in a chunk around its own that it doesn't get into.
-static inline bool tide_grid_reaches(const tide_grid_view *v, const int32_t x, const int32_t y, const int32_t z)
-{
-    return x >= v->low[0] && x < v->high[0] && y >= v->low[1] && y < v->high[1] && z >= v->low[2] && z < v->high[2];
-}
-
-// Sets up a task's view of chunk `record` (an index) of `g`, with what
-// `reach` says around it. False when the system doesn't run there: in another
-// phase than `phase`, a chunk made this tick, or with `sleeps`, where nothing
-// within its reach changed since the tick before.
-bool tide_grid_view_start(tide_grid_view *v, tide_grid g, tide_entity entity, uint32_t record, const tide_grid_shape *s,
-                          const tide_grid_reach *reach, uint32_t phase, bool sleeps);
-
-// The task is done: the chunks it made go to its system's finish (tide_task_data).
-void tide_grid_view_end(tide_grid_view *v);
-
-static inline const void *tide_grid_view_peek(const tide_grid_view *v, const int32_t x, const int32_t y, const int32_t z,
-                                              const tide_grid_shape *s)
-{
-    if (!tide_grid_reaches(v, x, y, z)) return NULL;
-    const uint8_t *cells = v->cells[tide_grid_around(v, x >> s->shift[0], y >> s->shift[1], z >> s->shift[2])];
-    return cells ? cells + tide_grid_place(s, x, y, z) : NULL; // NULL too in a chunk it doesn't get into
-}
-
-// The first change to a chunk around: made the task's own (a copy, if a
-// snapshot shares it) and marked changed, or made where there was none if
-// `make`. NULL when it isn't there and not `make`.
-uint8_t *tide_grid_view_take(tide_grid_view *v, uint32_t around, bool make);
-
-static inline void *tide_grid_view_poke(tide_grid_view *v, const int32_t x, const int32_t y, const int32_t z, const tide_grid_shape *s,
-                                        const bool make)
-{
-    if (!tide_grid_reaches(v, x, y, z)) return NULL;
-    const uint32_t a = tide_grid_around(v, x >> s->shift[0], y >> s->shift[1], z >> s->shift[2]);
-    if (!(v->chunks >> a & 1u)) return NULL; // A chunk it doesn't get into: another task's
-    uint8_t *cells = v->mine[a] ? v->mine[a] : tide_grid_view_take(v, a, make);
-    return cells ? cells + tide_grid_place(s, x, y, z) : NULL;
-}
-
-// What a task made, as it leaves it for its system's finish: a chunk, or a
-// page it copied (cells NULL).
-typedef struct tide_grid_made {
-    struct tide_grid_made *next;
-    tide_entity entity;
-    int32_t chunk[3];
-    void *cells;
-    tide_page *copied;
-} tide_grid_made;
-
-// A chunk system's finish: the chunks its tasks made, in task order, into
-// the heap of `g`, whose field `field` returns for an entity (or the
-// singleton's for null). The made ones are freed, and the pages copied let go of.
-void tide_grid_finish(void **data, uint32_t tasks, tide_grid *(*field)(void *world, tide_entity entity), void *world,
-                      const tide_grid_shape *s);

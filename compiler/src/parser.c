@@ -882,6 +882,36 @@ static stmt *parse_stmt(parser *p)
         return s;
     }
 
+    case T_PARALLEL: {
+        // parallel (var at in cells), or by blocks: parallel (var at in cells by 2 offset shift)
+        advance(p);
+        stmt *s = new_stmt(S_PARALLEL, t->at);
+        expect(p, T_LPAREN, "'(' after 'parallel'");
+        if (!accept(p, T_VAR)) {
+            const qname type = parse_type(p, "'var' or the position's type");
+            s->type_name = type.text;
+            s->type_at = type.name_at;
+            s->type_qual_at = type.at;
+        }
+        const token *name = expect_ident(p, "the variable for each step's place");
+        s->name = name->text;
+        s->name_at = name->at;
+        if (!at(p, T_IDENT) || !str_eq_c(peek(p)->text, "in")) fail_at(p, peek(p), "'in' and the grid");
+        advance(p);
+        s->value = parse_expr(p);
+        if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "by")) {
+            advance(p);
+            s->by = parse_expr(p);
+        }
+        if (at(p, T_IDENT) && str_eq_c(peek(p)->text, "offset")) {
+            advance(p);
+            s->offset = parse_expr(p);
+        }
+        expect(p, T_RPAREN, "')' after the grid");
+        s->then_stmt = parse_stmt(p);
+        return s;
+    }
+
     default: {
         // `Type name = ...` declares a local: two identifiers in a row, the
         // first maybe qualified, as in `Combat.Stats stats = ...`.
@@ -1304,21 +1334,20 @@ static void parse_query_rest(parser *p, decl *d)
             param prm = {0};
             prm.at = peek(p)->at;
             const char *what = "parameter type";
-            // `chunk mut Field.cells cells`: a chunk system's grid. `chunk` is
-            // only a keyword here, before `mut` or a name.
+            // `chunk mut Field.cells cells` was a chunk system's grid
             const token *first = peek(p);
             if (first->kind == T_IDENT && str_eq_c(first->text, "chunk")
                 && (peek_at(p, 1)->kind == T_MUT || (peek_at(p, 1)->kind == T_IDENT && peek_at(p, 2)->kind != T_COMMA
                                                      && peek_at(p, 2)->kind != T_RPAREN))) {
-                advance(p);
-                prm.chunk = true;
-                prm.chunk_at = first->at;
-                what = "the grid after 'chunk', like 'chunk mut Field.cells cells'";
+                diag_error(first->at, "chunk systems are gone: a system takes the grid's component or singleton, and a "
+                                      "parallel loop goes through its cells at once");
+                diag_note("like 'system Fall(mut Field field) { parallel (var at in field.cells) { ... } }'");
+                longjmp(p->fail, 1);
             }
-            if (!prm.chunk && accept(p, T_WITH)) {
+            if (accept(p, T_WITH)) {
                 prm.mode = PARAM_WITH;
                 what = "component name after 'with'";
-            } else if (!prm.chunk && accept(p, T_WITHOUT)) {
+            } else if (accept(p, T_WITHOUT)) {
                 prm.mode = PARAM_WITHOUT;
                 what = "component name after 'without'";
             } else {
@@ -1418,7 +1447,7 @@ static void parse_attributes(parser *p)
         if (accept(p, T_LPAREN)) {
             if (!at(p, T_RPAREN)) {
                 do {
-                    // [NativeName("stb_perlin_noise3")], [Reach(1)] and [Reach(int2(0, -1))] take values
+                    // [NativeName("stb_perlin_noise3")] takes text
                     const bool call = at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN;
                     if (at(p, T_STRING) || at(p, T_INT) || at(p, T_MINUS) || call) vec_push(a.values, parse_expr(p));
                     else vec_push(a.args, parse_qname(p, "a name"));

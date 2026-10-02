@@ -72,29 +72,6 @@ tide_block *tide_heap_write_shared(tide_heap *h, const uint32_t block)
     return tide_heap_block(h, block);
 }
 
-// A chunk task's copy leaves `moves` alone: the threads that change blocks
-// at once only change their own chunks, and code that keeps an address meanwhile
-// (on another thread) only reads, and reads the same bytes in the old page.
-tide_block *tide_heap_write_parallel(tide_heap *h, const uint32_t block, tide_page **copied)
-{
-    *copied = NULL;
-    tide_page **slot = &h->page[block >> TIDE_HEAP_PAGE_SHIFT];
-    tide_page *p = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
-    // A page replaced meanwhile still has this heap's reference, so it reads as shared
-    if (__atomic_load_n(&p->refs, __ATOMIC_RELAXED) != 1u) {
-        tide_page *own = tide_page_copy(p, 1u, in_use(h, p));
-        if (__atomic_compare_exchange_n(slot, &p, own, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            *copied = p;
-            p = own;
-        } else {
-            free(own); // Another thread's copy got there first: p is that one now
-            tide_memory_sync(); // ...which this one may not see yet (see tide/page.h)
-        }
-    }
-    __atomic_store_n(&p->hashed, UINT32_MAX, __ATOMIC_RELAXED);
-    return (tide_block *)(uintptr_t)((uint8_t *)tide_page_data(p) + (block - (p->first << TIDE_HEAP_PAGE_SHIFT)));
-}
-
 uint32_t tide_heap_alloc(tide_heap *h, const uint32_t bytes)
 {
     const uint64_t size = (uint64_t)sizeof(tide_block) + bytes;

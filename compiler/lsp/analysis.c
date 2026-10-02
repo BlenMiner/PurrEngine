@@ -610,10 +610,13 @@ static void walk_stmt(const stmt *s)
         walk_stmt(s->then_stmt);
         break;
     case S_FOREACH:
+    case S_PARALLEL:
         type_ref(s->type_qual_at.line ? s->type_qual_at : s->type_at, s->type_at, s->type_name, s->type);
         add_occ((occurrence){.at = s->name_at, .len = s->name.len, .kind = OCC_LOCAL, .declaration = true, .local = s,
                              .name = s->name, .type = s->type});
         walk_expr(s->value);
+        walk_expr(s->by);
+        walk_expr(s->offset);
         walk_stmt(s->then_stmt);
         break;
     case S_FOR:
@@ -862,7 +865,8 @@ static const char *builtin_type_doc(const type_kind kind)
     case TY_STRING: return "Text, written in double quotes.";
     case TY_ACTION: return "Code the caller writes in braces after the call, run with `content();`.";
     case TY_LIST: return "A list of values, which grows and shrinks: `Count`, `items[i]`, `Add`, `RemoveAt`, `foreach`.";
-    case TY_GRID: return "Cells at positions, kept in chunks only where something's set: `cells[x, y]`, `size`, `Clear()`. "
+    case TY_GRID: return "Cells at positions, kept in chunks only where something's set: `cells[x, y]`, `size`, `Clear()`, "
+                         "and `foreach` or `parallel` through its cells. "
                          "Its size is given when it's made, `Grid2(1024, 1024)`; 0 or nothing is open.";
     default: return NULL;
     }
@@ -1758,37 +1762,6 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
             break;
         }
         case FIX_USE_THIS: continue; // use_this_action
-        case FIX_REMOVE_REACH: {
-            // [Reach(1)] alone: its line; [Reach(1), Sleeps]: it and its comma
-            const int name = token_at(f->at);
-            if (name < 1) continue;
-            int last = name;
-            if (last + 1 < DOC->tok_count && DOC->toks[last + 1].kind == T_LPAREN) {
-                while (last + 1 < DOC->tok_count && DOC->toks[last].kind != T_RPAREN) last++;
-            }
-            if (last + 1 >= DOC->tok_count) continue;
-            const token *open = &DOC->toks[name - 1];
-            const token *next = &DOC->toks[last + 1];
-            sb_put(&title, "Remove [Reach]: tidec works it out");
-            if (open->kind == T_LBRACKET && next->kind == T_RBRACKET) {
-                start = open->at;
-                end = token_end(next);
-                const bool first = name < 2 || DOC->toks[name - 2].at.line < open->at.line;
-                const bool alone = last + 2 >= DOC->tok_count || DOC->toks[last + 2].at.line > next->at.line;
-                if (first && alone) { // The whole line
-                    start = (loc){open->at.line, 1, open->at.file};
-                    end = (loc){open->at.line + 1, 1, open->at.file};
-                }
-            } else if (next->kind == T_COMMA && last + 2 < DOC->tok_count) {
-                start = f->at;
-                end = DOC->toks[last + 2].at;
-            } else {
-                start = open->at; // The comma before it
-                end = token_end(&DOC->toks[last]);
-            }
-            sb_put(&text, "");
-            break;
-        }
         }
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"title\":");
@@ -2398,7 +2371,7 @@ static void collect_list(stmt *const *stmts, const int count, const loc at, scop
             }
             if (block_contains(s->else_stmt, at)) collect_locals(s->else_stmt, at, sc);
         }
-        if (s->kind == S_FOREACH && block_contains(s->then_stmt, at)) {
+        if ((s->kind == S_FOREACH || s->kind == S_PARALLEL) && block_contains(s->then_stmt, at)) {
             vec_push(sc->locals, s); // foreach (var item in ...)
             collect_locals(s->then_stmt, at, sc);
         }
@@ -2600,8 +2573,6 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         const char *at = t.decl->dims == 3 ? "int3" : "int2";
         item(c, "size", CK_PROPERTY, at, "The grid's size, 0 on the axes where it's open.", NULL);
         item(c, "Clear", CK_METHOD, "cells.Clear()", "Sets every cell back to zero, keeping the size.", "Clear()");
-        item(c, "min", CK_PROPERTY, at, "In a chunk system: its chunk's first cell.", NULL);
-        item(c, "max", CK_PROPERTY, at, "In a chunk system: past its chunk's last cell.", NULL);
     }
     if (t.kind == TY_STRING) {
         item(c, "Length", CK_PROPERTY, "int", "How many characters the text has.", NULL);
@@ -2952,6 +2923,13 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         static const char *const keywords[] = {"if", "else", "return", "var", "mut", "switch", "case", "default", "break",
                                                "while", "for", "foreach", "continue"};
         for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) item(c, keywords[i], CK_KEYWORD, NULL, NULL, NULL);
+        // Every cell of a grid at once, in a system, view or handler that isn't async
+        if (sc.decl && sc.decl->kind == DECL_SYSTEM && !sc.decl->is_async) {
+            item(c, "parallel", CK_KEYWORD, "parallel (var at in cells) { ... }",
+                 "Goes through a grid's cells, or with `by`, its blocks, all at once: each step reads the grid as the loop "
+                 "found it and changes only its own cell or block.",
+                 NULL);
+        }
         // A function that can fail ends with its error
         if (sc.decl && is_routine(sc.decl) && sc.decl->fails.kind != TY_VOID) {
             item(c, "fail", CK_KEYWORD, NULL, "Ends the function with an error.", NULL);
@@ -3267,10 +3245,6 @@ void analysis_completion(const int line, const int character, jbuf *out)
             item(&c, "NativeName", CK_FUNCTION, "[NativeName(\"c_function\")]",
                  "The C function the extern function after it calls, when its name isn't the function's own.",
                  "NativeName(\"$1\")");
-            item(&c, "Reach", CK_FUNCTION, "[Reach(cells)]",
-                 "How many cells past its chunk a chunk system touches, where tidec can't work it out from the cells it indexes.", "Reach($1)");
-            item(&c, "Sleeps", CK_FUNCTION, "[Sleeps]",
-                 "A chunk system that only runs where something within its reach changed.", "Sleeps");
         }
         break;
 
@@ -3345,7 +3319,6 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 item(&c, "mut", CK_KEYWORD, "Write access", NULL, NULL);
                 item(&c, "with", CK_KEYWORD, "Entities must have this component", NULL, NULL);
                 item(&c, "without", CK_KEYWORD, "Entities must not have this component", NULL, NULL);
-                item(&c, "chunk", CK_KEYWORD, "A grid's chunks, one at a time on threads: chunk mut Field.cells cells", NULL, NULL);
                 item(&c, "Devices", CK_CLASS, "The devices of the entity's owner, or the server's", NULL, NULL);
             }
             complete_types(&c, true, true, pk != T_MUT);
@@ -3575,7 +3548,7 @@ static bool local_named(const stmt *s, const str name)
         }
     }
     if (s->kind == S_EXPR) return local_named(s->value->block, name);
-    if (s->kind == S_FOREACH) return str_eq(s->name, name) || local_named(s->then_stmt, name);
+    if (s->kind == S_FOREACH || s->kind == S_PARALLEL) return str_eq(s->name, name) || local_named(s->then_stmt, name);
     if (s->kind == S_WHILE || s->kind == S_FOR) return local_named(s->init, name) || local_named(s->then_stmt, name);
     return s->kind == S_IF && (local_named(s->then_stmt, name) || local_named(s->else_stmt, name));
 }

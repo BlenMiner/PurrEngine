@@ -1,0 +1,4 @@
+// expect: chunk systems are gone: a system takes the grid's component or singleton, and a parallel loop goes through its cells at once
+singleton Field { Grid2<int> cells; }
+system Step(chunk mut Field.cells cells) { }
+scene Main { }

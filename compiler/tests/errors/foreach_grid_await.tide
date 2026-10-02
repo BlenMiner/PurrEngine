@@ -1,0 +1,12 @@
+// expect: a task can't wait inside a foreach over a grid, which goes through its cells as they are
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+async void Sweep(mut Field field)
+{
+    foreach (var at in field.cells)
+    {
+        field.cells[at] = 1;
+        await Wait.Ticks(1);
+    }
+}
+system Step(mut Field field) { Sweep(field); }
+scene Main { }

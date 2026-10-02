@@ -1,0 +1,10 @@
+// expect: a parallel loop's steps run at once, so they can't change the whole grid
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells)
+    {
+        field.cells.Clear();
+    }
+}
+scene Main { }

@@ -1,8 +1,0 @@
-// expect: Reach takes how many cells past its chunk a chunk system touches, 0 to 64: [Reach(1)]
-singleton Field { Grid2<int> cells; }
-[Reach(100)]
-system Step(chunk mut Field.cells cells)
-{
-    cells[0, 0] = 1;
-}
-scene Main { }

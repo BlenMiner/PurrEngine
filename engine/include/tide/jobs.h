@@ -69,10 +69,6 @@ typedef struct tide_system_tasks {
     // A task's own data, with the real handles for the temporary ones it
     // stored: its mut components' entity fields. NULL when it has none.
     void (*settle)(void *world, uint32_t task, const tide_new_entities *settled);
-    // Once all its tasks are done, on one thread, before anything waiting for
-    // it starts: what each task left in tide_task_data, in task order (NULL
-    // for a task that left nothing). NULL when it has nothing to finish.
-    void (*finish)(void *world, void **data, uint32_t tasks);
 } tide_system_tasks;
 
 // What the tick runs its systems with.
@@ -100,6 +96,10 @@ tide_queue *tide_recording(tide_queue *world);
 // settles its spawns, or else a new entity in `t`.
 tide_entity tide_new_entity(tide_entities *t);
 
-// What the running task leaves its system to finish (tide_system_tasks.finish).
-// NULL when no task is running.
-void **tide_task_data(void);
+// Runs work(context, task) for every task from 0 to count - 1, and returns once
+// they're all done: a parallel loop's steps (see tide/grid.h). While systems
+// run on threads, the threads with nothing else to do help, when `cost` (the
+// loop's work, as tidec reckons it) is worth it; anywhere else, and for a
+// small loop, it runs them on this thread, in order. The tasks never depend on
+// each other, so the result is the same either way.
+void tide_parallel_for(uint32_t count, void (*work)(void *context, uint32_t task), void *context, uint64_t cost);

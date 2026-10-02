@@ -1,0 +1,11 @@
+// expect: a parallel loop's steps run at once, so they can't spawn
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+component Spark { }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells)
+    {
+        if (field.cells[at] == 1) Spawn(Spark);
+    }
+}
+scene Main { }

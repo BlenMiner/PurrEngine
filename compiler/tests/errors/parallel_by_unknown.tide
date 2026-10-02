@@ -1,0 +1,7 @@
+// expect: a parallel loop's blocks are a size known while compiling: an int, or an int2
+singleton Field { Grid2<int> cells = Grid2(8, 8); int size = 2; }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells by field.size) { }
+}
+scene Main { }

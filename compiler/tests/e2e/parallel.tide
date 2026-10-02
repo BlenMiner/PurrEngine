@@ -1,0 +1,166 @@
+// Parallel loops over grids (see docs/spec.md, Grids): every cell or block at
+// once, checked against the same rules worked out by hand, in order.
+
+scene Main { }
+
+singleton Heat
+{
+    Grid2<int> cells;   // Spread by a parallel loop
+    Grid2<int> twin;    // ...and the same way by hand, through a second grid
+    Grid2<int> next;
+    Grid2<int> grains;  // Fall in 2x2 blocks, by a parallel loop
+    Grid2<int> fallen;  // ...and the same blocks by hand, in order
+    Grid2<int> doubled; // A foreach that only touches its own cell
+    Grid2<int> totals;  // A foreach that reads the cell before its own, so it goes in order
+    int size = 40;
+    int sum;            // The doubled grid's cells added up by a foreach, through a mut parameter
+    int mismatches;     // Cells where a loop and the same rule by hand disagree
+    bool ready;
+}
+
+system Setup(mut Heat heat)
+{
+    if (heat.ready) return;
+    heat.ready = true;
+    var size = heat.size;
+    heat.cells = Grid2(size, size);
+    heat.twin = Grid2(size, size);
+    heat.next = Grid2(size, size);
+    heat.grains = Grid2(size, size);
+    heat.fallen = Grid2(size, size);
+    heat.doubled = Grid2(size, size);
+    heat.totals = Grid2(size, size);
+    for (var y = 0; y < size; y++)
+    {
+        for (var x = 0; x < size; x++)
+        {
+            var hot = (x * 7 + y * 13) % 11 == 0 ? 800 : 0;
+            heat.cells[x, y] = hot;
+            heat.twin[x, y] = hot;
+            var grain = y > size / 2 && (x * 3 + y * 5) % 4 == 0 ? 1 : 0;
+            heat.grains[x, y] = grain;
+            heat.fallen[x, y] = grain;
+            heat.doubled[x, y] = x + y;
+        }
+    }
+}
+
+// Each cell becomes the average of itself and its neighbors, from the grid as
+// it was: every cell at once.
+system Spread(mut Heat heat)
+{
+    parallel (var at in heat.cells)
+    {
+        var sum = heat.cells[at] * 4 + heat.cells[at + int2(1, 0)] + heat.cells[at + int2(-1, 0)]
+                + heat.cells[at + int2(0, 1)] + heat.cells[at + int2(0, -1)];
+        heat.cells[at] = sum / 8;
+    }
+}
+
+system SpreadByHand(mut Heat heat)
+{
+    var size = heat.size;
+    for (var y = 0; y < size; y++)
+    {
+        for (var x = 0; x < size; x++)
+        {
+            var sum = heat.twin[x, y] * 4 + heat.twin[x + 1, y] + heat.twin[x - 1, y] + heat.twin[x, y + 1] + heat.twin[x, y - 1];
+            heat.next[x, y] = sum / 8;
+        }
+    }
+    for (var y = 0; y < size; y++)
+    {
+        for (var x = 0; x < size; x++) heat.twin[x, y] = heat.next[x, y];
+    }
+}
+
+// Grains fall in 2x2 blocks, whose corners are on even cells one tick and odd
+// ones the next: a grain over an empty cell falls into it.
+system Fall(Time time, mut Heat heat)
+{
+    var shift = time.tick % 2;
+    parallel (var at in heat.grains by 2 offset shift)
+    {
+        var a = heat.grains[at + int2(0, 1)];
+        var b = heat.grains[at + int2(1, 1)];
+        var c = heat.grains[at];
+        var d = heat.grains[at + int2(1, 0)];
+        if (a == 1 && c == 0)
+        {
+            heat.grains[at] = 1;
+            heat.grains[at + int2(0, 1)] = 0;
+        }
+        if (b == 1 && d == 0)
+        {
+            heat.grains[at + int2(1, 0)] = 1;
+            heat.grains[at + int2(1, 1)] = 0;
+        }
+    }
+}
+
+system FallByHand(Time time, mut Heat heat)
+{
+    var shift = time.tick % 2;
+    var size = heat.size;
+    for (var y = shift; y + 1 < size; y += 2)
+    {
+        for (var x = shift; x + 1 < size; x += 2)
+        {
+            var a = heat.fallen[x, y + 1];
+            var b = heat.fallen[x + 1, y + 1];
+            var c = heat.fallen[x, y];
+            var d = heat.fallen[x + 1, y];
+            if (a == 1 && c == 0)
+            {
+                heat.fallen[x, y] = 1;
+                heat.fallen[x, y + 1] = 0;
+            }
+            if (b == 1 && d == 0)
+            {
+                heat.fallen[x + 1, y] = 1;
+                heat.fallen[x + 1, y + 1] = 0;
+            }
+        }
+    }
+}
+
+system Double(mut Heat heat)
+{
+    foreach (var at in heat.doubled) heat.doubled[at] = heat.doubled[at] * 2 % 1000;
+}
+
+// Each cell is one more than the one before it in its row, which this loop
+// already changed: in order, a count along the row.
+system Count(mut Heat heat)
+{
+    foreach (var at in heat.totals) heat.totals[at] = heat.totals[at - int2(1, 0)] + 1;
+}
+
+// Adds each cell to a total outside it, through a mut parameter: that's not
+// its own cell, so it goes in order.
+void Add(mut int total, int n)
+{
+    total += n;
+}
+
+system Sum(mut Heat heat)
+{
+    mut var total = 0;
+    foreach (var at in heat.doubled) Add(total, heat.doubled[at]);
+    heat.sum = total;
+}
+
+system Compare(mut Heat heat)
+{
+    var size = heat.size;
+    mut var wrong = 0;
+    for (var y = 0; y < size; y++)
+    {
+        for (var x = 0; x < size; x++)
+        {
+            if (heat.cells[x, y] != heat.twin[x, y]) wrong++;
+            if (heat.grains[x, y] != heat.fallen[x, y]) wrong++;
+        }
+    }
+    heat.mismatches += wrong;
+}

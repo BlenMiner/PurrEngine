@@ -1,0 +1,10 @@
+// expect: a parallel loop's step can't hold another parallel loop
+singleton Field { Grid2<int> cells = Grid2(8, 8); Grid2<int> other = Grid2(8, 8); }
+system Step(mut Field field)
+{
+    parallel (var at in field.cells)
+    {
+        parallel (var p in field.other) { }
+    }
+}
+scene Main { }

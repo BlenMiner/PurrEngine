@@ -1,0 +1,7 @@
+// expect: a parallel loop's offset is where its blocks start: an int, or an int2, not float
+singleton Field { Grid2<int> cells = Grid2(8, 8); }
+system Step(mut Field field, Time time)
+{
+    parallel (var at in field.cells by 2 offset time.dt) { }
+}
+scene Main { }

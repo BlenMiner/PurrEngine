@@ -1,4 +1,4 @@
-// grids.tide's C: Glow calls it for each chunk it wakes for.
+// grids.tide's C: Glow calls it for each cell, from its parallel loop's steps.
 
 #include <stdint.h>
 

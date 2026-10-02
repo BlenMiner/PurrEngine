@@ -588,12 +588,12 @@ system Advance(mut Match match)
 ### Provisional
 
 - `for (var i = 0; i < n; i++) { ... }`: its start, condition and step are each optional. The variable it declares changes in its step, and is read-only in its body unless it's declared `mut var`.
-- `foreach (var item in list) { ... }` goes through a list's elements in order; `foreach (Type item in list)` names their type. Each element is a copy, read-only. The list's `Count` is read each round, so elements added along the way are reached too.
+- `foreach (var item in list) { ... }` goes through a list's elements in order; `foreach (Type item in list)` names their type. Each element is a copy, read-only. The list's `Count` is read each round, so elements added along the way are reached too. A foreach over a grid goes through its cells' places, and `parallel` through them at once (see Grids).
 - `i++`, `i--`, `++i` and `--i` are statements, on ints and floats, the same as `i += 1` and `i -= 1`. They aren't expressions.
 - `break` ends the innermost loop or switch; `continue` goes on to the innermost loop's next round, from inside a switch too. In a block after a call, both are the caller's: they end or continue the caller's loop, even if the function runs the block inside a loop of its own.
 - `Spawn`, `Scene.Load` and widgets can't be in a loop's condition or a for's step, which run again and again; they go in its body.
 - `while (true)` and `for (;;)` with no `break` of their own never end, so nothing needs to follow them: a function can end with one, and so can a switch's section.
-- `in` is only a keyword in a foreach; `while`, `for`, `foreach` and `continue` are keywords everywhere.
+- `in` is only a keyword in a foreach or a parallel loop, and `by` and `offset` only in a parallel loop; `while`, `for`, `foreach`, `parallel` and `continue` are keywords everywhere.
 - There's no `do ... while` yet.
 
 ## Text
@@ -657,7 +657,11 @@ system Advance(mut Match match)
 - `Grid2<T>` and `Grid3<T>` hold cells at `int2` or `int3` positions. They're fields of components, singletons and scenes, so a world can have many: a dimension per scene, a canvas per player, a grid per ship.
 - A grid keeps its cells in chunks, and a chunk only exists once a cell in it is set to something other than zero: everywhere else reads as zero, so an open grid costs what's in it, not the space it spans. A world and its snapshots share chunks until one of them changes one, and hashes cover each chunk on its own.
 - A grid's size is given when it's made, `Grid2(1024, 1024)`. An axis given 0, or left out, is open: any int, negative ones too. Past its size, reads give zero and writes do nothing.
-- A chunk system runs once per chunk of a grid, on threads: `system Fall(chunk mut Field.cells cells)`. tidec works out how far past its own chunk it touches cells, from the cells it indexes, and its chunks run in phases far enough apart that no two touch the same chunk, so the result is the same on any number of threads. Where tidec can't work it out, `[Reach(n)]` says it. Any other system reads any cell, and one that changes cells waits for others that do.
+- `parallel (var at in cells) { ... }` goes through every cell of a grid at once, on threads. Each step reads the grid as the loop found it and changes only its own cell, so the result is the same on any number of threads, and the order the steps run in never shows. Code after the loop runs once every step is done.
+- `parallel (var at in cells by 2 offset o) { ... }` goes through blocks instead: each step has the block of cells from `at` to `at + 1` on each axis (`by int2(2, 1)` sizes each axis), changes only those, and reads any cell. Blocks start at the offset, an int or an `int2`/`int3` given each time, and never overlap, so cells can move within a block: sand falls and slides in 2 by 2 blocks whose offset goes 0, 1, 0, 1, so each cell is in another block the tick after. A block that would go past a grid's size is left out, so along a sized edge, cells are only in the blocks of some offsets.
+- `foreach (var at in cells) { ... }` goes through a grid's cells in order, in place, as C#'s would: rows from the first, each from its lowest x, and each step sees what the ones before it changed. When nothing a step does depends on the others (it changes only its own cell, and nothing outside the loop), its steps run at once instead, with the same result.
+- `for` loops stay in order.
+- There are no chunk systems: a system takes the grid's component or singleton like any other, and goes through the cells with a loop.
 
 ```csharp
 singleton Field
@@ -665,17 +669,15 @@ singleton Field
     Grid2<int> cells = Grid2(512, 512);
 }
 
-// Ones fall a cell a tick, a chunk at a time, into the chunk below too
-system Fall(chunk mut Field.cells cells)
+// Ones fall a cell a tick, in blocks of a cell and the one above it, from
+// even rows one tick and odd ones the next
+system Fall(mut Field field, Time time)
 {
-    for (var y = Math.Max(cells.min.y, 1); y < cells.max.y; y++)
+    parallel (var at in field.cells by int2(1, 2) offset int2(0, time.tick % 2))
     {
-        for (var x = cells.min.x; x < cells.max.x; x++)
-        {
-            if (cells[x, y] != 1 || cells[x, y - 1] != 0) continue;
-            cells[x, y] = 0;
-            cells[x, y - 1] = 1;
-        }
+        if (field.cells[at + int2(0, 1)] != 1 || field.cells[at] != 0) continue;
+        field.cells[at] = 1;
+        field.cells[at + int2(0, 1)] = 0;
     }
 }
 ```
@@ -688,22 +690,22 @@ Implemented on the owner's go-ahead, to be revisited once games use them:
 - `cells[x, y]` is `cells[int2(x, y)]`, and `cells[x, y, z]` is `cells[int3(x, y, z)]`. `cells.size` is the grid's size, 0 on open axes. `cells.Clear()` sets every cell back to zero and keeps the size; `cells = Grid2(...)` gives the field a new, empty grid.
 - A cell is a copy, like a list's element: `cells[p].heat = 1` is an error that says to take it out, change it and put it back. `cells[p] += 1` works on numbers. Setting a cell to zero where there's no chunk makes none.
 - A grid is never copied, since every chunk would be: a local can't hold one, nor a component or singleton that has one, and a grid field is only assigned a new grid. Functions can't take or return grids yet. `Grid2(...)` takes its cell type from the field it goes in; anywhere else it's an error that says so.
-- A chunk is the engine's: 4096 cells (64 by 64, or 16 by 16 by 16 in 3D), or for cells bigger than four bytes, as many as fit in a page (16 KiB), a power of two along each axis, the first axes the most. Chunks of small cells share pages; a chunk system's tasks change chunks of one page at once, and the first to change a page a snapshot shares copies it for all of them.
-- A chunk system has one `chunk` parameter: a grid field of a component, `chunk mut Canvas.pixels pixels`, which runs for every entity's grid, or of a singleton. It runs for each chunk that existed when the tick began; chunks made during a tick run from the next one, so the tick is the same on threads as on one. Its grid has `min` and `max` too, its own chunk's cells (`max` not included).
-- A chunk system reads singletons, and the components of its grid's entity (which is `this`), but changes only cells within its reach. It can't spawn, send, add, remove or destroy yet, clear its grid, or take the component or singleton its grid is in, whose other chunks change meanwhile. It counts as changing the match's text, lists and grids, as its chunks are in the match's heap: other systems that change them wait for it.
-- How far a chunk system reaches is worked out on each axis, before its chunk and after it, from every cell it indexes: each index as an interval from the chunk's first cell. `cells.min` and `cells.max` are where the chunk starts and ends, constants are themselves, a loop variable that only its step changes goes from where it starts to the bound its condition sets, and any other local holds every value it's given; `+`, `-`, `*`, `/`, `%`, `&`, `?:`, `Math.Min`, `Max`, `Clamp` and `Abs` carry intervals through. It doesn't follow `if`s, so it can come out further than the code ever goes, never less.
-- A chunk system reaches at most one chunk past its own, which tidec checks. Each cell it indexes gets into the chunks around its own that its interval spans, and its chunks run in as few phases as keep two that run together from touching the same chunk: sand that reads the cells below and beside it touches 6 chunks and runs in 6 phases, heat that spreads to the cells beside each one, never across corners, touches 5 and runs in 5 (a 3 by 3 block of chunks would take 9), one that only reads below runs in 2, and one that stays in its chunk runs every chunk at once. A chunk's phase is its position times a weight for each axis, added up, modulo the phases: tidec picks the fewest phases, and the weights, that keep apart every two chunks a task could both touch. The schedule shows it: `(per chunk, 5 phases, reaches x -1..+1, y -1..+1, 5 of those 9 chunks)`. Within a chunk, cells change in the order the code goes through them; a grain that moves into a chunk of a later phase can move again in the same tick.
-- A cell tidec can't place from the chunk is an error that says how to index it, or to say the reach above the system: `[Reach(n)]` for `n` cells (0 to 64) past its chunk, every way on every axis, or `[Reach(int2(-1, 0), int2(1, 0), int2(0, -1))]` for the cells around each cell it touches (`int3` in 3D), each 64 or fewer away, which get into only the chunks they reach. Constants work in both. `[Reach]` on a system whose reach tidec works out is a warning, with a quick fix that removes it, and so is a cell tidec can tell is past a written reach, or in a chunk it doesn't get into: there, reads give 0 and writes do nothing.
-- `[Sleeps]`: the system only runs on chunks where something within its reach changed, in the tick before or this one. The game says when that's right: when a chunk whose surroundings didn't change can't change either, whatever else it reads. It skips the work of everything that's settled.
-- Chunks a chunk system's task makes, setting a cell where there was no chunk, join the grid once its phase is done, in task order.
+- A chunk is the engine's: 4096 cells (64 by 64, or 16 by 16 by 16 in 3D), or for cells bigger than four bytes, as many as fit in a page (16 KiB), a power of two along each axis, the first axes the most.
+- A loop over a grid with a size on every axis goes through every cell within it. An open axis goes on forever, so there a loop goes through the cells of the chunks the grid has, where something was set: in blocks, every block that takes in part of one. A foreach over an open grid goes through them in the same order, rows from the first, skipping what has no chunk.
+- A parallel loop's step changes only its own cell or block, `at` plus constants (`at + int2(1, 0)`, `int2(at.x + 1, at.y)`), and the variables it declares. Anything else it changes is an error that says why: a variable outside the loop (to add up, use a `for` loop or a foreach that goes in order), another cell, the whole grid (`Clear`), through a `mut` argument too. It can't `break` out of the loop (`continue` ends the step), return, wait, start tasks, spawn, send, add, remove or destroy, load scenes, draw, use the GUI, or hold another parallel loop. It can call functions, and C.
+- A block is 1 to 64 cells along each axis, a size known while compiling: a constant int, or `int2`/`int3`. The offset can be any int: blocks start at it plus any multiple of their size, so with blocks of 2, an offset of 2 gives the same blocks as 0.
+- A parallel loop goes in a system, a view or an event handler that isn't async: not in functions, methods, async code or an input's `Sample`. A foreach there whose steps only touch their own cell runs at once; anywhere else, it goes in order.
+- A foreach over a grid can't wait inside it: it goes through the cells as they are.
+- Each step writes into a copy of its chunk, made from the chunk as it was, and the loop's end puts the copies into the grid in order, chunk by chunk, so where the steps ran never shows. The schedule says how many parallel loops each system has: `(once, 2 parallel loops)`. A tick with one runs on threads, and the loop's steps spread across them when there are enough to be worth it.
 - Hosts read a world's cells with `tide_grid_read(&w->heap, w->Field.cells, x, y, 0, &tide_shape_Grid2_int)`: the generated header names each grid type's shape.
 - Text can't show a grid.
 
 ### Open
 
 - Generating chunks as they're first needed, keeping the regions around players loaded, and sending each player only theirs: an endless voxel world.
-- Functions that take grids; chunk systems that spawn and send.
-- Following `if`s, and reversed sweeps (`cells.max.x - 1 - i`), which come out as reaching a whole chunk back now.
+- Functions that take grids; parallel steps that spawn and send.
+- Skipping what's settled: a parallel loop that only runs where something near changed (what `[Sleeps]` did for chunk systems).
+- `for` loops that run at once when nothing a step does depends on the others.
 - Resizing a grid; drawing one.
 
 ## Errors

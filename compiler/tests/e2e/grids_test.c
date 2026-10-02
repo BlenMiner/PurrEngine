@@ -5,7 +5,7 @@
 #include "game.h"
 #include "tide_test.h"
 
-extern int32_t grids_visits; // grids_c.c: chunks Glow ran for
+extern int32_t grids_visits; // grids_c.c: cells Glow ran for
 
 static tide_world world;
 static tide_world other;
@@ -14,6 +14,14 @@ static int32_t cell(const tide_world *w, const int32_t x, const int32_t y)
 {
     const int32_t *c = tide_grid_read(&w->heap, w->Field.cells, x, y, 0, &tide_shape_Grid2_int);
     return c ? *c : 0;
+}
+
+// How high the column's ones are, all together: less each tick one falls.
+static int32_t height(const tide_world *w)
+{
+    int32_t sum = 0;
+    for (int32_t y = 0; y < 100; y++) sum += y * cell(w, 10, y);
+    return sum;
 }
 
 static void ticks(tide_world *w, const int n)
@@ -33,9 +41,9 @@ TIDE_TEST(grids_all_checks_pass)
     tide_world_free(&world);
 }
 
-// A chunk system with a reach moves cells across its chunk's edge: the
-// column falls through the chunk below and lands on the floor, whole.
-TIDE_TEST(grids_chunk_system_moves_across_chunks)
+// A parallel loop's blocks move cells across chunks' edges: the column falls
+// through the chunk below and lands on the floor, whole.
+TIDE_TEST(grids_parallel_loop_moves_across_chunks)
 {
     tide_world_init(&world, 1.0f);
     ticks(&world, 90);
@@ -49,14 +57,14 @@ TIDE_TEST(grids_chunk_system_moves_across_chunks)
     tide_world_free(&world);
 }
 
-// A sleeping chunk system runs where something within its reach changed:
-// the tick a lamp is lit, and the next, then never again.
-TIDE_TEST(grids_sleeping_chunks)
+// A parallel loop goes through every cell within the grid's size, once a tick:
+// none before the first tick gives the lamps a size, and 5 by 5 after.
+TIDE_TEST(grids_parallel_loop_steps)
 {
     grids_visits = 0;
     tide_world_init(&world, 1.0f);
     ticks(&world, 12);
-    TIDE_CHECK(grids_visits == 2);
+    TIDE_CHECK(grids_visits == 11 * 25);
     const int32_t *lamp = tide_grid_read(&world.heap, world.Field.lamps, 4, 4, 0, &tide_shape_Grid2_int);
     TIDE_CHECK(lamp && *lamp == 3);
     tide_world_free(&world);
@@ -81,10 +89,10 @@ TIDE_TEST(grids_snapshot_and_pack)
     tide_world_init(&world, 1.0f);
     ticks(&world, 3);
     tide_world_copy(&other, &world);
-    const int32_t before = cell(&other, 10, 68); // The column's top
+    const int32_t before = height(&other);
     ticks(&world, 5);
-    TIDE_CHECK(cell(&other, 10, 68) == before);
-    TIDE_CHECK(cell(&world, 10, 68) != before);
+    TIDE_CHECK(height(&other) == before);
+    TIDE_CHECK(height(&world) < before);
     tide_world_free(&other);
 
     const uint32_t size = tide_world_pack(&world, NULL, 0);

@@ -1,9 +1,0 @@
-// expect: a chunk system can't spawn yet
-singleton Field { Grid2<int> cells; }
-component Spark { }
-system Step(chunk mut Field.cells cells)
-{
-    cells[0, 0] = 1;
-    Spawn(Spark);
-}
-scene Main { }

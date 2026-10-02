@@ -38,6 +38,9 @@ typedef struct checker {
     const expr *statement_call; // The call a statement makes: an async one starts a task
     int block_depth;          // Inside a block written after a call, which runs where the function runs it
     VEC(struct task_call) task_calls; // Calls of async functions: awaited, or starting tasks
+    const stmt *parallel;     // Checking a parallel loop's step: the loop
+    int grid_loops;           // Foreach loops over grids being checked, which go through cells without waiting
+    int parallel_locals;      // ...and how many locals were in scope before it: the rest are the step's own
 } checker;
 
 // A call of an async function: awaited, its frame part of the caller's, or
@@ -439,15 +442,6 @@ static bool holds_text(type t);
 static void note_text_write(const checker *c, const bool text)
 {
     if (text && c->system && c->system->kind == DECL_SYSTEM && !c->method) c->system->writes_text = true;
-}
-
-// A chunk system's tasks run on threads, a chunk each, and change nothing but
-// cells: no spawning, sending or changing entities, for now.
-static void refuse_in_chunks(const checker *c, const expr *e, const char *what)
-{
-    if (!c->system || c->method || !c->system->chunk_param) return;
-    diag_error(e->at, "a chunk system can't %s yet", what);
-    diag_note("its chunks run on threads at once and change only cells; do it in a system of its own");
 }
 
 // The system being checked spawns: it hands out entity IDs, which go in order,
@@ -1326,7 +1320,6 @@ static type check_send(checker *c, expr *e)
         return T_ERR;
     }
     e->call = CALL_SEND;
-    refuse_in_chunks(c, e, "send events");
     e->local_world = local_code(c);
     if (e->kind == E_METHOD && !check_entity_side(c, e)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
@@ -1559,7 +1552,6 @@ static type check_call(checker *c, expr *e)
             diag_note("that side only runs sometimes; spawn into a local before the condition");
         }
         e->call = CALL_SPAWN;
-        refuse_in_chunks(c, e, "spawn");
         e->local_world = local_code(c);
         e->spawn_mask = check_component_list(c, e, "Spawn");
         if (in_async_function(c)) e->local_world = c->method->task_side == TASK_LOCAL;
@@ -1884,7 +1876,6 @@ static type check_scene_call(checker *c, expr *e)
             return T_ERR;
         }
         e->call = CALL_LOAD;
-        refuse_in_chunks(c, e, "load scenes");
         e->type_decl = scene;
         note_text_write(c, decl_holds_text(scene));
         e->spawn_mask = bit(scene);
@@ -1935,11 +1926,9 @@ static type check_scene_call(checker *c, expr *e)
             return T_ERR;
         }
         e->call = CALL_SCENE_PLAYER;
-        refuse_in_chunks(c, e, "change who sees a scene");
         return T_VOID_;
     }
     e->call = CALL_UNLOAD;
-    refuse_in_chunks(c, e, "unload scenes");
     return T_VOID_;
 }
 
@@ -2202,7 +2191,6 @@ static type check_method(checker *c, expr *e)
 
     if (str_eq_c(e->name, "Add")) {
         e->call = CALL_ADD;
-        refuse_in_chunks(c, e, "add components");
         if (e->args.count == 0) diag_error(e->at, "Add needs at least one component");
         const uint64_t added = check_component_list(c, e, "Add");
         c->prog->added_mask |= added;
@@ -2214,7 +2202,6 @@ static type check_method(checker *c, expr *e)
 
     if (str_eq_c(e->name, "Remove")) {
         e->call = CALL_REMOVE;
-        refuse_in_chunks(c, e, "remove components");
         if (e->args.count == 0) diag_error(e->at, "Remove needs at least one component");
         uint64_t mask = 0;
         for (int i = 0; i < e->args.count; i++) {
@@ -2234,7 +2221,6 @@ static type check_method(checker *c, expr *e)
 
     if (str_eq_c(e->name, "Destroy")) {
         e->call = CALL_DESTROY;
-        refuse_in_chunks(c, e, "destroy entities");
         if (e->args.count != 0) diag_error(e->at, "Destroy takes no arguments");
         c->prog->uses_destroy = true;
         return T_VOID_;
@@ -2283,7 +2269,6 @@ static type check_snap(checker *c, expr *e, decl *singleton)
         singleton->snapped = true;
     }
     e->call = CALL_SNAP;
-    refuse_in_chunks(c, e, "snap");
     e->type_decl = singleton;
     return T_VOID_;
 }
@@ -2710,21 +2695,10 @@ static type check_member(checker *c, expr *e)
         return T_ERR;
     }
     if (obj.kind == TY_GRID) {
-        // A chunk system's grid also has its chunk's cells, from min up to max
-        const bool chunk = e->object->kind == E_NAME && e->object->bind == BIND_PARAM && e->object->param->chunk;
-        const type position = obj.decl->dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
-        if (str_eq_c(e->member, "size")) return position;
-        if (chunk && (str_eq_c(e->member, "min") || str_eq_c(e->member, "max"))) return position;
-        if (!chunk && (str_eq_c(e->member, "min") || str_eq_c(e->member, "max"))) {
-            diag_error(e->at, "only a chunk system's grid has '" STR_FMT "': its chunk's cells", STR_ARG(e->member));
-            diag_note("a grid's own bounds are from 0 to 'size' on the axes it has one");
-            return T_ERR;
-        }
-        diag_error(e->at, "a grid has 'size'%s and Clear(), not '" STR_FMT "'", chunk ? ", 'min', 'max'" : "", STR_ARG(e->member));
+        if (str_eq_c(e->member, "size")) return obj.decl->dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
+        diag_error(e->at, "a grid has 'size' and Clear(), not '" STR_FMT "'", STR_ARG(e->member));
         suggestion sg = suggest_start(e->member);
         suggest_consider_c(&sg, "size");
-        if (chunk) suggest_consider_c(&sg, "min");
-        if (chunk) suggest_consider_c(&sg, "max");
         suggest_note(&sg);
         return T_ERR;
     }
@@ -3166,11 +3140,6 @@ static type check_grid_method(checker *c, expr *e, const type grid)
         diag_error(e->at, "Clear takes no arguments: 'cells.Clear()'");
         return T_ERR;
     }
-    if (e->object->kind == E_NAME && e->object->bind == BIND_PARAM && e->object->param->chunk) {
-        diag_error(e->at, "a chunk system changes the cells within its reach, so it can't clear the whole grid");
-        diag_note("clear it in a system that takes its component or singleton as 'mut'");
-        return T_ERR;
-    }
     e->call = CALL_GRID;
     e->type_decl = grid.decl;
     decl *changer = NEW(decl);
@@ -3420,6 +3389,11 @@ static type check_await(checker *c, expr *e)
         diag_error(e->at, "a task can't wait inside a block written after a call: the function runs it");
         return T_ERR;
     }
+    if (c->grid_loops > 0) {
+        diag_error(e->at, "a task can't wait inside a foreach over a grid, which goes through its cells as they are");
+        diag_note("go through them with 'for' loops, which can wait: 'for (var y = 0; y < cells.size.y; y++) { ... }'");
+        return T_ERR;
+    }
     if (t.kind == TY_ERROR) return T_ERR;
     if (call->call == CALL_WAIT) return T_VOID_;
     if ((call->kind == E_CALL || call->kind == E_METHOD) && call->call == CALL_FUNCTION && call->method->is_async) return t;
@@ -3577,8 +3551,47 @@ static expr *assign_root(expr *target)
 
 // Whether `target` can be changed: by an assignment, by calling mut method
 // `called` on it, or passed to `called`'s mut parameter `arg_of`. Reports why not.
+static bool same_place(const expr *a, const expr *b);
+static bool own_offset(const expr *e, const stmt *loop, int dims, int64_t out[3]);
+
+// In a parallel loop's step: whether it may write `target`, its own cell or
+// block of the grid the loop goes over, or a variable it declares itself.
+static bool check_step_write(checker *c, const expr *target)
+{
+    const stmt *loop = c->parallel;
+    if (target->kind == E_INDEX && target->object->type.kind == TY_GRID && same_place(target->object, loop->value)) {
+        const int dims = target->object->type.decl->dims;
+        int64_t at[3] = {0, 0, 0};
+        bool own = own_offset(target->lhs, loop, dims, at);
+        for (int i = 0; own && i < dims; i++) own = at[i] >= 0 && at[i] < loop->block[i];
+        if (own) return true;
+        if (loop->by) {
+            diag_error(target->at, "a parallel loop's step changes only its own block: cells from '" STR_FMT "' up to "
+                                   "the block's size", STR_ARG(loop->name));
+            diag_note("write each cell as '" STR_FMT " + %s(...)', with constants from 0 up to the block's size",
+                      STR_ARG(loop->name), dims == 2 ? "int2" : "int3");
+        } else {
+            diag_error(target->at, "a parallel loop's step changes only its own cell: '" STR_FMT "'", STR_ARG(loop->name));
+            diag_note("steps run at once and read the grid as the loop found it; to move something, the cell it "
+                      "goes to takes it, or a 'for' loop goes in order");
+        }
+        return false;
+    }
+    const expr *root = assign_root((expr *)target);
+    if (root && root->bind == BIND_LOCAL) {
+        for (int i = c->parallel_locals; i < c->locals.count; i++) {
+            if (c->locals.items[i] == root->local) return true;
+        }
+    }
+    diag_error(target->at, "a parallel loop's steps run at once, so each changes only its own cell or block, and "
+                           "the variables it declares");
+    diag_note("work it out in the step, or in a 'for' loop, which goes in order");
+    return false;
+}
+
 static bool check_writable(checker *c, expr *target, const decl *called, const param *arg_of)
 {
+    if (c->parallel && !check_step_write(c, target)) return false;
     if (target->kind == E_THIS) {
         diag_error(target->at, "'this' is the entity the code runs for, so it can't change");
         if (called) diag_note("store it in a 'mut var' first");
@@ -3660,6 +3673,12 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         vec_push(c->prog->fixes, f);
         return false;
     }
+    if (root->bind == BIND_LOCAL && (root->local->kind == S_PARALLEL
+                                     || (root->local->kind == S_FOREACH && root->local->value->type.kind == TY_GRID))) {
+        diag_error(root->at, "'" STR_FMT "' is the step's place in the grid, so it can't change", STR_ARG(root->name));
+        diag_note("copy it into a 'mut var' to work with another place");
+        return false;
+    }
     if (root->bind == BIND_LOCAL && root->local->kind == S_FOREACH) {
         diag_error(root->at, "'" STR_FMT "' is a copy of the list's element, so it can't be changed", STR_ARG(root->name));
         diag_note("change the list itself: 'for (var i = 0; i < items.Count; i++) { ... items[i] = ...; }'");
@@ -3692,6 +3711,369 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         return false;
     }
     return true;
+}
+
+static bool fold_int(const expr *e, int64_t *out);
+static bool fold_cell(const expr *e, int dims, int64_t out[3]);
+static void check_stmt(checker *c, stmt *s);
+static type local_type(checker *c, stmt *s);
+
+// Whether `local` is declared somewhere in `s`.
+static bool stmt_inside(const stmt *s, const stmt *local)
+{
+    if (!s) return false;
+    if (s == local) return true;
+    if (s->kind == S_BLOCK) {
+        for (int i = 0; i < s->stmts.count; i++) {
+            if (stmt_inside(s->stmts.items[i], local)) return true;
+        }
+        return false;
+    }
+    if (s->kind == S_SWITCH) {
+        for (int i = 0; i < s->cases.count; i++) {
+            for (int k = 0; k < s->cases.items[i].body.count; k++) {
+                if (stmt_inside(s->cases.items[i].body.items[k], local)) return true;
+            }
+        }
+        return false;
+    }
+    return stmt_inside(s->init, local) || stmt_inside(s->step, local) || stmt_inside(s->then_stmt, local)
+        || stmt_inside(s->else_stmt, local);
+}
+
+// Whether two places are the same field: field.cells and field.cells.
+static bool same_place(const expr *a, const expr *b)
+{
+    if (a->kind != b->kind) return false;
+    if (a->kind == E_NAME) return str_eq(a->name, b->name) && a->bind == b->bind;
+    if (a->kind == E_MEMBER) return str_eq(a->member, b->member) && same_place(a->object, b->object);
+    if (a->kind == E_THIS) return true;
+    return false;
+}
+
+// at.x, at.x + 1 or at.x - 1 (constants): how far from the step's place along `axis`.
+static bool own_component(const expr *e, const stmt *loop, const int axis, int64_t *out)
+{
+    if (e->kind == E_MEMBER && e->object->kind == E_NAME && e->object->bind == BIND_LOCAL && e->object->local == loop) {
+        if (e->member.len != 1 || e->member.ptr[0] != "xyz"[axis]) return false;
+        *out = 0;
+        return true;
+    }
+    int64_t k;
+    if (e->kind == E_BINARY && (e->op == T_PLUS || e->op == T_MINUS) && own_component(e->lhs, loop, axis, out)
+        && fold_int(e->rhs, &k)) {
+        *out += e->op == T_PLUS ? k : -k;
+        return true;
+    }
+    if (e->kind == E_BINARY && e->op == T_PLUS && fold_int(e->lhs, &k) && own_component(e->rhs, loop, axis, out)) {
+        *out += k;
+        return true;
+    }
+    return false;
+}
+
+// How far a cell's index is from the step's place: at, at + int2(1, 0),
+// int2(at.x + 1, at.y), cells[at.x, at.y + 1]. False when it isn't that.
+static bool own_offset(const expr *e, const stmt *loop, const int dims, int64_t out[3])
+{
+    if (e->kind == E_NAME && e->bind == BIND_LOCAL && e->local == loop) {
+        out[0] = out[1] = out[2] = 0;
+        return true;
+    }
+    int64_t k[3] = {0, 0, 0};
+    if (e->kind == E_BINARY && (e->op == T_PLUS || e->op == T_MINUS) && own_offset(e->lhs, loop, dims, out)
+        && fold_cell(e->rhs, dims, k)) {
+        for (int i = 0; i < dims; i++) out[i] += e->op == T_PLUS ? k[i] : -k[i];
+        return true;
+    }
+    if (e->kind == E_BINARY && e->op == T_PLUS && fold_cell(e->lhs, dims, k) && own_offset(e->rhs, loop, dims, out)) {
+        for (int i = 0; i < dims; i++) out[i] += k[i];
+        return true;
+    }
+    if (e->kind == E_CALL && e->call == CALL_CONSTRUCT && e->ctor == CTOR_COMPONENTS && e->args.count == dims) {
+        out[2] = 0;
+        for (int i = 0; i < dims; i++) {
+            if (!own_component(e->args.items[i], loop, i, &out[i])) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool own_cell_only_expr(const expr *e, const stmt *loop);
+
+// Whether a foreach over a grid only reads and writes its own cell, and
+// changes nothing else, so its steps could run in any order, at once: its
+// variables, and nothing that leaves the loop or reaches outside.
+static bool own_cell_only(const stmt *s, const stmt *loop, const int depth)
+{
+    if (!s) return true;
+    switch (s->kind) {
+    case S_BLOCK:
+        for (int i = 0; i < s->stmts.count; i++) {
+            if (!own_cell_only(s->stmts.items[i], loop, depth)) return false;
+        }
+        return true;
+    case S_IF:
+        return own_cell_only_expr(s->cond, loop) && own_cell_only(s->then_stmt, loop, depth)
+            && own_cell_only(s->else_stmt, loop, depth);
+    case S_WHILE:
+    case S_FOR:
+        return own_cell_only(s->init, loop, depth + 1) && (!s->cond || own_cell_only_expr(s->cond, loop))
+            && own_cell_only(s->step, loop, depth + 1) && own_cell_only(s->then_stmt, loop, depth + 1);
+    case S_FOREACH:
+    case S_PARALLEL:
+        return false; // Another loop over a grid: in order
+    case S_SWITCH:
+        if (!own_cell_only_expr(s->cond, loop)) return false;
+        for (int i = 0; i < s->cases.count; i++) {
+            for (int k = 0; k < s->cases.items[i].body.count; k++) {
+                if (!own_cell_only(s->cases.items[i].body.items[k], loop, depth + 1)) return false;
+            }
+        }
+        return true;
+    case S_VAR:
+        return !s->value || own_cell_only_expr(s->value, loop);
+    case S_EXPR:
+        return own_cell_only_expr(s->value, loop);
+    case S_ASSIGN: {
+        const expr *t = s->target;
+        if (t->kind == E_INDEX && t->object->type.kind == TY_GRID && same_place(t->object, loop->value)) {
+            int64_t at[3];
+            if (!own_offset(t->lhs, loop, t->object->type.decl->dims, at) || at[0] || at[1] || at[2]) return false;
+            return own_cell_only_expr(t->lhs, loop) && own_cell_only_expr(s->value, loop);
+        }
+        // Only its own variables: a total or a flag outside it goes in order
+        const expr *root = t;
+        while (root->kind == E_MEMBER || root->kind == E_INDEX) root = root->object;
+        if (root->kind != E_NAME || root->bind != BIND_LOCAL || !stmt_inside(loop->then_stmt, root->local)) return false;
+        return own_cell_only_expr(t, loop) && own_cell_only_expr(s->value, loop);
+    }
+    case S_CONTINUE:
+        return true;
+    case S_BREAK:
+        return depth > 0;
+    case S_RETURN:
+    case S_FAIL:
+        return false;
+    }
+    return false;
+}
+
+// Whether `e` is in a variable the loop's step declares: what it changes
+// through a call stays in the step.
+static bool step_own(const expr *e, const stmt *loop)
+{
+    while (e->kind == E_MEMBER || e->kind == E_INDEX) e = e->object;
+    return e->kind == E_NAME && e->bind == BIND_LOCAL && stmt_inside(loop->then_stmt, e->local);
+}
+
+static bool own_cell_only_expr(const expr *e, const stmt *loop)
+{
+    if (!e) return true;
+    switch (e->call) {
+    case CALL_NONE: case CALL_BUILTIN: case CALL_CONSTRUCT: case CALL_TEXT:
+        break;
+    case CALL_FUNCTION:
+        if (e->method && (e->method->calls_c || e->method->is_async || e->method->draws)) return false;
+        // What it changes, its mut arguments and the value a mut method is called on, is the step's own
+        for (int i = 0; e->method && i < e->args.count && i < e->method->params.count; i++) {
+            if (e->method->params.items[i].mode == PARAM_MUT && !step_own(e->args.items[i], loop)) return false;
+        }
+        if (e->method && e->method->is_mut_method && (!e->object || !step_own(e->object, loop))) return false;
+        break;
+    default:
+        return false; // Spawns, sends, draws, the GUI, list and grid changes, C: in order
+    }
+    if (e->kind == E_AWAIT || e->kind == E_TRY) return false;
+    if (e->kind == E_INDEX && e->object->type.kind == TY_GRID && same_place(e->object, loop->value)) {
+        int64_t at[3];
+        if (!own_offset(e->lhs, loop, e->object->type.decl->dims, at) || at[0] || at[1] || at[2]) return false;
+    }
+    if (e->block) return false;
+    if (!own_cell_only_expr(e->object, loop) || !own_cell_only_expr(e->lhs, loop) || !own_cell_only_expr(e->rhs, loop)
+        || !own_cell_only_expr(e->cond, loop)) {
+        return false;
+    }
+    for (int i = 0; i < e->args.count; i++) {
+        if (!own_cell_only_expr(e->args.items[i], loop)) return false;
+    }
+    for (int i = 0; i < e->inits.count; i++) {
+        if (!own_cell_only_expr(e->inits.items[i].value, loop)) return false;
+    }
+    return true;
+}
+
+// What a parallel loop's step can't do, which runs at once with the others:
+// end the loop, wait, or do anything whose order counts.
+static void check_step_stmt(checker *c, const stmt *s, int depth);
+
+static void check_step_expr(checker *c, const expr *e)
+{
+    if (!e) return;
+    const char *what = NULL;
+    switch (e->call) {
+    case CALL_SPAWN: what = "spawn"; break;
+    case CALL_ADD: case CALL_REMOVE: case CALL_DESTROY: what = "add, remove or destroy"; break;
+    case CALL_SEND: what = "send events"; break;
+    case CALL_DRAW: what = "draw"; break;
+    case CALL_GUI: what = "use the GUI"; break;
+    case CALL_SESSION: case CALL_CLIPBOARD: what = "make requests of the host"; break;
+    case CALL_LOAD: case CALL_UNLOAD: case CALL_SCENE_PLAYER: what = "load and unload scenes"; break;
+    case CALL_SNAP: what = "snap"; break;
+    default: break;
+    }
+    if (e->kind == E_AWAIT) what = "wait";
+    if (e->call == CALL_FUNCTION && e->method && e->method->is_async) what = "start tasks";
+    if (e->call == CALL_GRID && same_place(e->object, c->parallel->value)) what = "change the whole grid";
+    if (what) {
+        diag_error(e->at, "a parallel loop's steps run at once, so they can't %s", what);
+        diag_note("do it before or after the loop, or in a 'for' loop, which goes in order");
+        return;
+    }
+    check_step_expr(c, e->object);
+    check_step_expr(c, e->lhs);
+    check_step_expr(c, e->rhs);
+    check_step_expr(c, e->cond);
+    for (int i = 0; i < e->args.count; i++) check_step_expr(c, e->args.items[i]);
+    for (int i = 0; i < e->inits.count; i++) check_step_expr(c, e->inits.items[i].value);
+    if (e->block) check_step_stmt(c, e->block, 0);
+}
+
+static void check_step_stmt(checker *c, const stmt *s, const int depth)
+{
+    if (!s) return;
+    switch (s->kind) {
+    case S_BLOCK:
+        for (int i = 0; i < s->stmts.count; i++) check_step_stmt(c, s->stmts.items[i], depth);
+        break;
+    case S_IF:
+        check_step_expr(c, s->cond);
+        check_step_stmt(c, s->then_stmt, depth);
+        check_step_stmt(c, s->else_stmt, depth);
+        break;
+    case S_WHILE:
+    case S_FOR:
+    case S_FOREACH:
+        check_step_stmt(c, s->init, depth);
+        check_step_expr(c, s->cond);
+        check_step_expr(c, s->value);
+        check_step_stmt(c, s->step, depth);
+        check_step_stmt(c, s->then_stmt, depth + 1);
+        break;
+    case S_PARALLEL:
+        diag_error(s->at, "a parallel loop's step can't hold another parallel loop");
+        diag_note("its steps already run at once: write the inner one as a 'for' or 'foreach'");
+        break;
+    case S_SWITCH:
+        check_step_expr(c, s->cond);
+        for (int i = 0; i < s->cases.count; i++) {
+            for (int k = 0; k < s->cases.items[i].body.count; k++) check_step_stmt(c, s->cases.items[i].body.items[k], depth + 1);
+        }
+        break;
+    case S_VAR:
+    case S_EXPR:
+        check_step_expr(c, s->value);
+        break;
+    case S_ASSIGN:
+        check_step_expr(c, s->target);
+        check_step_expr(c, s->value);
+        break;
+    case S_BREAK:
+        if (depth == 0) {
+            diag_error(s->at, "a parallel loop's steps run at once, so one can't end the loop");
+            diag_note("'continue' ends this step; a 'for' loop can stop part way");
+        }
+        break;
+    case S_RETURN:
+    case S_FAIL:
+        diag_error(s->at, "a parallel loop's step can't return: its steps run at once");
+        diag_note("'continue' ends this step");
+        break;
+    case S_CONTINUE:
+        break;
+    }
+}
+
+// parallel (var at in cells) { ... }, or by blocks: parallel (var at in cells by 2 offset shift)
+static void check_parallel(checker *c, stmt *s)
+{
+    const type grid = check_expr(c, s->value);
+    if (grid.kind != TY_GRID && grid.kind != TY_ERROR) {
+        diag_error(s->value->at, "parallel goes through a grid's cells, and this is %s", type_name(grid));
+        diag_note("a list goes through 'foreach', in order");
+    }
+    const int dims = grid.kind == TY_GRID ? grid.decl->dims : 2;
+    const type position = dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
+    for (int i = 0; i < 3; i++) s->block[i] = 1;
+    if (grid.kind == TY_GRID) check_writable(c, s->value, NULL, NULL); // It changes the grid
+    if (s->by) {
+        const type t = check_expr(c, s->by);
+        int64_t size[3] = {0, 0, 0};
+        bool known = false;
+        if (t.kind == TY_INT) {
+            int64_t v;
+            known = fold_int(s->by, &v);
+            for (int i = 0; i < dims; i++) size[i] = v;
+        } else if (t.kind == position.kind) {
+            known = fold_cell(s->by, dims, size);
+        }
+        if (t.kind != TY_ERROR && !known) {
+            diag_error(s->by->at, "a parallel loop's blocks are a size known while compiling: an int, or %s",
+                       dims == 2 ? "an int2" : "an int3");
+            diag_note("like 'by 2' or 'by int2(2, 1)'");
+        }
+        for (int i = 0; known && i < dims; i++) {
+            if (size[i] < 1 || size[i] > 64) {
+                diag_error(s->by->at, "a block is 1 to 64 cells along each axis, not %lld", (long long)size[i]);
+                break;
+            }
+            s->block[i] = (int)size[i];
+        }
+    }
+    if (s->offset) {
+        const type t = check_expr(c, s->offset);
+        if (t.kind != TY_ERROR && t.kind != TY_INT && t.kind != position.kind) {
+            diag_error(s->offset->at, "a parallel loop's offset is where its blocks start: an int, or %s, not %s",
+                       dims == 2 ? "an int2" : "an int3", type_name(t));
+        }
+    }
+    if (s->type_name.len > 0) {
+        const type declared = local_type(c, s);
+        if (declared.kind != TY_ERROR && !same_type(declared, position)) {
+            diag_error(s->type_at, "a grid's places are %s, not %s", type_name(position), type_name(declared));
+        }
+    }
+    s->type = position;
+    s->parallel = true;
+    if (c->parallel) {
+        diag_error(s->at, "a parallel loop's step can't hold another parallel loop");
+        return;
+    }
+    if (in_routine(c) || async_code(c) || c->in_input) {
+        diag_error(s->at, "a parallel loop goes in a system, view or handler%s", async_code(c) ? " that isn't async" : "");
+        diag_note("its steps run on threads, as a system's do");
+    }
+    check_reserved(s->name, s->name_at);
+    if (find_local(c, s->name) || find_param(c, s->name)) {
+        diag_error(s->name_at, "'" STR_FMT "' is already declared", STR_ARG(s->name));
+    }
+    push_scope(c);
+    vec_push(c->locals, s);
+    const int switches = c->switch_depth;
+    const int loops = c->loop_depth;
+    c->switch_depth = 0;
+    c->loop_depth = 1; // `continue` ends the step
+    c->parallel = s;
+    c->parallel_locals = c->locals.count;
+    push_scope(c);
+    check_stmt(c, s->then_stmt);
+    pop_scope(c);
+    check_step_stmt(c, s->then_stmt, 0);
+    c->parallel = NULL;
+    c->loop_depth = loops;
+    c->switch_depth = switches;
+    pop_scope(c);
 }
 
 static void check_assign(checker *c, const stmt *s)
@@ -4188,13 +4570,18 @@ static void check_stmt(checker *c, stmt *s)
             diag_note("use 'return;' to end %s here", c->method ? "it" : "the system");
         }
         break;
+    case S_PARALLEL:
+        check_parallel(c, s);
+        break;
     case S_FOREACH: {
         const type list = check_expr(c, s->value);
         type element = T_ERR;
         if (list.kind == TY_LIST) {
             element = list_element(list);
+        } else if (list.kind == TY_GRID) { // Its cells' positions, in order
+            element = list.decl->dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
         } else if (list.kind != TY_ERROR) {
-            diag_error(s->value->at, "foreach goes through a list, and this is %s", type_name(list));
+            diag_error(s->value->at, "foreach goes through a list or a grid, and this is %s", type_name(list));
         }
         if (s->type_name.len > 0) {
             const type declared = local_type(c, s);
@@ -4213,12 +4600,22 @@ static void check_stmt(checker *c, stmt *s)
         const int switches = c->switch_depth;
         c->switch_depth = 0;
         c->loop_depth++;
+        c->grid_loops += list.kind == TY_GRID;
         push_scope(c);
         check_stmt(c, s->then_stmt);
         pop_scope(c);
+        c->grid_loops -= list.kind == TY_GRID;
         c->loop_depth--;
         c->switch_depth = switches;
         pop_scope(c);
+        // Its steps at once, where a parallel loop could be and nothing they
+        // do depends on their order
+        if (list.kind == TY_GRID) {
+            for (int i = 0; i < 3; i++) s->block[i] = 1;
+            s->parallel = c->system && !c->method && !async_code(c) && !c->in_input && !c->parallel
+                       && own_cell_only(s->then_stmt, s, 0);
+            if (!s->parallel) c->prog->uses_text = true; // In order, it keeps where it is in the scratch area
+        }
         break;
     }
     case S_WHILE:
@@ -5446,94 +5843,6 @@ static bool check_param_side(const decl *sys, const param *p, const decl *d)
     return true;
 }
 
-// `chunk mut Field.cells cells`: the grid field a chunk system runs for, a
-// chunk at a time. Its owner is a component (each entity's grid) or a singleton.
-static void check_chunk_param(const checker *c, decl *sys, param *p, const int index)
-{
-    const loc at = p->type_qual_at.line ? p->type_qual_at : p->at;
-    p->type = T_ERR;
-    if (sys->is_view || sys->is_handler) {
-        diag_error(p->chunk_at, "only systems run per chunk; %s runs once %s", sys->is_view ? "a view" : "an event handler",
-                   sys->is_view ? "per frame" : "per event");
-        return;
-    }
-    if (sys->chunk_param) {
-        diag_error(p->chunk_at, "a chunk system runs for one grid's chunks, and this is a second");
-        return;
-    }
-    str owner_name, field_name;
-    if (!split_qualified(p->type_name, &owner_name, &field_name)) {
-        diag_error(at, "'chunk' names a grid field, like 'chunk mut Field.cells cells'");
-        return;
-    }
-    decl *owner = find_type(c, owner_name, at);
-    if (!owner) {
-        diag_error(at, "unknown component or singleton '" STR_FMT "'", STR_ARG(owner_name));
-        return;
-    }
-    if (owner->kind != DECL_COMPONENT && owner->kind != DECL_SINGLETON) {
-        diag_error(at, "'" STR_FMT "' is %s; grids are in components, singletons and scenes", STR_ARG(owner->name), decl_what(owner));
-        return;
-    }
-    int found = -1;
-    for (int i = 0; i < owner->fields.count; i++) {
-        if (str_eq(owner->fields.items[i].name, field_name)) found = i;
-    }
-    if (found < 0 || owner->fields.items[found].type.kind != TY_GRID) {
-        if (found < 0) {
-            diag_error(p->type_at, "'" STR_FMT "' has no field '" STR_FMT "'", STR_ARG(owner->name), STR_ARG(field_name));
-        } else {
-            diag_error(p->type_at, "'" STR_FMT "." STR_FMT "' is %s, not a grid", STR_ARG(owner->name), STR_ARG(field_name),
-                       type_name(owner->fields.items[found].type));
-        }
-        suggestion sg = suggest_start(field_name);
-        for (int i = 0; i < owner->fields.count; i++) {
-            if (owner->fields.items[i].type.kind == TY_GRID) suggest_consider(&sg, owner->fields.items[i].name);
-        }
-        suggest_note(&sg);
-        return;
-    }
-    if (owner->is_local || (owner->kind == DECL_SINGLETON && owner->builtin)) {
-        diag_error(at, "a chunk system changes the match, and '" STR_FMT "' is %s", STR_ARG(owner->name),
-                   owner->is_local ? "local" : "managed by the engine");
-        return;
-    }
-    p->type = owner->fields.items[found].type;
-    p->chunk_of = owner;
-    p->chunk_field = found;
-    sys->chunk_param = index + 1;
-    if (owner->kind == DECL_COMPONENT) sys->need_mask |= (uint64_t)1 << owner->index;
-}
-
-// A chunk system's other parameters: what it reads alongside its grid. Its
-// tasks run on threads, a chunk each, so they change nothing but cells: the
-// rest is read, and a component is the grid's own entity's.
-static void check_chunk_system(decl *sys)
-{
-    const param *chunk = &sys->params.items[sys->chunk_param - 1];
-    sys->writes_text = true; // Its chunks are in the match's heap, which one system changes at a time
-    for (int i = 0; i < sys->params.count; i++) {
-        const param *p = &sys->params.items[i];
-        if (p == chunk || p->type.kind == TY_ERROR) continue;
-        if (p->mode == PARAM_MUT) {
-            diag_error(p->at, "a chunk system changes the cells within its reach, and nothing else");
-            diag_note("its chunks run on threads at once; change '" STR_FMT "' in a system of its own", STR_ARG(p->type_name));
-        } else if (p->type.decl && p->type.decl == chunk->chunk_of) {
-            diag_error(p->at, "'" STR_FMT "' holds the grid this chunk system changes, so it can't read it as well",
-                       STR_ARG(p->type_name));
-            diag_note("its other chunks change at the same time; read the grid through '" STR_FMT "', within its reach",
-                      STR_ARG(chunk->name));
-        } else if (p->type.kind == TY_INPUT || p->type.kind == TY_RECORD) {
-            diag_error(p->at, "a chunk system runs for its chunks, which no player owns, so it can't read %s",
-                       p->type.kind == TY_INPUT ? "input" : "devices");
-        } else if (p->type.kind == TY_COMPONENT && chunk->chunk_of && chunk->chunk_of->kind == DECL_SINGLETON) {
-            diag_error(p->at, "'" STR_FMT "' is a singleton's grid, so its chunks belong to no entity with components",
-                       STR_ARG(chunk->type_name));
-            diag_note("read components in a system that runs for their entities");
-        }
-    }
-}
-
 static void check_params(const checker *c, decl *sys)
 {
     const program *prog = c->prog;
@@ -5560,15 +5869,6 @@ static void check_params(const checker *c, decl *sys)
 
         if (p->mode == PARAM_EVENT) {
             check_trigger(c, sys, p, d);
-            continue;
-        }
-
-        if (p->chunk) {
-            check_chunk_param(c, sys, p, i);
-            if (p->chunk_of && p->chunk_of->kind == DECL_COMPONENT) {
-                seen |= bit(p->chunk_of);
-                if (!side_of) side_of = p->chunk_of;
-            }
             continue;
         }
 
@@ -5718,7 +6018,6 @@ static void check_params(const checker *c, decl *sys)
         diag_error(sys->at, "system '" STR_FMT "' both requires and excludes the same component", STR_ARG(sys->name));
     }
     sys->per_entity = entity || seen != 0;
-    if (sys->chunk_param) check_chunk_system(sys);
     sys->entity_local = side_of ? side_of->is_local : entity && entity->type.kind == TY_LOCAL_ENTITY;
 
     // A handler that takes components reads the entity its event is sent to,
@@ -6407,40 +6706,6 @@ static bool fold_cell(const expr *e, const int dims, int64_t out[3])
     return true;
 }
 
-// [Reach(1)]: how many cells past its chunk a chunk system touches, every way;
-// or [Reach(int2(0, -1), int2(1, -1))]: the cells around each cell it touches.
-// False when it's neither.
-static bool check_reach(checker *c, decl *d, const attribute *attr)
-{
-    if (attr->args.count || attr->values.count == 0) return false;
-    const int dims = d->params.items[d->chunk_param - 1].type.decl->dims;
-    c->unit = d->unit;
-    d->reach_at = attr->at;
-    const type first = check_constant_expr(c, attr->values.items[0], false, (type){TY_ERROR, NULL});
-    if (first.kind == TY_ERROR) return true; // Reported
-    if (first.kind == TY_INT) {
-        int64_t n;
-        if (attr->values.count != 1 || !fold_int(attr->values.items[0], &n) || n < 0 || n > 64) return false;
-        d->has_reach = true;
-        d->reach = (int)n;
-        return true;
-    }
-    d->reach = -1;
-    for (int k = 0; k < attr->values.count; k++) {
-        expr *v = attr->values.items[k];
-        const type t = k == 0 ? first : check_constant_expr(c, v, false, (type){TY_ERROR, NULL});
-        if (t.kind == TY_ERROR) return true;
-        int64_t cell[3] = {0, 0, 0};
-        if (t.kind != (dims == 3 ? TY_INT3 : TY_INT2) || !fold_cell(v, dims, cell)) return false;
-        for (int i = 0; i < 3; i++) {
-            if (cell[i] < -64 || cell[i] > 64) return false;
-            vec_push(d->reach_cells, (int)cell[i]);
-        }
-    }
-    d->has_reach = true;
-    return true;
-}
-
 // [Before(X)] and [After(X)] order systems, and views among views.
 static void check_attributes(checker *c)
 {
@@ -6456,29 +6721,6 @@ static void check_attributes(checker *c)
                 }
                 continue;
             }
-            // [Reach(1)] and [Sleeps]: how a chunk system runs
-            if (str_eq_c(attr->name, "Reach") || str_eq_c(attr->name, "Sleeps")) {
-                const bool reach = str_eq_c(attr->name, "Reach");
-                if (d->kind != DECL_SYSTEM || !d->chunk_param) {
-                    diag_error(attr->at, "'" STR_FMT "' is for chunk systems, which run once per chunk of a grid",
-                               STR_ARG(attr->name));
-                    diag_note("like '[" STR_FMT "] system Fall(chunk mut Field.cells cells) { ... }'",
-                              reach ? "Reach(1)" : "Sleeps");
-                    continue;
-                }
-                if (!reach) {
-                    if (attr->values.count || attr->args.count) diag_error(attr->at, "Sleeps takes no arguments: [Sleeps]");
-                    d->sleeps = true;
-                    continue;
-                }
-                if (!check_reach(c, d, attr)) {
-                    const bool three = d->params.items[d->chunk_param - 1].type.decl->dims == 3;
-                    diag_error(attr->at, "Reach takes how many cells past its chunk a chunk system touches, 0 to 64: [Reach(1)]");
-                    diag_note("or the cells around each cell that it touches, each 64 or fewer away: [Reach(%s)]",
-                              three ? "int3(0, -1, 0), int3(1, -1, 0)" : "int2(0, -1), int2(1, -1)");
-                }
-                continue;
-            }
             const bool before = str_eq_c(attr->name, "Before");
             if (!before && !str_eq_c(attr->name, "After")) {
                 diag_error(attr->at, "unknown attribute '" STR_FMT "'", STR_ARG(attr->name));
@@ -6486,11 +6728,9 @@ static void check_attributes(checker *c)
                 suggest_consider_c(&s, "Before");
                 suggest_consider_c(&s, "After");
                 suggest_consider_c(&s, "NativeName");
-                suggest_consider_c(&s, "Reach");
-                suggest_consider_c(&s, "Sleeps");
                 suggest_note(&s);
                 diag_note("the attributes are Before and After, which order systems: [After(Physics.Integrate)], "
-                          "NativeName, which names an extern function's C function, and Reach and Sleeps, for chunk systems");
+                          "and NativeName, which names an extern function's C function");
                 continue;
             }
             if (attr->values.count > 0) {
@@ -6978,7 +7218,6 @@ bool check(program *prog)
     }
 
     check_attributes(&c);
-    if (diag_error_count() == 0) infer_reaches(prog);
     if (diag_error_count() == 0) {
         schedule(prog->systems.items, prog->systems.count);
         schedule(prog->views.items, prog->views.count);

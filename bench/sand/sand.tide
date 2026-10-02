@@ -2,8 +2,8 @@
 // cellular automaton benchmark (see AGENTS.md, Benchmarks). Bots play it
 // there; play.tide makes it a game people play, with the mouse.
 //
-// The cells are a grid, which a chunk system steps a chunk at a time, on
-// threads, in phases (see docs/spec.md, Grids).
+// The cells are a grid, which a parallel loop steps in 2x2 blocks, every
+// block at once, on threads (see docs/spec.md, Grids).
 
 enum Material : byte
 {
@@ -66,7 +66,9 @@ int Hash(int x, int y, int t)
     return h ^ (h >> 16);
 }
 
-// Ledges of wall, with sand scattered above them, so it starts out falling.
+// A box of wall, with ledges in it and sand scattered above them, so it starts
+// out falling. The box keeps sand off the grid's edges, which the blocks Step
+// goes through only take in every other tick.
 system Setup(mut Field field)
 {
     if (field.ready) return;
@@ -79,7 +81,8 @@ system Setup(mut Field field)
     {
         for (var x = 0; x < size; x++)
         {
-            if (y % ledges == ledges / 2 && (x / span) % 2 == 1) field.cells[x, y] = Material.Wall;
+            if (x == 0 || y == 0 || x == size - 1 || y == size - 1) field.cells[x, y] = Material.Wall;
+            else if (y % ledges == ledges / 2 && (x / span) % 2 == 1) field.cells[x, y] = Material.Wall;
             else if (y > size / 2 && (Hash(x, y, 0) & 3) == 0) field.cells[x, y] = Material.Sand;
         }
     }
@@ -90,65 +93,75 @@ event(PlayerJoined joined) Join()
     Spawn(Painter, Owner { player = joined.player });
 }
 
-// Painting past the grid's edge does nothing.
+// Painting leaves the box alone, and past the grid's edge does nothing.
 system Paint(Brush brush, mut Field field, with Painter)
 {
     if (!brush.down) return;
+    var size = field.size;
     for (var dy = -BRUSH; dy <= BRUSH; dy++)
     {
         for (var dx = -BRUSH; dx <= BRUSH; dx++)
         {
-            if (dx * dx + dy * dy <= BRUSH * BRUSH) field.cells[brush.x + dx, brush.y + dy] = brush.material;
+            var x = brush.x + dx;
+            var y = brush.y + dy;
+            if (dx * dx + dy * dy <= BRUSH * BRUSH && x > 0 && y > 0 && x < size - 1 && y < size - 1)
+            {
+                field.cells[x, y] = brush.material;
+            }
         }
     }
 }
 
-// Whether a grain of `mover` can go where `there` is: anything into empty
+// Whether a grain of `mover` goes where `there` is: sand and water into empty
 // space, and sand sinks through water.
 bool Takes(Material there, Material mover)
 {
-    return there == Material.Empty || (there == Material.Water && mover == Material.Sand);
+    if (mover == Material.Sand) return there == Material.Empty || there == Material.Water;
+    return mover == Material.Water && there == Material.Empty;
 }
 
-// Each chunk's rows go from the bottom up, so a grain that falls within it
-// lands in a row that's done. Rows go left to right on even ticks and right
-// to left on odd ones, and water flows back the way its row came. A grain
-// can move into the chunks around, which its reach of one cell takes in.
-system Step(Time time, chunk mut Field.cells cells)
+// Whether water flows between two cells side by side: one is water, the
+// other empty.
+bool Flows(Material left, Material right)
 {
-    var width = cells.size.x;
-    var forward = time.tick % 2 == 0;
-    var back = forward ? -1 : 1;
-    for (var y = Math.Max(cells.min.y, 1); y < cells.max.y; y++)
-    {
-        for (var k = cells.min.x; k < cells.max.x; k++)
-        {
-            var x = forward ? k : cells.max.x - 1 - (k - cells.min.x);
-            var cell = cells[x, y];
-            if (cell != Material.Sand && cell != Material.Water) continue;
+    return (left == Material.Water && right == Material.Empty) || (left == Material.Empty && right == Material.Water);
+}
 
-            // Down, else down to one side or the other, as the hash says
-            var side = (Hash(x, y, time.tick) & 1) == 0 ? -1 : 1;
-            mut var to = int2(x, y - 1);
-            mut var moves = Takes(cells[to], cell);
-            if (!moves && x + side >= 0 && x + side < width && Takes(cells[x + side, y - 1], cell))
-            {
-                to = int2(x + side, y - 1);
-                moves = true;
-            }
-            else if (!moves && x - side >= 0 && x - side < width && Takes(cells[x - side, y - 1], cell))
-            {
-                to = int2(x - side, y - 1);
-                moves = true;
-            }
-            if (!moves && cell == Material.Water && x + back >= 0 && x + back < width && cells[x + back, y] == Material.Empty)
-            {
-                to = int2(x + back, y);
-                moves = true;
-            }
-            if (!moves) continue;
-            cells[x, y] = cells[to];
-            cells[to] = cell;
+void Swap(mut Material a, mut Material b)
+{
+    var was = a;
+    a = b;
+    b = was;
+}
+
+// Sand and water move in 2x2 blocks, whose corners are on even cells one tick
+// and odd ones the next, so blocks never overlap and each cell is in another
+// block the tick after: grains fall, or else slide down to the block's other
+// side, and where nothing can, water flows sideways. Every block at once.
+system Step(Time time, mut Field field)
+{
+    parallel (var at in field.cells by 2 offset time.tick % 2)
+    {
+        mut var a = field.cells[at + int2(0, 1)]; // Top left
+        mut var b = field.cells[at + int2(1, 1)]; // Top right
+        mut var c = field.cells[at];              // Bottom left
+        mut var d = field.cells[at + int2(1, 0)]; // Bottom right
+        if (a == b && b == c && c == d) continue;
+        if (Takes(c, a) || Takes(d, b) || Takes(d, a) || Takes(c, b))
+        {
+            if (Takes(c, a)) Swap(a, c);
+            if (Takes(d, b)) Swap(b, d);
+            if (Takes(d, a)) Swap(a, d);
+            if (Takes(c, b)) Swap(b, c);
         }
+        else
+        {
+            if (Flows(c, d)) Swap(c, d);
+            if (Flows(a, b)) Swap(a, b);
+        }
+        field.cells[at] = c;
+        field.cells[at + int2(1, 0)] = d;
+        field.cells[at + int2(0, 1)] = a;
+        field.cells[at + int2(1, 1)] = b;
     }
 }

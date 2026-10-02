@@ -1,0 +1,12 @@
+// expect: a parallel loop's steps run at once, so each changes only its own cell or block, and the variables it declares
+singleton Field { Grid2<int> cells = Grid2(8, 8); int total; }
+system Step(mut Field field)
+{
+    mut var total = 0;
+    parallel (var at in field.cells)
+    {
+        total += field.cells[at];
+    }
+    field.total = total;
+}
+scene Main { }

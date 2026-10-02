@@ -1085,8 +1085,8 @@ TIDE_TEST(lsp_grids)
 {
     start();
     static const char game[] = "singleton Field { Grid2<int> cells = Grid2(64, 64); }\nscene Main { }\n\n"
-                               "system Fall(chunk mut Field.cells cells)\n{\n"
-                               "    for (var y = cells.min.y; y < cells.max.y; y++) cells[cells.min.x, y] = 1;\n}\n";
+                               "system Fall(mut Field field)\n{\n"
+                               "    for (var y = 0; y < field.cells.size.y; y++) field.cells[0, y] = 1;\n}\n";
     open_document(game);
     TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
     TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Grid2<int> keeps no spaces
@@ -1096,8 +1096,6 @@ TIDE_TEST(lsp_grids)
     TIDE_CHECK(offers(members, "size"));
     TIDE_CHECK(offers(members, "Clear"));
     TIDE_CHECK(offers(complete("singleton Field\n{\n    $\n}\nscene Main { }\n"), "Grid2"));
-    TIDE_CHECK(offers(complete("singleton Field { Grid2<int> cells; }\nscene Main { }\nsystem S($) { }\n"), "chunk"));
-    TIDE_CHECK(offers(complete("singleton Field { Grid2<int> cells; }\nscene Main { }\n[$]\nsystem S() { }\n"), "Reach"));
     open_document("singleton Field { Grid2<int> ce$lls; }\nscene Main { }\n");
     TIDE_CHECK(has(request("textDocument/hover"), "Grid2<int> cells"));
 
@@ -1113,46 +1111,34 @@ TIDE_TEST(lsp_grids)
     TIDE_CHECK(offers(backings, "ushort"));
 }
 
-// How far a chunk system reaches: worked out, so [Reach] only says it where it can't be.
-TIDE_TEST(lsp_reach)
+// Parallel loops: offered where they can go, formatted, and their cells' places
+// hovered.
+TIDE_TEST(lsp_parallel)
 {
     start();
-    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\n[Reach(1)]\n"
-                  "system Fall(chunk mut Field.cells cells)\n{\n"
-                  "    for (var x = cells.min.x; x < cells.max.x; x++) cells[x, cells.min.y - 1] = cells[x, cells.min.y];\n}\n");
-    const char *sent = last_sent();
-    TIDE_CHECK(has(sent, "tidec works out how far 'Fall' reaches, so [Reach] isn't needed"));
-    TIDE_CHECK(has(sent, "it reaches 1 cell before it on y"));
-    const char *fix = actions_at(2);
-    TIDE_CHECK(has(fix, "Remove [Reach]: tidec works it out"));
-    TIDE_CHECK(has(fix, "\"start\":{\"line\":2,\"character\":0},\"end\":{\"line\":3,\"character\":0}")); // Its line
-    // With another attribute: it and its comma
-    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\n[Reach(1), Sleeps]\n"
-                  "system Fall(chunk mut Field.cells cells) { cells[cells.min.x, cells.min.y] = 1; }\n");
-    TIDE_CHECK(has(actions_at(2), "\"start\":{\"line\":2,\"character\":1},\"end\":{\"line\":2,\"character\":11}"));
+    static const char game[] = "singleton Field { Grid2<int> cells = Grid2(64, 64); }\nscene Main { }\n\n"
+                               "system Fall(mut Field field, Time time)\n{\n"
+                               "    parallel (var at in field.cells by 2 offset time.tick % 2)\n    {\n"
+                               "        var below = field.cells[at];\n"
+                               "        field.cells[at + int2(0, 1)] = below;\n    }\n"
+                               "    foreach (var at in field.cells) field.cells[at] = 0;\n}\n";
+    open_document(game);
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]"));
+    static const char messy[] = "singleton Field { Grid2<int> cells; }\nscene Main { }\n"
+                                "system S(mut Field field)\n{\n    parallel(var at in field.cells by 2 offset 1){ field.cells[at] = 1; }\n}\n";
+    format_reply(messy);
+    TIDE_CHECK(has(apply_reply(messy, NULL), "    parallel (var at in field.cells by 2 offset 1) { field.cells[at] = 1; }\n"));
 
-    // Where it can't work it out, Reach says, and a cell it can tell is past it is a warning
-    open_document("singleton Field { Grid2<int> cells; }\nsingleton Spot { int at; }\nscene Main { }\n"
-                  "system Fall(Spot spot, chunk mut Field.cells cells) { cells[spot.at, cells.min.y] = 1; }\n");
-    TIDE_CHECK(has(last_sent(), "can't work out how far this cell is from the chunk on x"));
-    open_document("singleton Field { Grid2<int> cells; }\nsingleton Spot { int at; }\nscene Main { }\n[Reach(1)]\n"
-                  "system Fall(Spot spot, chunk mut Field.cells cells) { cells[spot.at, cells.min.y - 2] = 1; }\n");
-    sent = last_sent();
-    TIDE_CHECK(!has(sent, "can't work out"));
-    TIDE_CHECK(has(sent, "this cell can be 2 cells before the chunk on y, past its [Reach]"));
-
-    // [Reach] as the cells around each cell it touches: a cell tidec can tell is in a chunk it doesn't get into
-    static const char pattern[] =
-        "singleton Field { Grid2<int> cells; }\nsingleton Spot { int at; }\nscene Main { }\n"
-        "[Reach(int2(-1, 0), int2(0, -1))]\n"
-        "system Fall(Spot spot, chunk mut Field.cells cells) { cells[spot.at, cells.min.y] = cells[cells.min.x - 1, cells.min.y - 1]; }\n";
-    open_document(pattern);
-    sent = last_sent();
-    TIDE_CHECK(has(sent, "this cell can be in the chunk at x -1, y -1 from its own, which its [Reach] doesn't get into"));
-    TIDE_CHECK(has(format_reply(pattern), "\"result\":[]"));
-    open_document("singleton Field { Grid3<int> cells; }\nscene Main { }\n[Reach(int2(1, 0))]\n"
-                  "system Fall(chunk mut Field.cells cells) { }\n");
-    TIDE_CHECK(has(last_sent(), "[Reach(int3(0, -1, 0), int3(1, -1, 0))]")); // A 3D grid's cells are int3
+    TIDE_CHECK(offers(complete("singleton Field { Grid2<int> cells; }\nscene Main { }\nsystem S(mut Field field)\n{\n    $\n}\n"),
+                      "parallel"));
+    TIDE_CHECK(!offers(complete("scene Main { }\nvoid F()\n{\n    $\n}\n"), "parallel")); // Only systems, views and handlers
+    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\nsystem S(mut Field field)\n{\n"
+                  "    parallel (var at in field.cells) field.cells[a$t] = 1;\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "int2 at"));
+    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\nsystem S(mut Field field)\n{\n"
+                  "    parallel (var at in field.cells) field.cells[at + int2(1, 0)] = 1;\n}\n");
+    TIDE_CHECK(has(last_sent(), "a parallel loop's step changes only its own cell"));
 }
 
 TIDE_TEST(lsp_format_lists)

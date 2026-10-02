@@ -125,13 +125,6 @@ typedef struct param {
     bool written; // The body assigns through it
     bool function_param; // A method's or function's: a copy, or with mut, the caller's variable itself
     bool task_ref;       // An async function's component or singleton: its task gets it again each time it goes on
-    // A chunk system's grid, `chunk mut Field.cells cells`: its type is the
-    // grid's, and it's the grid field `chunk_field` of the component or
-    // singleton `chunk_of`
-    bool chunk;
-    loc chunk_at;
-    struct decl *chunk_of;
-    int chunk_field;
 } param;
 
 // Why a system waits for one that runs before it in the tick (see parallel.c).
@@ -268,21 +261,6 @@ typedef struct decl {
     bool takes_action;   // A function whose last parameter is an Action: inlined where it's called
     bool calls_c;        // Code that calls an extern function, itself or through others: its calls run in order
     bool writes_text;    // A system that writes text, lists or grids into its world: its heap, which one system changes at a time
-    int chunk_param;     // A chunk system's grid parameter, 1 + its index; 0 for any other system
-    bool has_reach;      // A chunk system's [Reach], for where tidec can't work out how far it reaches:
-    int reach;           // ...[Reach(n)]'s n cells past its chunk every way, or -1 for
-    VEC(int) reach_cells; // ...[Reach(int2(0, -1), ...)]'s cells around each cell it touches: x, y and z of each
-    loc reach_at;
-    // How far it reaches: cells before and after its chunk on each axis, the
-    // chunks around its own it gets into (a bit each, by tide_grid_around), and
-    // its phases: a chunk's is reach_weight times its position, modulo
-    // reach_phases. What tidec works out, or [Reach]'s (reach.c).
-    int reach_before[3];
-    int reach_after[3];
-    unsigned reach_chunks;
-    int reach_weight[3];
-    int reach_phases;
-    bool sleeps;         // ...and [Sleeps]: it only runs where something within its reach changed
     bool spawns;         // A system that spawns or loads scenes: entity IDs are handed out in order
     bool starts_tasks;   // Code that starts tasks, calling an async function without await: they're the world's, in order
     loc starts_at;       // ...where it first does
@@ -509,6 +487,9 @@ typedef enum stmt_kind {
     S_FOR,      // for (init; cond; step) then_stmt: each part optional
     S_CONTINUE,
     S_FOREACH,  // foreach (var name in value) then_stmt: `type` is the element's, and it's the variable's declaration
+    // parallel (var name in value by by offset offset) then_stmt: a grid's cells
+    // or blocks, at once; `type` is a position's, and it's the variable's declaration
+    S_PARALLEL,
     S_FAIL,     // fail value;: ends a function that `fails` with an error
 } stmt_kind;
 
@@ -552,6 +533,15 @@ struct stmt {
     // S_VAR initializer (NULL for the name after `is`), S_ASSIGN value, S_EXPR
     // expression, S_RETURN value (or NULL), S_FAIL error
     expr *value;
+
+    // S_PARALLEL: each step's block (a constant int or vector; NULL for a
+    // cell) and where blocks start (NULL for 0), and the block's cells along
+    // each axis. A foreach over a grid whose steps only touch their own cell
+    // runs as one (`parallel`).
+    expr *by;
+    expr *offset;
+    int block[3];
+    bool parallel;
 
     // S_ASSIGN
     expr *target;
@@ -627,7 +617,6 @@ typedef enum fix_kind {
     FIX_CREATE_STRUCT,    // An unknown type where a struct fits: declare one
     FIX_CREATE_COMPONENT, // An unknown type where a component fits: declare one
     FIX_USE_THIS,   // An Entity or LocalEntity parameter: remove it, and name the entity `this`
-    FIX_REMOVE_REACH, // [Reach(n)] on a chunk system whose reach tidec works out: `at` is the attribute
 } fix_kind;
 
 typedef struct fix {
@@ -658,18 +647,13 @@ void analyze_parallelism(program *prog);
 // right.
 bool system_splits(const decl *sys);
 
-// How many phases a chunk system's chunks run in (1 for any other system).
-int chunk_phases(const decl *sys);
+// The loops a statement holds whose steps run at once, on threads: parallel
+// loops, and foreach loops over grids that run as one.
+int parallel_loops(const stmt *s);
 
 // A grid type's chunk: its cells' size in bytes, and 1 << shift[i] cells
 // along axis i (codegen.c).
 void grid_shape(const decl *grid, int *cell, int shift[3]);
-
-// Works out how far each chunk system reaches past its chunk, from the cells
-// its body indexes (reach.c): decl.reach_before and reach_after, or
-// [Reach(n)]'s where it can't. Reports what it can't work out, and Reach
-// where it isn't needed.
-void infer_reaches(program *prog);
 
 // Why `sys` waits for `w->on`, like "both write Transform". `quote` wraps names
 // ("`" for Markdown).

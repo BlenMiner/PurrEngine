@@ -37,6 +37,7 @@ typedef enum tok_kind {
     T_WHILE,
     T_FOR,
     T_FOREACH,
+    T_PARALLEL,
     T_CONTINUE,
     T_THIS, // The entity the code runs for
     T_FAIL, // fail error;: ends a function that `fails`
