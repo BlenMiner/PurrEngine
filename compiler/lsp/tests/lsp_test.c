@@ -1830,6 +1830,106 @@ TIDE_TEST(lsp_rename_refusals)
     TIDE_CHECK(has(request("textDocument/prepareRename"), "Fix the syntax errors first"));
 }
 
+#define BUILT_IN_METHODS                                                                                    \
+    "singleton Field { Grid2<int> cells = Grid2(8, 8); List<int> items; string name; }\n"                   \
+    "singleton Camera { float2 center; }\ncomponent Body { float x; }\nscene Main { }\n"
+
+// Built-in methods are what they're called on's: a list's Clear isn't an
+// entity's Destroy. Hovers, signatures and references say so.
+TIDE_TEST(lsp_built_in_methods)
+{
+    start();
+    open_document(BUILT_IN_METHODS "system S(mut Field field)\n{\n    field.items.Cl$ear();\n}\n");
+    TIDE_CHECK(!has(last_sent(), "\"severity\":1"));
+    const char *clear = request("textDocument/hover");
+    TIDE_CHECK(has(clear, "List<int>.Clear()") && has(clear, "Removes every element.") && !has(clear, "Destroys"));
+    open_document(BUILT_IN_METHODS "system S(mut Field field)\n{\n    var has = field.items.Conta$ins(3);\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "List<int>.Contains(int item) -> bool"));
+    open_document(BUILT_IN_METHODS "system S(mut Field field)\n{\n    field.cells.Cl$ear();\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "Grid2<int>.Clear()"));
+    open_document(BUILT_IN_METHODS "system S(mut Body body)\n{\n    this.Sn$ap();\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "entity.Snap()"));
+    open_document(BUILT_IN_METHODS "system S(mut Camera camera)\n{\n    camera.Sn$ap();\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "singleton.Snap()"));
+    open_document(BUILT_IN_METHODS "system S(mut Body body)\n{\n    this.Dest$roy();\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "entity.Destroy()"));
+    open_document(BUILT_IN_METHODS "system S(Field field)\n{\n    var n = field.name.Len$gth;\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "How many characters the text has."));
+    // A grid made in a default: a type, as constructors are
+    open_document("singleton Field { Grid2<int> cells = Gr$id2(8, 8); }\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "Grid2<int>"));
+
+    // Signatures, by what the call is on
+    open_document(BUILT_IN_METHODS "system S(mut Field field)\n{\n    field.items.Insert($\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "List<int>.Insert(int index, int item)"));
+    open_document(BUILT_IN_METHODS "system S(mut Field field)\n{\n    field.items.Add($\n}\n");
+    const char *add = request("textDocument/signatureHelp");
+    TIDE_CHECK(has(add, "List<int>.Add(int item)") && !has(add, "components"));
+    open_document(BUILT_IN_METHODS "system S(mut Body body)\n{\n    this.Add($\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "entity.Add(components...)"));
+    open_document(BUILT_IN_METHODS "system S(Field field)\n{\n    var t = field.name.Substring(1, $\n}\n");
+    const char *substring = request("textDocument/signatureHelp");
+    TIDE_CHECK(has(substring, "string.Substring(int start, int length) -> string") && has(substring, "\"activeSignature\":1"));
+    open_document("scene Main { }\nview V()\n{\n    var t = \"cat\".ToUpper($\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "string.ToUpper()"));
+    open_document("scene Main { }\nview V()\n{\n    Clipboard.Copy($\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "Clipboard.Copy(string text)"));
+    open_document("singleton Field { Grid2<int> cells = Grid2(8, $ }\nscene Main { }\n");
+    const char *grid = request("textDocument/signatureHelp");
+    TIDE_CHECK(has(grid, "Grid2(int width, int height)") && has(grid, "\"activeParameter\":1"));
+    open_document("scene Main { }\nview V()\n{\n    Draw.Text(\"a\", $\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "Draw.Text(string text, float2 position, float size, Color color)"));
+
+    // References: a grid's Clear, not a list's; and Snap and Grid2 are found at all
+    static const char program[] = BUILT_IN_METHODS "system S(mut Field field, with Body)\n{\n    field.cells.Clear();\n"
+                                  "    field.items.Clear();\n    field.cells.Clear();\n    this.Snap();\n}\n";
+    open_document(program);
+    TIDE_CHECK(count(request_at("file:///test.tide", "textDocument/references", 6, 17,
+                                "\"context\":{\"includeDeclaration\":true}"),
+                     "\"uri\"") == 2);
+    TIDE_CHECK(count(request_at("file:///test.tide", "textDocument/references", 7, 17,
+                                "\"context\":{\"includeDeclaration\":true}"),
+                     "\"uri\"") == 1);
+    TIDE_CHECK(has(request_at("file:///test.tide", "textDocument/hover", 9, 10, ""), "entity.Snap()"));
+}
+
+// Inlay hints name the parameters literal arguments go to, the built-ins' too.
+TIDE_TEST(lsp_inlay_hints_for_built_ins)
+{
+    start();
+    open_document("local singleton Menu { float volume; }\nscene Main { }\n"
+                  "view V(mut Menu menu)\n{\n    Draw.Circle(float2(1, 2), 3, Color.red);\n"
+                  "    menu.volume = Math.Clamp(0.5, 0, menu.volume);\n"
+                  "    GUILayout.Slider(\"Volume\", menu.volume, 0, 1);\n    Session.Open(7777);\n"
+                  "    var c = Color(1, 0.5, 0);\n}\n");
+    TIDE_CHECK(!has(last_sent(), "\"severity\":1"));
+    const char *hints = request_at("file:///test.tide", "textDocument/inlayHint", 0, 0,
+                                   "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":20,\"character\":0}}");
+    TIDE_CHECK(has(hints, "{\"position\":{\"line\":4,\"character\":30},\"label\":\"radius:\",\"kind\":2"));
+    TIDE_CHECK(has(hints, "\"label\":\"x:\"") && has(hints, "\"label\":\"y:\"")); // float2(1, 2)
+    TIDE_CHECK(!has(hints, "\"label\":\"center:\"") && !has(hints, "\"label\":\"color:\"")); // Not literals
+    TIDE_CHECK(has(hints, "{\"position\":{\"line\":5,\"character\":29},\"label\":\"x:\"")); // Math.Clamp's
+    TIDE_CHECK(has(hints, "{\"position\":{\"line\":5,\"character\":34},\"label\":\"a:\""));
+    TIDE_CHECK(has(hints, "\"label\":\"label:\"") && has(hints, "\"label\":\"min:\"") && has(hints, "\"label\":\"max:\""));
+    TIDE_CHECK(has(hints, "\"label\":\"port:\""));
+    TIDE_CHECK(has(hints, "\"label\":\"r:\"") && has(hints, "\"label\":\"g:\"") && has(hints, "\"label\":\"b:\""));
+}
+
+// A grid's cells[x, y] is cells[int2(x, y)] to the checker: x is still x.
+TIDE_TEST(lsp_grid_positions_keep_their_names)
+{
+    start();
+    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\n"
+                  "system S(mut Field field)\n{\n    var x$ = 1;\n    field.cells[x, 2] = x;\n}\n");
+    TIDE_CHECK(!has(last_sent(), "\"severity\":1"));
+    TIDE_CHECK(count(request_with("textDocument/references", "\"context\":{\"includeDeclaration\":true}"), "\"uri\"") == 3);
+    request_with("textDocument/rename", "\"newName\":\"column\"");
+    TIDE_CHECK(has(apply_reply("singleton Field { Grid2<int> cells; }\nscene Main { }\n"
+                               "system S(mut Field field)\n{\n    var x = 1;\n    field.cells[x, 2] = x;\n}\n",
+                               "file:///test.tide"),
+                   "field.cells[column, 2] = column;"));
+}
+
 TIDE_TEST(lsp_signature_help)
 {
     start();

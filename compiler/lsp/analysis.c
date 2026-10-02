@@ -54,8 +54,10 @@ typedef struct occurrence {
     str owner;          // Functions and constants: "Math", "Draw", "Color"...
     str name;
     type type;
-    type object_type;   // Members: the type they're read from
+    type object_type;   // Members, and built-in methods: the type they're read from or called on
     const char *c_name; // Functions and constants: what they are in C, like tide_draw_circle
+    builtin_call call;  // Built-in methods: which kind, CALL_LIST for items.Add(...)
+    int order;          // When it was found, which decides between two at one position
 } occurrence;
 
 // One file of the game being analysed.
@@ -179,8 +181,9 @@ static void collect(void *user, const diag_severity severity, const loc at, cons
     vec_push(A.diags, d);
 }
 
-static void add_occ(const occurrence o)
+static void add_occ(occurrence o)
 {
+    o.order = A.occs.count;
     if (o.at.line > 0 && o.len > 0) vec_push(A.occs, o);
 }
 
@@ -448,8 +451,12 @@ static void walk_expr(const expr *e)
     }
 
     case E_CALL: {
-        occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type};
-        if (e->call == CALL_CONSTRUCT) {
+        occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type, .call = e->call};
+        // cells[x, y] is cells[int2(x, y)] to the checker: that int2 isn't in the source.
+        const int name = token_at(e->at);
+        const bool written = name >= 0 && str_eq(A.files[e->at.file].toks[name].text, e->name);
+        if (e->call != CALL_NONE && written) vec_push(A.calls, e);
+        if ((e->call == CALL_CONSTRUCT || e->call == CALL_NEW_GRID) && written) { // float3(...), Grid2(64, 64)
             o.kind = OCC_TYPE;
             add_occ(o);
         } else if (e->call == CALL_SPAWN || e->call == CALL_SEND) {
@@ -459,7 +466,6 @@ static void walk_expr(const expr *e)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
             o.decl = e->method;
             add_occ(o);
-            vec_push(A.calls, e);
         } else if (e->call == CALL_ACTION) { // content(): the Action parameter
             o.kind = OCC_PARAM;
             o.param = e->param;
@@ -472,15 +478,17 @@ static void walk_expr(const expr *e)
 
     case E_METHOD: {
         walk_expr(e->object);
-        occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type};
+        occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type, .object_type = e->object->type,
+                        .call = e->call};
+        if (e->call != CALL_NONE) vec_push(A.calls, e);
         if (e->call == CALL_BUILTIN || e->call == CALL_DRAW || e->call == CALL_GUI || e->call == CALL_TEXT) {
             o.kind = OCC_FUNCTION;
             o.owner = e->call == CALL_TEXT ? str_from("string") : e->object->name; // name.Contains(...): text's
             o.c_name = e->c_callee;
             add_occ(o);
         } else if (e->call == CALL_ADD || e->call == CALL_REMOVE || e->call == CALL_DESTROY || e->call == CALL_SEND
-                   || e->call == CALL_LIST) {
-            o.kind = OCC_METHOD;
+                   || e->call == CALL_LIST || e->call == CALL_GRID || e->call == CALL_SNAP) {
+            o.kind = OCC_METHOD; // e.Destroy(), items.Add(x), cells.Clear(), this.Snap()
             add_occ(o);
         } else if (e->call == CALL_LOAD || e->call == CALL_UNLOAD || e->call == CALL_SCENE_PLAYER) {
             add_occ((occurrence){.at = e->object->at, .len = 5, .kind = OCC_OWNER, .owner = str_from("Scene"),
@@ -510,7 +518,6 @@ static void walk_expr(const expr *e)
             o.kind = e->call == CALL_METHOD ? OCC_METHOD : OCC_FUNCTION;
             o.decl = e->method;
             add_occ(o);
-            vec_push(A.calls, e);
         }
         for (int i = 0; i < e->args.count; i++) walk_expr(e->args.items[i]);
         walk_stmt(e->block);
@@ -656,9 +663,14 @@ static void walk_routine(const decl *m)
     walk_code = NULL;
 }
 
+// In source order, and at one position in the order they were found: qsort
+// leaves ties in any order.
 static int occ_order(const void *a, const void *b)
 {
-    return loc_cmp(((const occurrence *)a)->at, ((const occurrence *)b)->at);
+    const occurrence *x = a;
+    const occurrence *y = b;
+    const int c = loc_cmp(x->at, y->at);
+    return c != 0 ? c : x->order - y->order;
 }
 
 static void index_program(void)
@@ -753,7 +765,7 @@ static void index_program(void)
         }
     }
 
-    // In source order, one per position.
+    // In source order, one per position: the first found there.
     qsort(A.occs.items, (size_t)A.occs.count, sizeof(occurrence), occ_order);
     int n = 0;
     for (int i = 0; i < A.occs.count; i++) {
@@ -1081,6 +1093,12 @@ static const struct {
      "takes it over. On a client, it does nothing."},
 };
 
+#define GRID_SIZE_DOC                                                                                                  \
+    "A grid of that size, in cells, whose cell type comes from where it goes: 0 or nothing leaves an axis open."
+#define GRID_SIZE_FIELD_DOC "The grid's size, 0 on the axes where it's open."
+#define LIST_COUNT_DOC "How many elements the list has."
+#define TEXT_LENGTH_DOC "How many characters the text has."
+
 #define CLIPBOARD_COPY_FORM "Clipboard.Copy(string text)"
 #define CLIPBOARD_COPY_DOC                                                                                             \
     "Puts `text` on this machine's clipboard, after the frame: up to 255 bytes for now. A browser takes it only "     \
@@ -1102,6 +1120,87 @@ static const struct {
      "Waits for `seconds`: in the match, the nearest whole number of ticks, the same on every machine; in local code, "
      "this machine's time, frame by frame."},
 };
+
+// A built-in method: its form, after what it's called on, and what it does.
+typedef struct method_form {
+    const char *name;
+    const char *form; // In a list's and a grid's, T is the element or the cell
+    const char *doc;
+} method_form;
+
+// A list's methods, as the checker takes them.
+static const method_form list_calls[] = {
+    {"Add", "Add(T item)", "Adds an element at the end."},
+    {"Insert", "Insert(int index, T item)", "Adds an element at `index`, moving the ones after it along."},
+    {"RemoveAt", "RemoveAt(int index)", "Removes the element at `index`, moving the ones after it back."},
+    {"Remove", "Remove(T item) -> bool", "Removes the first element equal to `item`, if there is one, and says whether it did."},
+    {"Clear", "Clear()", "Removes every element."},
+    {"Contains", "Contains(T item) -> bool", "Whether an element is equal to `item`."},
+    {"IndexOf", "IndexOf(T item) -> int", "Where the first element equal to `item` is, or -1."},
+};
+
+static const method_form grid_calls[] = {
+    {"Clear", "Clear()", "Sets every cell back to zero, keeping the size."},
+};
+
+// An entity's methods, in match code for an Entity and in local code for a LocalEntity.
+static const method_form entity_calls[] = {
+    {"Add", "Add(components...)", "Adds components, or replaces their values. Applied at the end of the tick."},
+    {"Remove", "Remove(components...)", "Removes components. Applied at the end of the tick."},
+    {"Destroy", "Destroy()", "Destroys the entity at the end of the tick."},
+    {"Send", "Send(event)",
+     "Sends an event to the entity: handlers that take its components run for it, at the end of the tick."},
+    {"Snap", "Snap()",
+     "It jumped, like a respawn or a portal: views draw it as it is this tick, not blended from where it was."},
+};
+
+static const method_form singleton_calls[] = {
+    {"Snap", "Snap()", "It jumped, like a camera cut: views draw it as it is this tick, not blended from where it was."},
+};
+
+// The built-in methods of what has the type `t`, or NULL: a list's, a grid's,
+// an entity's or a singleton's. Text's are in builtins.c, with Math's.
+static const method_form *methods_of(const type t, size_t *count)
+{
+    const method_form *forms = NULL;
+    *count = 0;
+    switch (t.kind) {
+    case TY_LIST: forms = list_calls; *count = sizeof list_calls / sizeof list_calls[0]; break;
+    case TY_GRID: forms = grid_calls; *count = sizeof grid_calls / sizeof grid_calls[0]; break;
+    case TY_ENTITY: case TY_LOCAL_ENTITY: forms = entity_calls; *count = sizeof entity_calls / sizeof entity_calls[0]; break;
+    case TY_SINGLETON: forms = singleton_calls; *count = sizeof singleton_calls / sizeof singleton_calls[0]; break;
+    default: break;
+    }
+    return forms;
+}
+
+// "List<int>.Add(int item)" for the method `form` called on a value of type
+// `t`; "items.Add(T item)" where its type isn't known.
+static void format_method(const method_form *form, const type t, sb *out)
+{
+    const bool generic = (t.kind == TY_LIST || t.kind == TY_GRID) && t.decl;
+    const char *element = generic ? type_name(t.decl->fields.items[0].type) : "T";
+    sb_put(out, generic ? type_name(t)
+                : t.kind == TY_LIST ? "items"
+                : t.kind == TY_GRID ? "cells"
+                : t.kind == TY_SINGLETON ? "singleton"
+                : "entity");
+    sb_put(out, ".");
+    for (const char *p = form->form; *p; p++) {
+        const bool alone = (p == form->form || !isalnum((unsigned char)p[-1])) && !isalnum((unsigned char)p[1]);
+        if (*p == 'T' && alone) sb_put(out, element);
+        else sb_putn(out, p, 1);
+    }
+}
+
+// The form named `name` in `forms`, or NULL.
+static const method_form *find_form(const method_form *forms, const size_t count, const str name)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (str_eq_c(name, forms[i].name)) return &forms[i];
+    }
+    return NULL;
+}
 
 // What `default` is for type `t`, in words.
 static void describe_default(const type t, sb *out)
@@ -1325,35 +1424,34 @@ static void describe(const occurrence *o, sb *out)
                                              : "It only reads the fields.");
             break;
         }
-        if (str_eq_c(o->name, "Sample")) {
+        if (o->call == CALL_NONE && str_eq_c(o->name, "Sample")) {
             code_block(out, "Sample()");
             sb_put(out, "\n\nBuilds the player's input from this machine's `Devices`, once per tick on their machine. "
                         "Fields start at their defaults. It runs outside the simulation, so it only sees the devices and "
                         "the local singletons it takes.");
-        } else if (str_eq_c(o->name, "Sanitize")) {
+        } else if (o->call == CALL_NONE && str_eq_c(o->name, "Sanitize")) {
             code_block(out, "Sanitize()");
             sb_put(out, "\n\nRuns on every input before the simulation reads it, including input from other "
                         "players, so systems can rely on what it guarantees.");
-        } else if (str_eq_c(o->name, "Destroy")) {
-            code_block(out, "entity.Destroy()");
-        } else if (str_eq_c(o->name, "Send")) {
-            code_block(out, "entity.Send(event)");
-            sb_put(out, "\n\nSends an event to the entity: handlers that take its components run for it, at the end "
-                        "of the tick.");
-            break;
         } else {
-            sb_printf(&code, "entity." STR_FMT "(components...)", STR_ARG(o->name));
+            // What it's called on decides: items.Clear() is a list's, e.Destroy() an entity's.
+            size_t count;
+            const method_form *forms = methods_of(o->object_type, &count);
+            const method_form *form = find_form(forms, count, o->name);
+            if (!form) break;
+            format_method(form, o->object_type, &code);
             code_block(out, code.data);
+            sb_printf(out, "\n\n%s", form->doc);
         }
-        sb_put(out, str_eq_c(o->name, "Add") ? "\n\nAdds components, or replaces their values. Applied at the end of the tick."
-                  : str_eq_c(o->name, "Remove") ? "\n\nRemoves components. Applied at the end of the tick."
-                  : "\n\nDestroys the entity at the end of the tick.");
         break;
     case OCC_MEMBER:
         sb_printf(&code, "%s " STR_FMT, type_name(o->type), STR_ARG(o->name));
         code_block(out, code.data);
         if (str_eq_c(o->name, "down")) sb_put(out, "\n\nTrue on the tick it became true.");
         if (str_eq_c(o->name, "up")) sb_put(out, "\n\nTrue on the tick it became false.");
+        if (o->object_type.kind == TY_STRING && str_eq_c(o->name, "Length")) sb_put(out, "\n\n" TEXT_LENGTH_DOC);
+        if (o->object_type.kind == TY_LIST && str_eq_c(o->name, "Count")) sb_put(out, "\n\n" LIST_COUNT_DOC);
+        if (o->object_type.kind == TY_GRID && str_eq_c(o->name, "size")) sb_put(out, "\n\n" GRID_SIZE_FIELD_DOC);
         break;
     case OCC_ATTRIBUTE: {
         static const struct {
@@ -2143,6 +2241,8 @@ static void inlay_hint(jbuf *out, int *written, const loc at, const char *label,
     jb_printf(out, ",\"kind\":%d,\"%s\":true}", kind, before ? "paddingRight" : "paddingLeft");
 }
 
+static int call_param_names(const expr *call, str *names, int max);
+
 void analysis_inlay_hints(const int start_line, const int end_line, jbuf *out)
 {
     enum { HINT_TYPE = 1, HINT_PARAMETER = 2 };
@@ -2156,13 +2256,15 @@ void analysis_inlay_hints(const int start_line, const int end_line, jbuf *out)
         sb_printf(&label, ": %s", type_name(o->type));
         inlay_hint(out, &written, (loc){o->at.line, o->at.col + o->len, o->at.file}, label.data, HINT_TYPE, false);
     }
-    for (int i = 0; i < A.calls.count; i++) { // Heal(unit.stats, amount: 2)
+    for (int i = 0; i < A.calls.count; i++) { // Heal(unit.stats, amount: 2), Draw.Circle(p, radius: 3, color)
         const expr *call = A.calls.items[i];
         if (call->at.file != A.doc || call->at.line - 1 < start_line || call->at.line - 1 > end_line) continue;
-        for (int k = 0; k < call->args.count && k < call->method->params.count; k++) {
-            if (!is_literal(call->args.items[k])) continue;
+        str names[16];
+        const int count = call_param_names(call, names, 16);
+        for (int k = 0; k < call->args.count && k < count; k++) {
+            if (!is_literal(call->args.items[k]) || names[k].len == 0) continue;
             sb label = {0};
-            sb_printf(&label, STR_FMT ":", STR_ARG(call->method->params.items[k].name));
+            sb_printf(&label, STR_FMT ":", STR_ARG(names[k]));
             inlay_hint(out, &written, expr_start(call->args.items[k]), label.data, HINT_PARAMETER, true);
         }
     }
@@ -2676,27 +2778,10 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "b", CK_PROPERTY, "float", "Blue, 0 to 1.", NULL);
         item(c, "a", CK_PROPERTY, "float", "Alpha, 0 to 1.", NULL);
     }
-    if (t.kind == TY_LIST) {
-        item(c, "Count", CK_PROPERTY, "int", "How many elements the list has.", NULL);
-        item(c, "Add", CK_METHOD, "items.Add(item)", "Adds an element at the end.", "Add($1)");
-        item(c, "Insert", CK_METHOD, "items.Insert(index, item)", "Adds an element at `index`, moving the ones after it along.",
-             "Insert($1)");
-        item(c, "RemoveAt", CK_METHOD, "items.RemoveAt(index)", "Removes the element at `index`, moving the ones after it back.",
-             "RemoveAt($1)");
-        item(c, "Remove", CK_METHOD, "items.Remove(item) -> bool", "Removes the first element equal to `item`, if there is one.",
-             "Remove($1)");
-        item(c, "Clear", CK_METHOD, "items.Clear()", "Removes every element.", "Clear()");
-        item(c, "Contains", CK_METHOD, "items.Contains(item) -> bool", "Whether an element is equal to `item`.", "Contains($1)");
-        item(c, "IndexOf", CK_METHOD, "items.IndexOf(item) -> int", "Where the first element equal to `item` is, or -1.",
-             "IndexOf($1)");
-    }
-    if (t.kind == TY_GRID) {
-        const char *at = t.decl->dims == 3 ? "int3" : "int2";
-        item(c, "size", CK_PROPERTY, at, "The grid's size, 0 on the axes where it's open.", NULL);
-        item(c, "Clear", CK_METHOD, "cells.Clear()", "Sets every cell back to zero, keeping the size.", "Clear()");
-    }
+    if (t.kind == TY_LIST) item(c, "Count", CK_PROPERTY, "int", LIST_COUNT_DOC, NULL);
+    if (t.kind == TY_GRID) item(c, "size", CK_PROPERTY, t.decl->dims == 3 ? "int3" : "int2", GRID_SIZE_FIELD_DOC, NULL);
     if (t.kind == TY_STRING) {
-        item(c, "Length", CK_PROPERTY, "int", "How many characters the text has.", NULL);
+        item(c, "Length", CK_PROPERTY, "int", TEXT_LENGTH_DOC, NULL);
         builtin_visit v = {c};
         builtin_list_members(str_from("string"), add_builtin_member, &v);
     }
@@ -2712,23 +2797,23 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         static const char *const columns[] = {"c0", "c1", "c2", "c3"};
         item(c, columns[i], CK_PROPERTY, type_name(vector_type(true, n)), "A column.", NULL);
     }
+    // Built-in methods: a list's and a grid's, and an entity's or a singleton's
+    // where the code can change it.
     const bool local = sc->decl && sc->decl->kind == DECL_SYSTEM && (sc->decl->is_view || sc->decl->is_local);
     const bool match = sc->decl && sc->decl->kind == DECL_SYSTEM && !local;
-    if ((t.kind == TY_ENTITY && match) || (t.kind == TY_LOCAL_ENTITY && local)) {
-        item(c, "Add", CK_METHOD, "entity.Add(components...)", "Adds components, or replaces their values.", "Add($1)");
-        item(c, "Remove", CK_METHOD, "entity.Remove(components...)", "Removes components.", "Remove($1)");
-        item(c, "Destroy", CK_METHOD, "entity.Destroy()", "Destroys the entity at the end of the tick.", "Destroy()");
-        item(c, "Send", CK_METHOD, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.",
-             "Send($1)");
-        if (t.kind == TY_ENTITY) {
-            item(c, "Snap", CK_METHOD, "entity.Snap()",
-                 "It jumped, like a respawn or a portal: views draw it as it is this tick, not blended from where it was.",
-                 "Snap()");
+    const bool changes = (t.kind == TY_ENTITY && match) || (t.kind == TY_LOCAL_ENTITY && local)
+                      || (t.kind == TY_SINGLETON && match && !t.decl->is_local);
+    if (t.kind == TY_LIST || t.kind == TY_GRID || changes) {
+        size_t count;
+        const method_form *forms = methods_of(t, &count);
+        for (size_t i = 0; i < count; i++) {
+            if (t.kind == TY_LOCAL_ENTITY && strcmp(forms[i].name, "Snap") == 0) continue; // Local state isn't blended
+            sb detail = {0};
+            format_method(&forms[i], t, &detail);
+            sb snippet = {0};
+            sb_printf(&snippet, "%s(%s)", forms[i].name, strstr(forms[i].form, "()") ? "" : "$1");
+            item(c, forms[i].name, CK_METHOD, detail.data, forms[i].doc, snippet.data);
         }
-    }
-    if (t.kind == TY_SINGLETON && match && !t.decl->is_local) {
-        item(c, "Snap", CK_METHOD, "singleton.Snap()",
-             "It jumped, like a camera cut: views draw it as it is this tick, not blended from where it was.", "Snap()");
     }
     if (edges && t.kind == TY_BOOL) {
         item(c, "down", CK_PROPERTY, "bool", "True on the tick it became true.", NULL);
@@ -3650,7 +3735,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             if (DOC->toks[first].kind == T_IDENT && (str_eq_c(type_text, "Grid2") || str_eq_c(type_text, "Grid3"))) {
                 const bool flat = str_eq_c(type_text, "Grid2");
                 item(&c, flat ? "Grid2" : "Grid3", CK_FUNCTION, flat ? "Grid2(int width, int height)" : "Grid3(int width, int height, int depth)",
-                     "A grid of that size, in cells; 0 or nothing leaves an axis open.", flat ? "Grid2($1)" : "Grid3($1)");
+                     GRID_SIZE_DOC, flat ? "Grid2($1)" : "Grid3($1)");
             }
         }
         break;
@@ -3746,9 +3831,9 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
     case OCC_CONSTANT:
         if (is_routine(a->decl) || is_routine(b->decl)) return a->decl == b->decl;
         return str_eq(a->owner, b->owner) && str_eq(a->name, b->name);
-    case OCC_METHOD:
+    case OCC_METHOD: // A built-in one is what it's called on's: a list's Add isn't an entity's
         if (is_routine(a->decl) || is_routine(b->decl)) return a->decl == b->decl;
-        return str_eq(a->name, b->name);
+        return str_eq(a->name, b->name) && a->call == b->call && a->object_type.kind == b->object_type.kind;
     case OCC_MEMBER:
     case OCC_NAMESPACE:
     case OCC_ATTRIBUTE:
@@ -4125,7 +4210,155 @@ static const struct {
     {"PlayerID", {"PlayerID(int index)"}, "A player by index, for local play and tests."},
     {"Spawn", {"Spawn(components...)"}, "Creates an entity with these components. It's added at the end of the tick."},
     {"Send", {"Send(event)"}, "Sends an event to the whole world, handled at the end of the tick."},
+    {"Grid2", {"Grid2(int width, int height)"}, GRID_SIZE_DOC},
+    {"Grid3", {"Grid3(int width, int height, int depth)"}, GRID_SIZE_DOC},
 };
+
+// The type of what's before the dot at token `dot`, from what's written
+// there: `this`, text, or names like unit.stats. TY_ERROR for anything else.
+static type receiver_type(const int dot, const loc at)
+{
+    if (dot < 1) return (type){TY_ERROR, NULL};
+    const token *before = &DOC->toks[dot - 1];
+    if (before->kind == T_STRING) return (type){TY_STRING, NULL};
+    if ((before->kind == T_INTERP || before->kind == T_INTERP_PART) && before->text.ptr[before->text.len - 1] == '"') {
+        return (type){TY_STRING, NULL};
+    }
+    const scope sc = scope_at(at);
+    if (before->kind == T_THIS) return this_type(&sc);
+    int first = dot - 1;
+    while (first >= 2 && DOC->toks[first - 1].kind == T_DOT && DOC->toks[first - 2].kind == T_IDENT) first -= 2;
+    if (DOC->toks[first].kind != T_IDENT) return (type){TY_ERROR, NULL};
+    const param *ignored;
+    type t = name_type(&sc, DOC->toks[first].text, &ignored);
+    if (t.kind == TY_ERROR) t = loop_variable_type(&sc, first);
+    for (int k = first + 2; k < dot && t.kind != TY_ERROR; k += 2) t = member_type(t, DOC->toks[k].text);
+    return t;
+}
+
+// A signature's parameters, from its label as add_signature reads them: each
+// a type and a name ("float2 center"), or only a name ("x" in Math.Clamp).
+typedef struct label_params {
+    str types[16];
+    str names[16];
+    int count; // -1 for a label that takes any number, like "Spawn(components...)"
+} label_params;
+
+static void parse_label(const char *label, label_params *out)
+{
+    out->count = 0;
+    const char *open = strchr(label, '(');
+    const char *close = open ? strchr(open, ')') : NULL;
+    if (!open || !close) return;
+    if (strstr(label, "...")) {
+        out->count = -1;
+        return;
+    }
+    for (const char *p = open + 1; p < close && out->count < 16;) {
+        const char *end = p;
+        while (end < close && *end != ',') end++;
+        const char *name = end; // The last word, and the one before it: "mut float value"
+        while (name > p && name[-1] != ' ') name--;
+        const char *type_end = name > p ? name - 1 : p;
+        const char *type_start = type_end;
+        while (type_start > p && type_start[-1] != ' ') type_start--;
+        out->names[out->count] = (str){name, (int)(end - name)};
+        out->types[out->count] = (str){type_start, (int)(type_end - type_start)};
+        out->count++;
+        p = end < close ? end + 2 : close;
+    }
+    // A GUI container's block isn't an argument
+    if (out->count > 0 && str_eq_c(out->types[out->count - 1], "Block")) out->count--;
+}
+
+// Whether a checked call's argument `k` goes to a parameter of type `type_text`:
+// the type the call converted it to, if it says, or else one it can take.
+static bool param_fits(const str type_text, const expr *call, const int k)
+{
+    type want;
+    if (type_text.len == 0) return true;
+    if (str_eq_c(type_text, "string")) want = (type){TY_STRING, NULL};
+    else if (!builtin_type_named(type_text, &want)) return true; // Anchor, or a list's element: nothing to tell apart
+    if (call->arg_want.count > k) return call->arg_want.items[k].kind == want.kind;
+    return type_assignable(want, call->args.items[k]->type);
+}
+
+typedef struct label_list {
+    VEC(const char *) labels;
+} label_list;
+
+static void collect_label(void *user, const char *label, const char *doc)
+{
+    (void)doc;
+    vec_push(((label_list *)user)->labels, label);
+}
+
+// The names of the parameters a checked call's arguments go to, in order:
+// the game's function's, or the built-in signature the call took. Returns
+// how many; 0 for calls with none to show, like Spawn(...).
+static int call_param_names(const expr *call, str *names, const int max)
+{
+    int count = 0;
+    if (call->call == CALL_METHOD || call->call == CALL_FUNCTION) {
+        for (; count < call->method->params.count && count < max; count++) names[count] = call->method->params.items[count].name;
+        return count;
+    }
+    label_list list = {0};
+    switch (call->call) {
+    case CALL_BUILTIN: case CALL_DRAW: case CALL_GUI: case CALL_TEXT: {
+        const str owner = call->call == CALL_TEXT ? str_from("string") : call->object ? call->object->name : (str){"", 0};
+        builtin_signatures(owner, call->name, collect_label, &list);
+        break;
+    }
+    case CALL_CONSTRUCT: case CALL_NEW_GRID:
+        for (size_t i = 0; i < sizeof call_forms / sizeof call_forms[0]; i++) {
+            if (!str_eq_c(call->name, call_forms[i].name)) continue;
+            for (int f = 0; f < 3 && call_forms[i].forms[f]; f++) vec_push(list.labels, call_forms[i].forms[f]);
+        }
+        break;
+    case CALL_SESSION:
+        for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
+            if (str_eq_c(call->name, session_calls[i].name)) vec_push(list.labels, session_calls[i].form);
+        }
+        break;
+    case CALL_LOAD: case CALL_UNLOAD: case CALL_SCENE_PLAYER:
+        for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
+            if (str_eq_c(call->name, scene_calls[i].name)) vec_push(list.labels, scene_calls[i].form);
+        }
+        break;
+    case CALL_WAIT:
+        for (size_t i = 0; i < sizeof wait_calls / sizeof wait_calls[0]; i++) {
+            if (str_eq_c(call->name, wait_calls[i].name)) vec_push(list.labels, wait_calls[i].form);
+        }
+        break;
+    case CALL_CLIPBOARD:
+        vec_push(list.labels, CLIPBOARD_COPY_FORM);
+        break;
+    case CALL_LIST: {
+        const method_form *form = find_form(list_calls, sizeof list_calls / sizeof list_calls[0], call->name);
+        sb label = {0};
+        if (form) format_method(form, call->object->type, &label);
+        if (form) vec_push(list.labels, label.data);
+        break;
+    }
+    default:
+        break;
+    }
+    // The signature with as many parameters as the call has arguments, of
+    // their types; or one whose last ones it leaves out, like Session.Open().
+    for (int exact = 1; exact >= 0; exact--) {
+        for (int i = 0; i < list.labels.count; i++) {
+            label_params params;
+            parse_label(list.labels.items[i], &params);
+            bool fits = exact ? params.count == call->args.count : params.count > call->args.count;
+            for (int k = 0; fits && k < call->args.count; k++) fits = param_fits(params.types[k], call, k);
+            if (!fits) continue;
+            for (; count < params.count && count < max; count++) names[count] = params.names[count];
+            return count;
+        }
+    }
+    return 0;
+}
 
 void analysis_signature_help(const int line, const int character, jbuf *out)
 {
@@ -4165,29 +4398,45 @@ void analysis_signature_help(const int line, const int character, jbuf *out)
         return;
     }
     const str name = DOC->toks[open - 1].text;
-    const bool method = open >= 3 && DOC->toks[open - 2].kind == T_DOT && DOC->toks[open - 3].kind == T_IDENT;
+    const bool method = open >= 2 && DOC->toks[open - 2].kind == T_DOT;
+    const str owner = method && open >= 3 && DOC->toks[open - 3].kind == T_IDENT ? DOC->toks[open - 3].text : (str){"", 0};
 
     jbuf list = {0};
     signature_list s = {&list, commas, -1, commas, 0};
-    if (method && builtin_owner(DOC->toks[open - 3].text)) {
-        builtin_signatures(DOC->toks[open - 3].text, name, visit_signature, &s);
-    } else if (method && (str_eq_c(name, "Add") || str_eq_c(name, "Remove"))) {
-        add_signature(&s, str_eq_c(name, "Add") ? "entity.Add(components...)" : "entity.Remove(components...)", NULL);
-    } else if (method && str_eq_c(DOC->toks[open - 3].text, "Scene")) {
+    if (owner.len > 0 && builtin_owner(owner)) { // Math.Clamp(, Draw.Circle(, quaternion.Euler(
+        builtin_signatures(owner, name, visit_signature, &s);
+    } else if (str_eq_c(owner, "Scene")) {
         for (size_t i = 0; i < sizeof scene_calls / sizeof scene_calls[0]; i++) {
             if (str_eq_c(name, scene_calls[i].name)) add_signature(&s, scene_calls[i].form, scene_calls[i].doc);
         }
-    } else if (method && str_eq_c(DOC->toks[open - 3].text, "Session")) {
+    } else if (str_eq_c(owner, "Session")) {
         for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
             if (str_eq_c(name, session_calls[i].name)) add_signature(&s, session_calls[i].form, session_calls[i].doc);
         }
-    } else if (method && str_eq_c(DOC->toks[open - 3].text, "Wait")) {
+    } else if (str_eq_c(owner, "Wait")) {
         for (size_t i = 0; i < sizeof wait_calls / sizeof wait_calls[0]; i++) {
             if (str_eq_c(name, wait_calls[i].name)) add_signature(&s, wait_calls[i].form, wait_calls[i].doc);
         }
-    } else if (method && str_eq_c(name, "Send")) {
-        add_signature(&s, "entity.Send(event)", "Sends an event to the entity, handled at the end of the tick.");
-    } else if (!method) {
+    } else if (str_eq_c(owner, "Clipboard")) {
+        if (str_eq_c(name, "Copy")) add_signature(&s, CLIPBOARD_COPY_FORM, CLIPBOARD_COPY_DOC);
+    } else if (method) {
+        // What it's called on decides: text's, a list's, a grid's, an entity's or a singleton's.
+        // The call's own, once it parses; until then, what the names before the dot are.
+        const occurrence *called = occurrence_at(DOC->toks[open - 1].at);
+        const type t = called && called->call != CALL_NONE && called->object_type.kind != TY_ERROR
+                         ? called->object_type
+                         : receiver_type(open - 2, at);
+        size_t count;
+        const method_form *forms = methods_of(t, &count);
+        const method_form *form = find_form(forms, count, name);
+        if (t.kind == TY_STRING) {
+            builtin_signatures(str_from("string"), name, visit_signature, &s);
+        } else if (form) {
+            sb label = {0};
+            format_method(form, t, &label);
+            add_signature(&s, label.data, form->doc);
+        }
+    } else {
         for (size_t i = 0; i < sizeof call_forms / sizeof call_forms[0]; i++) {
             if (!str_eq_c(name, call_forms[i].name)) continue;
             for (int f = 0; f < 3 && call_forms[i].forms[f]; f++) add_signature(&s, call_forms[i].forms[f], call_forms[i].doc);
