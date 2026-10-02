@@ -125,6 +125,20 @@ Navigation is built in. Tab and Shift+Tab move the focus between widgets, in the
 
 Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position. Clicking a number field, or pressing Enter on it, starts typing into it; Enter or leaving the field keeps a valid number, and Escape keeps the old one.
 
+## Copy and paste
+
+Ctrl+V (Cmd+V on macOS) pastes into the field that has the focus, as if the player typed it, but for newlines and tabs. `Clipboard.Copy(text)` puts text on the clipboard, from a view or a local handler, like `Session`'s calls:
+
+```csharp
+if (session.room != "")
+{
+    GUILayout.Label("Room " + session.room);
+    if (GUILayout.Button("Copy")) Clipboard.Copy(session.room);
+}
+```
+
+It copies up to 255 bytes for now. In a browser, it works shortly after a click or a key, as when a button is pressed.
+
 ## The GUI and input
 
 Whatever the GUI is using, such as a click on a button or typing in a field, is hidden from the input's `Sample` and from views' `Devices`. So clicking a button never fires a weapon, and typing a name never moves the player.

@@ -494,6 +494,12 @@ static void walk_expr(const expr *e)
             o.kind = OCC_FUNCTION;
             o.owner = str_from("Session");
             add_occ(o);
+        } else if (e->call == CALL_CLIPBOARD) {
+            add_occ((occurrence){.at = e->object->at, .len = 9, .kind = OCC_OWNER, .owner = str_from("Clipboard"),
+                                 .name = str_from("Clipboard")});
+            o.kind = OCC_FUNCTION;
+            o.owner = str_from("Clipboard");
+            add_occ(o);
         } else if (e->call == CALL_WAIT) {
             add_occ((occurrence){.at = e->object->at, .len = 4, .kind = OCC_OWNER, .owner = str_from("Wait"),
                                  .name = str_from("Wait")});
@@ -1071,6 +1077,12 @@ static const struct {
      "takes it over. On a client, it does nothing."},
 };
 
+#define CLIPBOARD_COPY_FORM "Clipboard.Copy(string text)"
+#define CLIPBOARD_COPY_DOC                                                                                             \
+    "Puts `text` on this machine's clipboard, after the frame: up to 255 bytes for now. A browser takes it only "     \
+    "shortly after a click or a key, as when a button is pressed. Pasting needs no call: Ctrl+V types what's on the " \
+    "clipboard into the text field that has the focus."
+
 // What async code waits for, after `await`.
 static const struct {
     const char *name;
@@ -1235,6 +1247,8 @@ static void describe(const occurrence *o, sb *out)
                   : str_eq_c(o->name, "Scene")     ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
                   : str_eq_c(o->name, "Session")   ? "\n\nWhich match this machine is in: Play, Host, Join, Connect and Leave, from views "
                                                      "and local handlers. Take `Session session` to read where it stands."
+                  : str_eq_c(o->name, "Clipboard") ? "\n\nThis machine's clipboard: Copy, from views and local handlers. "
+                                                     "Ctrl+V pastes into text fields by itself."
                   : str_eq_c(o->name, "Wait")      ? "\n\nWhat async code waits for, after `await`: the match's ticks, this "
                                                      "machine's frames, or seconds."
                                                    : "\n\nMath functions and constants, deterministic on every platform.");
@@ -1263,6 +1277,9 @@ static void describe(const occurrence *o, sb *out)
                 code_block(out, scene_calls[i].form);
                 sb_printf(out, "\n\n%s", scene_calls[i].doc);
             }
+        } else if (o->kind == OCC_FUNCTION && str_eq_c(o->owner, "Clipboard")) {
+            code_block(out, CLIPBOARD_COPY_FORM);
+            sb_put(out, "\n\n" CLIPBOARD_COPY_DOC);
         } else if (o->kind == OCC_FUNCTION && str_eq_c(o->owner, "Session")) {
             for (size_t i = 0; i < sizeof session_calls / sizeof session_calls[0]; i++) {
                 if (!str_eq_c(o->name, session_calls[i].name)) continue;
@@ -2670,6 +2687,11 @@ static void complete_members(completion *c, const int dot, const loc at, const b
             }
             return;
         }
+        // Clipboard.: its one call, where local code runs
+        if (n == 1 && str_eq_c(base, "Clipboard") && decides_session(&sc)) {
+            item(c, "Copy", CK_FUNCTION, CLIPBOARD_COPY_FORM, CLIPBOARD_COPY_DOC, "Copy($1)");
+            return;
+        }
         // Wait.: what async code waits for
         if (n == 1 && str_eq_c(base, "Wait") && sc.decl && sc.decl->is_async) {
             for (size_t i = 0; i < sizeof wait_calls / sizeof wait_calls[0]; i++) {
@@ -3000,6 +3022,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     // Session.Start and the like are statements of their own.
     if (statement && decides_session(&sc)) {
         item(c, "Session", CK_MODULE, "Starts, joins and leaves matches", NULL, NULL);
+        item(c, "Clipboard", CK_MODULE, "This machine's clipboard", NULL, NULL);
     }
     complete_value_types(c, true);
     complete_structs(c);
@@ -3608,7 +3631,7 @@ static const char *check_new_name(const occurrence *target, const str name)
                                            "fail", "try", "is", "null", "await"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
-                                           "GUI", "GUILayout", "Screen", "Anchor", "Action", "Session", "SessionState",
+                                           "GUI", "GUILayout", "Screen", "Anchor", "Action", "Session", "SessionState", "Clipboard",
                                            "DisconnectReason", "Connected", "Disconnected"};
     static char message[160];
 

@@ -305,19 +305,57 @@ static void poll_gamepad(tide_gamepad *g)
     }
 }
 
-// Characters typed since the last poll, which follow the keyboard layout.
+#ifndef __wasm__
+// What Ctrl+V (Cmd+V on macOS) pasted, as characters typed: the next to type
+// is pasted[pasted_at]. On the web, the page does it (tide.js).
+static uint32_t pasted[1024];
+static uint32_t pasted_count, pasted_at;
+
+static void paste(void)
+{
+    const bool control = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) || IsKeyDown(KEY_LEFT_SUPER)
+                      || IsKeyDown(KEY_RIGHT_SUPER);
+    if (!control || !IsKeyPressed(KEY_V)) return;
+    const char *text = GetClipboardText();
+    if (!text) return;
+    int at = 0;
+    while (text[at] && pasted_count < COUNT_OF(pasted)) {
+        int size = 0;
+        const int c = GetCodepointNext(text + at, &size);
+        at += size > 0 ? size : 1;
+        if (c >= 32 && c != 127) pasted[pasted_count++] = (uint32_t)c; // Not newlines or tabs
+    }
+}
+#endif
+
+// Characters typed since the last poll, which follow the keyboard layout. A
+// poll takes as many as it holds, and leaves the rest for the next.
 static void poll_text(tide_typed *text)
 {
     text->count = 0;
-    for (;;) {
+#ifndef __wasm__
+    paste();
+    while (pasted_at < pasted_count && text->count < TIDE_TEXT_MAX) text->chars[text->count++] = pasted[pasted_at++];
+    if (pasted_at == pasted_count) pasted_at = pasted_count = 0;
+#endif
+    while (text->count < TIDE_TEXT_MAX) {
 #ifdef __wasm__
         const int c = tide_web_take_char();
 #else
         const int c = GetCharPressed();
 #endif
         if (c <= 0) break;
-        if (text->count < TIDE_TEXT_MAX) text->chars[text->count++] = (uint32_t)c;
+        text->chars[text->count++] = (uint32_t)c;
     }
+}
+
+void tide_platform_copy(const char *text)
+{
+#ifdef __wasm__
+    tide_web_copy(text);
+#else
+    SetClipboardText(text);
+#endif
 }
 
 void tide_platform_poll(tide_devices *devices)
@@ -690,7 +728,25 @@ void tide_platform_draw_overlay(const char *text)
 {
     if (unseen()) return;
     const int size = 16;
-    DrawText(text, GetScreenWidth() - MeasureText(text, size) - 12, 8, size, GRAY);
+    const int pitch = 20; // From one line to the next
+    char lines[16][128];
+    int count = 0;
+    int widest = 0;
+    for (const char *line = text; line && count < 16; count++) {
+        const char *end = strchr(line, '\n');
+        size_t n = end ? (size_t)(end - line) : strlen(line);
+        if (n >= sizeof lines[0]) n = sizeof lines[0] - 1;
+        memcpy(lines[count], line, n);
+        lines[count][n] = '\0';
+        const int width = MeasureText(lines[count], size);
+        if (width > widest) widest = width;
+        line = end ? end + 1 : NULL;
+    }
+    // A panel in the bottom right corner, each line against its right edge
+    const int right = GetScreenWidth() - 12;
+    const int top = GetScreenHeight() - 12 - count * pitch;
+    DrawRectangle(right - widest - 8, top - 6, widest + 16, count * pitch + 8, (Color){0, 0, 0, 140});
+    for (int i = 0; i < count; i++) DrawText(lines[i], right - MeasureText(lines[i], size), top + i * pitch, size, LIGHTGRAY);
 }
 
 int tide_platform_fps(void)

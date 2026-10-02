@@ -270,6 +270,11 @@ typedef struct tide_session_status {
     // Seconds the match this machine runs skipped: updates further apart than
     // the ticks its server runs in one, where the rest never happens.
     double skipped;
+    // Bytes this machine sent and received over networks since the session was
+    // made, in its datagrams (what lower layers add isn't counted). Its own
+    // match, over loopback, isn't a network.
+    uint64_t sent_bytes;
+    uint64_t received_bytes;
 } tide_session_status;
 
 tide_session *tide_session_create(const tide_session_desc *desc);
@@ -360,7 +365,8 @@ typedef bool (*tide_migrate_fn)(void *user, const void *from, void *to);
 bool tide_session_migrate(tide_session *s, const tide_game *game, tide_migrate_fn migrate, void *user);
 
 // What local code asked for, with Session.Start, Join, Connect, Leave, Open,
-// Close, Kick, KickAll and End.
+// Close, Kick, KickAll and End, and Clipboard.Copy, which isn't the session's
+// but goes to the host the same way.
 typedef enum tide_session_request_kind {
     TIDE_REQUEST_NONE,
     TIDE_REQUEST_START,
@@ -372,6 +378,7 @@ typedef enum tide_session_request_kind {
     TIDE_REQUEST_KICK,    // A player, with a message
     TIDE_REQUEST_KICK_ALL,
     TIDE_REQUEST_END,     // The match this machine runs ends, for everyone
+    TIDE_REQUEST_COPY,    // Text onto this machine's clipboard
 } tide_session_request_kind;
 
 #define TIDE_DEFAULT_PORT 7777u
@@ -381,5 +388,5 @@ typedef struct tide_session_request {
     uint32_t port;          // Open: the port to take players on. Connect: the server's, unless `text` has one
     tide_player_id player;  // Kick: whom
     char text[TIDE_MESSAGE_BYTES]; // Join: the room's code. Connect: the server's address, "host" or "host:port".
-                                   // Kick and KickAll: the message
+                                   // Kick and KickAll: the message. Copy: the text
 } tide_session_request;

@@ -3312,6 +3312,11 @@ static void gen_stmt(gen *g, const stmt *s)
             sb_printf(o, ", %s);\n", str_eq_c(s->value->name, "AddPlayer") ? "true" : "false");
         } else if (s->value->call == CALL_SESSION) {
             gen_session_call(g, s->value);
+        } else if (s->value->call == CALL_CLIPBOARD) {
+            indent(g, o);
+            sb_put(o, "tide_request_copy(tide_l, ");
+            gen_c_text(g, o, s->value->args.items[0]);
+            sb_put(o, ");\n");
         } else if (s->value->call == CALL_GUI && s->value->block) {
             gen_container(g, s->value);
         } else if (s->value->call == CALL_FUNCTION && s->value->method->takes_action) {
@@ -3786,6 +3791,7 @@ static void gen_header(gen *g)
     sb_put(o, "    tide_session_request tide_request_open; // Session.Open or Close, after tide_request\n");
     sb_put(o, "    tide_session_request tide_kicks[TIDE_MAX_PLAYERS]; // Session.Kick and KickAll, after those\n");
     sb_put(o, "    uint32_t tide_kick_count;\n");
+    sb_put(o, "    tide_session_request tide_copy; // Clipboard.Copy: the frame's last, after the kicks\n");
     sb_put(o, "    char tide_message[TIDE_MESSAGE_BYTES]; // Disconnected's message: a kick's, or \"\"\n");
     sb_put(o, "    char tide_room[8]; // Session.room: the code of the room the match is in, or \"\"\n");
     sb_put(o, "} tide_local;\n\n");
@@ -4371,6 +4377,13 @@ static void gen_session_helpers(gen *g)
     sb_put(o, "    if (n >= sizeof r->text) n = sizeof r->text - 1u;\n");
     sb_put(o, "    while (n > 0 && ((unsigned char)message[n] & 0xC0u) == 0x80u) n--;\n");
     sb_put(o, "    memcpy(r->text, message, n);\n}\n\n");
+    sb_put(o, "// Clipboard.Copy(text): the last of the frame's, cut where a character starts.\n");
+    sb_put(o, "TIDE_HELPER void tide_request_copy(tide_local *l, const char *text)\n{\n");
+    sb_put(o, "    l->tide_copy = (tide_session_request){.kind = TIDE_REQUEST_COPY};\n");
+    sb_put(o, "    size_t n = strlen(text);\n");
+    sb_put(o, "    if (n >= sizeof l->tide_copy.text) n = sizeof l->tide_copy.text - 1u;\n");
+    sb_put(o, "    while (n > 0 && ((unsigned char)text[n] & 0xC0u) == 0x80u) n--;\n");
+    sb_put(o, "    memcpy(l->tide_copy.text, text, n);\n}\n\n");
 }
 
 static void gen_prelude(gen *g)
@@ -7236,7 +7249,10 @@ static void gen_game_api(gen *g)
     sb_put(o, "    if (local->tide_request_open.kind != TIDE_REQUEST_NONE) {\n");
     sb_put(o, "        *request = local->tide_request_open;\n");
     sb_put(o, "        local->tide_request_open = (tide_session_request){0};\n        return true;\n    }\n");
-    sb_put(o, "    if (local->tide_kick_count == 0) return false;\n");
+    sb_put(o, "    if (local->tide_kick_count == 0) {\n");
+    sb_put(o, "        if (local->tide_copy.kind == TIDE_REQUEST_NONE) return false;\n");
+    sb_put(o, "        *request = local->tide_copy;\n");
+    sb_put(o, "        local->tide_copy = (tide_session_request){0};\n        return true;\n    }\n");
     sb_put(o, "    *request = local->tide_kicks[0];\n    local->tide_kick_count--;\n");
     sb_put(o, "    memmove(local->tide_kicks, local->tide_kicks + 1, local->tide_kick_count * sizeof local->tide_kicks[0]);\n");
     sb_put(o, "    memset(&local->tide_kicks[local->tide_kick_count], 0, sizeof local->tide_kicks[0]);\n    return true;\n}\n\n");

@@ -1,0 +1,6 @@
+// expect: Clipboard.Copy takes text, not int
+local scene Main { }
+view Menu()
+{
+    if (GUILayout.Button("Copy")) Clipboard.Copy(42);
+}

@@ -1,0 +1,10 @@
+// expect: can't call Clipboard.Copy yet; views and local handlers do
+local scene Main { }
+void Share()
+{
+    if (GUILayout.Button("Copy")) Clipboard.Copy("hello");
+}
+view Menu()
+{
+    Share();
+}

@@ -1,0 +1,6 @@
+// expect: Clipboard has no 'Paste'; it has Copy
+local scene Main { }
+view Menu()
+{
+    Clipboard.Paste();
+}

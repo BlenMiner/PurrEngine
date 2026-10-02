@@ -175,9 +175,18 @@ static uint8_t read_header(tide_reader *r)
     return r->failed ? 0 : type;
 }
 
-static void send_packet(const tide_transport *t, const tide_address to, const tide_writer *w)
+// Bytes a server or client sent and received over networks. Loopback, a
+// machine's own match, isn't one.
+typedef struct traffic {
+    uint64_t sent;
+    uint64_t received;
+} traffic;
+
+static void send_packet(const tide_transport *t, const tide_address to, const tide_writer *w, traffic *counted)
 {
-    if (!w->overflow && t->send) t->send(t->self, to, w->data, w->size);
+    if (w->overflow || !t->send) return;
+    t->send(t->self, to, w->data, w->size);
+    if (to.kind != TIDE_ADDRESS_LOOPBACK) counted->sent += w->size;
 }
 
 // A signed number as a varint, its sign in the lowest bit: small ones of
@@ -341,6 +350,7 @@ struct tide_server {
     double clock_start;
     uint32_t clock_base;
     double now;
+    traffic traffic;
     connection connections[TIDE_MAX_PLAYERS]; // Player n is connections[n]
     uint8_t events[MAX_EVENTS][2];            // Joins and leaves before the next tick
     uint32_t event_count;
@@ -498,17 +508,17 @@ static bool hands_over(const tide_server *s)
     return s->game->host_migration && s->room_key[0] && s->room_code[0];
 }
 
-static void send_bye(const tide_server *s, const uint32_t transport, const tide_address to)
+static void send_bye(tide_server *s, const uint32_t transport, const tide_address to)
 {
     uint8_t data[8];
     tide_writer w = {data, sizeof data, 0, false, false};
     header(&w, MSG_BYE);
     tide_write_u8(&w, s->ended ? BYE_ENDED : hands_over(s) ? BYE_HANDOVER : BYE_LEFT);
-    send_packet(&s->desc.transports[transport], to, &w);
+    send_packet(&s->desc.transports[transport], to, &w, &s->traffic);
 }
 
 // Tells a kicked player they were, and why.
-static void send_kicked(const tide_server *s, const kicked *k)
+static void send_kicked(tide_server *s, const kicked *k)
 {
     uint8_t data[8u + TIDE_MESSAGE_BYTES];
     tide_writer w = {data, sizeof data, 0, false, false};
@@ -517,16 +527,16 @@ static void send_kicked(const tide_server *s, const kicked *k)
     const uint32_t n = (uint32_t)strlen(k->message);
     tide_write_u8(&w, (uint8_t)n);
     tide_write_bytes(&w, k->message, n);
-    send_packet(&s->desc.transports[k->transport], k->address, &w);
+    send_packet(&s->desc.transports[k->transport], k->address, &w, &s->traffic);
 }
 
-static void refuse(const tide_server *s, const uint32_t transport, const tide_address to, const uint8_t reason)
+static void refuse(tide_server *s, const uint32_t transport, const tide_address to, const uint8_t reason)
 {
     uint8_t data[8];
     tide_writer w = {data, sizeof data, 0, false, false};
     header(&w, MSG_REFUSE);
     tide_write_u8(&w, reason);
-    send_packet(&s->desc.transports[transport], to, &w);
+    send_packet(&s->desc.transports[transport], to, &w, &s->traffic);
 }
 
 static connection *find_connection(tide_server *s, const uint32_t transport, const tide_address from)
@@ -744,6 +754,7 @@ static void server_receive(tide_server *s, const uint32_t transport)
     tide_address from;
     uint32_t size;
     while ((size = t->receive(t->self, &from, data, sizeof data)) > 0) {
+        if (from.kind != TIDE_ADDRESS_LOOPBACK) s->traffic.received += size;
         tide_reader r = {data, size, 0, false};
         const uint8_t type = read_header(&r);
         if (type == MSG_HELLO) {
@@ -917,7 +928,7 @@ static void server_tick(tide_server *s)
     *f = (stored_frame){tick, w.size, data};
 }
 
-static void send_welcome(const tide_server *s, const connection *c)
+static void send_welcome(tide_server *s, const connection *c)
 {
     uint8_t data[64];
     tide_writer w = {data, sizeof data, 0, false, false};
@@ -935,7 +946,7 @@ static void send_welcome(const tide_server *s, const connection *c)
     tide_write_u16(&w, millis16(s->now));
     tide_write_u16(&w, c->their_time);
     tide_write_u64(&w, s->cookies[c - s->connections]);
-    send_packet(&s->desc.transports[c->transport], c->address, &w);
+    send_packet(&s->desc.transports[c->transport], c->address, &w, &s->traffic);
 }
 
 static void send_chunks(tide_server *s, connection *c)
@@ -953,7 +964,7 @@ static void send_chunks(tide_server *s, connection *c)
         tide_write_u32(&w, i);
         tide_write_u16(&w, (uint16_t)size);
         tide_write_bytes(&w, c->snapshot + from, size);
-        send_packet(&s->desc.transports[c->transport], c->address, &w);
+        send_packet(&s->desc.transports[c->transport], c->address, &w, &s->traffic);
         c->chunk_sent[i] = s->now > 0.0 ? s->now : 1e-9;
         sent++;
     }
@@ -1017,7 +1028,7 @@ static void send_frames(tide_server *s, connection *c)
             const uint32_t size = f->size - from < PIECE ? f->size - from : PIECE;
             if (w.size + piece_header(s, tick, f->size) + size > TIDE_NET_MTU || pieces == 255u) {
                 s->packet[count_at] = (uint8_t)pieces;
-                send_packet(t, c->address, &w);
+                send_packet(t, c->address, &w, &s->traffic);
                 packets++;
                 start_server_packet(s, c, &w, &count_at);
                 pieces = 0;
@@ -1031,7 +1042,7 @@ static void send_frames(tide_server *s, connection *c)
         *mark = (sent_mark){tick, s->now > 0.0 ? s->now : 1e-9};
     }
     s->packet[count_at] = (uint8_t)pieces;
-    if (packets < PACKETS_PER_UPDATE) send_packet(t, c->address, &w); // Always one, for the times and margin
+    if (packets < PACKETS_PER_UPDATE) send_packet(t, c->address, &w, &s->traffic); // Always one, for the times and margin
 }
 
 tide_server *tide_server_create(const tide_server_desc *desc, const double now)
@@ -1150,7 +1161,7 @@ static void send_handover(tide_server *s)
     s->handover_sent = s->now;
     for (uint32_t i = 0; i < TIDE_MAX_PLAYERS; i++) {
         const connection *c = &s->connections[i];
-        if (c->used && !c->local) send_packet(&s->desc.transports[c->transport], c->address, &w);
+        if (c->used && !c->local) send_packet(&s->desc.transports[c->transport], c->address, &w, &s->traffic);
     }
 }
 
@@ -1283,6 +1294,7 @@ struct tide_client {
     bool need_snapshot;
     uint32_t resyncs;
     uint64_t world_bytes;
+    traffic traffic;
     uint64_t cookie;
 
     // The world it builds the one being received from: the one it was given
@@ -1557,6 +1569,7 @@ static void client_receive(tide_client *c)
     uint32_t size;
     const tide_transport *t = &c->desc.transport;
     while (t->receive && (size = t->receive(t->self, &from, data, sizeof data)) > 0) {
+        if (from.kind != TIDE_ADDRESS_LOOPBACK) c->traffic.received += size;
         if (!tide_address_equal(from, c->desc.server)) continue;
         tide_reader r = {data, size, 0, false};
         const uint8_t type = read_header(&r);
@@ -1879,7 +1892,7 @@ static void send_hello(tide_client *c)
     tide_write_u64(&w, c->desc.cookie);
     tide_write_u8(&w, (c->desc.knew_kick ? HELLO_KNEW_KICK : 0u) | (c->base ? HELLO_HAS_WORLD : 0u)
                           | (can_start(c) ? HELLO_CAN_START : 0u));
-    send_packet(&c->desc.transport, c->desc.server, &w);
+    send_packet(&c->desc.transport, c->desc.server, &w, &c->traffic);
     c->last_hello = c->now;
 }
 
@@ -1961,7 +1974,7 @@ static void send_client(tide_client *c)
         count++;
     }
     c->packet[count_at] = (uint8_t)count;
-    send_packet(&c->desc.transport, c->desc.server, &w);
+    send_packet(&c->desc.transport, c->desc.server, &w, &c->traffic);
 }
 
 tide_client *tide_client_create(const tide_client_desc *desc, const double now)
@@ -2003,7 +2016,7 @@ void tide_client_destroy(tide_client *c)
         uint8_t data[8];
         tide_writer w = {data, sizeof data, 0, false, false};
         header(&w, MSG_BYE);
-        send_packet(&c->desc.transport, c->desc.server, &w);
+        send_packet(&c->desc.transport, c->desc.server, &w, &c->traffic);
     }
     if (c->desc.transport.close) c->desc.transport.close(c->desc.transport.self);
     stop_receiving(c);
@@ -2108,6 +2121,8 @@ struct tide_session {
     // machine took it over yet, or this machine joined the one that did.
     tide_client *stale;
     bool migrating;
+
+    traffic traffic; // Of the servers and clients it had: theirs is added as they go
 };
 
 // The session's own time starts over with each match.
@@ -2122,8 +2137,15 @@ static void push_event(tide_session *s, const tide_session_event e)
     if (s->event_count < SESSION_EVENTS) s->events[s->event_count++] = e;
 }
 
+static void keep_traffic(tide_session *s, const traffic t)
+{
+    s->traffic.sent += t.sent;
+    s->traffic.received += t.received;
+}
+
 static void drop_stale(tide_session *s)
 {
+    if (s->stale) keep_traffic(s, s->stale->traffic);
     tide_client_destroy(s->stale);
     s->stale = NULL;
     s->migrating = false;
@@ -2132,6 +2154,8 @@ static void drop_stale(tide_session *s)
 // Ends whatever it's in, without a word to local code.
 static void tear_down(tide_session *s)
 {
+    if (s->client) keep_traffic(s, s->client->traffic);
+    if (s->server) keep_traffic(s, s->server->traffic);
     tide_client_destroy(s->client);
     tide_server_destroy(s->server);
     tide_loopback_destroy(s->loopback);
@@ -2404,6 +2428,16 @@ tide_session_status tide_session_status_of(const tide_session *s)
     status.server = s->server != NULL;
     status.open = s->open;
     status.skipped = s->paused;
+    traffic t = s->traffic;
+    const traffic *live[] = {s->server ? &s->server->traffic : NULL, s->client ? &s->client->traffic : NULL,
+                             s->stale ? &s->stale->traffic : NULL};
+    for (int i = 0; i < 3; i++) {
+        if (!live[i]) continue;
+        t.sent += live[i]->sent;
+        t.received += live[i]->received;
+    }
+    status.sent_bytes = t.sent;
+    status.received_bytes = t.received;
     return status;
 }
 

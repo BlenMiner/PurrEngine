@@ -1,0 +1,6 @@
+// expect: the match runs the same on every machine, so it can't call Clipboard.Copy
+scene Main { }
+system Share()
+{
+    Clipboard.Copy("hello");
+}

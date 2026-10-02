@@ -2028,6 +2028,53 @@ static bool names_wait(const checker *c, const expr *e)
         && !is_namespace(c->prog, e->name);
 }
 
+// Clipboard.Copy(text): text onto this machine's clipboard, which the host
+// does after the frame, as it does what Session's calls ask. Local code's,
+// like those.
+static type check_clipboard_call(checker *c, expr *e)
+{
+    if (!str_eq_c(e->name, "Copy")) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        diag_error(e->at, "Clipboard has no '" STR_FMT "'; it has Copy", STR_ARG(e->name));
+        if (str_eq_c(e->name, "Paste") || str_eq_c(e->name, "text")) {
+            diag_note("what's pasted comes as typing: a text field takes it");
+        }
+        return T_ERR;
+    }
+    if (in_async_function(c) && !note_task_side(c, TASK_LOCAL, e->at)) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        return T_ERR;
+    }
+    if (in_routine(c) || c->in_input || (!in_async_function(c) && !local_code(c))) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        if (in_routine(c)) {
+            diag_error(e->at, "%s can't call Clipboard.Copy yet; views and local handlers do", routines(c));
+            diag_note("call it in the view, and pass what the function decides back, like a 'mut bool' or its result");
+        } else if (c->in_input) {
+            diag_error(e->at, "%s makes this machine's input, so it can't call Clipboard.Copy", input_code(c));
+        } else {
+            diag_error(e->at, "the match runs the same on every machine, so it can't call Clipboard.Copy");
+            diag_note("call it from a view or a local handler, like a button's");
+        }
+        return T_ERR;
+    }
+    if (c->loop_header > 0 || c->branch_depth > 0 || c->short_circuit_depth > 0) {
+        diag_error(e->at, "Clipboard.Copy is a statement of its own");
+    }
+    e->call = CALL_CLIPBOARD;
+    if (e->args.count != 1) {
+        for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+        diag_error(e->at, "Clipboard.Copy takes the text to copy: 'Clipboard.Copy(session.room)'");
+        return T_ERR;
+    }
+    const type t = check_expr(c, e->args.items[0]);
+    if (t.kind != TY_ERROR && t.kind != TY_STRING) {
+        diag_error(e->args.items[0]->at, "Clipboard.Copy takes text, not %s", type_name(t));
+        diag_note("put a value in text with '$', like '$\"{value}\"'");
+    }
+    return T_VOID_;
+}
+
 static type check_method(checker *c, expr *e)
 {
     if (names_wait(c, e->object)) {
@@ -2043,6 +2090,10 @@ static type check_method(checker *c, expr *e)
     if (e->object->kind == E_NAME && str_eq_c(e->object->name, "Session") && !find_local(c, e->object->name)
         && !find_param(c, e->object->name)) {
         return check_session_call(c, e);
+    }
+    if (e->object->kind == E_NAME && str_eq_c(e->object->name, "Clipboard") && !find_local(c, e->object->name)
+        && !find_param(c, e->object->name)) {
+        return check_clipboard_call(c, e);
     }
 
     // Math.Dot(a, b), quaternion.AxisAngle(axis, angle), Draw.Circle(center,
@@ -4220,7 +4271,8 @@ static void check_stmt(checker *c, stmt *s)
                              && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
                          || (called->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION
                          || call == CALL_SEND || call == CALL_LOAD || call == CALL_UNLOAD || call == CALL_SCENE_PLAYER
-                         || call == CALL_GUI || call == CALL_ACTION || call == CALL_SESSION || call == CALL_SNAP
+                         || call == CALL_GUI || call == CALL_ACTION || call == CALL_SESSION || call == CALL_CLIPBOARD
+                         || call == CALL_SNAP
                          || (call == CALL_LIST && !str_eq_c(called->name, "Contains") && !str_eq_c(called->name, "IndexOf"))
                          || call == CALL_GRID
                          || e->kind == E_TRY // Passes an error on, even from a variable

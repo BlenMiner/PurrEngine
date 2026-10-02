@@ -91,7 +91,8 @@ view Panel(mut Canvas canvas, mut Lobby lobby, Session session)
             }
             else if (session.room != "")
             {
-                GUILayout.Label("Room " + session.room + "  ");
+                GUILayout.Label("Room " + session.room);
+                if (GUILayout.Button("Copy")) Clipboard.Copy(session.room);
             }
             GUILayout.TextField("Code", lobby.code);
             if (GUILayout.Button("Join") && lobby.code != "") Session.Join(lobby.code);

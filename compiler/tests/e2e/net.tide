@@ -73,6 +73,7 @@ local singleton Menu
     bool host;  // Start and Open, in one frame
     bool close;
     bool kick;
+    bool copy;
     bool join;
     bool connect;
     bool inRoom; // Session.room, as the view read it
@@ -114,6 +115,12 @@ view Start(mut Menu menu, Session session)
         menu.kick = false;
         Session.Kick(PlayerID(1), "Be nice");
         Session.KickAll();
+    }
+    if (menu.copy)
+    {
+        menu.copy = false;
+        Clipboard.Copy("first");
+        Clipboard.Copy($"room {menu.roomLength} é");
     }
     if (!menu.play) return;
     menu.play = false;

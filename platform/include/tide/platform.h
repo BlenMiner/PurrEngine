@@ -76,8 +76,12 @@ void tide_platform_draw(const tide_draw_list *list);
 // tools and tests.
 tide_float2 tide_platform_world_to_screen(tide_float2 world);
 
-// Draws `text` in the window's top right corner, over the frame. For debug
-// overlays such as frame rates.
+// Puts `text` on the system's clipboard. A browser takes it only shortly
+// after the player clicked or pressed a key, as when a button is pressed.
+void tide_platform_copy(const char *text);
+
+// Draws `text` in the window's bottom right corner, over the frame, each of
+// its lines against the right edge. For debug overlays such as frame rates.
 void tide_platform_draw_overlay(const char *text);
 
 // Frames per second, averaged over the last frames.

@@ -1303,6 +1303,15 @@ TIDE_TEST(lsp_sessions)
 
     open_document("local scene Main { }\nview Menu()\n{\n    Session.Le$ave();\n}\n");
     TIDE_CHECK(has(request("textDocument/hover"), "Leaves the match"));
+
+    // Clipboard, where Session is: its one call
+    TIDE_CHECK(offers(complete("local scene Main { }\nview Menu()\n{\n    $\n}\n"), "Clipboard"));
+    TIDE_CHECK(!offers(complete("scene Main { }\nsystem Move()\n{\n    $\n}\n"), "Clipboard"));
+    TIDE_CHECK(offers(complete("local scene Main { }\nview Menu()\n{\n    Clipboard.$\n}\n"), "Copy"));
+    open_document("local scene Main { }\nview Menu(Session session)\n{\n"
+                  "    if (GUILayout.Button(\"Copy\")) Clipboard.Co$py(session.room);\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(request("textDocument/hover"), "on this machine's clipboard"));
 }
 
 

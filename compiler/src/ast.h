@@ -362,6 +362,7 @@ typedef enum builtin_call {
     CALL_UNLOAD,    // Scene.Unload(scene)
     CALL_SCENE_PLAYER, // Scene.AddPlayer(scene, player) and Scene.RemovePlayer(scene, player)
     CALL_SESSION,   // Session.Start, Open, Close, Join, Connect and Leave: `name` says which; type_decl is Start's scene
+    CALL_CLIPBOARD, // Clipboard.Copy(text)
     CALL_SNAP,      // entity.Snap() or singleton.Snap(): views draw it as it is this tick; type_decl is a singleton's
     CALL_GUI,       // GUI.Button(...), GUILayout.Horizontal() { ... }: calls c_callee with the GUI first
     CALL_ACTION,    // content(): runs the Action its function was given

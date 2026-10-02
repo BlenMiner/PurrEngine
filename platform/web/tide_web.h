@@ -37,8 +37,12 @@ TIDE_WEB_IMPORT(watch_key) void tide_web_watch_key(int index, const char *code);
 TIDE_WEB_IMPORT(key_held) bool tide_web_key_held(int index);
 
 // The next character typed, as a Unicode code point, or 0 once there are no
-// more. They follow the keyboard layout, unlike keys.
+// more. They follow the keyboard layout, unlike keys. What's pasted comes as
+// characters typed too.
 TIDE_WEB_IMPORT(take_char) int tide_web_take_char(void);
+
+// Puts text on the clipboard (see tide_platform_copy).
+TIDE_WEB_IMPORT(copy) void tide_web_copy(const char *text);
 
 // Gamepads in the browser's standard mapping: axes -1 to 1 (y down), buttons
 // 0 to 1 (triggers are analog buttons 6 and 7).

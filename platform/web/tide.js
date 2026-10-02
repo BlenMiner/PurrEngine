@@ -192,6 +192,28 @@
         if (typed.length < 64) typed.push(c);
     }
     addEventListener('keydown', event => { onKey(event, 1); onType(event); });
+    // Ctrl+V (Cmd+V) pastes as typing, but for newlines and tabs.
+    addEventListener('paste', event => {
+        const text = event.clipboardData ? event.clipboardData.getData('text') : '';
+        for (const ch of text) {
+            const c = ch.codePointAt(0);
+            if (c >= 32 && c !== 127 && typed.length < 1024) typed.push(c);
+        }
+        event.preventDefault();
+    });
+    // The clipboard API where the browser has it, else the old way: copying a
+    // hidden field's selection.
+    function copyText(text) {
+        const field = document.createElement('textarea');
+        field.value = text;
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.appendChild(field);
+        field.select();
+        try { document.execCommand('copy'); } catch { /* Nothing more to try */ }
+        field.remove();
+        canvas.focus();
+    }
     addEventListener('keyup', event => onKey(event, 0));
     addEventListener('blur', () => { keysHeld.fill(0); keysTapped.fill(0); }); // Keys released elsewhere never send keyup
 
@@ -350,6 +372,11 @@
         },
         key_held(index) { const held = keysHeld[index] || keysTapped[index] || 0; keysTapped[index] = 0; return held; },
         take_char: () => typed.length ? typed.shift() : 0,
+        copy(textPtr) {
+            const text = string(textPtr);
+            if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => copyText(text));
+            else copyText(text);
+        },
         gamepad_connected(pad) {
             const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
             return gamepads[pad] && gamepads[pad].connected ? 1 : 0;

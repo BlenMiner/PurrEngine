@@ -528,6 +528,16 @@ TIDE_TEST(net_local_code_joins_rooms_and_connects_to_addresses)
     TIDE_CHECK(request.kind == TIDE_REQUEST_KICK_ALL && request.text[0] == 0);
     TIDE_CHECK(!tide_local_take_request(&local, &request, &start));
 
+    // Clipboard.Copy: the frame's last, after the session's requests.
+    local.Menu.copy = true;
+    local.Menu.close = true;
+    run_views();
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_CLOSE);
+    TIDE_REQUIRE(tide_local_take_request(&local, &request, &start));
+    TIDE_CHECK(request.kind == TIDE_REQUEST_COPY && strcmp(request.text, "room 0 \xC3\xA9") == 0);
+    TIDE_CHECK(!tide_local_take_request(&local, &request, &start));
+
     // Disconnected has a kick's message.
     tide_local_disconnected(&local, TIDE_DISCONNECT_KICKED, "Be nice");
     run_views();

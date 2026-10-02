@@ -18,7 +18,9 @@ Sand, water and walls that everyone in a room paints into at once, built for the
 
 ## Paint together
 
-Press **Invite**, and the room's code shows beside it. Whoever opens this page on another machine types the code next to **Join** and presses it, and you're both painting into the same sand. Up to 16 players can join.
+Press **Invite**, and the room's code shows beside it, with **Copy** to put it on the clipboard. Whoever opens this page on another machine pastes the code next to **Join** (Ctrl+V, or Cmd+V) and presses it, and you're both painting into the same sand. Up to 16 players can join.
+
+The corner shows the frame rate, the ping, and what goes over the network each second, up and down.
 
 Only the brushes go over the network: where each one is, what it paints, and whether it's down. Every machine runs the same simulation from them, and gets the same sand, bit for bit. A player who joins gets the world as it is then, and only the parts of it that changed since the match started.
 

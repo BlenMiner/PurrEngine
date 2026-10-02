@@ -61,9 +61,17 @@ static int frame(void *user, const float seconds)
         key_event("keydown", "Space", " ", 32);
         tide_web_eval("dispatchEvent(new FocusEvent('blur'))");
         return TIDE_KEEP_RUNNING;
-    default:
+    case 5:
         check(!devices.keyboard.space.held, "losing focus releases held keys");
         check(devices.text.count == 1 && devices.text.chars[0] == ' ', "space types a space");
+        // Ctrl+V: the browser's paste event, with what's on the clipboard
+        tide_web_eval("const data = new DataTransfer(); data.setData('text', 'K7\\n\\u00e9');"
+                      "dispatchEvent(new ClipboardEvent('paste', {clipboardData: data}))");
+        return TIDE_KEEP_RUNNING;
+    default:
+        check(devices.text.count == 3 && devices.text.chars[0] == 'K' && devices.text.chars[1] == '7'
+                  && devices.text.chars[2] == 0xE9u,
+              "pasting types what's on the clipboard, but for newlines");
         return failures == 0 ? 0 : 1;
     }
 }

@@ -25,7 +25,7 @@ typedef struct tide_run_desc {
     int width;              // Starting window size in pixels; default 960 x 540
     int height;
     int tick_rate;          // Ticks per second, over the game's tickRate setting; 0 for that, or else 60
-    bool stats;        // Show the tick, entity count, ping and frame rate in a corner
+    bool stats;        // Show the frame rate, ping, bandwidth, tick and entity count in a corner
     int argc;          // The command line, for --host, --join and --connect
     char **argv;
 } tide_run_desc;
@@ -105,6 +105,12 @@ static double tide_run_now; // Seconds since the program started
 static bool tide_run_dropped;
 // Host migration: when this machine went to its match's room again, or 0
 static double tide_run_migrating_since;
+// The stats overlay (tide_run_desc.stats): frames and bytes over the last
+// second, counted from when it began, with the session's totals then.
+static double tide_run_stats_since;
+static uint32_t tide_run_stats_frames;
+static uint64_t tide_run_stats_sent, tide_run_stats_received;
+static double tide_run_fps, tide_run_up, tide_run_down; // A second, over the last one
 
 // This machine's input for one tick.
 static inline void tide_run_sample(void *user, const uint32_t tick, void *input)
@@ -118,7 +124,8 @@ static inline void tide_run_sample(void *user, const uint32_t tick, void *input)
     tide_devices_consume(&tide_run_devices);
 }
 
-// Starts, joins or leaves a match, as local code or the command line asked.
+// Starts, joins or leaves a match, as local code or the command line asked,
+// and copies what it asked to.
 // `start` is a tide_start, or NULL for Main.
 static inline void tide_run_request(const tide_session_request *request, const void *start)
 {
@@ -173,6 +180,9 @@ static inline void tide_run_request(const tide_session_request *request, const v
         break;
     case TIDE_REQUEST_END:
         tide_session_end(s);
+        break;
+    case TIDE_REQUEST_COPY:
+        tide_platform_copy(request->text);
         break;
     default:
         break;
@@ -346,10 +356,25 @@ static inline int tide_run_frame(void *user, const float seconds)
     tide_gui_end(&tide_run_gui, &tide_run_draw);
     tide_platform_draw(&tide_run_draw);
 
+    if (tide_run_settings.stats) {
+        tide_run_stats_frames++;
+        const double span = tide_run_now - tide_run_stats_since;
+        if (span >= 1.0) {
+            const uint64_t sent = status.sent_bytes, received = status.received_bytes;
+            tide_run_fps = tide_run_stats_frames / span;
+            tide_run_up = sent >= tide_run_stats_sent ? (double)(sent - tide_run_stats_sent) / span : 0.0;
+            tide_run_down = received >= tide_run_stats_received ? (double)(received - tide_run_stats_received) / span : 0.0;
+            tide_run_stats_since = tide_run_now;
+            tide_run_stats_frames = 0;
+            tide_run_stats_sent = sent;
+            tide_run_stats_received = received;
+        }
+    }
     if (tide_run_settings.stats && match) {
-        char stats[128];
-        snprintf(stats, sizeof stats, "tick %d   entities %u   ping %u ms   %d fps", (int)game->tick(match),
-                 (unsigned)game->entity_count(match), (unsigned)status.client.ping_ms, tide_platform_fps());
+        char stats[192];
+        snprintf(stats, sizeof stats, "%.0f fps\nping %u ms\nup %.1f KB/s\ndown %.1f KB/s\ntick %d\n%u entities",
+                 tide_run_fps, (unsigned)status.client.ping_ms, tide_run_up / 1024.0, tide_run_down / 1024.0,
+                 (int)game->tick(match), (unsigned)game->entity_count(match));
         tide_platform_draw_overlay(stats);
     }
 
