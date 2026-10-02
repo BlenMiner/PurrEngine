@@ -1,0 +1,135 @@
+// Cases the grammar once colored wrong, which grammar.test.mjs checks by
+// finding their lines. Not a game: some lines are wrong on purpose.
+
+// Text is one line: an unclosed string ends with its line.
+string Unclosed(int score)
+{
+    return $"score {score} and more;
+}
+component AfterUnclosed { int x; }
+
+string UnclosedValue(int score)
+{
+    return $"score {score;
+}
+component AfterUnclosedValue { int x; }
+
+string UnclosedPlain()
+{
+    return "no end;
+}
+component AfterUnclosedPlain { int x; }
+
+// Functions that return generic types, and T?.
+List<int> Doubled(List<int> values)
+{
+    mut List<int> doubled = [];
+    return doubled;
+}
+List<Combat.Stats>? MaybeStats(int count) { return null; }
+int? Find(List<int> items, int wanted) { return null; }
+extern List<int> Primes(int count);
+extern float Noise(float x, float y);
+extern void Fill(in Stats stats, mut List<float> values);
+const List<int> NONE = [];
+const int MAX_HEALTH = 100;
+
+struct Stats
+{
+    int hp;
+    Grid2<int> cells;
+    List<float> Weights() { return []; }
+    mut void Heal(int amount) { }
+    Stats operator +(Stats a, Stats b) { return a; }
+}
+
+// Declaration words are keywords only where a declaration starts.
+input PlayerInput
+{
+    float2 move;
+}
+
+system Steer(PlayerInput input, List<int> events)
+{
+    if (input is PlayerInput other) { }
+    foreach (var event in events) { }
+    var scene = 1;
+}
+
+// Both orders of local and async.
+local event Shown { }
+local component Toast { float alpha; }
+async local event(Shown) Fade(mut Toast toast) { }
+local async event(Shown) Glow(mut Toast toast) { }
+async void Countdown() { await Wait.Seconds(1); }
+
+// fails after the parameters, or on a line of its own.
+int Parse(string text) fails ParseError
+{
+    return 0;
+}
+
+int ParseLong(string text)
+    fails ParseError
+{
+    return 0;
+}
+
+// Attributes side by side.
+[After(Steer)] [Before(Fade)]
+system Both() { }
+[After(Steer), Before(Fade)] system SameLine() { }
+
+input Aim
+{
+    [Clamp(float2(0, -5), float2(10, 5))] float2 aim;
+    [Min(1)] [Max(3)] int gear = 1;
+}
+
+// Built-in types and groups.
+enum Voxel : byte { Air, Stone }
+view Show(Devices devices)
+{
+    Keyboard keyboard = devices.keyboard;
+    Mouse mouse = devices.mouse;
+    Gamepad pad = devices.gamepad;
+    Button jump = keyboard.space;
+    Dpad dpad = pad.dpad;
+    float4x4 world = default;
+    float2x3 wrong = default;
+    int2x2 alsoWrong = default;
+    Draw.Rect(0, 0, 1, 1, Color.white);
+    if (GUI.Button("Copy")) Clipboard.Copy("x");
+}
+
+// Operators that aren't what they look like.
+void Operators(string text)
+{
+    int value = Parse(text)!;
+    bool not = !true;
+    int either = true ? 1 : 2;
+    switch (value)
+    {
+        case 1:
+            break;
+        default:
+            break;
+    }
+}
+
+// Escapes.
+void Escapes()
+{
+    string good = "quote \" slash \\ line \n";
+    string bad = "tab \t";
+    string braces = $"{{ {value:F2} }}";
+    string lone = $"a } b";
+    string badValue = $"tab \t {value}";
+}
+
+// Loops' headers.
+system Loops(Field field)
+{
+    parallel (var at in field.cells by 2 offset o) { }
+    foreach (var tick in Both(Ticks(), Ticks())) { int in = 1; }
+}

@@ -1,7 +1,8 @@
 # Builds the docs site (docs/, SvelteKit), with the web demos in it, and
 # deploys it to Fly.io (docs/fly.toml) on pushes to dev. Pull requests only
 # build it, which also checks its links. GitHub Pages, where the site used to
-# be, sends visitors on to it.
+# be, sends visitors on to it. It tests the editors' grammar first, through the
+# Shiki the site highlights Tide with.
 name: Docs
 
 on:
@@ -28,6 +29,13 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: docs/package-lock.json
+      # tools/tide-syntax/test: the grammar's scopes, on its cases and the
+      # compiler's test programs.
+      - name: Test the grammar
+        working-directory: docs
+        run: |
+          npm ci
+          npm run test:grammar
       - name: Install tools
         run: |
           sudo apt-get update
@@ -49,7 +57,6 @@ jobs:
       - name: Build the site
         working-directory: docs
         run: |
-          npm ci
           npm run check
           npm run build
 

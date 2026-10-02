@@ -75,6 +75,7 @@ tasks {
     prepareSandbox {
         from(layout.projectDirectory.dir("../tide-syntax")) {
             into("tide/textmate")
+            exclude("test/**")
         }
     }
 }
