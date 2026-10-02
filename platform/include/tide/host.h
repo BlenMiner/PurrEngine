@@ -25,7 +25,7 @@ typedef struct tide_run_desc {
     int width;              // Starting window size in pixels; default 960 x 540
     int height;
     int tick_rate;          // Ticks per second, over the game's tickRate setting; 0 for that, or else 60
-    bool stats;        // Show the frame rate, ping, bandwidth, tick and entity count in a corner
+    bool stats;        // Show the frame rate, ping, bandwidth, tick, entity count and threads in a corner
     int argc;          // The command line, for --host, --join and --connect
     char **argv;
 } tide_run_desc;
@@ -371,10 +371,12 @@ static inline int tide_run_frame(void *user, const float seconds)
         }
     }
     if (tide_run_settings.stats && match) {
-        char stats[192];
-        snprintf(stats, sizeof stats, "%.0f fps\nping %u ms\nup %.1f KB/s\ndown %.1f KB/s\ntick %d\n%u entities",
+        const tide_jobs *jobs = tide_platform_jobs(); // What the session ticks on
+        char stats[208];
+        snprintf(stats, sizeof stats,
+                 "%.0f fps\nping %u ms\nup %.1f KB/s\ndown %.1f KB/s\ntick %d\n%u entities\nthreads %u",
                  tide_run_fps, (unsigned)status.client.ping_ms, tide_run_up / 1024.0, tide_run_down / 1024.0,
-                 (int)game->tick(match), (unsigned)game->entity_count(match));
+                 (int)game->tick(match), (unsigned)game->entity_count(match), jobs ? (unsigned)jobs->threads : 1u);
         tide_platform_draw_overlay(stats);
     }
 
