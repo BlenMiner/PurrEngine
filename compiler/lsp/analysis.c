@@ -2432,9 +2432,13 @@ void analysis_implementation(const int line, const int character, jbuf *out)
     }
     jb_put(out, "[");
     int written = 0;
-    for (int i = 0; d->kind == DECL_EVENT && i < d->handlers.count; i++) {
+    // The program's handlers rather than the event's: the checker only lists
+    // those once the game has no errors, in the order they run.
+    for (int i = 0; d->kind == DECL_EVENT && i < A.prog->handlers.count; i++) {
+        const decl *h = A.prog->handlers.items[i];
+        if (h->event != d) continue;
         if (written++) jb_put(out, ",");
-        write_location(out, d->handlers.items[i]->at, d->handlers.items[i]->name.len);
+        write_location(out, h->at, h->name.len);
     }
     if (d->kind == DECL_INPUT && d->body) {
         if (written++) jb_put(out, ",");
@@ -2994,7 +2998,8 @@ void analysis_inlay_hints(const int start_line, const int end_line, jbuf *out)
         str names[16];
         const int count = call_param_names(call, names, 16);
         for (int k = 0; k < call->args.count && k < count; k++) {
-            if (!is_literal(call->args.items[k]) || names[k].len == 0) continue;
+            // A one-letter name (float3's x, y, z, Color's r, g, b) says no more than where the argument is.
+            if (!is_literal(call->args.items[k]) || names[k].len <= 1) continue;
             sb label = {0};
             sb_printf(&label, STR_FMT ":", STR_ARG(names[k]));
             inlay_hint(out, &written, expr_start(call->args.items[k]), label.data, HINT_PARAMETER, true);

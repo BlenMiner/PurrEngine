@@ -625,6 +625,13 @@ TIDE_TEST(lsp_type_definition_and_implementation)
     TIDE_CHECK(has(handlers, "\"range\":{\"start\":{\"line\":32,\"character\":15}")); // TakeHit
     const char *spawned = request_at("file:///test.tide", "textDocument/implementation", 37, 8, ""); // event(Spawned)
     TIDE_CHECK(has(spawned, "{\"line\":18,\"character\":15}") && has(spawned, "{\"line\":37,\"character\":15}")); // Setup, Grow
+    // While the game has an error elsewhere too, as it does while typing.
+    open_document(GAME_TYPES "event Hit\n{\n    int damage = 1;\n}\n\nsystem Strike(with Body)\n{\n"
+                  "    this.Send(Hit { damage = 2 });\n}\n\nevent(Hit hit) TakeHit(mut Body body)\n{\n"
+                  "    body.radius -= hit.damge;\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"severity\":1"));
+    const char *broken = request_at("file:///test.tide", "textDocument/implementation", 22, 7, "");
+    TIDE_CHECK(has(broken, "\"range\":{\"start\":{\"line\":32,\"character\":15}"));
     open_document("input Ke$ys\n{\n    bool fire;\n    Sample() { }\n    Sanitize() { }\n}\nscene Main { }\n");
     const char *input = request("textDocument/implementation");
     TIDE_CHECK(has(input, "{\"start\":{\"line\":3,\"character\":4},\"end\":{\"line\":3,\"character\":10}}"));
@@ -2070,7 +2077,8 @@ TIDE_TEST(lsp_built_in_methods)
     TIDE_CHECK(has(request_at("file:///test.tide", "textDocument/hover", 9, 10, ""), "entity.Snap()"));
 }
 
-// Inlay hints name the parameters literal arguments go to, the built-ins' too.
+// Inlay hints name the parameters literal arguments go to, the built-ins' too,
+// but for one-letter names, which only say where the argument is.
 TIDE_TEST(lsp_inlay_hints_for_built_ins)
 {
     start();
@@ -2083,13 +2091,11 @@ TIDE_TEST(lsp_inlay_hints_for_built_ins)
     const char *hints = request_at("file:///test.tide", "textDocument/inlayHint", 0, 0,
                                    "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":20,\"character\":0}}");
     TIDE_CHECK(has(hints, "{\"position\":{\"line\":4,\"character\":30},\"label\":\"radius:\",\"kind\":2"));
-    TIDE_CHECK(has(hints, "\"label\":\"x:\"") && has(hints, "\"label\":\"y:\"")); // float2(1, 2)
     TIDE_CHECK(!has(hints, "\"label\":\"center:\"") && !has(hints, "\"label\":\"color:\"")); // Not literals
-    TIDE_CHECK(has(hints, "{\"position\":{\"line\":5,\"character\":29},\"label\":\"x:\"")); // Math.Clamp's
-    TIDE_CHECK(has(hints, "{\"position\":{\"line\":5,\"character\":34},\"label\":\"a:\""));
     TIDE_CHECK(has(hints, "\"label\":\"label:\"") && has(hints, "\"label\":\"min:\"") && has(hints, "\"label\":\"max:\""));
     TIDE_CHECK(has(hints, "\"label\":\"port:\""));
-    TIDE_CHECK(has(hints, "\"label\":\"r:\"") && has(hints, "\"label\":\"g:\"") && has(hints, "\"label\":\"b:\""));
+    // float2(1, 2), Math.Clamp(x, a, b) and Color(r, g, b)
+    TIDE_CHECK(!has(hints, "\"label\":\"x:\"") && !has(hints, "\"label\":\"a:\"") && !has(hints, "\"label\":\"r:\""));
 }
 
 // A grid's cells[x, y] is cells[int2(x, y)] to the checker: x is still x.
