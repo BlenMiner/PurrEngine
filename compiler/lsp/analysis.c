@@ -80,7 +80,11 @@ typedef struct afile {
     int tok_count;
     int lex_errors; // Characters the lexer skipped
     VEC(const char *) lines; // Where each line starts
+    unsigned char *inactive; // Each line, from 1: LINE_DIRECTIVE, LINE_LEFT_OUT, or 0 for code
 } afile;
+
+// Lines no code is read from (see lex_all_spans).
+enum { LINE_DIRECTIVE = 1, LINE_LEFT_OUT = 2 };
 
 static struct {
     afile *files; // Index i is source file i: locations' `file` indexes this
@@ -857,7 +861,7 @@ void analysis_run(const analysis_file *files, const int count)
         afile *f = &A.files[i];
         char *copy = arena_alloc(files[i].len + 1);
         memcpy(copy, files[i].text, files[i].len);
-        f->src = (source){files[i].path, copy, files[i].len, 0};
+        f->src = (source){files[i].path, copy, files[i].len, 0, files[i].package};
         f->uri = files[i].uri;
         diag_add_source(&f->src);
 
@@ -869,8 +873,16 @@ void analysis_run(const analysis_file *files, const int count)
         }
 
         const int errors_before = diag_error_count();
-        f->toks = lex_all(&f->src);
+        lex_spans spans = {0};
+        f->toks = lex_all_spans(&f->src, &spans);
         f->lex_errors = diag_error_count() - errors_before;
+        f->inactive = arena_alloc((size_t)f->lines.count + 2);
+        memset(f->inactive, 0, (size_t)f->lines.count + 2);
+        for (int k = 0; k < spans.count; k++) {
+            for (int l = spans.items[k].first; l <= spans.items[k].last && l <= f->lines.count; l++) {
+                f->inactive[l] = spans.items[k].directive ? LINE_DIRECTIVE : LINE_LEFT_OUT;
+            }
+        }
         while (f->toks[f->tok_count].kind != T_EOF) f->tok_count++;
         parse_file(A.prog, &f->src, f->toks, true);
     }
@@ -2761,6 +2773,17 @@ static const char *token_start(const token *t);
 static int line_of(const char *p);
 static const unit *doc_unit(void);
 
+// At the start of a line no code is read from (see lex_all_spans), the start
+// of the first line after it that has code, or `limit`; anywhere else `p`.
+static const char *past_inactive(const char *p, const char *limit)
+{
+    if (p != DOC->src.text && p[-1] != '\n') return p;
+    for (int line = line_of(p); line <= DOC->lines.count && DOC->inactive[line]; line++) {
+        p = line < DOC->lines.count ? DOC->lines.items[line] : DOC->src.text + DOC->src.len;
+    }
+    return p < limit ? p : limit;
+}
+
 void analysis_folding_ranges(jbuf *out)
 {
     jb_put(out, "[");
@@ -2794,14 +2817,31 @@ void analysis_folding_ranges(jbuf *out)
     // over several lines: between tokens, where they are.
     for (int line = 1; line <= DOC->lines.count;) {
         int end = line;
-        while (end <= DOC->lines.count && comment_line(end)) end++;
+        while (end <= DOC->lines.count && comment_line(end) && !DOC->inactive[end]) end++;
         if (end - line >= 3) folding_range(out, &written, line, end - 1, "comment");
         line = end > line ? end : line + 1;
+    }
+    // Each branch of an #if, from its directive to the next one of that #if.
+    int *branch = arena_alloc(sizeof(int) * ((size_t)DOC->lines.count + 1)); // Open branches' first lines
+    int branches = 0;
+    for (int line = 1; line <= DOC->lines.count; line++) {
+        if (DOC->inactive[line] != LINE_DIRECTIVE) continue;
+        str text = doc_line(line);
+        while (text.len > 0 && (text.ptr[0] == ' ' || text.ptr[0] == '\t' || text.ptr[0] == '#')) {
+            text.ptr++;
+            text.len--;
+        }
+        const bool opens = text.len >= 2 && memcmp(text.ptr, "if", 2) == 0 && (text.len == 2 || !isalnum((unsigned char)text.ptr[2]));
+        const bool ends = text.len >= 5 && memcmp(text.ptr, "endif", 5) == 0;
+        if (!opens && branches > 0) folding_range(out, &written, branch[--branches], line - 1, "region");
+        if (!ends) branch[branches++] = line;
     }
     const char *p = DOC->src.text;
     for (int i = 0; i <= DOC->tok_count; i++) {
         const char *next = i < DOC->tok_count ? token_start(&DOC->toks[i]) : DOC->src.text + DOC->src.len;
         for (; p + 1 < next; p++) {
+            p = past_inactive(p, next);
+            if (p + 1 >= next) break;
             if (p[0] == '/' && p[1] == '/') {
                 while (p < next && *p != '\n') p++;
             } else if (p[0] == '/' && p[1] == '*') {
@@ -3061,9 +3101,9 @@ void analysis_workspace_symbols(const char *query, jbuf *out, int *written)
 
 static const char *const token_types[] = {"namespace", "type",     "struct", "class",   "interface", "parameter",
                                           "variable",  "property", "enumMember", "function", "method", "keyword",
-                                          "decorator", "enum"};
+                                          "decorator", "enum", "comment", "macro"};
 enum { ST_NAMESPACE, ST_TYPE, ST_STRUCT, ST_CLASS, ST_INTERFACE, ST_PARAMETER, ST_VARIABLE, ST_PROPERTY,
-       ST_ENUM_MEMBER, ST_FUNCTION, ST_METHOD, ST_KEYWORD, ST_DECORATOR, ST_ENUM };
+       ST_ENUM_MEMBER, ST_FUNCTION, ST_METHOD, ST_KEYWORD, ST_DECORATOR, ST_ENUM, ST_COMMENT, ST_MACRO };
 
 // Lowercase built-in value types (float3, int, bool, ...) read as keywords,
 // like C#'s float and int.
@@ -3164,24 +3204,95 @@ static void classify(const occurrence *o, int *type, int *mods)
     }
 }
 
+typedef struct semantic_token {
+    int line; // From 0
+    int col;  // In UTF-16 units
+    int len;
+    int type;
+    int mods;
+} semantic_token;
+
+typedef VEC(semantic_token) semantic_tokens;
+
+// `n` bytes of UTF-8 in UTF-16 units, as editors count.
+static int utf16_len(const char *p, const int n)
+{
+    int units = 0;
+    for (int i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)p[i];
+        if ((c & 0xC0) != 0x80) units += c >= 0xF0 ? 2 : 1;
+    }
+    return units;
+}
+
+// A directive's line: its word (#if) a keyword and the symbols in it macros.
+// Lines it leaves out read as comments, as editors gray out such code.
+static void inactive_tokens(const int line, semantic_tokens *toks)
+{
+    const str text = doc_line(line);
+    if (DOC->inactive[line] == LINE_LEFT_OUT) {
+        int start = 0;
+        while (start < text.len && (text.ptr[start] == ' ' || text.ptr[start] == '\t')) start++;
+        if (start == text.len) return;
+        const semantic_token t = {line - 1, utf16_len(text.ptr, start), utf16_len(text.ptr + start, text.len - start),
+                                  ST_COMMENT, 0};
+        vec_push(*toks, t);
+        return;
+    }
+    int i = 0;
+    while (i < text.len && text.ptr[i] != '#') i++;
+    int word = i + 1;
+    while (word < text.len && (text.ptr[word] == ' ' || text.ptr[word] == '\t')) word++;
+    int end = word;
+    while (end < text.len && isalnum((unsigned char)text.ptr[end])) end++;
+    const semantic_token directive = {line - 1, utf16_len(text.ptr, i), end - i, ST_KEYWORD, 0};
+    vec_push(*toks, directive);
+    for (int k = end; k < text.len;) {
+        if (text.ptr[k] == '/' && k + 1 < text.len && text.ptr[k + 1] == '/') break; // A comment after it
+        if (!isalpha((unsigned char)text.ptr[k]) && text.ptr[k] != '_') {
+            k++;
+            continue;
+        }
+        int name = k;
+        while (k < text.len && (isalnum((unsigned char)text.ptr[k]) || text.ptr[k] == '_')) k++;
+        const bool literal = (k - name == 4 && memcmp(text.ptr + name, "true", 4) == 0)
+                          || (k - name == 5 && memcmp(text.ptr + name, "false", 5) == 0);
+        const semantic_token symbol = {line - 1, utf16_len(text.ptr, name), k - name, literal ? ST_KEYWORD : ST_MACRO, 0};
+        vec_push(*toks, symbol);
+    }
+}
+
+static int semantic_order(const void *a, const void *b)
+{
+    const semantic_token *x = a;
+    const semantic_token *y = b;
+    return x->line != y->line ? (x->line > y->line) - (x->line < y->line) : (x->col > y->col) - (x->col < y->col);
+}
+
 void analysis_semantic_tokens(jbuf *out)
 {
-    jb_put(out, "{\"data\":[");
-    int prev_line = 0;
-    int prev_col = 0;
-    for (int i = 0, written = 0; i < A.occs.count; i++) {
+    semantic_tokens toks = {0};
+    for (int i = 0; i < A.occs.count; i++) {
         const occurrence *o = &A.occs.items[i];
         if (o->at.file != A.doc) continue;
         if (is_operator_decl(o->decl) && !o->declaration) continue; // `+` in code: the editor colors it as an operator
-        int type;
-        int mods;
-        classify(o, &type, &mods);
-        const int line = o->at.line - 1;
-        const int col = utf16_col(o->at);
-        const int delta_col = line == prev_line ? col - prev_col : col;
-        jb_printf(out, "%s%d,%d,%d,%d,%d", written++ ? "," : "", line - prev_line, delta_col, o->len, type, mods);
-        prev_line = line;
-        prev_col = col;
+        semantic_token t = {o->at.line - 1, utf16_col(o->at), o->len, 0, 0};
+        classify(o, &t.type, &t.mods);
+        vec_push(toks, t);
+    }
+    for (int line = 1; line <= DOC->lines.count; line++) {
+        if (DOC->inactive[line]) inactive_tokens(line, &toks);
+    }
+    if (toks.count > 0) qsort(toks.items, (size_t)toks.count, sizeof(semantic_token), semantic_order);
+    jb_put(out, "{\"data\":[");
+    int prev_line = 0;
+    int prev_col = 0;
+    for (int i = 0; i < toks.count; i++) {
+        const semantic_token *t = &toks.items[i];
+        const int delta_col = t->line == prev_line ? t->col - prev_col : t->col;
+        jb_printf(out, "%s%d,%d,%d,%d,%d", i ? "," : "", t->line - prev_line, delta_col, t->len, t->type, t->mods);
+        prev_line = t->line;
+        prev_col = t->col;
     }
     jb_put(out, "]}");
 }
@@ -4201,6 +4312,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
     const loc at = from_lsp(line, character);
     completion c = {out, 0, {0}};
     jb_put(out, "{\"isIncomplete\":false,\"items\":[");
+    if (at.line >= 1 && at.line <= DOC->lines.count && DOC->inactive[at.line]) goto done; // A directive, or no code
 
     // The last token before the cursor, skipping the word being typed.
     int last = -1;
@@ -4766,7 +4878,7 @@ static const char *check_new_name(const occurrence *target, const str name)
         if (!isalnum((unsigned char)name.ptr[i]) && name.ptr[i] != '_') return "Names use letters, digits and '_' only.";
     }
     // The lexer's own keywords: it reads them as something other than a name.
-    const source text = {"", name.ptr, (size_t)name.len, 0};
+    const source text = {"", name.ptr, (size_t)name.len, 0, NULL};
     const token *word = lex_all(&text);
     if (!word || word[0].kind != T_IDENT) return "That's a keyword.";
     const bool variable = target->kind == OCC_PARAM || target->kind == OCC_LOCAL;
@@ -5531,12 +5643,19 @@ const char *analysis_format(int tab_size, const bool insert_spaces, const int fi
     fmt_line *lines = arena_alloc(sizeof(fmt_line) * (size_t)(DOC->lines.count + 1));
     bool *verbatim = arena_alloc(sizeof(bool) * (size_t)(DOC->lines.count + 2));
 
-    // Tokens and comments, line by line, in text order.
+    // Tokens and comments, line by line, in text order. Directives and the
+    // lines they leave out stay as they are.
+    for (int l = 1; l <= DOC->lines.count; l++) verbatim[l] = DOC->inactive[l] != 0;
     const char *p = DOC->lines.items[0];
     for (int i = 0; i <= DOC->tok_count; i++) {
         const token *t = &DOC->toks[i];
         const char *next = i < DOC->tok_count ? token_start(t) : DOC->src.text + DOC->src.len;
         while (p < next) {
+            const char *code = past_inactive(p, next);
+            if (code != p) {
+                p = code;
+                continue;
+            }
             if (p + 1 < next && p[0] == '/' && (p[1] == '/' || p[1] == '*')) {
                 const char *start = p;
                 const int first_line = line_of(start);

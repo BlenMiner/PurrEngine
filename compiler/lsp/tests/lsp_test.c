@@ -1732,6 +1732,60 @@ TIDE_TEST(lsp_operators)
     if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
 }
 
+// #if and the rest: the formatter leaves directives and what they leave out as
+// they are, which reads as comments, and each branch folds.
+TIDE_TEST(lsp_directives)
+{
+    start();
+    static const char messy[] = "scene Main { }\n"
+                                "#if TIDE_0_1_OR_NEWER\n"
+                                "const int A = 1;\n"
+                                "#else\n"
+                                "   this isn't /* code {{{\n"
+                                "#endif\n"
+                                "singleton Count { int n; }\n"
+                                "system S(mut Count c)\n"
+                                "{\n"
+                                "#if TIDE_9999_0_OR_NEWER\n"
+                                "        nonsense(\n"
+                                "#else\n"
+                                "c.n=A;\n"
+                                "#endif\n"
+                                "}\n";
+    static const char expected[] = "scene Main { }\n"
+                                   "#if TIDE_0_1_OR_NEWER\n"
+                                   "const int A = 1;\n"
+                                   "#else\n"
+                                   "   this isn't /* code {{{\n"
+                                   "#endif\n"
+                                   "singleton Count { int n; }\n"
+                                   "system S(mut Count c)\n"
+                                   "{\n"
+                                   "#if TIDE_9999_0_OR_NEWER\n"
+                                   "        nonsense(\n"
+                                   "#else\n"
+                                   "    c.n = A;\n"
+                                   "#endif\n"
+                                   "}\n";
+    open_document(messy);
+    TIDE_CHECK(has(sent[0], "\"diagnostics\":[]")); // What's left out isn't read
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    TIDE_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+    TIDE_CHECK(has(format_reply(expected), "\"result\":[]"));
+
+    open_document(expected);
+    const char *tokens = request("textDocument/semanticTokens/full");
+    TIDE_CHECK(has(tokens, "1,0,3,11,0,0,4,17,15,0"));   // #if a keyword, its symbol a macro
+    TIDE_CHECK(has(tokens, "1,3,22,14,0"));              // The line it leaves out a comment
+    const char *folds = request("textDocument/foldingRange");
+    TIDE_CHECK(has(folds, "{\"startLine\":1,\"endLine\":2,\"kind\":\"region\"}")); // #if to #else
+    TIDE_CHECK(has(folds, "{\"startLine\":3,\"endLine\":4,\"kind\":\"region\"}")); // #else to #endif
+    open_document("scene Main { }\n#if false\nthis is no$t code\n#endif\n");
+    TIDE_CHECK(has(request("textDocument/completion"), "\"items\":[]"));
+}
+
 TIDE_TEST(lsp_folding)
 {
     start();
@@ -2481,6 +2535,17 @@ static void open_uri(const char *uri, const char *text)
     jb_free(&b);
 }
 
+static void close_uri(const char *uri)
+{
+    jbuf b = {0};
+    jb_put(&b, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didClose\",\"params\":{\"textDocument\":{\"uri\":");
+    jb_string(&b, uri);
+    jb_put(&b, "}}}");
+    clear_sent();
+    handle(b.data);
+    jb_free(&b);
+}
+
 static const char *request_at(const char *uri, const char *method, const int line, const int character,
                               const char *extra)
 {
@@ -2713,6 +2778,68 @@ TIDE_TEST(lsp_open_folder_is_a_game)
     remove_game_file("lsp_open/main.tide");
     remove_folder("lsp_open/sub");
     remove_folder("lsp_open");
+    clear_sent();
+    lsp_free(&server);
+}
+
+// A game whose tide.packages lists a package in a folder: its files are
+// analyzed with the game's, in its namespace. A package's file is analyzed
+// with the game that uses it, or else alone, with no Main; and a folder of
+// the game with a tide.packages of its own isn't the game's.
+TIDE_TEST(lsp_open_folder_with_packages)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_pk");
+    make_folder("lsp_pk/game");
+    make_folder("lsp_pk/game/other");
+    make_folder("lsp_pk/physics");
+    static const char body[] = "namespace Physics;\n"
+                               "component Body { float2 position; }\n"
+                               "system Gravity(mut Body body) { body.position.y -= 1; }\n";
+    static const char main_file[] = "using Physics;\n"
+                                    "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
+    write_file("lsp_pk/game/tide.packages", "../physics\n");
+    write_file("lsp_pk/game/main.tide", main_file);
+    write_file("lsp_pk/game/other/tide.packages", "package Other\n");
+    write_file("lsp_pk/game/other/loose.tide", "struct Pair { float a; }\n"); // Outside its namespace, but not the game's
+    write_file("lsp_pk/physics/tide.packages", "package Physics\n");
+    write_file("lsp_pk/physics/body.tide", body);
+    char root[700], uri_main[700], uri_body[700], uri_loose[700];
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_pk/game", dir);
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_pk/game/main.tide", dir);
+    snprintf(uri_body, sizeof uri_body, "file:///%s/lsp_pk/physics/body.tide", dir);
+    snprintf(uri_loose, sizeof uri_loose, "file:///%s/lsp_pk/physics/loose.tide", dir);
+
+    start_in(root);
+    open_uri(uri_main, main_file);
+    TIDE_CHECK(sent_count == 2);
+    TIDE_CHECK(has(sent[0], uri_body) && has(sent[0], "\"diagnostics\":[]")); // The package's files come first
+    TIDE_CHECK(has(sent[1], uri_main) && has(sent[1], "\"diagnostics\":[]"));
+    // Opened from the game, the package's file is the game's.
+    open_uri(uri_body, body);
+    TIDE_CHECK(sent_count == 2 && has(sent[1], uri_main));
+
+    // A file of the package outside its namespace says so.
+    open_uri(uri_loose, "struct Pair { float a; }\n");
+    TIDE_CHECK(has(sent[1], uri_loose) && has(sent[1], "what package Physics declares goes in its namespace"));
+    close_uri(uri_loose);
+
+    // Without the game open, the package stands alone: no Main is missing.
+    start();
+    open_uri(uri_body, body);
+    TIDE_CHECK(sent_count == 1 && has(sent[0], "\"diagnostics\":[]"));
+
+    remove_game_file("lsp_pk/game/tide.packages");
+    remove_game_file("lsp_pk/game/main.tide");
+    remove_game_file("lsp_pk/game/other/tide.packages");
+    remove_game_file("lsp_pk/game/other/loose.tide");
+    remove_game_file("lsp_pk/physics/tide.packages");
+    remove_game_file("lsp_pk/physics/body.tide");
+    remove_folder("lsp_pk/game/other");
+    remove_folder("lsp_pk/game");
+    remove_folder("lsp_pk/physics");
+    remove_folder("lsp_pk");
     clear_sent();
     lsp_free(&server);
 }

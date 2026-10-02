@@ -1,0 +1,4 @@
+// expect: 'TIDE_0_3' isn't a symbol Tide knows
+scene Main { }
+#if TIDE_0_3
+#endif

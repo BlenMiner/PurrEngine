@@ -1,7 +1,8 @@
 # tide: the command users run to build, run and upgrade games. It runs tidec's
 # front end in-process and calls clang (see AGENTS.md, Packaging and releases).
-add_executable(tide_cli main.c build.c editors.c libraries.c release.c serve.c sha256.c sys.c toolchain.c upgrade.c
-    "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/folders.c" "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c")
+add_executable(tide_cli main.c build.c editors.c fetch.c libraries.c packages_cmd.c release.c serve.c sha256.c sys.c
+    toolchain.c upgrade.c "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/folders.c" "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/packages.c")
 target_include_directories(tide_cli PRIVATE . ../lsp)
 target_link_libraries(tide_cli PRIVATE tidec_core)
 # The engine library is already the `tide` target; the program is still called tide.
@@ -18,13 +19,23 @@ else()
 endif()
 install(TARGETS tide_cli RUNTIME DESTINATION bin COMPONENT tide)
 
-# Versions and picking releases, without the network, and which platform
-# libraries are for.
-add_executable(tide_cli_tests tests/release_test.c tests/libraries_test.c release.c libraries.c
-    "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c" "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+# Versions and picking releases, which platform libraries are for, and what
+# tide.packages and git's lists of branches and tags say, without the network.
+add_executable(tide_cli_tests tests/release_test.c tests/libraries_test.c tests/packages_test.c release.c libraries.c
+    fetch.c sys.c "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c" "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/packages.c"
+    "${PROJECT_SOURCE_DIR}/tests/test_main.c")
 target_include_directories(tide_cli_tests PRIVATE . ../lsp "${PROJECT_SOURCE_DIR}/tests")
-target_link_libraries(tide_cli_tests PRIVATE tide)
+target_link_libraries(tide_cli_tests PRIVATE tide tidec_core)
+if(NOT WIN32)
+    target_link_libraries(tide_cli_tests PRIVATE Threads::Threads)
+endif()
 add_test(NAME tide_cli_tests COMMAND tide_cli_tests)
+
+# Games with packages: in folders, and from git through a folder that stands
+# in for git hosts.
+add_test(NAME tide_cli_packages
+    COMMAND "${CMAKE_COMMAND}" "-DTIDE=$<TARGET_FILE:tide_cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/packages_test"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/packages_test.cmake")
 
 # tide editors, with fake editors where their installers put them.
 add_test(NAME tide_cli_editors

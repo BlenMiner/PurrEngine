@@ -1,6 +1,6 @@
 # The tide command
 
-`tide` builds and runs games. A game is every `.tide` file in a folder and its subfolders, with the `.c` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)). Commands take the game's folder, or use the current one.
+`tide` builds and runs games. A game is every `.tide` file in a folder and its subfolders, with the `.c` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)), and the packages its `tide.packages` lists (see [Packages](packages.md)). Commands take the game's folder, or use the current one.
 
 ```
 tide <command> [folder] [options]
@@ -11,6 +11,8 @@ tide <command> [folder] [options]
 | `tide run [folder]` | Builds the game and plays it |
 | `tide build [folder]` | Builds the game into `<folder>/build`, named after the folder |
 | `tide schedule [folder]` | Shows which systems can run at the same time, and why the others wait |
+| `tide add <source>` | Adds a package to the game in the current folder, from git or a folder |
+| `tide update [package]` | Moves the game's packages from git to the newest commit of what they follow |
 | `tide editors` | Adds Tide to VS Code, Cursor, VSCodium and Windsurf |
 | `tide upgrade` | Updates tide to the newest version |
 | `tide version` | Shows tide's version and channel, where it's installed, and which compilers it found |
@@ -77,6 +79,22 @@ Hot reload is only for `tide run`: `tide build` makes a plain program, or a page
 | `--join <code>` | The match in the room with this code, like `K7QF2M` |
 | `--connect <address>` | The match at an address, like `192.168.1.5` or `localhost:7777` (not on the web) |
 
+## add and update
+
+`tide add` and `tide update` change the `tide.packages` of the game in the current folder (see [Packages](packages.md)).
+
+| Command | What it does |
+|---|---|
+| `tide add github.com/owner/repo` | The newest commit of the repository's default branch |
+| `tide add github.com/owner/repo@dev` | The newest commit of the `dev` branch, which `tide update` follows |
+| `tide add github.com/owner/repo@v1` | The newest `v1.x.y` tag, which `tide update` follows |
+| `tide add github.com/owner/repo//physics` | The package in the repository's `physics` folder |
+| `tide add ../shared` | A package in a folder on this machine |
+| `tide update` | Every package from git, to the newest commit of what it follows |
+| `tide update physics` | One, by its name, its repository's name or its source |
+
+Both add the lines of the packages the game's packages need that it doesn't list yet.
+
 ## upgrade
 
 | Option | What it does |
@@ -89,4 +107,4 @@ Hot reload is only for `tide run`: `tide build` makes a plain program, or a page
 
 ## Files
 
-`tide` keeps its work in a hidden `.tide` folder in the game's folder. You can delete it any time, and git ignores it. `tide build` puts what it makes in `build/`, with the game's `.dll`, `.so` or `.dylib` libraries next to the program. C files and libraries in hidden folders or in `build/` aren't part of the game.
+`tide` keeps its work in a hidden `.tide` folder in the game's folder. You can delete it any time, and git ignores it. Packages from git are kept for every game, once each commit: in `%LOCALAPPDATA%\Tide\packages` on Windows and `~/.tide/packages` elsewhere, or where `TIDE_PACKAGES` says. `tide build` puts what it makes in `build/`, with the game's `.dll`, `.so` or `.dylib` libraries next to the program. C files and libraries in hidden folders or in `build/` aren't part of the game.

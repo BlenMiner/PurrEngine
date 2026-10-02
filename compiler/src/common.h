@@ -79,6 +79,7 @@ typedef struct source {
     const char *text;
     size_t len;
     int file;         // Set by diag_add_source
+    const char *package; // The package the file is in (its name, which is its namespace); NULL for the game's own
 } source;
 
 typedef enum diag_severity {

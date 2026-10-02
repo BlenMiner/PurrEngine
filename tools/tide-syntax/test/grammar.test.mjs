@@ -186,6 +186,16 @@ const cases = {
         ['string lone =', [['}', 'invalid.illegal']]],
         ['string badValue =', [['\\t', 'invalid.illegal'], ['value', 'meta.interpolation']]],
     ],
+    'directives': [
+        ['#if TIDE_0_3_OR_NEWER', [
+            ['#if', 'keyword.preprocessor'], ['TIDE_0_3_OR_NEWER', 'entity.name.variable.preprocessor.symbol'],
+            ['&&', 'keyword.operator.logical'], ['!', 'keyword.operator.logical'], ['false', 'constant.language'],
+            ['A newer tide', 'comment.line'],
+        ]],
+        ['#elif (TIDE_0_2_OR_NEWER)', [['#elif', 'keyword.preprocessor'], ['TIDE_0_2_OR_NEWER', 'entity.name.variable.preprocessor.symbol']]],
+        ['#else', [['#else', 'keyword.preprocessor']]],
+        ['#endif', [['#endif', 'keyword.preprocessor']]],
+    ],
     "loops' headers": [
         ['parallel (var at in field.cells by 2 offset o)', [['parallel', 'keyword.control'], ['in', 'keyword.control'], ['by', 'keyword.control'], ['offset', 'keyword.control']]],
         ['foreach (var tick in Both(Ticks(), Ticks()))', [['in', 'keyword.control'], ['Both', 'entity.name.function.call'], ['in', '!keyword', 2]]],

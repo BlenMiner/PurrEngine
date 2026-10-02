@@ -46,15 +46,22 @@ static int path_order(const void *a, const void *b)
 bool compile_program(const char **inputs, const int count, const codegen_options *opts, sb *schedule)
 {
     qsort(inputs, (size_t)count, sizeof(char *), path_order);
+    compile_input *files = arena_alloc(sizeof(compile_input) * (size_t)(count > 0 ? count : 1));
+    for (int i = 0; i < count; i++) files[i] = (compile_input){inputs[i], NULL};
+    return compile_inputs(files, count, opts, schedule);
+}
 
+bool compile_inputs(const compile_input *inputs, const int count, const codegen_options *opts, sb *schedule)
+{
     diag_reset();
     program *prog = program_new();
     for (int i = 0; i < count; i++) {
         source *src = NEW(source);
-        src->path = inputs[i];
-        char *text = read_file(inputs[i], &src->len);
+        src->path = inputs[i].path;
+        src->package = inputs[i].package;
+        char *text = read_file(inputs[i].path, &src->len);
         if (!text) {
-            fprintf(stderr, "tidec: can't read %s\n", inputs[i]);
+            fprintf(stderr, "tidec: can't read %s\n", inputs[i].path);
             return false;
         }
         src->text = text;
@@ -68,7 +75,7 @@ bool compile_program(const char **inputs, const int count, const codegen_options
     if (!check(prog)) return false;
 
     codegen_options named = *opts;
-    if (!named.name) named.name = path_stem(inputs[0]);
+    if (!named.name) named.name = path_stem(inputs[0].path);
     if (schedule) {
         print_schedule(prog, named.name, schedule);
         return true;

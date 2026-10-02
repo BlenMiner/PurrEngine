@@ -110,6 +110,21 @@ token *lex(const source *src);
 // read. For editors, which need tokens while code is half typed.
 token *lex_all(const source *src);
 
+// Lines the lexer reads no code from (see docs/spec.md, Conditional
+// compilation): a directive, like `#if TIDE_0_3_OR_NEWER`, or the lines one
+// leaves out.
+typedef struct lex_span {
+    int first; // Lines, from 1
+    int last;
+    bool directive;
+} lex_span;
+
+typedef VEC(lex_span) lex_spans;
+
+// lex_all, listing in `spans` the lines of directives and those they leave
+// out, in order.
+token *lex_all_spans(const source *src, lex_spans *spans);
+
 const char *tok_kind_name(tok_kind kind);
 
 // The binary operator behind a compound assignment: T_PLUS for T_PLUS_ASSIGN,

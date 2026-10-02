@@ -7,8 +7,10 @@
 
 #include "common.h"
 #include "compile.h"
+#include "fetch.h"
 #include "folders.h"
 #include "libraries.h"
+#include "packages.h"
 #include "serve.h"
 #include "sys.h"
 #include "toolchain.h"
@@ -75,12 +77,20 @@ static void free_files(file_list *list)
     *list = (file_list){0};
 }
 
-static file_list game_files(const char *folder)
+static int path_order(const void *a, const void *b)
+{
+    return path_compare(*(const char *const *)a, *(const char *const *)b);
+}
+
+// The .tide files in `folder` and its subfolders, but those of games and
+// packages of their own (subfolders with a tide.packages), by path.
+static file_list tide_files(const char *folder)
 {
     file_list list = {0};
     char *dir = path_join(folder, "");
-    folder_find(dir, ".tide", add_file, &list);
+    folder_find_own(dir, ".tide", add_file, &list);
     free(dir);
+    if (list.count > 0) qsort(list.items, (size_t)list.count, sizeof(char *), path_order);
     return list;
 }
 
@@ -124,7 +134,7 @@ static file_list own_files_of(const char *folder, const char *const *extensions)
 {
     char *dir = path_join(folder, "");
     own_files o = {strlen(dir), extensions, {0}};
-    folder_find(dir, "", add_own_file, &o); // Every file, once
+    folder_find_own(dir, "", add_own_file, &o); // Every file, once
     free(dir);
     return o.list;
 }
@@ -135,6 +145,70 @@ static const char *const library_extensions[] = {".a", ".lib", ".so", ".dll", ".
 // Whatever a build of the game reads, besides its .tide files: tide run builds
 // again when one changes.
 static const char *const c_side_extensions[] = {".c", ".h", ".a", ".lib", ".so", ".dll", ".dylib", NULL};
+
+// ---------------------------------------------------------------------------
+// Packages (packages.h): those from git are downloaded the first time a build
+// needs them.
+
+// Says what's wrong with a tide.packages, as tidec says what's wrong with code.
+static void report_package(void *user, const char *where, const int line, const char *message, const char *note)
+{
+    (void)user;
+    if (line > 0) fprintf(stderr, "%s:%d: error: %s\n", where, line, message);
+    else fprintf(stderr, "%s: error: %s\n", where, message);
+    if (note) fprintf(stderr, "  = note: %s\n", note);
+}
+
+// The packages of the game in `folder`, into `out`. False after saying
+// what's wrong, which includes `folder` being a package rather than a game.
+static bool find_packages(const char *folder, game_packages *out)
+{
+    packages_free(out);
+    if (!packages_resolve(folder, out, fetch_package, report_package, NULL)) return false;
+    if (out->file.name) {
+        fprintf(stderr, "tide: %s is package %s, not a game\n", folder, out->file.name);
+        fprintf(stderr, "  = note: to try it, make a game in a folder of its own whose tide.packages lists this "
+                        "folder, like `..` from a folder in it\n");
+        return false;
+    }
+    return true;
+}
+
+// Every .tide file of the game, in the order they compile: each package's,
+// in the packages' order, then the game's own, each by path. `paths` holds
+// the paths. NULL after saying the game has no files of its own.
+static compile_input *game_inputs(const char *folder, const game_packages *packages, file_list *paths, int *count)
+{
+    *paths = (file_list){0};
+    const char **names = malloc(sizeof(char *) * 1); // Each path's package
+    if (!names) abort();
+    int game_start = 0;
+    for (int p = 0; p <= packages->count; p++) {
+        const char *name = p < packages->count ? packages->items[p].name : NULL;
+        if (!name) game_start = paths->count;
+        file_list files = tide_files(name ? packages->items[p].folder : folder);
+        names = realloc(names, sizeof(char *) * (size_t)(paths->count + files.count + 1));
+        if (!names) abort();
+        for (int i = 0; i < files.count; i++) {
+            names[paths->count] = name;
+            add_file(paths, files.items[i]);
+        }
+        free_files(&files);
+    }
+    if (game_start == paths->count) {
+        fprintf(stderr, "tide: there are no .tide files in %s\n", folder);
+        fprintf(stderr, "  = note: a game is every .tide file in its folder; add one, like game.tide\n");
+        free_files(paths);
+        free(names);
+        return NULL;
+    }
+    compile_input *inputs = malloc(sizeof(compile_input) * (size_t)paths->count);
+    if (!inputs) abort();
+    for (int i = 0; i < paths->count; i++) inputs[i] = (compile_input){paths->items[i], names[i]};
+    free(names);
+    *count = paths->count;
+    return inputs;
+}
 
 // The folder's name, as a window title and a file name.
 static const char *game_name(const char *folder)
@@ -284,7 +358,8 @@ typedef struct build {
     char *wasm_ld; // Web builds with an installed clang
     char *cache;   // <folder>/.tide/<configuration>
     bool engine_built;
-    file_list engine; // The engine's objects
+    file_list engine;       // The engine's objects
+    game_packages packages; // Found again by each build of the game
 } build;
 
 static void config_flags(args *a, const build *b)
@@ -534,27 +609,35 @@ static uint64_t hash_file(const uint64_t h, const char *path)
     return (hash_text(h, path) ^ sys_file_stamp(path)) * 0x100000001B3ull;
 }
 
-// Compiles the game's .c files into `dir`, each one again only when it, a
-// header in the game's folder, or the flags changed: each object has a stamp
-// of what made it. Objects for a library are kept apart on Linux, as the
-// engine's are.
-static bool compile_game_c(const build *b, c_side *out)
+// Compiles the .c files of the game, or of one of its packages (`package`,
+// its name), in `folder_path` into a folder of the cache, each one again only
+// when it, a header in that folder, or the flags changed: each object has a
+// stamp of what made it. Objects for a library are kept apart on Linux, as
+// the engine's are.
+static bool compile_c_files(const build *b, const char *folder_path, const char *package, c_side *out)
 {
-    file_list sources = own_files_of(b->folder, c_extensions);
+    file_list sources = own_files_of(folder_path, c_extensions);
     if (sources.count == 0) return true;
 #if !defined(_WIN32) && !defined(__APPLE__)
     char *dir = path_join(b->cache, b->library ? "c-pic" : "c");
 #else
     char *dir = path_join(b->cache, "c");
 #endif
+    if (package) {
+        char sub[512];
+        snprintf(sub, sizeof sub, "packages/%s", package);
+        char *base = dir;
+        dir = path_join(base, sub);
+        free(base);
+    }
     sys_mkdirs(dir);
     char *flags = stamp_of(b);
     uint64_t common = hash_text(0xCBF29CE484222325ull, flags);
     free(flags);
-    file_list headers = own_files_of(b->folder, header_extensions);
+    file_list headers = own_files_of(folder_path, header_extensions);
     for (int i = 0; i < headers.count; i++) common = hash_file(common, headers.items[i]);
     free_files(&headers);
-    char *folder = path_join(b->folder, "");
+    char *folder = path_join(folder_path, "");
     const size_t prefix = strlen(folder);
     free(folder);
     bool ok = true;
@@ -584,13 +667,24 @@ static bool compile_game_c(const build *b, c_side *out)
     return ok;
 }
 
-// The game's libraries built for the target: static ones (and Windows import
-// libraries) are linked in, and dynamic ones are linked to and go next to the
-// program, which finds them there. A library tide can't read is left out,
-// saying so; one for another platform or CPU is left out quietly.
-static void find_libraries(const build *b, c_side *out)
+// The game's C, and its packages'.
+static bool compile_game_c(const build *b, c_side *out)
 {
-    file_list libraries = own_files_of(b->folder, library_extensions);
+    bool ok = compile_c_files(b, b->folder, NULL, out);
+    for (int p = 0; p < b->packages.count && ok; p++) {
+        ok = compile_c_files(b, b->packages.items[p].folder, b->packages.items[p].name, out);
+    }
+    return ok;
+}
+
+// The libraries in `folder` (the game's or a package's) built for the target:
+// static ones (and Windows import libraries) are linked in, and dynamic ones
+// are linked to and go next to the program, which finds them there. A library
+// tide can't read is left out, saying so; one for another platform or CPU is
+// left out quietly.
+static void find_libraries_in(const build *b, const char *folder, c_side *out)
+{
+    file_list libraries = own_files_of(folder, library_extensions);
     const lib_platform platform = target_platform(b);
     const unsigned cpu = target_cpu(b);
     bool dynamic = false;
@@ -632,6 +726,13 @@ static void find_libraries(const build *b, c_side *out)
     (void)dynamic;
 #endif
     free_files(&libraries);
+}
+
+// The game's libraries, and its packages'.
+static void find_libraries(const build *b, c_side *out)
+{
+    find_libraries_in(b, b->folder, out);
+    for (int p = 0; p < b->packages.count; p++) find_libraries_in(b, b->packages.items[p].folder, out);
 }
 
 // Copies the game's dynamic libraries into `dir`, next to its program. Ones
@@ -818,22 +919,22 @@ static bool make_page(const char *root, const char *program, const char *page)
 
 // ---------------------------------------------------------------------------
 
-// With `layout`, the generated code describes the data layout too, for hot
-// reloading. `externs` gets the C function of each extern function, a line
-// each, until the next build.
-static bool generate(const char *folder, const char *gen, const bool layout, sb *externs)
+// Finds the game's packages and generates its C. With `layout`, the generated
+// code describes the data layout too, for hot reloading. `externs` gets the C
+// function of each extern function, a line each, until the next build.
+static bool generate(build *b, const char *gen, const bool layout, sb *externs)
 {
-    file_list files = game_files(folder);
-    if (files.count == 0) {
-        fprintf(stderr, "tide: there are no .tide files in %s\n", folder);
-        fprintf(stderr, "  = note: a game is every .tide file in its folder; add one, like game.tide\n");
-        return false;
-    }
+    if (!find_packages(b->folder, &b->packages)) return false;
+    file_list paths;
+    int count = 0;
+    compile_input *inputs = game_inputs(b->folder, &b->packages, &paths, &count);
+    if (!inputs) return false;
     arena_reset(); // What an earlier build compiled, when a run rebuilds the game
     *externs = (sb){0};
     const codegen_options codegen = {"game", gen, true, layout, externs};
-    const bool ok = compile_program((const char **)files.items, files.count, &codegen, NULL);
-    free_files(&files);
+    const bool ok = compile_inputs(inputs, count, &codegen, NULL);
+    free(inputs);
+    free_files(&paths);
     return ok;
 }
 
@@ -881,7 +982,7 @@ char *tide_build(const char *root, const build_options *opts)
     sys_mkdirs(gen);
 
     sb externs;
-    if (!generate(b.folder, gen, false, &externs)) return NULL;
+    if (!generate(&b, gen, false, &externs)) return NULL;
     char *main_c = path_join(gen, "main.c");
     write_main(main_c, opts, b.name);
     if (!build_engine(&b)) return NULL;
@@ -952,7 +1053,7 @@ static char *build_path(const run *r, const uint32_t n, const char *suffix)
 static bool build_library(run *r)
 {
     sb externs;
-    if (!generate(r->b.folder, r->gen, true, &externs) || !build_engine(&r->b)) return false;
+    if (!generate(&r->b, r->gen, true, &externs) || !build_engine(&r->b)) return false;
     const char *suffix = r->web ? ".wasm" : LIBRARY_SUFFIX;
     char *game_c = path_join(r->gen, "game.c");
     char *library_c = path_join(r->gen, r->web ? "main.c" : "library.c");
@@ -1068,17 +1169,32 @@ static void stamp_file(void *user, const char *path)
     *h = (*h ^ sys_file_stamp(path)) * 0x100000001B3ull;
 }
 
-// Changes whenever one of the game's .tide files does, or its C, headers and
-// libraries, or one comes or goes.
-static uint64_t game_stamp(const char *folder)
+// Stamps the .tide files in `folder`, its C, headers and libraries, and its
+// tide.packages.
+static void stamp_folder(uint64_t *h, const char *folder)
 {
-    uint64_t h = 0xCBF29CE484222325ull;
     char *dir = path_join(folder, "");
-    folder_find(dir, ".tide", stamp_file, &h);
+    folder_find_own(dir, ".tide", stamp_file, h);
+    char *packages = path_join(dir, PACKAGES_FILE);
+    stamp_file(h, packages);
+    free(packages);
     free(dir);
     file_list others = own_files_of(folder, c_side_extensions);
-    for (int i = 0; i < others.count; i++) stamp_file(&h, others.items[i]);
+    for (int i = 0; i < others.count; i++) stamp_file(h, others.items[i]);
     free_files(&others);
+}
+
+// Changes whenever one of the game's .tide files does, or its C, headers and
+// libraries, or one comes or goes; or its tide.packages, or the files of a
+// package in a folder on this machine. Those from git, at their commits,
+// never change.
+static uint64_t game_stamp(const build *b)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    stamp_folder(&h, b->folder);
+    for (int p = 0; p < b->packages.count; p++) {
+        if (b->packages.items[p].line->local) stamp_folder(&h, b->packages.items[p].folder);
+    }
     return h;
 }
 
@@ -1138,7 +1254,7 @@ int tide_run_reloading(const char *root, const build_options *opts, const char *
     fflush(stdout);
     sys_read_lines();
 
-    uint64_t stamp = game_stamp(r.b.folder);
+    uint64_t stamp = game_stamp(&r.b);
     int64_t changed_at = -1;
     int code = 0;
     while (!sys_wait(game, 250, &code)) {
@@ -1147,7 +1263,7 @@ int tide_run_reloading(const char *root, const build_options *opts, const char *
             sys_write_text(restart, "");
             free(restart);
         }
-        const uint64_t now = game_stamp(r.b.folder);
+        const uint64_t now = game_stamp(&r.b);
         if (now != stamp) {
             stamp = now;
             changed_at = sys_now_ms();
@@ -1292,12 +1408,12 @@ int tide_run_web(const char *root, const build_options *opts, const bool open_pa
     if (open_page && !sys_open_in_browser(url)) fprintf(stderr, "tide: couldn't open a browser; open %s in one\n", url);
     sys_read_lines();
 
-    uint64_t stamp = game_stamp(r->b.folder);
+    uint64_t stamp = game_stamp(&r->b);
     int64_t changed_at = -1;
     for (;;) {
         serve_poll(server, 250, answer_web, &w);
         if (typed_restart()) w.restarts++;
-        const uint64_t now = game_stamp(r->b.folder);
+        const uint64_t now = game_stamp(&r->b);
         if (now != stamp) {
             stamp = now;
             changed_at = sys_now_ms();
@@ -1314,14 +1430,14 @@ int tide_run_web(const char *root, const build_options *opts, const bool open_pa
 bool tide_schedule(const char *folder_arg)
 {
     char *folder = path_absolute(folder_arg);
-    file_list files = game_files(folder);
-    if (files.count == 0) {
-        fprintf(stderr, "tide: there are no .tide files in %s\n", folder);
-        return false;
-    }
+    game_packages packages = {0};
+    file_list paths;
+    int count = 0;
+    compile_input *inputs = find_packages(folder, &packages) ? game_inputs(folder, &packages, &paths, &count) : NULL;
+    if (!inputs) return false;
     const codegen_options codegen = {game_name(folder), NULL, true, false, NULL};
     sb text = {0};
-    if (!compile_program((const char **)files.items, files.count, &codegen, &text)) return false;
+    if (!compile_inputs(inputs, count, &codegen, &text)) return false;
     fputs(text.data, stdout);
     return true;
 }

@@ -1,6 +1,6 @@
 # Editors
 
-Tide's language server, `tidels`, comes with `tide`. Open your game's folder, the one you run `tide run` in, and every `.tide` file in it is one game. Across all of them, editors get:
+Tide's language server, `tidels`, comes with `tide`. Open your game's folder, the one you run `tide run` in, and every `.tide` file in it is one game, with its [packages](packages.md). Across all of them, editors get:
 
 - Completion, and errors as you type, with quick fixes: a name spelled wrong, a missing `mut`, an error nothing handles, a name from another namespace.
 - Hovers, go to definition or to a value's type, find usages, the uses of a name highlighted, and rename.
@@ -24,7 +24,7 @@ In a folder you haven't trusted (VS Code's Restricted Mode), nothing from it run
 
 ### Running the game
 
-The play button above a `.tide` file runs its game, which is the folder you opened:
+The play button above a `.tide` file runs its game, which is the folder you opened, or the folder of the game it's in when that has a `tide.packages` of its own; a [package](packages.md)'s file runs the open game that lists it:
 
 - **Tide: Run** plays it in a window of its own, as `tide run` does.
 - **Tide: Run on the Web** plays it in a browser tab beside your code: VS Code's integrated browser, or the Simple Browser in editors without it. A game only gets keys while its tab has focus, and the editor may pause it while its tab is hidden, so keep it in a group of its own.
@@ -48,7 +48,7 @@ JetBrains' dark color schemes draw type names like plain text, so Tide's types s
 
 ### Running the game
 
-Right-click a `.tide` file and pick **Run**, or press Ctrl+Shift+F10 in it (Ctrl+Shift+R on macOS), to run its game, which is the project's folder. The run is named after the folder, like `mygame`:
+Right-click a `.tide` file and pick **Run**, or press Ctrl+Shift+F10 in it (Ctrl+Shift+R on macOS), to run its game, which is the project's folder, or the folder of the game it's in when that has a `tide.packages` of its own; a [package](packages.md)'s file runs the project's game when it lists the package. The run is named after the folder, like `mygame`:
 
 - **mygame** plays it in a window of its own, as `tide run` does.
 - **mygame (web)** plays it on the web, in the **Tide Game** tool window. Its **Open DevTools** button shows the page's console, where each reload says what it did. The game only gets keys while the tool window has focus.

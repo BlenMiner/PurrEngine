@@ -74,6 +74,8 @@ Then, in that folder:
 | `tide build` | Builds the game into `build/` |
 | `tide build --release --web` | An optimized, self-contained `.html` (WebGL 2) |
 | `tide schedule` | Shows which systems can run at the same time, and why the others wait |
+| `tide add github.com/owner/repo` | Adds a package, at its newest commit, to `tide.packages` |
+| `tide update` | Moves the packages to the newest commits of what they follow |
 
 `tide help` lists every option. `tide` keeps its work in a hidden `.tide`
 folder next to your files, which you can delete any time; it's ignored by git.

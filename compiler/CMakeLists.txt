@@ -7,6 +7,8 @@ list(REMOVE_ITEM TIDEC_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.c")
 # language server and tide run natively, so only native builds have them.
 if(NOT TIDE_WEB)
     add_library(tidec_core STATIC ${TIDEC_SOURCES})
+    # `#if TIDE_0_3_OR_NEWER` and packages' `tide 0.3` compare with it (version.h).
+    set_source_files_properties(src/version.c PROPERTIES COMPILE_DEFINITIONS "TIDE_VERSION=\"${TIDE_VERSION}\"")
     target_link_libraries(tidec_core PUBLIC tide_flags)
     # tidec reads the device member lists from tide/devices.h so Tide and C agree.
     target_include_directories(tidec_core PUBLIC src "${PROJECT_SOURCE_DIR}/engine/include")

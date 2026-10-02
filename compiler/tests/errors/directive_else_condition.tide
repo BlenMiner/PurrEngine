@@ -1,0 +1,5 @@
+// expect: #else takes no condition; for one, write #elif
+scene Main { }
+#if false
+#else TIDE_0_1_OR_NEWER
+#endif

@@ -5,6 +5,7 @@
   "fileTypes": ["tide"],
   "patterns": [
     { "include": "#comments" },
+    { "include": "#directives" },
     { "include": "#namespaces" },
     { "include": "#attributes" },
     { "include": "#declarations" },
@@ -29,6 +30,41 @@
           "name": "comment.block.tide",
           "begin": "/\\*",
           "end": "\\*/"
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "comment": "#if TIDE_0_3_OR_NEWER, #elif, #else and #endif, each a line of its own",
+          "name": "meta.preprocessor.tide",
+          "begin": "^\\s*(#\\s*(?:if|elif|else|endif))\\b",
+          "end": "$",
+          "beginCaptures": {
+            "1": { "name": "keyword.preprocessor.tide" }
+          },
+          "patterns": [
+            {
+              "name": "comment.line.double-slash.tide",
+              "match": "//.*$"
+            },
+            {
+              "name": "constant.language.boolean.tide",
+              "match": "\\b(?:true|false)\\b"
+            },
+            {
+              "name": "entity.name.variable.preprocessor.symbol.tide",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            },
+            {
+              "name": "keyword.operator.logical.tide",
+              "match": "&&|\\|\\||==|!=|!"
+            },
+            {
+              "name": "punctuation.parenthesis.tide",
+              "match": "[()]"
+            }
+          ]
         }
       ]
     },

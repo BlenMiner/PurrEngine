@@ -54,6 +54,14 @@ find_program(TIDE_NODE NAMES node) # Tests that run Node: web builds need it any
 option(TIDE_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
 option(TIDE_TOOLS_ONLY "Build only tidec, as web builds do for their host (cmake/HostTidec.cmake)" OFF)
 
+# What the tide command says it is, and where it looks for updates. Release
+# builds get the version semantic-release picked (.github/workflows/build.yml);
+# anything else is a development build, which never looks for updates. tidec
+# has it too, for `#if TIDE_0_3_OR_NEWER`, so web builds' host tidec gets the
+# same (cmake/HostTidec.cmake).
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" TIDE_BASE_VERSION LIMIT_COUNT 1)
+set(TIDE_VERSION "${TIDE_BASE_VERSION}-dev" CACHE STRING "tide's version")
+
 # tide_add_game runs tidec: this build's, or in web builds a native one, since
 # a WebAssembly tidec can't run during the build.
 if(TIDE_WEB)
@@ -69,11 +77,6 @@ if(TIDE_TOOLS_ONLY)
     return()
 endif()
 
-# What the tide command says it is, and where it looks for updates. Release
-# builds get the version semantic-release picked (.github/workflows/build.yml);
-# anything else is a development build, which never looks for updates.
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" TIDE_BASE_VERSION LIMIT_COUNT 1)
-set(TIDE_VERSION "${TIDE_BASE_VERSION}-dev" CACHE STRING "tide's version")
 set(TIDE_CHANNEL "nightly" CACHE STRING "The update channel tide starts on: stable or nightly")
 set(TIDE_REPOSITORY "BlenMiner/tide-engine" CACHE STRING "The GitHub repository tide updates from")
 

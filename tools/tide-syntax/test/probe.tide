@@ -127,6 +127,13 @@ void Escapes()
     string badValue = $"tab \t {value}";
 }
 
+// Directives.
+#if TIDE_0_3_OR_NEWER && !false // A newer tide
+const int NEWER = 1;
+#elif (TIDE_0_2_OR_NEWER)
+#else
+#endif
+
 // Loops' headers.
 system Loops(Field field)
 {

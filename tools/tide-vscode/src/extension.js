@@ -248,11 +248,60 @@ function manifestGames() {
     return games;
 }
 
+// A folder's tide.packages (see docs/guide/packages.md), as lines without
+// their comments, or null when it has none.
+function packagesLines(folder) {
+    try {
+        return fs.readFileSync(path.join(folder, 'tide.packages'), 'utf8').split(/\r?\n/)
+            .map(line => line.replace(/(^|\s)#.*$/, '').trim()).filter(line => line);
+    } catch {
+        return null;
+    }
+}
+
+// The package a folder is, by its `package` line, or null for a game.
+function packageName(folder) {
+    const line = (packagesLines(folder) ?? []).find(l => /^package\s/.test(l));
+    return line ? line.split(/\s+/)[1] : null;
+}
+
+// Where tide keeps packages from git, as compiler/lsp/packages.c says.
+function packagesCache() {
+    if (process.env.TIDE_PACKAGES) return process.env.TIDE_PACKAGES;
+    if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA ?? '.', 'Tide', 'packages');
+    return path.join(os.homedir(), '.tide', 'packages');
+}
+
+// Whether the game in `game` lists the package in `folder`: a folder, or a
+// repository's commit (with //sub for a folder in it) in tide's cache.
+function listsPackage(game, folder) {
+    for (const line of packagesLines(game) ?? []) {
+        const [source, commit] = line.split(/\s+/);
+        if (source === 'package' || source === 'tide') continue;
+        let dir;
+        if (/^(\.|\/|\\|[A-Za-z]:)/.test(source)) {
+            dir = path.resolve(game, source);
+        } else if (commit) {
+            const slash = source.indexOf('/');
+            const at = source.lastIndexOf('@');
+            const plain = at > slash ? source.slice(0, at) : source;
+            const [repo, sub = ''] = plain.split('//');
+            dir = path.join(packagesCache(), ...repo.split('/'), commit, ...sub.split('/').filter(p => p));
+        } else {
+            continue;
+        }
+        if (path.relative(dir, folder) === '') return true;
+    }
+    return false;
+}
+
 // The folder `tide run` plays for the .tide file `file`, found as tidels finds
-// the game a file is in (game_of in compiler/lsp/server.c): the folder a
-// manifest lists it in; else the innermost open folder it's in, unless a
-// manifest lists games there, whose other files stand alone; else its own
-// folder. { error } when tide run can't play it.
+// the game a file is in (game_folder in compiler/lsp/server.c): the folder a
+// manifest lists it in; else the innermost folder with a tide.packages it's
+// in, up to the open folder it's in, and for a package, the open folder whose
+// game lists it; else the innermost open folder it's in, unless a manifest
+// lists games there, whose other files stand alone; else its own folder.
+// { error } when tide run can't play it.
 function gameFolder(file) {
     const games = manifestGames();
     const game = games.find(g => g.path.endsWith('/') ? inFolder(file, g.path) : path.relative(g.path, file) === '');
@@ -261,6 +310,16 @@ function gameFolder(file) {
         return { error: `${path.basename(file)} is in ${game.name}, which CMake builds from a list of files, and tide run plays a whole folder.` };
     }
     const root = openFolders().filter(f => inFolder(file, f)).sort((a, b) => b.length - a.length)[0];
+    for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
+        if (packagesLines(dir)) {
+            const name = packageName(dir);
+            if (!name) return { folder: dir };
+            const user = openFolders().find(f => !packageName(f) && listsPackage(f, dir));
+            if (user) return { folder: user };
+            return { error: `${path.basename(file)} is in package ${name}, and tide run plays a game: run one whose tide.packages lists it.` };
+        }
+        if ((root && path.relative(root, dir) === '') || path.dirname(dir) === dir) break;
+    }
     if (!root) return { folder: path.dirname(file) };
     if (games.some(g => inFolder(g.path, root))) {
         return { error: `${path.basename(file)} is in none of the games build/tools/games.txt lists.` };

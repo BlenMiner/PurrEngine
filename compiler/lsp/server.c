@@ -9,6 +9,7 @@
 #include "common.h"
 #include "folders.h"
 #include "json.h"
+#include "packages.h"
 
 enum { METHOD_NOT_FOUND = -32601, PARSE_ERROR = -32700, INVALID_PARAMS = -32602, REQUEST_FAILED = -32803 };
 
@@ -158,19 +159,39 @@ static char *read_all(const char *path, size_t *len)
     return text;
 }
 
-// A game's files, without repeats.
+// A game's files, without repeats, with the package each is in (NULL for
+// the game's own files).
 typedef struct path_list {
     char **items;
+    char **packages;
     int count;
 } path_list;
 
-static void add_path(void *user, const char *path)
+static void add_path_in(path_list *list, const char *path, const char *package)
 {
-    path_list *list = user;
     for (int i = 0; i < list->count; i++)
         if (same_path(list->items[i], path)) return;
     list->items = realloc(list->items, sizeof(char *) * (size_t)(list->count + 1));
-    list->items[list->count++] = copy_string(path, strlen(path));
+    list->packages = realloc(list->packages, sizeof(char *) * (size_t)(list->count + 1));
+    if (!list->items || !list->packages) abort();
+    list->items[list->count] = copy_string(path, strlen(path));
+    list->packages[list->count++] = package ? copy_string(package, strlen(package)) : NULL;
+}
+
+static void add_path(void *user, const char *path)
+{
+    add_path_in(user, path, NULL);
+}
+
+static void free_paths(path_list *list)
+{
+    for (int i = 0; i < list->count; i++) {
+        free(list->items[i]);
+        free(list->packages[i]);
+    }
+    free(list->items);
+    free(list->packages);
+    *list = (path_list){0};
 }
 
 static bool is_folder(const char *path)
@@ -202,16 +223,86 @@ static int compare_paths(const void *a, const void *b)
     return path_compare(*(const char *const *)a, *(const char *const *)b);
 }
 
-// Every .tide file in `folder` and its subfolders, with new files the editor
-// hasn't saved yet.
-static void add_folder(const lsp_server *s, path_list *list, const char *folder)
+// The folder `path` is in, or the one `path` (a folder) is in, ending in '/':
+// "D:/a/b.tide" and "D:/a/b/" -> "D:/a/". NULL at the top. malloc'd.
+static char *parent_folder(const char *path)
 {
-    folder_find(folder, ".tide", add_path, list);
+    size_t n = strlen(path);
+    if (n > 0 && (path[n - 1] == '/' || path[n - 1] == '\\')) n--;
+    while (n > 0 && path[n - 1] != '/' && path[n - 1] != '\\') n--;
+    return n > 0 ? copy_string(path, n) : NULL;
+}
+
+// Whether `folder` (ending in '/') is a game or a package of its own.
+static bool has_packages(const char *folder)
+{
+    jbuf path = {0};
+    jb_printf(&path, "%s%s", folder, PACKAGES_FILE);
+    FILE *f = fopen(path.data, "rb");
+    jb_free(&path);
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+// Whether `path` is a .tide file in `folder` (ending in '/') or its
+// subfolders, but not in a game or a package of their own there.
+static bool in_own_folder(const char *path, const char *folder)
+{
+    if (!in_folder(path, folder)) return false;
+    bool own = true;
+    for (char *dir = parent_folder(path); dir;) {
+        if (strlen(dir) <= strlen(folder)) {
+            free(dir);
+            break;
+        }
+        own = own && !has_packages(dir);
+        char *up = parent_folder(dir);
+        free(dir);
+        dir = up;
+    }
+    return own;
+}
+
+typedef struct found_files {
+    path_list *list;
+    const char *package;
+} found_files;
+
+static void add_found(void *user, const char *path)
+{
+    const found_files *f = user;
+    add_path_in(f->list, path, f->package);
+}
+
+// Every .tide file in `folder` and its subfolders, with new files the editor
+// hasn't saved yet, by path: in `package` (NULL for the game's own). With
+// `own`, but those of games and packages of their own in its subfolders, as
+// tide builds them; without, every one, as tide_add_game does.
+static void add_folder(const lsp_server *s, path_list *list, const char *folder, const char *package, const bool own)
+{
+    const int start = list->count;
+    found_files f = {list, package};
+    if (own) folder_find_own(folder, ".tide", add_found, &f);
+    else folder_find(folder, ".tide", add_found, &f);
     for (int k = 0; k < s->doc_count; k++) {
         char *open = uri_to_path(s->docs[k].uri);
-        if (in_folder(open, folder)) add_path(list, open);
+        if (own ? in_own_folder(open, folder) : in_folder(open, folder)) add_path_in(list, open, package);
         free(open);
     }
+    if (list->count > start) qsort(list->items + start, (size_t)(list->count - start), sizeof(char *), compare_paths);
+}
+
+// The files of the game in `folder`, as tide compiles them: each of its
+// packages' (packages.h), then its own. A package's folder is the package on
+// its own, with the packages it needs. Packages from git that aren't
+// downloaded yet are left out.
+static void add_game(const lsp_server *s, path_list *list, const char *folder)
+{
+    game_packages g;
+    packages_resolve(folder, &g, NULL, NULL, NULL);
+    for (int i = 0; i < g.count; i++) add_folder(s, list, g.items[i].folder, g.items[i].name, true);
+    add_folder(s, list, g.file.folder, g.file.name, true);
+    packages_free(&g);
 }
 
 // A line of a manifest: a game and one of its files, or a folder (ending in
@@ -269,17 +360,61 @@ static void free_manifests(manifests *m)
     free(m->lines);
 }
 
-// The paths of the game `path` belongs to, in the order tidec compiles them.
-// Returns how many; 0 if it's in no game. The paths are malloc'd.
+// The folder of the game that `path` (not in a manifest's game) belongs to,
+// or NULL for none: the innermost folder with a tide.packages that it's in,
+// up to the open folder it's in, or else that open folder, since that's the
+// game `tide run` builds there; unless a manifest lists games in that folder,
+// whose other files stand alone (tests, for example). A file of a package is
+// analyzed with an open folder's game that uses it, if there's one. malloc'd.
+static char *game_folder(const lsp_server *s, const char *path, const manifests *m)
+{
+    const char *root = NULL; // The innermost open folder it's in
+    for (int i = 0; i < s->root_count; i++) {
+        if (in_folder(path, s->roots[i]) && (!root || strlen(s->roots[i]) > strlen(root))) root = s->roots[i];
+    }
+    char *owner = NULL;
+    for (char *dir = parent_folder(path); dir && !owner;) {
+        const bool top = root && strlen(dir) <= strlen(root);
+        if (has_packages(dir)) {
+            owner = dir;
+            break;
+        }
+        char *up = top ? NULL : parent_folder(dir);
+        free(dir);
+        dir = up;
+    }
+    if (!owner) {
+        for (int i = 0; root && i < m->line_count; i++) {
+            if (under(m->lines[i].path, root)) root = NULL;
+        }
+        return root ? copy_string(root, strlen(root)) : NULL;
+    }
+    packages_file own;
+    packages_read(owner, &own, NULL, NULL);
+    char *game = NULL;
+    for (int r = 0; own.name && r < s->root_count && !game; r++) {
+        game_packages g;
+        packages_resolve(s->roots[r], &g, NULL, NULL, NULL);
+        for (int i = 0; !g.file.name && i < g.count && !game; i++) {
+            if (same_path(g.items[i].folder, own.folder)) game = copy_string(s->roots[r], strlen(s->roots[r]));
+        }
+        packages_free(&g);
+    }
+    packages_free_file(&own);
+    if (!game) return owner;
+    free(owner);
+    return game;
+}
+
+// The paths of the game `path` belongs to, in the order tidec compiles them,
+// into `list`; none if it's in no game.
 //
 // Games come from manifests: the one this server was built with, and the one
 // in any open folder that builds games with CMake, where tide_add_game writes
-// it. A file in none of them belongs to the open folder it's in, since that's
-// the game `tide run` builds there; unless a manifest lists games in that
-// folder, whose other files stand alone (tests, for example).
-static int game_of(const lsp_server *s, const char *path, char ***out)
+// it. Other files belong to the game in a folder (see game_folder).
+static void game_of(const lsp_server *s, const char *path, path_list *list)
 {
-    *out = NULL;
+    *list = (path_list){0};
     manifests m = {0};
     for (int i = 0; i < s->root_count; i++) {
         jbuf source = {0};
@@ -295,28 +430,20 @@ static int game_of(const lsp_server *s, const char *path, char ***out)
         if (is_folder(file) ? in_folder(path, file) : same_path(file, path)) game = &m.lines[i];
     }
 
-    path_list list = {0};
     if (game) {
         for (int i = 0; i < m.line_count; i++) {
             const manifest_line *line = &m.lines[i];
             if (line->manifest != game->manifest || strcmp(line->game, game->game) != 0) continue;
-            if (is_folder(line->path)) add_folder(s, &list, line->path);
-            else add_path(&list, line->path);
+            if (is_folder(line->path)) add_folder(s, list, line->path, NULL, false);
+            else add_path(list, line->path);
         }
+        if (list->count > 0) qsort(list->items, (size_t)list->count, sizeof(char *), compare_paths);
     } else {
-        const char *root = NULL; // The innermost open folder it's in
-        for (int i = 0; i < s->root_count; i++) {
-            if (in_folder(path, s->roots[i]) && (!root || strlen(s->roots[i]) > strlen(root))) root = s->roots[i];
-        }
-        for (int i = 0; root && i < m.line_count; i++) {
-            if (under(m.lines[i].path, root)) root = NULL;
-        }
-        if (root) add_folder(s, &list, root);
+        char *folder = game_folder(s, path, &m);
+        if (folder) add_game(s, list, folder);
+        free(folder);
     }
     free_manifests(&m);
-    if (list.count > 0) qsort(list.items, (size_t)list.count, sizeof(char *), compare_paths);
-    *out = list.items;
-    return list.count;
 }
 
 static void free_kept(lsp_server *s)
@@ -334,13 +461,15 @@ static void keep(lsp_server *s, char *text)
     s->kept[s->kept_count++] = text;
 }
 
-// Analyses the files at `paths` (`count` of them, malloc'd, as game_of gives
-// them) together, or with none, the file at `alone` by itself. Files open in
-// the editor use its text; the others are read from disk. The analysis points
-// to the paths, so they're kept until the next one, with `alone` (or NULL).
-static void run_game(lsp_server *s, char **paths, const int count, char *alone)
+// Analyses the files in `list` (as game_of gives them) together, or with
+// none, the file at `alone` by itself. Files open in the editor use its text;
+// the others are read from disk. The analysis points to the paths, so they're
+// kept until the next one, with `alone` (or NULL), and `list` is emptied.
+static void run_game(lsp_server *s, path_list *list, char *alone)
 {
     free_kept(s);
+    const int count = list->count;
+    char **paths = list->items;
     const int n = count > 0 ? count : 1;
     analysis_file *files = calloc((size_t)n, sizeof(analysis_file));
     char **uris = calloc((size_t)n, sizeof(char *)); // Made here for files not open
@@ -352,14 +481,15 @@ static void run_game(lsp_server *s, char **paths, const int count, char *alone)
             if (same_path(open_path, path)) open = &s->docs[k];
             free(open_path);
         }
+        const char *package = count > 0 ? list->packages[i] : NULL;
         if (open) {
-            files[i] = (analysis_file){open->uri, path, open->text, open->len};
+            files[i] = (analysis_file){open->uri, path, open->text, open->len, package};
         } else {
             size_t len = 0;
             char *text = read_all(path, &len);
             keep(s, text);
             uris[i] = path_to_uri(path);
-            files[i] = (analysis_file){uris[i], path, text ? text : "", text ? len : 0};
+            files[i] = (analysis_file){uris[i], path, text ? text : "", text ? len : 0, package};
         }
     }
     analysis_run(files, n);
@@ -371,8 +501,13 @@ static void run_game(lsp_server *s, char **paths, const int count, char *alone)
     for (int i = 0; i < n; i++) {
         if (uris[i]) keep(s, uris[i]);
     }
-    for (int i = 0; i < count; i++) keep(s, paths[i]);
-    free(paths);
+    for (int i = 0; i < count; i++) {
+        keep(s, paths[i]);
+        if (list->packages[i]) keep(s, list->packages[i]);
+    }
+    free(list->items);
+    free(list->packages);
+    *list = (path_list){0};
     if (alone) keep(s, alone);
     free(uris);
     free(files);
@@ -398,9 +533,9 @@ static void analyze(lsp_server *s, const char *uri)
 {
     if (s->analyzed && s->analyzed_changes == s->changes && select_uri(uri)) return;
     char *path = uri_to_path(uri);
-    char **paths;
-    const int count = game_of(s, path, &paths);
-    run_game(s, paths, count, path);
+    path_list list;
+    game_of(s, path, &list);
+    run_game(s, &list, path);
     select_uri(uri);
 }
 
@@ -521,7 +656,7 @@ static void register_watchers(lsp_server *s)
     jb_put(&b, "{\"jsonrpc\":\"2.0\",\"id\":\"" WATCH_REQUEST "\",\"method\":\"client/registerCapability\","
                "\"params\":{\"registrations\":[{\"id\":\"tide-files\",\"method\":\"workspace/didChangeWatchedFiles\","
                "\"registerOptions\":{\"watchers\":[{\"globPattern\":\"**/*.tide\"},"
-               "{\"globPattern\":\"**/build/tools/games.txt\"}");
+               "{\"globPattern\":\"**/build/tools/games.txt\"},{\"globPattern\":\"**/tide.packages\"}");
     bool outside = s->manifest != NULL;
     for (int i = 0; outside && i < s->root_count; i++) outside = !under(s->manifest, s->roots[i]);
     const char *slash = outside ? strrchr(s->manifest, '/') : NULL;
@@ -703,25 +838,25 @@ static bool same_game(const manifest_line *a, const manifest_line *b)
     return a->manifest == b->manifest && strcmp(a->game, b->game) == 0;
 }
 
-// Searches a game's files (`paths`, or `alone`, as run_game takes them),
+// Searches a game's files (`list`, or `alone`, as run_game takes them),
 // unless they were all searched already.
-static void search_game(lsp_server *s, symbol_search *search, char **paths, const int count, char *alone)
+static void search_game(lsp_server *s, symbol_search *search, path_list *list, char *alone)
 {
+    const int count = list->count;
     bool fresh = false;
     for (int i = 0; i < (count > 0 ? count : 1); i++) {
-        const char *path = count > 0 ? paths[i] : alone;
+        const char *path = count > 0 ? list->items[i] : alone;
         bool seen = false;
         for (int k = 0; k < search->seen.count && !seen; k++) seen = same_path(search->seen.items[k], path);
         fresh |= !seen;
         if (!seen) add_path(&search->seen, path);
     }
     if (!fresh) {
-        for (int i = 0; i < count; i++) free(paths[i]);
-        free(paths);
+        free_paths(list);
         free(alone);
         return;
     }
-    run_game(s, paths, count, alone);
+    run_game(s, list, alone);
     analysis_workspace_symbols(search->query, search->out, &search->written);
 }
 
@@ -757,33 +892,31 @@ static void workspace_symbols(lsp_server *s, const json *id, const char *query)
         for (int k = i; k < m.line_count; k++) {
             const manifest_line *line = &m.lines[k];
             if (!same_game(line, &m.lines[i])) continue;
-            if (is_folder(line->path)) add_folder(s, &list, line->path);
+            if (is_folder(line->path)) add_folder(s, &list, line->path, NULL, false);
             else add_path(&list, line->path);
         }
         if (list.count > 0) qsort(list.items, (size_t)list.count, sizeof(char *), compare_paths);
-        if (list.count > 0) search_game(s, &search, list.items, list.count, NULL);
-        else free(list.items);
+        if (list.count > 0) search_game(s, &search, &list, NULL);
+        else free_paths(&list);
     }
     for (int r = 0; r < s->root_count; r++) {
         bool listed = false;
         for (int i = 0; i < m.line_count && !listed; i++) listed = under(m.lines[i].path, s->roots[r]);
         if (listed) continue;
         path_list list = {0};
-        add_folder(s, &list, s->roots[r]);
-        if (list.count > 0) qsort(list.items, (size_t)list.count, sizeof(char *), compare_paths);
-        if (list.count > 0) search_game(s, &search, list.items, list.count, NULL);
-        else free(list.items);
+        add_game(s, &list, s->roots[r]);
+        if (list.count > 0) search_game(s, &search, &list, NULL);
+        else free_paths(&list);
     }
     free_manifests(&m);
     for (int i = 0; i < s->doc_count; i++) {
         char *path = uri_to_path(s->docs[i].uri);
-        char **paths;
-        const int count = game_of(s, path, &paths);
-        search_game(s, &search, paths, count, path);
+        path_list list;
+        game_of(s, path, &list);
+        search_game(s, &search, &list, path);
     }
 
-    for (int i = 0; i < search.seen.count; i++) free(search.seen.items[i]);
-    free(search.seen.items);
+    free_paths(&search.seen);
     jb_put(&b, "]}");
     send_buf(s, &b);
     jb_free(&b);

@@ -6,6 +6,7 @@
 
 #include "build.h"
 #include "editors.h"
+#include "packages_cmd.h"
 #include "sys.h"
 #include "toolchain.h"
 #include "upgrade.h"
@@ -33,12 +34,15 @@ static void usage(void)
            "  run [folder]       build the game in folder (default: here) and play it\n"
            "  build [folder]     build the game into <folder>/build\n"
            "  schedule [folder]  show which systems can run at the same time, and why the others wait\n"
+           "  add <source>       add a package to the game here, from git or a folder (see below)\n"
+           "  update [package]   move the game's packages from git to the newest commit of what they follow\n"
            "  editors            add Tide to VS Code, Cursor, VSCodium and Windsurf\n"
            "  upgrade            update tide to the newest version\n"
            "  version            show tide's version and channel, where it's installed, and which compilers it found\n"
            CC_USAGE
            "\n"
-           "A game is every .tide file in its folder and its subfolders.\n"
+           "A game is every .tide file in its folder and its subfolders, and the packages its\n"
+           "tide.packages lists.\n"
            "\n"
            "run and build:\n"
            "  --release          optimized, the way players get it\n"
@@ -52,6 +56,10 @@ static void usage(void)
            "  --host [port]        a match others can join: in a room, and on a port (7777 by default; not on the web)\n"
            "  --join <code>        the match in the room with this code, like K7QF2M\n"
            "  --connect <address>  the match at an address, like 192.168.1.5 or localhost:7777 (not on the web)\n"
+           "\n"
+           "add: a package from git is github.com/owner/repo (or its URL), at the newest commit of\n"
+           "its default branch; @branch after it follows a branch, @v1 the newest v1.x.y tag, and\n"
+           "//folder a folder in the repository. A folder on this machine is a path, like ../shared.\n"
            "\n"
            "upgrade:\n"
            "  --nightly          follow nightly versions from now on\n"
@@ -117,6 +125,25 @@ int main(const int argc, char **argv)
         return tide_editors(root, only_updates);
     }
 
+    if (strcmp(command, "add") == 0) {
+        if (argc != 3 || argv[2][0] == '-') {
+            fprintf(stderr, "tide: add takes a package: `tide add github.com/owner/repo`, or a folder\n");
+            return 2;
+        }
+        char *folder = path_absolute(".");
+        return tide_add(folder, argv[2]);
+    }
+
+    if (strcmp(command, "update") == 0) {
+        for (int i = 2; i < argc; i++) {
+            if (argv[i][0] != '-') continue;
+            fprintf(stderr, "tide: update doesn't take '%s'; it takes the names of packages, or none for all\n", argv[i]);
+            return 2;
+        }
+        char *folder = path_absolute(".");
+        return tide_update(folder, (const char *const *)argv + 2, argc - 2);
+    }
+
     if (strcmp(command, "upgrade") == 0) {
         const char *channel = NULL;
         const char *exact = NULL;
@@ -137,7 +164,8 @@ int main(const int argc, char **argv)
     const bool schedule = strcmp(command, "schedule") == 0;
     if (!run && !build && !schedule) {
         fprintf(stderr, "tide: unknown command '%s'\n", command);
-        fprintf(stderr, "  = note: the commands are run, build, schedule, editors, upgrade and version; see `tide help`\n");
+        fprintf(stderr, "  = note: the commands are run, build, schedule, add, update, editors, upgrade and version; see "
+                        "`tide help`\n");
         return 2;
     }
 

@@ -6469,6 +6469,13 @@ static void c_name_of(const decl *d, sb *out)
     sb_putn(out, d->name.ptr, (size_t)d->name.len);
 }
 
+// The package a declaration is in, by name, or NULL for the game's own (and
+// built-ins).
+static const char *package_of(const decl *d)
+{
+    return d->unit ? d->unit->src->package : NULL;
+}
+
 static void collect_decls(program *prog)
 {
     for (int i = 0; i < prog->decls.count; i++) {
@@ -6556,7 +6563,7 @@ static void collect_decls(program *prog)
                 vec_push(d->fields, visibility);
                 vec_push(d->fields, players);
             }
-            if (d->is_scene && str_eq_c(d->name, "Main")) {
+            if (d->is_scene && str_eq_c(d->name, "Main") && !package_of(d)) { // A package's is an error of its own
                 if (prog->main) {
                     diag_error(d->at, "there can only be one 'scene Main'");
                     const source *src = diag_source(prog->main->at.file);
@@ -6665,8 +6672,9 @@ static void derive_archetypes(const checker *c)
     }
     // The Main scene, which the engine loads, after every other archetype so
     // theirs keep their order. What Add and Remove derive from it comes after.
-    if (!add_archetype(prog, bit(prog->main), prog->main->is_local)) goto too_many;
-    prog->main_archetype = find_archetype(prog, bit(prog->main), prog->main->is_local);
+    // A package on its own, as editors analyze one, has none.
+    if (prog->main && !add_archetype(prog, bit(prog->main), prog->main->is_local)) goto too_many;
+    prog->main_archetype = prog->main ? find_archetype(prog, bit(prog->main), prog->main->is_local) : prog->archetypes.count;
     for (int i = prog->main_archetype; i < prog->archetypes.count; i++) {
         for (int bit_index = 0; bit_index < prog->components.count; bit_index++) {
             const uint64_t b = (uint64_t)1 << bit_index;
@@ -6678,7 +6686,7 @@ static void derive_archetypes(const checker *c)
         }
     }
     for (int i = 0; i < prog->archetypes.count; i++) vec_push(prog->spawn_target, false);
-    prog->spawn_target.items[prog->main_archetype] = true;
+    if (prog->main) prog->spawn_target.items[prog->main_archetype] = true;
     for (int i = 0; i < c->spawns.count; i++) {
         const int a = find_archetype(prog, c->spawns.items[i]->spawn_mask, c->spawns.items[i]->local_world);
         c->spawns.items[i]->spawn_archetype = a;
@@ -6701,7 +6709,8 @@ static void warn_unmatched(const program *prog, const decl *const *list, const i
 {
     for (int i = 0; i < count; i++) {
         const decl *sys = list[i];
-        if (!sys->per_entity) continue;
+        // A package's systems run on what the game makes, or don't: it may use only part of it.
+        if (!sys->per_entity || package_of(sys)) continue;
         bool matched = false;
         for (int a = 0; a < prog->archetypes.count; a++) {
             const uint64_t mask = prog->archetypes.items[a];
@@ -6738,7 +6747,7 @@ static void warn_unsent(const checker *c)
 {
     for (int i = 0; i < c->prog->handlers.count; i++) {
         const decl *h = c->prog->handlers.items[i];
-        if (!h->event || h->event->builtin) continue;
+        if (!h->event || h->event->builtin || package_of(h)) continue; // As for systems, above
         bool sent = false;
         for (int k = 0; k < c->sends.count && !sent; k++) sent = c->sends.items[k]->type_decl == h->event;
         if (sent) continue;
@@ -6839,6 +6848,66 @@ static void check_units(const program *prog)
             for (int j = 0; j < prog->units.count; j++) suggest_consider(&s, prog->units.items[j]->ns);
             suggest_note(&s);
         }
+    }
+}
+
+// Whether every file is a package's: one package on its own, as the language
+// server analyzes it, with no game to have Main.
+static bool only_packages(const program *prog)
+{
+    for (int i = 0; i < prog->units.count; i++) {
+        if (!prog->units.items[i]->src->package) return false;
+    }
+    return prog->units.count > 0;
+}
+
+// A package's files put what they declare in its namespace, or one inside it,
+// and leave what a game has one of (Main, its input and its settings) to the
+// game.
+static void check_packages(const program *prog)
+{
+    for (int i = 0; i < prog->units.count; i++) {
+        const unit *u = prog->units.items[i];
+        const char *package = u->src->package;
+        if (!package) continue;
+        const int n = (int)strlen(package);
+        if (u->ns.len >= n && memcmp(u->ns.ptr, package, (size_t)n) == 0 && (u->ns.len == n || u->ns.ptr[n] == '.')) {
+            continue;
+        }
+        if (u->ns.len > 0) {
+            diag_error(u->ns_at, "a file of package %s is in its namespace, or one inside it, not '" STR_FMT "'", package,
+                       STR_ARG(u->ns));
+            diag_note("write 'namespace %s;', or one inside it like 'namespace %s." STR_FMT ";'", package, package,
+                      STR_ARG(u->ns));
+            continue;
+        }
+        loc first = {0};
+        for (int k = 0; k < prog->decls.count && !first.line; k++) {
+            if (prog->decls.items[k]->unit == u) first = prog->decls.items[k]->at;
+        }
+        for (int k = 0; k < prog->settings.count && !first.line; k++) {
+            if (prog->settings.items[k]->at.file == u->src->file) first = prog->settings.items[k]->at;
+        }
+        if (!first.line) continue; // Nothing declared
+        diag_error(first, "what package %s declares goes in its namespace, %s", package, package);
+        diag_note("start the file with 'namespace %s;'", package);
+    }
+    for (int i = 0; i < prog->decls.count; i++) {
+        const decl *d = prog->decls.items[i];
+        const char *package = package_of(d);
+        if (!package) continue;
+        if (d->kind == DECL_COMPONENT && d->is_scene && str_eq_c(d->name, "Main")) {
+            diag_error(d->at, "package %s can't declare Main: the game that uses it does", package);
+            diag_note("give the package's scene another name, for the game to load");
+        } else if (d->kind == DECL_INPUT) {
+            diag_error(d->at, "package %s can't declare the input: the game that uses it does", package);
+            diag_note("a package's systems can take 'Devices', which the game's input sends with its own fields");
+        }
+    }
+    for (int i = 0; i < prog->settings.count; i++) {
+        const source *src = diag_source(prog->settings.items[i]->at.file);
+        if (!src || !src->package) continue;
+        diag_error(prog->settings.items[i]->at, "package %s can't have settings: they're the game's", src->package);
     }
 }
 
@@ -7307,6 +7376,7 @@ bool check(program *prog)
     add_device_records(prog);
     collect_decls(prog);
     check_units(prog);
+    check_packages(prog);
 
     for (int i = 0; i < prog->decls.count; i++) {
         const decl *d = prog->decls.items[i];
@@ -7385,7 +7455,7 @@ bool check(program *prog)
         }
     }
 
-    if (!prog->main && diag_error_count() == 0) {
+    if (!prog->main && diag_error_count() == 0 && !only_packages(prog)) {
         // Something named like it: a scene spelled main, or anything else named Main.
         const decl *near = NULL;
         for (int i = 0; i < prog->decls.count; i++) {

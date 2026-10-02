@@ -8,7 +8,7 @@ The language Tide games and the engine's built-in systems are written in. It tra
 
 - Source files use the `.tide` extension.
 - The compiler (transpiler) is `tidec`.
-- A game is one or more `.tide` files: by default, every `.tide` file in the game's folder and its subfolders. Every declaration is visible from every file of the game; there are no imports between files.
+- A game is one or more `.tide` files: by default, every `.tide` file in the game's folder and its subfolders, and those of the packages it lists (see Packages). Every declaration is visible from every file of the game; there are no imports between files.
 - A game needs no C: the engine runs it. A custom C host is optional, for tests or special hosts. A game can call C of its own, from `.c` files and libraries in its folder (see C functions).
 
 ### Namespaces
@@ -1415,6 +1415,67 @@ Implemented, awaiting approval:
 - Objects C owns (`ma_engine *`): a handle type only local state can hold, since pointers differ between machines.
 - Keeping the state of C libraries across hot reloads, by building them apart from the game's library.
 - Reading declarations from C headers, with tide's built-in clang.
+
+## Packages
+
+### Decided
+
+- Games share code as packages: Tide code (and C) from a git repository, at a commit, or from a folder on this machine.
+- A game lists its packages in a file of its own, `tide.packages`. A package from git is always pinned to a commit there, so every build of a game builds the same code; there's no lock file, and nothing is generated.
+- A package declares nothing global: everything it declares is in its namespace.
+- `tide update` moves packages to the newest commit of what they follow: a branch, or the newest tag of a version.
+- Packages come from git hosts. Code adapts to the version of tide it builds with (see Conditional compilation).
+
+```
+# tide.packages
+github.com/someone/tide-physics@v1 b01aac4d779e32c9c415283b65e40c86d691e7ab
+../shared
+```
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- `tide.packages` has a line each, and `#` at the start of a line or after a space starts a comment. A package line is a source, then its commit: `github.com/owner/repo 0123...` (40 hex digits, or 64), with `@ref` after the source for what `tide update` follows (the default branch without one) and `//folder` for a package in a folder of the repository. A line that starts with `.`, `/` or a drive (`../shared`, `D:/shared`) is a folder, relative to the file's, and has no commit. A line without its commit is an error that says `tide update` pins it.
+- A package is a folder whose `tide.packages` says `package Name`: its name and namespace, dotted or not. Its files are in that namespace or one inside it, and it can't declare `Main`, the input or settings, which are the game's. `tide 0.3` says the oldest tide it builds with; a game can say it too. Its other lines are the packages it needs; a package from git can't need a folder.
+- The game's `tide.packages` lists every package it builds with, those its packages need included: each one's lines must be in the game's, as the same source (any commit) or the same folder, and the game's line is what's built. `tide add` and `tide update` add what's missing. Two packages of the same name are an error.
+- Files compile with each package's first, in an order where each package comes after those it needs (by name where that leaves a choice), each package's by path, then the game's. That's the default order of systems.
+- A subfolder with a `tide.packages` of its own is a game or a package of its own, and isn't part of the folder's game or package: a package's example game lives inside it, listing `..`.
+- A version-looking ref (`v1`, `v1.2`, `1.2.3`) follows the newest tag whose numbers start with it, leaving out pre-releases; any other ref is a branch, or else a tag, of that name.
+- Packages from git download as their host's archive of the commit (GitHub, GitLab, Codeberg and Bitbucket), with curl and tar, into a cache shared by every game: `$TIDE_PACKAGES`, or `%LOCALAPPDATA%/Tide/packages` on Windows and `~/.tide/packages` elsewhere, at `<host>/<owner>/<repo>/<commit>`. `tide run` and `tide build` download what's missing. Branches and tags come from git's own list of them (`info/refs`), which every host serves.
+- `tide add <source>` takes URLs as people copy them (`https://...git`, `git@host:owner/repo`) and writes the source as `tide.packages` does. `tide update [names]` matches a package by its name, its repository's or folder's name, or its source, and only changes commits, leaving the rest of the file as it is.
+- A package's systems that match no entity, and its handlers of events nothing sends, aren't warned about: a game may use only part of a package.
+- The language server analyzes a game with its packages, and a package's file with an open game that uses it, or else the package on its own, which needs no `Main`.
+
+### Open
+
+- A registry of names, so a line doesn't need its host.
+- Packages from private repositories, and hosts other than those four.
+- Symbols for the packages a game has, so code can add to another package only when it's there (`#if PHYSICS`).
+
+## Conditional compilation
+
+### Decided
+
+- Code can adapt to the version of tide it builds with, as C# code adapts to Unity's with `#if UNITY_2022_3_OR_NEWER`: tide gives the tools, and packages adapt to the versions they support.
+
+```csharp
+#if TIDE_0_4_OR_NEWER
+const int SLOTS = 8;
+#else
+const int SLOTS = 4;
+#endif
+```
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- C#'s directives: `#if`, `#elif`, `#else` and `#endif`, each on a line of its own (spaces before it are fine, and a `//` comment after it), nesting. Conditions take symbols, `true`, `false`, `!`, `&&`, `||`, `==`, `!=` and parentheses.
+- The symbols are tide's versions: `TIDE_0_4_OR_NEWER` is true in tide 0.4 and after, `TIDE_0_4_2_OR_NEWER` in 0.4.2 and after. Only a version's numbers count: a pre-release (0.4.0-nightly.3) is the version it comes before. Any other symbol is an error, so a misspelling doesn't quietly leave code out.
+- Lines a directive leaves out aren't read, only looked through for the directives that end them, as in C#: they can hold anything, like code with syntax a newer tide reads. A directive inside a `/* */` comment in code that's read is part of the comment.
+- There are no symbols for platforms, debug and release, or anything else that differs between the machines of a match, which all have to run the same code.
+- Editors show the lines left out as comments, fold each branch, and the formatter leaves directives and those lines as they are.
 
 ## Open
 
