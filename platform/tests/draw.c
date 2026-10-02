@@ -163,6 +163,47 @@ static int run_checks(void)
     return failures == 0 ? 0 : 1;
 }
 
+// Rects side by side, a cell each as a grid's view draws them, leave no gap
+// between them at any scale: not even where their shared edge falls exactly
+// on a row or column of pixel centers, as it does every 8 cells at 3.125
+// pixels a cell.
+static void tiles_leave_no_gaps(void)
+{
+    static const float scales[] = {3.125f, 2.75f, 1.5f, 7.3f, 2.5f};
+    static const tide_float2 centers[] = {{0.0f, 0.0f}, {0.3f, 0.7f}, {0.5f, 0.5f}, {-0.25f, 0.125f}, {0.0f, 0.2f}};
+    enum { HALF = 20 }; // Cells each way from the middle
+    for (size_t k = 0; k < sizeof scales / sizeof scales[0]; k++) {
+        const float s = scales[k];
+        tide_draw_reset(&list);
+        tide_draw_clear(&list, background);
+        tide_draw_camera(&list, centers[k], HEIGHT / (2.0f * s));
+        for (int y = -HALF; y < HALF; y++) {
+            for (int x = -HALF; x < HALF; x++) {
+                tide_draw_rect(&list, tide_f2((float)x + 0.5f, (float)y + 0.5f), tide_f2(1, 1), orange);
+            }
+        }
+        // Every pixel inside the tiles, but for a pixel's margin
+        const float left = WIDTH * 0.5f + (-HALF - centers[k].x) * s + 1.0f;
+        const float right = WIDTH * 0.5f + (HALF - centers[k].x) * s - 1.0f;
+        const float top = HEIGHT * 0.5f - (HALF - centers[k].y) * s + 1.0f;
+        const float bottom = HEIGHT * 0.5f - (-HALF - centers[k].y) * s - 1.0f;
+        static tide_float2 points[WIDTH * HEIGHT];
+        static uint32_t got[WIDTH * HEIGHT];
+        int count = 0;
+        for (int py = (int)top; py < (int)bottom && py < HEIGHT; py++) {
+            for (int px = (int)left; px < (int)right && px < WIDTH; px++) {
+                if (px >= 0 && py >= 0) points[count++] = tide_f2((float)px + 0.5f, (float)py + 0.5f);
+            }
+        }
+        tide_platform_read_pixels(&list, points, count, got);
+        int gaps = 0;
+        for (int i = 0; i < count; i++) gaps += !near(got[i], rgba(orange), 0);
+        char what[96];
+        snprintf(what, sizeof what, "rects side by side leave no gaps at %.3f pixels a cell (%d missed)", (double)s, gaps);
+        expect(gaps == 0, what);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // --bench: frames of many shapes, each rendered offscreen and a pixel read
 // back, which waits for the GPU to finish it, and works in a hidden window or
@@ -207,7 +248,9 @@ static bool benching;
 static int frame(void *user, const float seconds)
 {
     (void)user, (void)seconds;
-    return benching ? bench() : run_checks();
+    if (benching) return bench();
+    tiles_leave_no_gaps();
+    return run_checks();
 }
 
 int main(const int argc, char **argv)
