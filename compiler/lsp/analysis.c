@@ -852,6 +852,11 @@ const char *analysis_file_uri(const int file)
     return A.files[file].uri;
 }
 
+const char *analysis_file_path(const int file)
+{
+    return A.files[file].src.path;
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostics
 
@@ -2398,23 +2403,20 @@ static void workspace_symbol(jbuf *out, int *written, const str name, const int 
     jb_put(out, "}");
 }
 
-void analysis_workspace_symbols(const char *query, jbuf *out)
+void analysis_workspace_symbols(const char *query, jbuf *out, int *written)
 {
-    jb_put(out, "[");
-    int written = 0;
     for (int i = 0; A.prog && i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
         if (d->builtin) continue;
         const int kind = symbol_kind(d);
         const str ns = d->unit ? d->unit->ns : (str){"", 0};
-        if (fuzzy_match(d->name, query)) workspace_symbol(out, &written, d->name, kind, d->at, d->name.len, ns);
+        if (fuzzy_match(d->name, query)) workspace_symbol(out, written, d->name, kind, d->at, d->name.len, ns);
         for (int k = 0; k < d->methods.count; k++) {
             const decl *m = d->methods.items[k];
             if (m->is_operator || !fuzzy_match(m->name, query)) continue;
-            workspace_symbol(out, &written, m->name, SYMBOL_METHOD, m->at, m->name.len, d->qualified);
+            workspace_symbol(out, written, m->name, SYMBOL_METHOD, m->at, m->name.len, d->qualified);
         }
     }
-    jb_put(out, "]");
 }
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,8 @@ typedef struct lsp_server {
     bool analyzed;
     char **kept;                // Strings the analysis points to: texts read from disk, URIs, paths
     int kept_count;
+    bool watch_files;           // The editor watches the files we ask it to (dynamic registration)
+    bool relative_patterns;     // ...and takes patterns relative to a folder, for one outside the open ones
     bool shutdown;
     bool exited;
     int exit_code;

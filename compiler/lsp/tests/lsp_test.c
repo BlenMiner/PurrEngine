@@ -2559,6 +2559,182 @@ TIDE_TEST(lsp_open_folder_with_manifest)
     lsp_free(&server);
 }
 
+// The index of the message sent with `uri` in it, or -1.
+static int sent_for(const char *uri)
+{
+    for (int i = 0; i < sent_count; i++) {
+        if (has(sent[i], uri)) return i;
+    }
+    return -1;
+}
+
+// Files that change on disk, as the editor reports them through the watchers
+// the server registers, and when it saves: the open documents' games are
+// analysed again.
+TIDE_TEST(lsp_files_change_on_disk)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_watch");
+    static const char physics[] = "component Body { float2 position; }\n";
+    static const char main_file[] = "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
+    write_file("lsp_watch/physics.tide", physics);
+    write_file("lsp_watch/main.tide", main_file);
+    char root[700], uri_main[700], uri_physics[700], uri_new[700], manifest[700], message[2048];
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_watch", dir);
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_watch/main.tide", dir);
+    snprintf(uri_physics, sizeof uri_physics, "file:///%s/lsp_watch/physics.tide", dir);
+    snprintf(uri_new, sizeof uri_new, "file:///%s/lsp_watch/new.tide", dir);
+    snprintf(manifest, sizeof manifest, "%s/elsewhere/build/tools/games.txt", game_dir);
+
+    // Watchers, registered once the editor says it's ready, when it can take them
+    clear_sent();
+    lsp_free(&server);
+    lsp_init(&server, capture, NULL);
+    server.manifest = manifest;
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"rootUri\":\"%s\",\"workspaceFolders\":"
+             "[{\"uri\":\"%s\",\"name\":\"game\"}],\"capabilities\":{\"workspace\":{\"didChangeWatchedFiles\":"
+             "{\"dynamicRegistration\":true,\"relativePatternSupport\":true}}}}}",
+             root, root);
+    handle(message);
+    TIDE_CHECK(has(last_sent(), "\"save\":{\"includeText\":false}"));
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}");
+    TIDE_CHECK(sent_count == 1 && has(sent[0], "\"method\":\"client/registerCapability\""));
+    TIDE_CHECK(has(sent[0], "\"method\":\"workspace/didChangeWatchedFiles\""));
+    TIDE_CHECK(has(sent[0], "{\"globPattern\":\"**/*.tide\"}") && has(sent[0], "{\"globPattern\":\"**/build/tools/games.txt\"}"));
+    TIDE_CHECK(has(sent[0], "/elsewhere/build/tools\",\"pattern\":\"games.txt\"}")); // The server's own, outside the folder
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":\"tidels-watch\",\"result\":null}"); // The editor's answer needs none
+    TIDE_CHECK(sent_count == 0);
+
+    open_uri(uri_main, main_file);
+    TIDE_CHECK(sent_count == 2 && has(sent[sent_for(uri_main)], "\"diagnostics\":[]"));
+
+    // Another file changes on disk: Body is gone
+    write_file("lsp_watch/physics.tide", "component Shape { float2 position; }\n");
+    clear_sent();
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":"
+             "[{\"uri\":\"%s\",\"type\":2}]}}",
+             uri_physics);
+    handle(message);
+    TIDE_CHECK(sent_for(uri_main) >= 0 && has(sent[sent_for(uri_main)], "unknown name 'Body'"));
+
+    // A new one brings it back
+    write_file("lsp_watch/new.tide", physics);
+    clear_sent();
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":"
+             "[{\"uri\":\"%s\",\"type\":1}]}}",
+             uri_new);
+    handle(message);
+    TIDE_CHECK(sent_count == 3 && has(sent[sent_for(uri_main)], "\"diagnostics\":[]"));
+
+    // A deleted one takes its diagnostics with it
+    write_file("lsp_watch/physics.tide", "component Body { float2 position; }\n"); // Declared twice now
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didSave\",\"params\":{\"textDocument\":{\"uri\":\"file:///none\"}}}");
+    TIDE_CHECK(has(sent[sent_for(uri_physics)], "\"severity\":1")); // Saving looks at the disk again too
+    remove_game_file("lsp_watch/physics.tide");
+    clear_sent();
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\",\"params\":{\"changes\":"
+             "[{\"uri\":\"%s\",\"type\":3}]}}",
+             uri_physics);
+    handle(message);
+    TIDE_CHECK(sent_for(uri_physics) >= 0 && has(sent[sent_for(uri_physics)], "\"diagnostics\":[]"));
+    TIDE_CHECK(has(sent[sent_for(uri_main)], "\"diagnostics\":[]"));
+
+    // An editor that can't watch gets no request
+    start_with("{\"capabilities\":{}}");
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}");
+    TIDE_CHECK(sent_count == 0);
+
+    remove_game_file("lsp_watch/new.tide");
+    remove_game_file("lsp_watch/main.tide");
+    remove_folder("lsp_watch");
+    clear_sent();
+    lsp_free(&server);
+}
+
+// Folders opened and closed in the editor change which files make up a game.
+TIDE_TEST(lsp_workspace_folders_change)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_folders");
+    static const char main_file[] = "scene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
+    write_file("lsp_folders/physics.tide", "component Body { float2 position; }\n");
+    write_file("lsp_folders/main.tide", main_file);
+    char root[700], uri_main[700], message[2048];
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_folders", dir);
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_folders/main.tide", dir);
+
+    start();
+    TIDE_CHECK(has(last_sent(), "\"workspaceFolders\":{\"supported\":true,\"changeNotifications\":true}"));
+    open_uri(uri_main, main_file);
+    TIDE_CHECK(sent_count == 1 && !has(sent[0], "\"diagnostics\":[]")); // Alone: no Body
+    clear_sent();
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":"
+             "{\"added\":[{\"uri\":\"%s\",\"name\":\"game\"}],\"removed\":[]}}}",
+             root);
+    handle(message);
+    TIDE_CHECK(sent_count == 2 && has(sent[sent_for(uri_main)], "\"diagnostics\":[]"));
+    clear_sent();
+    snprintf(message, sizeof message,
+             "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWorkspaceFolders\",\"params\":{\"event\":"
+             "{\"added\":[],\"removed\":[{\"uri\":\"%s\",\"name\":\"game\"}]}}}",
+             root);
+    handle(message);
+    TIDE_CHECK(sent_count == 1 && !has(sent[0], "\"diagnostics\":[]"));
+
+    remove_game_file("lsp_folders/physics.tide");
+    remove_game_file("lsp_folders/main.tide");
+    remove_folder("lsp_folders");
+    clear_sent();
+    lsp_free(&server);
+}
+
+// Workspace symbols come from every game in the open folders, with nothing open.
+TIDE_TEST(lsp_workspace_symbols_of_every_game)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_symbols");
+    make_folder("lsp_symbols/build");
+    make_folder("lsp_symbols/build/tools");
+    make_folder("lsp_symbols/a");
+    make_folder("lsp_symbols/b");
+    write_file("lsp_symbols/a/main.tide", "component Rocket { float fuel; }\nscene Main { }\n");
+    write_file("lsp_symbols/b/main.tide", "component Rover { float speed; }\nscene Main { }\n");
+    char manifest_text[1400], root[700];
+    snprintf(manifest_text, sizeof manifest_text, "a\t%s/lsp_symbols/a/\nb\t%s/lsp_symbols/b/main.tide\n", game_dir, game_dir);
+    write_file("lsp_symbols/build/tools/games.txt", manifest_text);
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_symbols", dir);
+
+    start_in(root);
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"ro\"}}");
+    TIDE_CHECK(has(last_sent(), "\"name\":\"Rocket\"") && has(last_sent(), "\"name\":\"Rover\""));
+    TIDE_CHECK(has(last_sent(), "lsp_symbols/a/main.tide") && has(last_sent(), "lsp_symbols/b/main.tide"));
+    TIDE_CHECK(count(last_sent(), "\"name\":\"Main\"") == 0); // Not what the query asks for
+
+    remove_game_file("lsp_symbols/a/main.tide");
+    remove_game_file("lsp_symbols/b/main.tide");
+    remove_game_file("lsp_symbols/build/tools/games.txt");
+    remove_folder("lsp_symbols/a");
+    remove_folder("lsp_symbols/b");
+    remove_folder("lsp_symbols/build/tools");
+    remove_folder("lsp_symbols/build");
+    remove_folder("lsp_symbols");
+    clear_sent();
+    lsp_free(&server);
+}
+
 TIDE_TEST(lsp_shutdown_and_exit)
 {
     start();

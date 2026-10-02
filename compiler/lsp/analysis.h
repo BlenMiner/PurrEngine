@@ -24,6 +24,7 @@ void analysis_run(const analysis_file *files, int count);
 bool analysis_select(const char *uri);
 int analysis_file_count(void);
 const char *analysis_file_uri(int file);
+const char *analysis_file_path(int file);
 
 // Diagnostics for one of the game's files.
 void analysis_diagnostics(int file, jbuf *out);                              // Diagnostic[]
@@ -35,7 +36,8 @@ void analysis_completion(int line, int character, jbuf *out);                // 
 void analysis_hover(int line, int character, jbuf *out);                     // Hover or null
 void analysis_definition(const char *uri, int line, int character, jbuf *out); // Location or null
 void analysis_symbols(jbuf *out);                                            // DocumentSymbol[]
-void analysis_workspace_symbols(const char *query, jbuf *out);               // SymbolInformation[], the whole game
+// SymbolInformation items of the whole game, comma-separated after `written` others.
+void analysis_workspace_symbols(const char *query, jbuf *out, int *written);
 void analysis_inlay_hints(int start_line, int end_line, jbuf *out);          // InlayHint[]
 void analysis_folding_ranges(jbuf *out);                                     // FoldingRange[]
 void analysis_semantic_tokens(jbuf *out);                                    // SemanticTokens
