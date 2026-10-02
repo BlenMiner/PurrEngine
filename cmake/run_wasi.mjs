@@ -100,7 +100,15 @@ for (const { module: from, name, kind } of WebAssembly.Module.imports(module)) {
     else if (from === 'wasi_snapshot_preview1') imports[from][name] = wasi[name] || (() => 52); // ENOSYS
     else imports[from][name] = () => { throw new Error(name + " only works on the program's own thread"); };
 }
-new WebAssembly.Instance(module, imports).exports.wasi_thread_start(tid, startArg);
+try {
+    new WebAssembly.Instance(module, imports).exports.wasi_thread_start(tid, startArg);
+} catch (error) {
+    // The program's own thread may be spinning, waiting for this one, and never
+    // get back to Node's loop to hear of it: say so here, and end the program
+    // as a crash would
+    writeSync(2, 'thread ' + tid + ': ' + (error && error.stack || error) + '\\n');
+    process.kill(process.pid, 'SIGKILL');
+}
 `;
 
 let nextThread = 1;
