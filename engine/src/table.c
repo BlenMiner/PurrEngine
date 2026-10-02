@@ -223,7 +223,7 @@ void tide_table_pack_delta(const tide_table *t, const tide_table *base, const ti
             const tide_page *b = based ? base->pages[chunk * c->count + k] : NULL;
             tide_delta_region(d, tide_page_data(p), tide_table_rows(t, c->shift, chunk) * c->sizes[k],
                               b ? tide_page_data(b) : NULL, b ? tide_table_rows(base, c->shift, chunk) * c->sizes[k] : 0u,
-                              b == p);
+                              b == p, c->sizes[k]);
         }
     }
     tide_delta_close(d);

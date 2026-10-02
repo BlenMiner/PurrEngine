@@ -1029,7 +1029,8 @@ TIDE_TEST(net_input_packs_and_unpacks)
 }
 
 // As what changed from another input, as frames and players send them: a bit
-// for each value that didn't, and back exactly.
+// for each value that didn't, a float as what flipped in its bits, and back
+// exactly.
 TIDE_TEST(net_input_packs_as_what_changed)
 {
     const Controls was = {.move = {0.25f, 0.0f}, .jump = true};
@@ -1043,7 +1044,7 @@ TIDE_TEST(net_input_packs_as_what_changed)
     // A button let go, and a value whose bits changed, though -0 == 0
     const Controls now = {.move = {0.25f, -0.0f}, .jump = false};
     n = tide_game_api.write_input_delta(&now, &was, bytes, sizeof bytes);
-    TIDE_CHECK(n == 5u); // 1 + 33 + 1 bits
+    TIDE_CHECK(n == 2u); // 1 + 13 + 1 bits: only the sign changed
     TIDE_CHECK(n <= tide_game_api.max_input_bytes);
     TIDE_REQUIRE(tide_game_api.read_input_delta(bytes, n, &was, &out));
     TIDE_CHECK(memcmp(&now, &out, sizeof out) == 0);

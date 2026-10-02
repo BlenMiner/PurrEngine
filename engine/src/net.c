@@ -422,6 +422,82 @@ void tide_bits_put_changed(tide_bits *b, const uint32_t now, const uint32_t was)
     if (now != was) tide_bits_put(b, now, 32);
 }
 
+void tide_bits_put_varint(tide_bits *b, uint32_t v)
+{
+    while (v >= 0x80u) {
+        tide_bits_put(b, v & 0x7Fu, 7);
+        tide_bits_put_bool(b, true);
+        v >>= 7;
+    }
+    tide_bits_put(b, v, 7);
+    tide_bits_put_bool(b, false);
+}
+
+uint32_t tide_bits_get_varint(tide_bits *b)
+{
+    uint32_t v = 0;
+    for (uint32_t shift = 0; shift < 35; shift += 7) {
+        v |= tide_bits_get(b, 7) << shift; // Past 32 bits, the rest falls off
+        if (!tide_bits_get_bool(b)) break;
+    }
+    return v;
+}
+
+void tide_bits_put_changed_varint(tide_bits *b, const uint32_t now, const uint32_t was)
+{
+    tide_bits_put_bool(b, now != was);
+    if (now != was) tide_bits_put_varint(b, now);
+}
+
+void tide_bits_put_changed_difference(tide_bits *b, const uint32_t now, const uint32_t was)
+{
+    tide_bits_put_bool(b, now != was);
+    if (now != was) tide_bits_put_varint(b, tide_zigzag((int32_t)(now - was)));
+}
+
+uint32_t tide_bits_get_difference(tide_bits *b, const uint32_t was)
+{
+    return was + (uint32_t)tide_unzigzag(tide_bits_get_varint(b));
+}
+
+void tide_bits_put_changed_xor(tide_bits *b, const uint32_t now, const uint32_t was)
+{
+    const uint32_t x = now ^ was;
+    tide_bits_put_bool(b, x != 0);
+    if (!x) return;
+    const uint32_t lead = (uint32_t)__builtin_clz(x);
+    const uint32_t trail = (uint32_t)__builtin_ctz(x);
+    const uint32_t len = 32u - lead - trail;
+    const bool window = 10u + len < 32u;
+    tide_bits_put_bool(b, window);
+    if (!window) {
+        tide_bits_put(b, now, 32);
+        return;
+    }
+    tide_bits_put(b, lead, 5);
+    tide_bits_put(b, len - 1u, 5);
+    tide_bits_put(b, x >> trail, len);
+}
+
+uint32_t tide_bits_get_xor(tide_bits *b, const uint32_t was)
+{
+    if (!tide_bits_get_bool(b)) return tide_bits_get(b, 32);
+    const uint32_t lead = tide_bits_get(b, 5);
+    const uint32_t len = tide_bits_get(b, 5) + 1u;
+    if (lead + len > 32u) { // Bits past either end: not what any input packs to
+        b->overflow = true;
+        return was;
+    }
+    return was ^ (tide_bits_get(b, len) << (32u - lead - len));
+}
+
+float tide_f32_from_bits(const uint32_t bits)
+{
+    float v;
+    memcpy(&v, &bits, sizeof v);
+    return v;
+}
+
 // ---------------------------------------------------------------------------
 // Hash: 8 bytes at a time, read little-endian, as every platform Tide
 // supports stores them.

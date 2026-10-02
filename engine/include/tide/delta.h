@@ -29,7 +29,12 @@
 //
 // Bytes go as runs: (zeros, literal count, literal bytes) repeated, the counts
 // as varints, a literal ending at two zeros in a row. A world is mostly zeros,
-// and a region XOR'd with its base even more.
+// and a region XOR'd with its base even more. Before its runs, a region says
+// its stride: 0, or each byte goes XOR'd with the one that many before it
+// (after the base's), so a row or cell like the one before it is zeros too.
+// The writer tries a few strides, and the size of what's in the region, and
+// keeps the one that leaves the fewest bytes that aren't zeros in a sample of
+// it. Every byte comes back as it was.
 //
 // Generated code calls these for each part of a world, in a fixed order, and
 // each part (tide/entity.h, tide/table.h, tide/heap.h) its regions.
@@ -43,6 +48,8 @@ typedef struct tide_delta_writer {
     bool lacking;  // The run of `need` being read: regions it needs, or has
     uint32_t left; // ...and how many more of them
     uint32_t same; // Regions the same as the base's since the last one sent
+    uint8_t *scratch; // A region XOR'd with its base's
+    uint32_t scratch_size;
 } tide_delta_writer;
 
 // A delta from `base` (a world both have), or from what the receiver said
@@ -55,14 +62,15 @@ void tide_delta_number(tide_delta_writer *d, uint32_t v);
 
 // The next region: `size` bytes of `now`, and the base's region in its place
 // (NULL when the base has none there), `same` when it's known to be the same
-// (its page).
+// (its page). `stride`: the size of each thing in it (a row of a column, a
+// cell), 0 when they vary.
 void tide_delta_region(tide_delta_writer *d, const void *now, uint32_t size, const void *base, uint32_t base_size,
-                       bool same);
+                       bool same, uint32_t stride);
 
 // The end of a part's regions.
 void tide_delta_close(tide_delta_writer *d);
 
-// The delta, to free(), and its size.
+// The delta, to free(), and its size. Frees the rest of the writer.
 uint8_t *tide_delta_end(tide_delta_writer *d, uint32_t *size);
 
 // Reading one into an empty world: false at anything that isn't a delta of

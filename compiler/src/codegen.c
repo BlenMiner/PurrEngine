@@ -6799,20 +6799,26 @@ static bool write_file(const char *path, const sb *b)
 typedef enum bits_mode { BITS_WRITE, BITS_READ, BITS_WRITE_DELTA, BITS_READ_DELTA } bits_mode;
 
 // Packs or unpacks one value of an input, `in->` `at`, as bits: bools take
-// one, numbers and enums 32, and a button of the devices whether it's held.
-// As a delta from `base->` `at`, a bool is whether it flipped, and anything
-// else whether it changed, then its value if it did: unchanged inputs take a
-// bit a value, or none.
+// one, floats 32, byte and ushort enums 8 and 16, ints, other enums, players
+// and entities a varint (zig-zagged where it can be negative), which small
+// numbers keep short, and a button of the devices whether it's held. As a
+// delta from `base->` `at`, a bool is whether it flipped, and anything else
+// whether it changed, then if it did: an int or enum by how much, a float its
+// XOR with what it was (tide_bits_put_changed_xor), and the rest its value.
+// Unchanged inputs take a bit a value, or none, and every value comes back
+// bit for bit.
 static void gen_bits(gen *g, const char *at, const type t, const bits_mode mode, uint32_t *bits)
 {
     sb *o = &g->c;
     char inner[512];
     const int dim = type_dim(t);
     const int columns = matrix_dim(t);
-    // A value of `width` bits: as it packs (`put`, with %s for where it is) and as it unpacks
+    // A value of `width` bits, or a varint: as it packs (`put`, with %s for
+    // where it is) and as it unpacks
     const char *put = NULL;
     const char *get = NULL;
     int width = 32;
+    bool varint = false;
     char narrow[256];
     if (t.kind == TY_FLOAT) {
         put = "tide_f32_bits(%s)";
@@ -6823,12 +6829,17 @@ static void gen_bits(gen *g, const char *at, const type t, const bits_mode mode,
         snprintf(narrow, sizeof narrow, "(%s)tide_bits_get(&b, %d)", type_cname(t.decl), width);
         get = narrow;
     } else if (t.kind == TY_INT || t.kind == TY_ENUM) {
-        put = "(uint32_t)%s";
-        get = "(int32_t)tide_bits_get(&b, 32)";
+        varint = true;
+        put = "tide_zigzag(%s)";
+        get = "tide_unzigzag(tide_bits_get_varint(&b))";
     } else if (t.kind == TY_PLAYER || t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY) {
+        varint = true;
         put = "%s"; // Their uint32_t parts, below
-        get = "tide_bits_get(&b, 32)";
+        get = "tide_bits_get_varint(&b)";
     }
+    const bool delta = mode == BITS_WRITE_DELTA || mode == BITS_READ_DELTA;
+    // Bits it can take, with whether it changed and, for a float, which way it went
+    const uint32_t most = (varint ? 40u : (uint32_t)width) + (delta ? 1u : 0u) + (delta && t.kind == TY_FLOAT ? 1u : 0u);
     if (t.kind == TY_BOOL) {
         if (mode == BITS_WRITE) line(g, o, "tide_bits_put_bool(&b, in->%s);", at);
         else if (mode == BITS_READ) line(g, o, "in->%s = tide_bits_get_bool(&b);", at);
@@ -6842,30 +6853,39 @@ static void gen_bits(gen *g, const char *at, const type t, const bits_mode mode,
         snprintf(now, sizeof now, put, inner);
         snprintf(inner, sizeof inner, "base->%s", at);
         snprintf(was, sizeof was, put, inner);
-        if (mode == BITS_WRITE) {
+        if (mode == BITS_WRITE && varint) {
+            line(g, o, "tide_bits_put_varint(&b, %s);", now);
+        } else if (mode == BITS_WRITE) {
             line(g, o, "tide_bits_put(&b, %s, %d);", now, width);
         } else if (mode == BITS_READ) {
             line(g, o, "in->%s = %s;", at, get);
-        } else if (mode == BITS_WRITE_DELTA && width == 32) {
-            line(g, o, "tide_bits_put_changed(&b, %s, %s);", now, was);
+        } else if (mode == BITS_WRITE_DELTA && t.kind == TY_FLOAT) {
+            line(g, o, "tide_bits_put_changed_xor(&b, %s, %s);", now, was);
+        } else if (mode == BITS_WRITE_DELTA && varint) {
+            line(g, o, "tide_bits_put_changed_difference(&b, (uint32_t)in->%s, (uint32_t)base->%s);", at, at);
         } else if (mode == BITS_WRITE_DELTA) { // Whether it changed, then its narrower value if it did
             line(g, o, "tide_bits_put_bool(&b, %s != %s);", now, was);
             line(g, o, "if (%s != %s) tide_bits_put(&b, %s, %d);", now, was, now, width);
+        } else if (t.kind == TY_FLOAT) {
+            line(g, o, "in->%s = tide_bits_get_bool(&b) ? tide_f32_from_bits(tide_bits_get_xor(&b, %s)) : base->%s;", at, was, at);
+        } else if (varint) {
+            line(g, o, "in->%s = tide_bits_get_bool(&b) ? (int32_t)tide_bits_get_difference(&b, (uint32_t)base->%s) : base->%s;",
+                 at, at, at);
         } else {
             line(g, o, "in->%s = tide_bits_get_bool(&b) ? %s : base->%s;", at, get, at);
         }
-        *bits += (uint32_t)width + (mode == BITS_WRITE_DELTA || mode == BITS_READ_DELTA ? 1u : 0u);
+        *bits += most;
     } else if (put) { // Players and entities: their parts
         static const char *const player[] = {"id"};
         static const char *const entity[] = {"index", "generation"};
         const int count = t.kind == TY_PLAYER ? 1 : 2;
         for (int i = 0; i < count; i++) {
             snprintf(inner, sizeof inner, "%s.%s", at, t.kind == TY_PLAYER ? player[i] : entity[i]);
-            if (mode == BITS_WRITE) line(g, o, "tide_bits_put(&b, in->%s, 32);", inner);
+            if (mode == BITS_WRITE) line(g, o, "tide_bits_put_varint(&b, in->%s);", inner);
             else if (mode == BITS_READ) line(g, o, "in->%s = %s;", inner, get);
-            else if (mode == BITS_WRITE_DELTA) line(g, o, "tide_bits_put_changed(&b, in->%s, base->%s);", inner, inner);
+            else if (mode == BITS_WRITE_DELTA) line(g, o, "tide_bits_put_changed_varint(&b, in->%s, base->%s);", inner, inner);
             else line(g, o, "in->%s = tide_bits_get_bool(&b) ? %s : base->%s;", inner, get, inner);
-            *bits += mode == BITS_WRITE_DELTA || mode == BITS_READ_DELTA ? 33 : 32;
+            *bits += most;
         }
     } else if (dim >= 2) {
         for (int i = 0; i < dim; i++) {
@@ -7055,7 +7075,8 @@ static void gen_world_delta(gen *g)
     sb_put(o, "    if (need) base = NULL; // Only the receiver has it\n");
     sb_put(o, "    tide_world header;\n    tide_world base_header;\n    tide_world_header(&header, w);\n");
     sb_put(o, "    if (base) tide_world_header(&base_header, base);\n");
-    sb_put(o, "    tide_delta_region(&d, &header, sizeof header, base ? &base_header : NULL, base ? sizeof base_header : 0u, false);\n");
+    sb_put(o, "    tide_delta_region(&d, &header, sizeof header, base ? &base_header : NULL, base ? sizeof base_header : 0u, false,\n"
+              "                      0u);\n");
     sb_put(o, "    tide_delta_close(&d);\n");
     sb_put(o, "    tide_entities_pack_delta(&w->entities, base ? &base->entities : NULL, &d);\n");
     for (int a = 0; a < prog->archetypes.count; a++) {

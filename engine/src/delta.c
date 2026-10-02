@@ -7,55 +7,143 @@
 //
 // A delta: its flags (1: regions are XOR'd with the base's), the world's
 // hash, then each part's numbers and regions. A part's regions go as tokens:
-// how many are the same as the base's, then the bytes of the one after them,
-// and at its end, how many more are the same.
+// how many are the same as the base's, then the stride and bytes of the one
+// after them, and at its end, how many more are the same.
 
 #define FLAG_XOR 1u
+#define MAX_STRIDE 127u // So it takes a byte
 
 // ---------------------------------------------------------------------------
 // Bytes, as runs of zeros and literals
 
-// Byte `i` of `now` XOR'd with `base`, which is zeros past `base_size`.
-static inline uint8_t byte_at(const uint8_t *now, const uint8_t *base, const uint32_t base_size, const uint32_t i)
+// Byte `i` of `d`, XOR'd with the one `stride` before it (0: none).
+static inline uint8_t filtered(const uint8_t *d, const uint32_t stride, const uint32_t i)
 {
-    return i < base_size ? (uint8_t)(now[i] ^ base[i]) : now[i];
+    return stride && i >= stride ? (uint8_t)(d[i] ^ d[i - stride]) : d[i];
 }
 
-static void put_bytes(tide_writer *w, const uint8_t *now, const uint32_t size, const uint8_t *base, uint32_t base_size)
+// The 8 filtered bytes from `i` (at least `stride`), as a word.
+static inline uint64_t filtered8(const uint8_t *d, const uint32_t stride, const uint32_t i)
 {
-    if (base_size > size) base_size = size;
+    uint64_t a;
+    uint64_t b = 0;
+    memcpy(&a, d + i, 8);
+    if (stride) memcpy(&b, d + i - stride, 8);
+    return a ^ b;
+}
+
+// Whether any of a word's bytes is zero.
+static inline bool has_zero(const uint64_t v)
+{
+    return ((v - 0x0101010101010101ull) & ~v & 0x8080808080808080ull) != 0;
+}
+
+// `size` bytes of `d`, filtered by `stride`, as runs into `w`.
+static void put_runs(tide_writer *w, const uint8_t *d, const uint32_t size, const uint32_t stride)
+{
     uint32_t i = 0;
     while (i < size) {
         const uint32_t zeros_from = i;
-        // Eight at a time while they're the same, then one at a time
-        while (i + 8u <= size && (i + 8u <= base_size || i >= base_size)) {
-            uint64_t a;
-            uint64_t b = 0;
-            memcpy(&a, now + i, 8);
-            if (i < base_size) memcpy(&b, base + i, 8);
-            if (a != b) break;
-            i += 8u;
+        // Eight at a time while they're zeros, then one at a time
+        if (i >= stride) {
+            while (i + 8u <= size && filtered8(d, stride, i) == 0) i += 8u;
         }
-        while (i < size && byte_at(now, base, base_size, i) == 0) i++;
+        while (i < size && filtered(d, stride, i) == 0) i++;
+        // A literal ends at two zeros in a row: none start in 8 bytes with no zeros
         const uint32_t literal_from = i;
-        while (i < size
-               && !(byte_at(now, base, base_size, i) == 0
-                    && (i + 1u >= size || byte_at(now, base, base_size, i + 1u) == 0))) {
+        while (i < size) {
+            if (i >= stride) {
+                while (i + 8u <= size && !has_zero(filtered8(d, stride, i))) i += 8u;
+                if (i >= size) break;
+            }
+            if (filtered(d, stride, i) == 0 && (i + 1u >= size || filtered(d, stride, i + 1u) == 0)) break;
             i++;
         }
+        const uint32_t literal = i - literal_from;
         tide_write_varint(w, literal_from - zeros_from);
-        tide_write_varint(w, i - literal_from);
-        if (i == literal_from) continue;
-        uint8_t *out = tide_write_space(w, i - literal_from);
+        tide_write_varint(w, literal);
+        if (!literal) continue;
+        uint8_t *out = tide_write_space(w, literal);
         if (!out) return;
-        for (uint32_t k = literal_from; k < i; k++) out[k - literal_from] = byte_at(now, base, base_size, k);
+        for (uint32_t k = literal_from; k < i; k++) out[k - literal_from] = filtered(d, stride, k);
     }
 }
 
-// Into `out`, `size` bytes that are zeros, or the base's bytes when XOR'd.
+// How many of the bytes of `d` from `from` to `to`, filtered by `stride`,
+// aren't zero: about what they take as runs, counted 8 at a time.
+static uint32_t nonzero_bytes(const uint8_t *d, const uint32_t from, const uint32_t to, const uint32_t stride)
+{
+    const uint64_t low7 = 0x7F7F7F7F7F7F7F7Full;
+    uint32_t count = 0;
+    uint32_t i = from;
+    for (; i < to && i < stride; i++) count += d[i] != 0;
+    for (; i + 8u <= to; i += 8u) {
+        const uint64_t v = filtered8(d, stride, i);
+        const uint64_t zeros = ~(((v & low7) + low7) | v | low7) >> 7; // 1 in each byte that's zero
+        count += 8u - (uint32_t)(zeros * 0x0101010101010101ull >> 56);
+    }
+    for (; i < to; i++) count += filtered(d, stride, i) != 0;
+    return count;
+}
+
+// The same for a sample of `size` bytes: all of them when they're few, else 4
+// stretches of SAMPLE bytes across them.
+#define SAMPLE 128u
+static uint32_t sampled_nonzero(const uint8_t *d, const uint32_t size, const uint32_t stride)
+{
+    if (size <= 8u * SAMPLE) return nonzero_bytes(d, 0, size, stride);
+    uint32_t count = 0;
+    for (uint32_t k = 0; k < 4u; k++) {
+        const uint32_t from = (uint32_t)((uint64_t)size * k / 4u);
+        count += nonzero_bytes(d, from, from + SAMPLE, stride);
+    }
+    return count;
+}
+
+// A region: `now` XOR'd with `base`, which is zeros past `base_size`, then
+// filtered by whichever stride leaves the fewest bytes that aren't zero in a
+// sample of it: none, a few small ones, or `stride`, the size of what's in it.
+static void put_bytes(tide_delta_writer *d, const uint8_t *now, const uint32_t size, const uint8_t *base,
+                      uint32_t base_size, const uint32_t stride)
+{
+    if (base_size > size) base_size = size;
+    const uint8_t *bytes = now;
+    if (base && base_size) {
+        if (d->scratch_size < size) {
+            free(d->scratch);
+            d->scratch = malloc(size);
+            if (!d->scratch) tide_out_of_memory();
+            d->scratch_size = size;
+        }
+        for (uint32_t i = 0; i < base_size; i++) d->scratch[i] = (uint8_t)(now[i] ^ base[i]);
+        memcpy(d->scratch + base_size, now + base_size, size - base_size);
+        bytes = d->scratch;
+    }
+    const uint32_t strides[] = {1u, 2u, 4u, 8u, stride};
+    const uint32_t count = stride == 1u || stride == 2u || stride == 4u || stride == 8u ? 4u : 5u;
+    uint32_t best = 0;
+    uint32_t fewest = sampled_nonzero(bytes, size, 0);
+    for (uint32_t k = 0; k < count && fewest > 0; k++) {
+        const uint32_t s = strides[k];
+        if (s == 0 || s > MAX_STRIDE || s >= size) continue;
+        const uint32_t left = sampled_nonzero(bytes, size, s);
+        if (left + left / 8u < fewest) { // Only for a real gain: on noise, any stride is as good
+            fewest = left;
+            best = s;
+        }
+    }
+    tide_write_varint(&d->bytes, best);
+    put_runs(&d->bytes, bytes, size, best);
+}
+
+// Into `out`, `size` bytes over zeros, or over the base's bytes when XOR'd.
 static bool get_bytes(tide_reader *r, uint8_t *out, const uint32_t size, const uint8_t *base, const uint32_t base_size)
 {
-    if (base && base_size) memcpy(out, base, base_size < size ? base_size : size);
+    const uint32_t stride = tide_read_varint(r);
+    if (r->failed || stride > MAX_STRIDE) return false;
+    // Over the base's bytes, or filtered over zeros, then unfiltered and XOR'd with the base's
+    if (!stride && base && base_size) memcpy(out, base, base_size < size ? base_size : size);
+    else memset(out, 0, size);
     uint32_t at = 0;
     while (at < size) {
         const uint32_t zeros = tide_read_varint(r);
@@ -66,6 +154,22 @@ static bool get_bytes(tide_reader *r, uint8_t *out, const uint32_t size, const u
         if (!bytes) return false;
         for (uint32_t k = 0; k < literal; k++) out[at + k] ^= bytes[k];
         at += literal;
+    }
+    if (!stride) return true;
+    uint32_t i = stride;
+    if (stride >= 8u) { // Eight at a time, from bytes already done
+        for (; i + 8u <= size; i += 8u) {
+            uint64_t a;
+            uint64_t b;
+            memcpy(&a, out + i, 8);
+            memcpy(&b, out + i - stride, 8);
+            a ^= b;
+            memcpy(out + i, &a, 8);
+        }
+    }
+    for (; i < size; i++) out[i] ^= out[i - stride];
+    if (base) {
+        for (uint32_t k = 0; k < base_size && k < size; k++) out[k] ^= base[k];
     }
     return true;
 }
@@ -108,7 +212,7 @@ static bool lacks_next(tide_delta_writer *d)
 }
 
 void tide_delta_region(tide_delta_writer *d, const void *now, const uint32_t size, const void *base,
-                       const uint32_t base_size, const bool same)
+                       const uint32_t base_size, const bool same, const uint32_t stride)
 {
     bool send;
     if (d->by_need) send = lacks_next(d);
@@ -119,7 +223,7 @@ void tide_delta_region(tide_delta_writer *d, const void *now, const uint32_t siz
     }
     tide_write_varint(&d->bytes, d->same);
     d->same = 0;
-    put_bytes(&d->bytes, now, size, d->xor ? base : NULL, d->xor && base ? base_size : 0u);
+    put_bytes(d, now, size, d->xor ? base : NULL, d->xor && base ? base_size : 0u, stride);
 }
 
 void tide_delta_close(tide_delta_writer *d)
@@ -131,6 +235,9 @@ void tide_delta_close(tide_delta_writer *d)
 uint8_t *tide_delta_end(tide_delta_writer *d, uint32_t *size)
 {
     if (d->bytes.overflow) tide_out_of_memory();
+    free(d->scratch);
+    d->scratch = NULL;
+    d->scratch_size = 0;
     *size = d->bytes.size;
     return d->bytes.data;
 }

@@ -229,7 +229,7 @@ void tide_entities_pack_delta(const tide_entities *t, const tide_entities *base,
     for (uint32_t p = 0; p < t->pages; p++) {
         const tide_page *b = base && p < base->pages ? base->page[p] : NULL;
         tide_delta_region(d, tide_page_data(t->page[p]), used_on(t, p) * SLOT, b ? tide_page_data(b) : NULL,
-                          b ? used_on(base, p) * SLOT : 0u, b == t->page[p]);
+                          b ? used_on(base, p) * SLOT : 0u, b == t->page[p], SLOT);
     }
     tide_delta_close(d);
 }

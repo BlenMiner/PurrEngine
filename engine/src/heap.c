@@ -276,7 +276,7 @@ void tide_heap_pack_delta(const tide_heap *h, const tide_heap *base, tide_delta_
         const tide_page *p = h->page[i];
         const tide_page *b = base_page(base, i);
         tide_delta_region(d, tide_page_data(p), in_use(h, p), b ? tide_page_data(b) : NULL, b ? in_use(base, b) : 0u,
-                          b == p);
+                          b == p, 0u);
     }
     tide_delta_close(d);
 }

@@ -15,4 +15,4 @@ add_test(NAME bench_sand COMMAND bench_sand --quick --expect 0x4f8c29e1545be234)
 
 tide_add_game(bench_gallery SOURCES gallery/gallery.tide NAME gallery HOST gallery/main.c)
 target_link_libraries(bench_gallery PRIVATE tide_bench)
-add_test(NAME bench_gallery COMMAND bench_gallery --quick --expect 0xa4bc3ade3d85f2fc)
+add_test(NAME bench_gallery COMMAND bench_gallery --quick --expect 0x5963c41ae016415f)

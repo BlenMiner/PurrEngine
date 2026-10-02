@@ -156,6 +156,47 @@ uint32_t tide_f32_bits(float v);
 // bits if it did.
 void tide_bits_put_changed(tide_bits *b, uint32_t now, uint32_t was);
 
+// A varint, for numbers that are usually small: 7 bits of the value at a
+// time, lowest first, each followed by a bit that says whether more come.
+// Under 128 takes 8 bits, under 16384 16, and the most 40. Reading stops
+// after 5 groups, whatever the last says, so bad input can't run on.
+void tide_bits_put_varint(tide_bits *b, uint32_t v);
+uint32_t tide_bits_get_varint(tide_bits *b);
+
+// ...as part of a delta: whether it changed from `was`, then the varint if it did.
+void tide_bits_put_changed_varint(tide_bits *b, uint32_t now, uint32_t was);
+
+// An int as part of a delta: whether it changed from `was`, then by how much
+// (wrapping, so it comes back bit for bit), zig-zagged into a varint. A value
+// that moves a little takes a byte, however big it is. Read the change after
+// reading true from the bit before it.
+void tide_bits_put_changed_difference(tide_bits *b, uint32_t now, uint32_t was);
+uint32_t tide_bits_get_difference(tide_bits *b, uint32_t was);
+
+// A float's bits as part of a delta: whether they changed from `was`, then
+// their XOR with `was`, which is zeros where they're the same: nearby values
+// share their sign, exponent and first digits, and round ones end in zeros.
+// So it goes as where the bits between those zeros start (5 bits), how many
+// there are (5 bits) and those bits, or as the float's own 32 bits when that's
+// shorter, with a bit to say which. It comes back bit for bit, NaNs and -0
+// too. Read it after reading true from the bit before it; a window that
+// can't be one marks the bits overflowed.
+void tide_bits_put_changed_xor(tide_bits *b, uint32_t now, uint32_t was);
+uint32_t tide_bits_get_xor(tide_bits *b, uint32_t was);
+float tide_f32_from_bits(uint32_t bits);
+
+// Signed values zig-zag into varints, so small negative numbers stay small:
+// 0, -1, 1, -2, 2 become 0, 1, 2, 3, 4.
+static inline uint32_t tide_zigzag(const int32_t v)
+{
+    return (uint32_t)v << 1 ^ (v < 0 ? UINT32_MAX : 0u);
+}
+
+static inline int32_t tide_unzigzag(const uint32_t u)
+{
+    return (int32_t)(u >> 1 ^ (0u - (u & 1u)));
+}
+
 // Done writing: clears the rest of the last byte, so the same value always
 // packs to the same bytes, and returns how many there are (0 if out of room).
 uint32_t tide_bits_end(tide_bits *b);

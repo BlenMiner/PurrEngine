@@ -103,6 +103,26 @@ static bool timed_unpack(void *world, const uint8_t *data, const uint32_t size)
     return ok;
 }
 
+// Sessions send worlds as deltas (tide/delta.h): these are what pack them.
+static uint8_t *timed_pack_delta(const void *world, const void *base, const uint8_t *need, const uint32_t need_size,
+                                 uint32_t *size)
+{
+    const uint64_t start = tide_time_now_ns();
+    uint8_t *data = real->pack_delta(world, base, need, need_size, size);
+    current->pack_ms += since(start);
+    current->packs++;
+    return data;
+}
+
+static bool timed_unpack_delta(void *world, const void *base, const uint8_t *data, const uint32_t size)
+{
+    const uint64_t start = tide_time_now_ns();
+    const bool ok = real->unpack_delta(world, base, data, size);
+    current->unpack_ms += since(start);
+    current->unpacks++;
+    return ok;
+}
+
 static void counted_send(void *self, const tide_address to, const void *data, const uint32_t size)
 {
     counted *c = self;
@@ -595,6 +615,8 @@ int bench_main(const bench_desc *d, const int argc, char **argv)
     timed.hash_world = timed_hash;
     timed.pack_world = timed_pack;
     timed.unpack_world = timed_unpack;
+    if (real->pack_delta) timed.pack_delta = timed_pack_delta;
+    if (real->unpack_delta) timed.unpack_delta = timed_unpack_delta;
 
     const tide_jobs *jobs = jobs_for(o.threads);
 
