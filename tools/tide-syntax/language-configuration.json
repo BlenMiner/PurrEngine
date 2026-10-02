@@ -18,10 +18,11 @@
   "surroundingPairs": [
     ["{", "}"],
     ["(", ")"],
-    ["[", "]"]
+    ["[", "]"],
+    ["\"", "\""]
   ],
   "indentationRules": {
-    "increaseIndentPattern": "^.*\\{[^}]*$",
+    "increaseIndentPattern": "^((?!//).)*\\{([^}\"/]*|[^}\"/]*//.*)$",
     "decreaseIndentPattern": "^\\s*\\}"
   }
 }

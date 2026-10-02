@@ -1,7 +1,7 @@
 {
-  "name": "tide",
-  "displayName": "Tide",
-  "description": "Syntax highlighting for Tide (.tide)",
+  "name": "tide-syntax",
+  "displayName": "Tide Syntax",
+  "description": "Syntax highlighting for Tide (.tide), without the language server: the Tide extension (tide-engine.tide) has both",
   "version": "0.1.0",
   "publisher": "tide-engine",
   "engines": {
