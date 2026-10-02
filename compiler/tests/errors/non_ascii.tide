@@ -1,4 +1,4 @@
-// expect: non-ASCII characters are only allowed in comments
+// expect: non-ASCII characters are only allowed in comments and text
 // Comments can say café freely.
 scene Main { }
 

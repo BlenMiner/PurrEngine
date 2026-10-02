@@ -412,7 +412,7 @@ static token *lex_impl(const source *src, const bool tolerant)
         case '|': t.kind = n == '|' ? (len = 2, T_OR) : n == '=' ? (len = 2, T_PIPE_ASSIGN) : T_PIPE; break;
         default:
             if ((unsigned char)c >= 0x80) {
-                diag_error(t.at, "non-ASCII characters are only allowed in comments");
+                diag_error(t.at, "non-ASCII characters are only allowed in comments and text");
                 // Skip the rest of the UTF-8 sequence so one character is one error.
                 lx.p++;
                 while (lx.p < lx.end && ((unsigned char)*lx.p & 0xC0) == 0x80) lx.p++;
