@@ -111,12 +111,12 @@ async void Flow(mut Log log)
     {
         switch (i)
         {
-        case 1:
-            log.sum += await Later(10);
-            break;
-        default:
-            log.sum += 1;
-            break;
+            case 1:
+                log.sum += await Later(10);
+                break;
+            default:
+                log.sum += 1;
+                break;
         }
     }
 
