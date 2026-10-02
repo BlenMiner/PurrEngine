@@ -2,7 +2,7 @@
 // (tide_android_app in platform/CMakeLists.txt). tide makes them itself.
 //
 //   tide_apk <app.apk> --package <id> --label <name> --lib <name> --key <file>
-//            [--min <api>] [--target <api>] [--debuggable] <abi>=<lib.so>...
+//            [--min <api>] [--target <api>] [--debuggable] [--icon <png>] <abi>=<lib.so>...
 //   tide_apk --key <file>   makes the key, unless it's there
 
 #include <stdio.h>
@@ -41,6 +41,7 @@ int main(int argc, char **argv)
         else if (strcmp(a, "--min") == 0 && has_value) desc.min_sdk = atoi(argv[++i]);
         else if (strcmp(a, "--target") == 0 && has_value) desc.target_sdk = atoi(argv[++i]);
         else if (strcmp(a, "--debuggable") == 0) desc.debuggable = true;
+        else if (strcmp(a, "--icon") == 0 && has_value) desc.icon = argv[++i];
         else if (strchr(a, '=') && a[0] != '-' && desc.lib_count < APK_MAX_LIBS) {
             static char abis[APK_MAX_LIBS][32];
             const size_t n = (size_t)(strchr(a, '=') - a);

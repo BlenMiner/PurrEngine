@@ -92,6 +92,7 @@ function(tide_android_app target)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${TIDE_APK_PATH}" "$<TARGET_FILE_DIR:${target}>/${target}.apk" --package "dev.tide.${id}"
             --label "${label}" --lib "${target}" --key "${TIDE_ANDROID_KEY}" --min ${TIDE_ANDROID_API} --debuggable
+            --icon "${PROJECT_SOURCE_DIR}/tools/tide-vscode/icon.png"
             "${TIDE_ANDROID_ABI}=$<TARGET_FILE:${target}>"
         COMMENT "Android app ${target}.apk"
         VERBATIM)
@@ -135,8 +136,10 @@ elseif(MINGW)
     install(FILES "${TIDE_MINGW_BUILTINS}" DESTINATION mingw COMPONENT tide)
 elseif(TIDE_ANDROID)
     # tide builds Android games against the NDK the user has (see
-    # compiler/cli/android.c), so only the platform layer for each CPU.
+    # compiler/cli/android.c), so only the platform layer for each CPU, and
+    # the icon apps get when their game has none.
     set(TIDE_PACKAGE_LIBS lib/android/${TIDE_ANDROID_ABI})
+    install(FILES "${PROJECT_SOURCE_DIR}/tools/tide-vscode/icon.png" DESTINATION lib/android COMPONENT tide)
 elseif(NOT WIN32)
     set(TIDE_PACKAGE_LIBS lib/native)
 endif()

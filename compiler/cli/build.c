@@ -1575,6 +1575,13 @@ static char *build_android(const char *root, const build_options *opts, char *pa
     char *output_dir = path_dir(output);
     sys_mkdirs(output_dir);
     desc.label = opts->title ? opts->title : b.info.title[0] ? b.info.title : b.name;
+    // Its icon: the game's icon.png, or Tide's
+    char *icon = path_join(b.folder, "icon.png");
+    if (!sys_exists(icon)) {
+        free(icon);
+        icon = path_join(root, "lib/android/icon.png");
+    }
+    desc.icon = sys_exists(icon) ? icon : NULL;
     char error[512];
     apk_key key;
     char *key_path = android_key_path();

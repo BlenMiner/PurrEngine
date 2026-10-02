@@ -195,6 +195,57 @@ TIDE_TEST(apk_is_signed_as_android_checks)
     remove(lib_path);
 }
 
+// An icon: the resource table that names it, and the image, stored and aligned.
+TIDE_TEST(apk_has_its_icon)
+{
+    const uint8_t png[] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+    FILE *f = fopen("apk_test_icon.png", "wb");
+    TIDE_REQUIRE(f && fwrite(png, 1, sizeof png, f) == sizeof png);
+    fclose(f);
+    f = fopen("apk_test_libgame.so", "wb");
+    TIDE_REQUIRE(f && fwrite("lib", 1, 3, f) == 3);
+    fclose(f);
+    char error[256];
+    apk_key key;
+    remove("apk_test.key");
+    TIDE_REQUIRE(apk_key_load("apk_test.key", &key, error, sizeof error));
+    const apk_desc desc = {.package = "dev.tide.test", .label = "Test", .lib_name = "game", .version_code = 1,
+                           .version_name = "1.0", .min_sdk = 29, .target_sdk = 35, .lib_count = 1,
+                           .abis = {"x86_64"}, .libs = {"apk_test_libgame.so"}, .icon = "apk_test_icon.png"};
+    TIDE_REQUIRE(apk_write("apk_test.apk", &desc, &key, error, sizeof error));
+    size_t size = 0;
+    uint8_t *apk = read_all("apk_test.apk", &size);
+    TIDE_REQUIRE(apk);
+    const uint8_t *end = apk + size - 22;
+    TIDE_CHECK(get16(end + 10) == 4); // The manifest, the table, the icon and the library
+    const uint8_t *e = apk + get32(end + 16);
+    bool table = false, icon = false;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t name_size = get16(e + 28), local = get32(e + 42);
+        const uint8_t *header = apk + local;
+        const uint32_t data = local + 30 + get16(header + 26) + get16(header + 28);
+        if (name_size == 14 && memcmp(e + 46, "resources.arsc", 14) == 0) {
+            table = get16(e + 10) == 0 && data % 4 == 0 && get16(apk + data) == 0x0002; // Stored, aligned, a table
+        }
+        if (name_size == 19 && memcmp(e + 46, "res/mipmap/icon.png", 19) == 0) {
+            icon = memcmp(apk + data, png, sizeof png) == 0;
+        }
+        e += 46 + name_size + get16(e + 30) + get16(e + 32);
+    }
+    TIDE_CHECK(table && icon);
+
+    // Something that isn't a PNG is refused
+    const apk_desc wrong = {.package = "dev.tide.test", .label = "Test", .lib_name = "game", .version_code = 1,
+                            .version_name = "1.0", .min_sdk = 29, .target_sdk = 35, .lib_count = 1,
+                            .abis = {"x86_64"}, .libs = {"apk_test_libgame.so"}, .icon = "apk_test_libgame.so"};
+    TIDE_CHECK(!apk_write("apk_test.apk", &wrong, &key, error, sizeof error));
+    free(apk);
+    remove("apk_test.apk");
+    remove("apk_test.key");
+    remove("apk_test_icon.png");
+    remove("apk_test_libgame.so");
+}
+
 // The manifest: binary XML with its string pool, its resource map and the
 // app's ID and library in it.
 TIDE_TEST(apk_manifest_is_binary_xml)

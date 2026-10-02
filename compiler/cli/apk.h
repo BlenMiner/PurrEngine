@@ -25,6 +25,7 @@ typedef struct apk_desc {
     int lib_count;
     const char *abis[APK_MAX_LIBS]; // "arm64-v8a", "x86_64"
     const char *libs[APK_MAX_LIBS]; // The library for each, on disk
+    const char *icon;               // Its icon, a PNG on disk, or NULL for the system's
 } apk_desc;
 
 // The key an app is signed with: Android only takes an update signed with the
@@ -41,6 +42,10 @@ bool apk_key_load(const char *path, apk_key *key, char *error, size_t error_size
 // The app's manifest, as Android reads it: binary XML. Returns its size, and
 // sets *out to it (to free()), or 0.
 size_t apk_manifest(const apk_desc *desc, uint8_t **out);
+
+// The app's resource table (resources.arsc), which only names its icon: its
+// size, and *out (to free()).
+size_t apk_resources(const char *package, uint8_t **out);
 
 // Writes the app to `path`, signed with `key`.
 bool apk_write(const char *path, const apk_desc *desc, const apk_key *key, char *error, size_t error_size);

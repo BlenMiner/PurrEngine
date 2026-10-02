@@ -90,6 +90,7 @@ static void close_length(bytes *b, const size_t start)
 enum {
     ATTR_THEME = 0x01010000,
     ATTR_LABEL = 0x01010001,
+    ATTR_ICON = 0x01010002,
     ATTR_NAME = 0x01010003,
     ATTR_HAS_CODE = 0x0101000c,
     ATTR_DEBUGGABLE = 0x0101000f,
@@ -107,6 +108,8 @@ enum {
     ATTR_APP_CATEGORY = 0x01010545,
 };
 #define THEME_FULLSCREEN 0x0103000au // @android:style/Theme.Black.NoTitleBar.Fullscreen
+#define APP_ICON 0x7f010000u         // @mipmap/icon: the app's own resources, its first type, its first entry
+#define ICON_PATH "res/mipmap/icon.png"
 #define LAUNCH_SINGLE_TASK 2
 #define CATEGORY_GAME 0
 // Every configuration change the activity takes itself, rather than starting
@@ -334,6 +337,7 @@ size_t apk_manifest(const apk_desc *desc, uint8_t **out)
     n = open_node(&x, "application");
     attr_value(n, ATTR_THEME, "theme", VALUE_REFERENCE, THEME_FULLSCREEN);
     attr_text(n, ATTR_LABEL, "label", desc->label);
+    if (desc->icon) attr_value(n, ATTR_ICON, "icon", VALUE_REFERENCE, APP_ICON);
     attr_value(n, ATTR_HAS_CODE, "hasCode", VALUE_BOOL, 0);
     if (desc->debuggable) attr_value(n, ATTR_DEBUGGABLE, "debuggable", VALUE_BOOL, 0xffffffffu);
     attr_value(n, ATTR_EXTRACT_NATIVE_LIBS, "extractNativeLibs", VALUE_BOOL, 0);
@@ -366,6 +370,102 @@ size_t apk_manifest(const apk_desc *desc, uint8_t **out)
 
     bytes b = {0};
     write_xml(&x, &b);
+    *out = b.data;
+    return b.size;
+}
+
+// ---------------------------------------------------------------------------
+// The resource table: one package (the app's, 0x7f), one type (mipmap) and
+// one entry (icon), its value the icon's path in the APK, for every
+// configuration (one image, which Android scales to each screen).
+
+// A string pool of UTF-8 strings, as the manifest's (write_xml).
+static void put_pool(bytes *b, const char *const *strings, const int count)
+{
+    const size_t start = b->size;
+    put16(b, 0x0001);
+    put16(b, 28);
+    put32(b, 0);
+    put32(b, (uint32_t)count);
+    put32(b, 0);
+    put32(b, 1 << 8); // UTF8_FLAG
+    put32(b, (uint32_t)(28 + 4 * count));
+    put32(b, 0);
+    bytes data = {0};
+    for (int i = 0; i < count; i++) {
+        put32(b, (uint32_t)data.size);
+        const size_t n = strlen(strings[i]);
+        put_pool_length(&data, n);
+        put_pool_length(&data, n);
+        put(&data, strings[i], n);
+        put8(&data, 0);
+    }
+    while (data.size % 4) put8(&data, 0);
+    put(b, data.data, data.size);
+    free(data.data);
+    set32(b->data + start + 4, (uint32_t)(b->size - start));
+}
+
+size_t apk_resources(const char *package, uint8_t **out)
+{
+    bytes b = {0};
+    put16(&b, 0x0002); // RES_TABLE_TYPE
+    put16(&b, 12);
+    put32(&b, 0);
+    put32(&b, 1); // Packages
+    const char *const values[] = {ICON_PATH};
+    put_pool(&b, values, 1);
+
+    const size_t pkg = b.size;
+    put16(&b, 0x0200); // RES_TABLE_PACKAGE_TYPE
+    put16(&b, 288);
+    put32(&b, 0);
+    put32(&b, 0x7f);
+    const size_t name = strlen(package);
+    for (size_t i = 0; i < 128; i++) put16(&b, i < name && i < 127 ? (uint16_t)package[i] : 0); // UTF-16
+    put32(&b, 0); // Where the type strings start, once they're written
+    put32(&b, 1); // The last public type
+    put32(&b, 0); // ...and key strings
+    put32(&b, 1);
+    put32(&b, 0); // typeIdOffset
+    set32(b.data + pkg + 268, (uint32_t)(b.size - pkg));
+    const char *const types[] = {"mipmap"};
+    put_pool(&b, types, 1);
+    set32(b.data + pkg + 276, (uint32_t)(b.size - pkg));
+    const char *const keys[] = {"icon"};
+    put_pool(&b, keys, 1);
+
+    put16(&b, 0x0202); // RES_TABLE_TYPE_SPEC_TYPE: which configurations each entry varies by (none)
+    put16(&b, 16);
+    put32(&b, 16 + 4);
+    put8(&b, 1); // The type's ID
+    put8(&b, 0);
+    put16(&b, 0);
+    put32(&b, 1); // Entries
+    put32(&b, 0);
+
+    const size_t type = b.size;
+    put16(&b, 0x0201); // RES_TABLE_TYPE_TYPE: the entries for one configuration, the default
+    put16(&b, 20 + 64);
+    put32(&b, 0);
+    put8(&b, 1);
+    put8(&b, 0);
+    put16(&b, 0);
+    put32(&b, 1);           // Entries
+    put32(&b, 20 + 64 + 4); // Where they start
+    put32(&b, 64);          // ResTable_config: its size, then zeros, which match every screen
+    for (int i = 0; i < 60; i++) put8(&b, 0);
+    put32(&b, 0); // The entry's offset
+    put16(&b, 8); // ResTable_entry: its size, no flags, its key
+    put16(&b, 0);
+    put32(&b, 0);
+    put16(&b, 8); // Res_value: the path, a string of the table's
+    put8(&b, 0);
+    put8(&b, VALUE_STRING);
+    put32(&b, 0);
+    set32(b.data + type + 4, (uint32_t)(b.size - type));
+    set32(b.data + pkg + 4, (uint32_t)(b.size - pkg));
+    set32(b.data + 4, (uint32_t)b.size);
     *out = b.data;
     return b.size;
 }
@@ -551,13 +651,28 @@ static bool fail(char *error, const size_t error_size, const char *message, cons
 bool apk_write(const char *path, const apk_desc *desc, const apk_key *key, char *error, const size_t error_size)
 {
     bytes entries = {0};
-    zip_entry list[1 + APK_MAX_LIBS];
+    zip_entry list[3 + APK_MAX_LIBS];
     int count = 0;
 
     uint8_t *manifest;
     const size_t manifest_size = apk_manifest(desc, &manifest);
     zip_add(&entries, &list[count++], "AndroidManifest.xml", manifest, manifest_size, 4);
     free(manifest);
+    if (desc->icon) {
+        bytes icon = {0};
+        static const uint8_t png[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+        if (!read_file(desc->icon, &icon) || icon.size < 8 || memcmp(icon.data, png, 8) != 0) {
+            free(icon.data);
+            free(entries.data);
+            return fail(error, error_size, "the icon isn't a PNG: ", desc->icon);
+        }
+        uint8_t *table;
+        const size_t table_size = apk_resources(desc->package, &table);
+        zip_add(&entries, &list[count++], "resources.arsc", table, table_size, 4); // Stored and aligned, as Android 11 wants
+        free(table);
+        zip_add(&entries, &list[count++], ICON_PATH, icon.data, icon.size, 4);
+        free(icon.data);
+    }
 
     char names[APK_MAX_LIBS][256];
     for (int i = 0; i < desc->lib_count; i++) {

@@ -54,6 +54,7 @@ Building for Android needs two things of Google's: the NDK, Android's C library 
 
 - The app's ID is the game's `appId` setting (see [Settings](../language/basics.md#settings)). Without one, it's `dev.tide.<the game's name>`, which is fine for testing, but `--release` needs one.
 - Its name under its icon is the game's `title` setting, or `--title`, or else the game's name.
+- Its icon is `icon.png` in the game's folder: a square PNG, 512 by 512 pixels is plenty. Without one, it's Tide's.
 - `tide` signs apps with a key it makes on your computer, `~/.android/tide.key`. A phone only takes an update to an app signed with the same key, so `tide run --android` replaces an app another computer installed.
 - `tide run --android` has no hot reload yet: run it again to see a change.
 
