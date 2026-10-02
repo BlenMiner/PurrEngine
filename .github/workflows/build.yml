@@ -159,7 +159,9 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           tools="$ANDROID_HOME/cmdline-tools/latest/bin"
-          yes | "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" > /dev/null
+          # Its yes to the licenses, without a pipe: yes ends with a broken one, which pipefail takes for failing
+          "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" \
+            > /dev/null < <(yes)
           echo no | "$tools/avdmanager" create avd -n tide -k "system-images;android-36;default;x86_64" --force
           "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
             -no-snapshot > emulator.log 2>&1 &
