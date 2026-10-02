@@ -84,7 +84,7 @@ The engine builds nothing a game couldn't build itself: containers are functions
 
 Positions and sizes are in pixels, as on a web page, so widgets keep their size when the window changes size. `Screen.width` and `Screen.height` are the window's size. On a display scaled to 150%, a pixel is the display's logical one, 1.5 real pixels wide, as CSS pixels are.
 
-`Rect(x, y, width, height)` is measured from the top left corner, with `y` down, as in Unity's GUI. (World drawing and the mouse have `y` up.)
+`Rect(x, y, width, height)` is measured from the top left corner, with `y` down, as in Unity's GUI. (World drawing, the mouse and touches have `y` up.)
 
 `Anchor` names the nine places an area can go, as Unity's `TextAnchor` does: `UpperLeft`, `UpperCenter`, `UpperRight`, `MiddleLeft`, `MiddleCenter`, `MiddleRight`, `LowerLeft`, `LowerCenter` and `LowerRight`.
 
@@ -117,7 +117,7 @@ view Menu(Session session, mut Lobby lobby)
 }
 ```
 
-It lays nothing out: its widgets stay where they'd be without it, in the container around it, and it works with `GUI` and `GUILayout` widgets alike. Tab skips disabled widgets. One disabled while it's pressed lets go, and a field disabled while the player types into it keeps its old value. The mouse on a disabled widget is still the GUI's, so a click on it doesn't reach the game. Inside another `GUI.Disabled` that's disabled, a block stays disabled whatever its own `disabled` is.
+It lays nothing out: its widgets stay where they'd be without it, in the container around it, and it works with `GUI` and `GUILayout` widgets alike. Tab skips disabled widgets. One disabled while it's pressed lets go, and a field disabled while the player types into it keeps its old value. The pointer on a disabled widget is still the GUI's, so a click on it doesn't reach the game. Inside another `GUI.Disabled` that's disabled, a block stays disabled whatever its own `disabled` is.
 
 ## Keyboard and gamepad
 
@@ -141,4 +141,6 @@ It copies up to 255 bytes for now. In a browser, it works shortly after a click 
 
 ## The GUI and input
 
-Whatever the GUI is using, such as a click on a button or typing in a field, is hidden from the input's `Sample` and from views' `Devices`. So clicking a button never fires a weapon, and typing a name never moves the player.
+Widgets follow the pointer: the mouse, or a finger on a touchscreen (see [Input](./input.md#touch)). A finger that lifted is nowhere, so nothing stays hovered where it was.
+
+Whatever the GUI is using, such as a click on a button, a finger on one, or typing in a field, is hidden from the input's `Sample` and from views' `Devices`. So clicking a button never fires a weapon, and typing a name never moves the player.

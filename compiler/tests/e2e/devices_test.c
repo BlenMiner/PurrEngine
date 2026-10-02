@@ -82,6 +82,33 @@ TIDE_TEST(devices_are_the_owners)
     TIDE_CHECK(s.throttle == 0.5f && s.jumps == 0);
 }
 
+TIDE_TEST(devices_touches_send_what_systems_read)
+{
+    tide_devices d = {0};
+    tide_touches_poll(&d.touchscreen);
+    tide_touch_event(&d.touchscreen, TIDE_TOUCH_BEGAN, 40, tide_f2(10.0f, 20.0f));
+    tide_touch_event(&d.touchscreen, TIDE_TOUCH_BEGAN, 41, tide_f2(50.0f, 50.0f));
+    tide_touch_event(&d.touchscreen, TIDE_TOUCH_MOVED, 40, tide_f2(13.0f, 24.0f));
+    tide_touch_event(&d.touchscreen, TIDE_TOUCH_MOVED, 41, tide_f2(60.0f, 50.0f));
+
+    const tide_input in = tide_input_sample(&d, NULL);
+    const tide_touchscreen *s = &in.tide_dev.touchscreen;
+    TIDE_CHECK(s->primaryTouch.press.pressed && s->touches.at[0].press.pressed && s->touches.at[1].press.pressed);
+    TIDE_CHECK(s->touches.at[0].delta.x == 3.0f && s->touches.at[0].delta.y == 4.0f);
+    TIDE_CHECK(s->touches.at[1].delta.x == 0.0f); // Only the first slot's movement is read
+    TIDE_CHECK(s->touches.at[0].position.x == 0.0f && s->touches.at[0].startPosition.x == 0.0f); // The window's
+    TIDE_CHECK(s->primaryTouch.position.x == 0.0f && s->touches.at[0].id == 0); // Not read
+    TIDE_CHECK(!s->touches.at[0].press.held && s->touches.at[0].source == 0); // The platform's own
+
+    tide_world_init(&world, 1.0f);
+    tide_world_set_input(&world, tide_player_from_index(0), in);
+    tide_world_tick(&world);
+    const Walker a = tide_get_Walker(&world, FIRST);
+    TIDE_CHECK(a.taps == 1 && a.swipe.x == 3.0f && a.swipe.y == 4.0f && a.fingers == 2 && a.slots == TIDE_TOUCHES);
+    tide_world_tick(&world); // Repeated: the finger doesn't tap again
+    TIDE_CHECK(tide_get_Walker(&world, FIRST).taps == 1);
+}
+
 // A button went down against last tick's input, so an input that repeats,
 // as a guess for a missing one does, doesn't press it again.
 TIDE_TEST(devices_buttons_go_down_once)

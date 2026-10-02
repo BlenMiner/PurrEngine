@@ -51,7 +51,7 @@ Input carries whether buttons are held, not whether they just went down: when a 
 
 ## Devices
 
-`Devices` has a keyboard, a mouse and a gamepad for now. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up). On a device, `.pressed` means held at any point since the last sample, so a quick tap between ticks is never lost.
+`Devices` has a keyboard, a mouse, a gamepad, a touchscreen and the pointer. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up). On a device, `.pressed` means held at any point since the last sample, so a quick tap between ticks is never lost.
 
 - **Keyboard:** every key by its position, named after the US layout, so `WASD` is in the same place on AZERTY:
   - `a` to `z`, and `digit0` to `digit9`
@@ -64,8 +64,13 @@ Input carries whether buttons are held, not whether they just went down: when a 
   - `numpad0` to `numpad9`, `numpadEnter`, `numpadPlus`, `numpadMinus`, `numpadMultiply`, `numpadDivide`, `numpadPeriod`
 - **Mouse:** `position`, `delta` and `scroll` (`float2`), and the buttons `left`, `right`, `middle`, `back` and `forward`. `position` is in window pixels from the bottom left.
 - **Gamepad:** `connected`, `leftStick` and `rightStick` (`float2`), `leftTrigger` and `rightTrigger` (0 to 1), the face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`, which is A, B, X and Y on Xbox), `dpad.up` and the other directions, `leftShoulder`, `rightShoulder`, `leftStickButton`, `rightStickButton`, `start` and `select`.
+- **Touchscreen:** `connected`, `primaryTouch`, and `touches`, a slot for each of 10 fingers. Each `Touch` has:
+  - `press`, a button: `.down` when the finger touched, and `.up` when it lifted
+  - `id`, the same while the finger touches, and a new one for each touch
+  - `position`, `delta` and `startPosition` (`float2`)
+- **Pointer:** `position`, `delta` and `press`: the mouse, with its left button, or the primary touch, whichever was used last.
 
-Each part has a type of its own: `Keyboard`, `Mouse`, `Gamepad`, `Dpad` and `Button`. Functions take them, and `Devices`, as parameters to read:
+Each part has a type of its own: `Keyboard`, `Mouse`, `Gamepad`, `Dpad`, `Touchscreen`, `Touch`, `Pointer` and `Button`. Functions take them, and `Devices`, as parameters to read:
 
 ```csharp
 float2 Steer(Gamepad pad)
@@ -74,7 +79,43 @@ float2 Steer(Gamepad pad)
 }
 ```
 
-Axes follow Unity: `y` is positive up, for sticks and the mouse, and `scroll.y` is positive scrolling away from you.
+Axes follow Unity: `y` is positive up, for sticks, the mouse, touches and the pointer, and `scroll.y` is positive scrolling away from you.
+
+### Touch
+
+A finger keeps its slot in `touches` while it touches, and lifts out of it. `primaryTouch` is the finger that touched while no other was the primary one, until it lifts: the one to follow for a single finger. A finger that touches and lifts between two samples reads as held for one, like a quick key press, so no tap is lost.
+
+`touches[i]` is the touch in slot `i` (an empty one past the last), `touches.count` is how many slots there are, and `foreach` goes through every slot, touching or not:
+
+```csharp
+mut var fingers = 0;
+foreach (var touch in Devices.touchscreen.touches)
+{
+    if (touch.press.pressed) fingers += 1;
+}
+```
+
+A finger is never the mouse, as in Unity's Input System: the mouse only sees mice. Code that should work with both reads the **pointer**, which follows the mouse or the primary touch, whichever was used last, as Unity's `Pointer.current` does. The GUI follows it too, so buttons work with a finger.
+
+```csharp
+input Brush
+{
+    int x;
+    int y;
+    bool paint;
+
+    // Cells of 16 pixels, under the mouse or a finger
+    Sample()
+    {
+        var pointer = Devices.pointer;
+        x = int(Math.Floor(pointer.position.x / 16));
+        y = int(Math.Floor(pointer.position.y / 16));
+        paint = pointer.press.pressed;
+    }
+}
+```
+
+Touches come from the web, on phones and desktops alike, and from touchscreens on Windows. Android and iOS come next. Elsewhere, `connected` is false and no finger ever touches.
 
 ### Devices in the match
 
@@ -90,7 +131,7 @@ system Hop(Devices devices, mut Velocity velocity)
 
 Match code can't read this machine's `Devices` directly; the error says to take the parameter. A system takes one `Devices` parameter, and one input parameter. Views read `Devices`, never a parameter, and can't read the input.
 
-The match can't read the mouse's `position` either: it's in this machine's window, which the other machines don't have. Work out what the match needs from it in `Sample`, like an aim direction, and read that from the input.
+The match can't read positions on the screen either, the mouse's, a touch's or the pointer's: they're in this machine's window, which the other machines don't have. Work out what the match needs from them in `Sample`, like an aim direction, and read that from the input.
 
 ## Input is an attack point
 

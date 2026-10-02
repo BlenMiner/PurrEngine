@@ -9,6 +9,7 @@
 #include <rlgl.h>
 
 #include "tide/page.h"
+#include "touch.h"
 
 #ifdef __wasm__
 #include "tide_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
@@ -154,6 +155,9 @@ void tide_platform_open(const tide_window_desc *desc)
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(desc->width, desc->height, desc->title);
     SetExitKey(KEY_NULL); // Escape belongs to the game
+#ifdef _WIN32
+    tide_win32_touch_attach(GetWindowHandle());
+#endif
 
 #ifdef __wasm__
     // raylib reads web keys by the character they type, which depends on the
@@ -245,7 +249,9 @@ static void poll_keyboard(tide_keyboard *k)
     }
 }
 
-static void poll_mouse(tide_mouse *m)
+// The mouse; true if it was used: it moved or scrolled, or a button went down
+// or up.
+static bool poll_mouse(tide_mouse *m)
 {
     const Vector2 position = GetMousePosition();
     const Vector2 delta = GetMouseDelta();
@@ -258,8 +264,38 @@ static void poll_mouse(tide_mouse *m)
     m->scroll = tide_f2(m->scroll.x + scroll.x, m->scroll.y + scroll.y);
     m->poll_delta = tide_f2(delta.x, -delta.y);
     m->poll_scroll = tide_f2(scroll.x, scroll.y);
-    for (size_t i = 0; i < COUNT_OF(mouse_buttons); i++)
-        tide_button_set(BUTTON_AT(m, mouse_buttons[i].offset), IsMouseButtonDown(mouse_buttons[i].raylib));
+    bool used = delta.x != 0.0f || delta.y != 0.0f || scroll.x != 0.0f || scroll.y != 0.0f;
+    for (size_t i = 0; i < COUNT_OF(mouse_buttons); i++) {
+        tide_button *b = BUTTON_AT(m, mouse_buttons[i].offset);
+        const bool held = IsMouseButtonDown(mouse_buttons[i].raylib);
+        used |= held != b->held;
+        tide_button_set(b, held);
+    }
+    return used;
+}
+
+// Fingers on a touchscreen: on the web, the page's; on Windows, the window's.
+// Elsewhere on desktop, there are none yet: GLFW has no touch.
+static void poll_touches(tide_touchscreen *s)
+{
+    tide_touches_poll(s);
+    const float width = (float)GetScreenWidth(), height = (float)GetScreenHeight();
+#ifdef __wasm__
+    s->connected = tide_web_touchscreen();
+    while (tide_web_take_touch()) {
+        // CSS pixels from the canvas's top left, as the mouse
+        const tide_float2 at = tide_f2(tide_web_touch_x(), height - tide_web_touch_y());
+        tide_touch_event(s, (tide_touch_phase)tide_web_touch_phase(), tide_web_touch_source(), at);
+    }
+    (void)width;
+#elif defined(_WIN32)
+    s->connected = tide_win32_touchscreen();
+    tide_touch_report r;
+    while (tide_win32_take_touch(&r)) tide_touch_event(s, r.phase, r.source, tide_f2(r.x * width, height - r.y * height));
+#else
+    (void)width;
+    (void)height;
+#endif
 }
 
 #ifndef __wasm__
@@ -364,8 +400,10 @@ void tide_platform_copy(const char *text)
 void tide_platform_poll(tide_devices *devices)
 {
     poll_keyboard(&devices->keyboard);
-    poll_mouse(&devices->mouse);
+    const bool mouse_used = poll_mouse(&devices->mouse);
     poll_gamepad(&devices->gamepad);
+    poll_touches(&devices->touchscreen);
+    tide_pointer_poll(devices, mouse_used);
     poll_text(&devices->text);
 }
 

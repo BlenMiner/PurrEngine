@@ -186,8 +186,8 @@ void tide_gui_end(tide_gui *g, tide_draw_list *draw);
 
 // Hides what the GUI is using from `devices`, a copy about to be sampled as
 // the game's input: the keyboard and gamepad while a widget has the focus,
-// the mouse's buttons while it's over the GUI or pressing a widget, and
-// everything while a modal is up.
+// the mouse's buttons and the primary touch while the pointer is over the GUI
+// or pressing a widget, and everything while a modal is up.
 void tide_gui_hide(tide_gui *g, tide_devices *devices);
 
 // ---------------------------------------------------------------------------

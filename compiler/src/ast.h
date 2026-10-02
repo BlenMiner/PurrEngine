@@ -92,7 +92,8 @@ typedef struct field {
     VEC(attribute) attributes; // [Clamp], [Min] and [Max] on input and struct fields
     loc type_qual_at; // Where the type starts: its namespace if it's qualified
     bool hidden; // The engine's own, in generated C only: a scene's visibility and players
-    int leaf;    // In the device records: 1 + its index in program.device_leaves, if it's a value the devices send
+    int leaf;    // In the device records: 1 + where its values start among its record's (a value is one)
+    bool window; // ...a position in this machine's window, which the match can't read
 } field;
 
 typedef enum param_mode {
@@ -196,9 +197,11 @@ typedef struct decl {
     bool is_scene;    // `scene Arena { ... }`: a DECL_COMPONENT whose entity is a loaded scene
     bool is_extern;   // `extern float Noise(float x);`: a DECL_FUNCTION written in C, with no body
     const char *c_name; // Records: the C struct name. Extern functions: the C function, from [NativeName] or the name.
-    bool device_group;  // Devices, Keyboard, Mouse, Gamepad and Dpad: records made of device values
-    int leaves_first;   // ...which are program.device_leaves from this one
-    int leaves_count;
+    bool device_group;  // Devices, Keyboard, Mouse, Gamepad, Dpad, Touch, ...: records made of device values
+    int leaves_count;   // ...how many
+    VEC(int) instances; // ...where each place it has in the devices starts in program.device_leaves
+    struct decl *array_of; // Records that are arrays of another, like Touchscreen.touches: the element
+    int array_length;      // ...and how many
 
     // Components, singletons, inputs, records, structs and events
     VEC(field) fields;
@@ -277,7 +280,8 @@ typedef struct decl {
     VEC(struct decl *) callees; // Functions it calls, once each
     VEC(loc) callee_at;         // ...and where it first calls each
     uint64_t device_uses[DEVICE_WORDS]; // Device values it reads through parameters, a bit per device leaf
-    loc position_at;     // ...where it first reads the mouse's position that way
+    loc position_at;     // ...where it first reads a position in the window that way (the mouse's, a touch's)
+    const char *position_what; // ...whose: "the mouse's position"
     uint64_t need_mask;  // Components an entity must have (access and `with`).
     uint64_t without_mask;
     VEC(struct decl *) after; // Systems or views that must run first ([After], and [Before] on them)
@@ -597,8 +601,7 @@ typedef struct program {
     decl *owner;         // The built-in Owner component.
     decl *devices;       // The built-in Devices record.
     VEC(decl *) records; // Built-in records: Devices, Keyboard, Mouse, Gamepad, Dpad, Button.
-    VEC(device_leaf) device_leaves; // Each value the devices send: a button, stick, trigger, axis or bool
-    int position_leaf;   // The mouse's position, which the match can't read
+    VEC(device_leaf) device_leaves; // Each value the devices send: a button, stick, trigger, axis, int or bool
     bool match_devices;  // Systems or handlers take Devices: the input sends the devices too
     uint64_t device_uses[DEVICE_WORDS]; // The leaves match code reads: all the input sends of them
     VEC(decl *) structs; // In an order where each comes after the structs it contains.

@@ -186,6 +186,12 @@ if(TIDE_WEB)
     tide_web_page(tide_platform_web_keys SHELL web/test_shell.html)
     tide_add_web_test(tide_platform_web_keys TARGET tide_platform_web_keys)
 
+    # Fingers on the canvas: the touchscreen's, never the mouse's.
+    add_executable(tide_platform_web_touch tests/web_touch.c)
+    target_link_libraries(tide_platform_web_touch PRIVATE tide_platform)
+    tide_web_page(tide_platform_web_touch SHELL web/test_shell.html)
+    tide_add_web_test(tide_platform_web_touch TARGET tide_platform_web_touch)
+
     # Two players in a room: a relay on this machine, and WebRTC between two
     # frames of one page, in real time rather than the other tests' virtual time.
     add_executable(tide_platform_web_rooms tests/web_rooms.c)

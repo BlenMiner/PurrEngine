@@ -1750,6 +1750,14 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             sb_put(o, ")");
             break;
         }
+        if (e->object->type.kind == TY_RECORD) { // touches[i] (tide/devices.h), or an empty one past the last
+            sb_printf(o, "%s_at(", e->object->type.decl->array_of->c_name);
+            gen_expr(g, o, e->object);
+            sb_put(o, ", ");
+            gen_expr(g, o, e->lhs);
+            sb_put(o, ")");
+            break;
+        }
         if (g->list_caches) {
             sb_printf(o, "tide_list%d_cget(&tide_lc[%d], ", e->object->type.decl->index, e->object->type.decl->index);
         } else {
@@ -3254,6 +3262,37 @@ static void gen_stmt(gen *g, const stmt *s)
         }
         if (s->value->type.kind == TY_GRID) { // In order: rows from the first, cells along each
             gen_grid_foreach(g, s);
+            break;
+        }
+        if (s->value->type.kind == TY_RECORD) { // touches: a copy, which a wait in the loop keeps in the frame
+            const decl *array = s->value->type.decl;
+            const int mark = task_mark(g);
+            const char *all = made_up(g, "all");
+            const char *index = made_up(g, "i");
+            line(g, o, "{");
+            g->indent++;
+            line(g, o, "%s %s = %s;", array->c_name, all, expr_text(g, s->value));
+            task_declare(g, all, s->value->type);
+            line(g, o, "int32_t %s = 0;", index);
+            task_declare(g, index, (type){TY_INT, NULL});
+            line(g, o, "for (; %s < %d; %s++) {", index, array->array_length, index);
+            g->indent++;
+            const int round = task_mark(g);
+            line(g, o, "%s %s = %s.at[%s];", elem_vtype(s->type), local_cname(g, s->name), all, index);
+            line(g, o, "(void)%s;", local_cname(g, s->name));
+            task_declare(g, local_cname(g, s->name), s->type);
+            const gen_target loop = {g->frame, g->containers.count, true, true, made_up(g, "loop_end"), false, made_up(g, "next"), false};
+            vec_push(g->targets, loop);
+            gen_body_stmt(g, s->then_stmt);
+            const gen_target done = g->targets.items[--g->targets.count];
+            if (done.next_used) line(g, o, "%s:;", done.next);
+            task_pop(g, round);
+            g->indent--;
+            line(g, o, "}");
+            if (done.end_used) line(g, o, "%s:;", done.end);
+            g->indent--;
+            line(g, o, "}");
+            task_pop(g, mark);
             break;
         }
         // The list's Count is read each round, so changes to it while it's gone

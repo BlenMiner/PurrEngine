@@ -1,0 +1,10 @@
+// expect: the match can't read a touch's position: it's in this machine's window
+component Finger { float2 at; }
+scene Main { }
+system Follow(Devices devices, mut Finger f)
+{
+    foreach (var touch in devices.touchscreen.touches)
+    {
+        if (touch.press.pressed) f.at = touch.position;
+    }
+}

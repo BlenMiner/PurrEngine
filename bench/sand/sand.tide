@@ -1,6 +1,6 @@
 // Sand: falling sand and water that every player paints into at once, the
 // cellular automaton benchmark (see AGENTS.md, Benchmarks). Bots play it
-// there; play.tide makes it a game people play, with the mouse.
+// there; play.tide makes it a game people play, with the mouse or a finger.
 //
 // The cells are a grid, which a parallel loop steps in 2x2 blocks, every
 // block at once, on threads (see docs/spec.md, Grids).
@@ -43,16 +43,17 @@ input Brush
     Material material;
     bool down;
 
-    // The left button paints, the right one erases.
+    // The pointer paints: the left button, or a finger. The right button erases.
     Sample(Canvas canvas)
     {
         if (canvas.scale <= 0) return;
-        var mouse = Devices.mouse;
-        var cell = (mouse.position - canvas.middle) / canvas.scale + float2(canvas.size, canvas.size) * 0.5;
+        var pointer = Devices.pointer;
+        var erase = Devices.mouse.right.pressed;
+        var cell = (pointer.position - canvas.middle) / canvas.scale + float2(canvas.size, canvas.size) * 0.5;
         x = int(Math.Floor(cell.x));
         y = int(Math.Floor(cell.y));
-        down = mouse.left.pressed || mouse.right.pressed;
-        material = mouse.right.pressed ? Material.Empty : canvas.material;
+        down = pointer.press.pressed || erase;
+        material = erase ? Material.Empty : canvas.material;
     }
 }
 

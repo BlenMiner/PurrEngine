@@ -1,0 +1,7 @@
+// expect: the match can't read the pointer's position: it's in this machine's window
+component Finger { float2 at; }
+scene Main { }
+system Follow(Devices devices, mut Finger f)
+{
+    f.at = devices.pointer.position;
+}

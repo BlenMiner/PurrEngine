@@ -1,0 +1,7 @@
+// expect: devices can only be read
+local singleton Fingers { int slots; }
+view Show(mut Fingers f)
+{
+    mut var all = Devices.touchscreen.touches;
+    all[0] = Devices.touchscreen.primaryTouch;
+}

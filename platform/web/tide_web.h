@@ -30,6 +30,18 @@ TIDE_WEB_IMPORT(mouse_buttons) int tide_web_mouse_buttons(void);
 TIDE_WEB_IMPORT(take_wheel_x) float tide_web_take_wheel_x(void);
 TIDE_WEB_IMPORT(take_wheel_y) float tide_web_take_wheel_y(void);
 
+// Fingers on the canvas, from its pointer events, in the order they happened:
+// take_touch moves to the next one since the last call (false once there are
+// none), and the others read it. Phases are tide_touch_phase's; positions are
+// in CSS pixels from the canvas's top left, as the mouse's. A finger is never
+// the mouse.
+TIDE_WEB_IMPORT(touchscreen) bool tide_web_touchscreen(void);
+TIDE_WEB_IMPORT(take_touch) bool tide_web_take_touch(void);
+TIDE_WEB_IMPORT(touch_phase) int tide_web_touch_phase(void);
+TIDE_WEB_IMPORT(touch_source) uint32_t tide_web_touch_source(void);
+TIDE_WEB_IMPORT(touch_x) float tide_web_touch_x(void);
+TIDE_WEB_IMPORT(touch_y) float tide_web_touch_y(void);
+
 // Keys by the DOM's `code`, which names physical positions: `index` is ours.
 // Held keys are released when the page loses focus. A key pressed since the
 // last call reads as held, even if it's already up again.

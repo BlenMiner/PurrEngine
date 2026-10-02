@@ -1,4 +1,4 @@
-// Sand to play: the field drawn, the brush under the mouse, and the GUI.
+// Sand to play: the field drawn, the brush under the pointer, and the GUI.
 // sand.tide is the game; these only draw it and change this machine's own
 // state (Canvas, Lobby).
 
@@ -48,11 +48,11 @@ view DrawField(Field field, mut Canvas canvas)
     }
 }
 
-// The brush, where the left button would paint, while the mouse is over the field.
+// The brush, where the pointer would paint, while it's over the field.
 view DrawBrush(Canvas canvas)
 {
     if (canvas.scale <= 0) return;
-    var cell = (Devices.mouse.position - canvas.middle) / canvas.scale + float2(canvas.size, canvas.size) * 0.5;
+    var cell = (Devices.pointer.position - canvas.middle) / canvas.scale + float2(canvas.size, canvas.size) * 0.5;
     if (cell.x < 0 || cell.y < 0 || cell.x >= canvas.size || cell.y >= canvas.size) return;
     var at = float2(Math.Floor(cell.x), Math.Floor(cell.y)) + 0.5;
     Draw.WireCircle(at, BRUSH + 0.5, canvas.material == Material.Empty ? Color.white : Shade(canvas.material));

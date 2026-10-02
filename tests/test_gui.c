@@ -30,6 +30,7 @@ static void key(tide_button *b, const bool held)
 
 static void begin(void)
 {
+    tide_pointer_poll(&devices, true); // As the platform polls it: the pointer follows the mouse
     tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
 }
 
@@ -188,6 +189,46 @@ TIDE_TEST(gui_arrows_wait_while_the_game_reads_them)
     TIDE_CHECK(two_buttons() == 0);
     TIDE_CHECK(gui.focus == 10);
 }
+
+// A frame of two_buttons with a finger: the touchscreen polled as the platform
+// does, then up to two events at (x, y) from the top left (TIDE_TOUCHES for
+// none).
+static int touch_frame(const tide_touch_phase first, const tide_touch_phase second, const float x, const float y)
+{
+    tide_touches_poll(&devices.touchscreen);
+    const tide_touch_phase phases[] = {first, second};
+    for (int i = 0; i < 2; i++) {
+        if ((int)phases[i] != TIDE_TOUCHES) tide_touch_event(&devices.touchscreen, phases[i], 1, tide_f2(x, 1080.0f - y));
+    }
+    tide_pointer_poll(&devices, false);
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    const bool a = tide_gui_layout_button(&gui, 10, "Play");
+    const bool b = tide_gui_layout_button(&gui, 20, "Quit");
+    end();
+    return (a ? 1 : 0) | (b ? 2 : 0);
+}
+
+#define NONE ((tide_touch_phase)TIDE_TOUCHES)
+
+TIDE_TEST(gui_fingers_press_buttons)
+{
+    start();
+    TIDE_CHECK(touch_frame(TIDE_TOUCH_BEGAN, NONE, 20.0f, 47.0f) == 0); // On Quit
+    TIDE_CHECK(gui.active == 20);
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(!sampled.touchscreen.primaryTouch.press.pressed && !sampled.touchscreen.touches.at[0].press.pressed);
+    TIDE_CHECK(!sampled.pointer.press.pressed); // The finger is the GUI's
+    TIDE_CHECK(touch_frame(TIDE_TOUCH_ENDED, NONE, 20.0f, 47.0f) == 2); // Lifted on it: a click
+    TIDE_CHECK(touch_frame(NONE, NONE, 0.0f, 0.0f) == 0);
+    TIDE_CHECK(gui.hot == 0); // Nothing stays hovered where the finger lifted
+
+    // A tap between two frames clicks too.
+    TIDE_CHECK(touch_frame(TIDE_TOUCH_BEGAN, TIDE_TOUCH_ENDED, 20.0f, 20.0f) == 0);
+    TIDE_CHECK(touch_frame(NONE, NONE, 0.0f, 0.0f) == 1);
+}
+
+#undef NONE
 
 TIDE_TEST(gui_mouse_over_the_gui_is_hidden)
 {

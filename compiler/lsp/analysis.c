@@ -1221,6 +1221,7 @@ static const method_form session_calls[] = {
     "A grid of that size, in cells, whose cell type comes from where it goes: 0 or nothing leaves an axis open."
 #define GRID_SIZE_FIELD_DOC "The grid's size, 0 on the axes where it's open."
 #define LIST_COUNT_DOC "How many elements the list has."
+#define DEVICE_ARRAY_COUNT_DOC "How many fingers the touchscreen follows at once: every slot, touching or not."
 #define TEXT_LENGTH_DOC "How many characters the text has."
 
 #define CLIPBOARD_COPY_FORM "Clipboard.Copy(string text)"
@@ -1580,6 +1581,10 @@ static void describe(const occurrence *o, sb *out)
         if (str_eq_c(o->name, "up")) sb_put(out, "\n\nTrue on the tick it became false.");
         if (o->object_type.kind == TY_STRING && str_eq_c(o->name, "Length")) sb_put(out, "\n\n" TEXT_LENGTH_DOC);
         if (o->object_type.kind == TY_LIST && str_eq_c(o->name, "Count")) sb_put(out, "\n\n" LIST_COUNT_DOC);
+        if (o->object_type.kind == TY_RECORD && o->object_type.decl && o->object_type.decl->array_of
+            && str_eq_c(o->name, "count")) {
+            sb_put(out, "\n\n" DEVICE_ARRAY_COUNT_DOC);
+        }
         if (o->object_type.kind == TY_GRID && str_eq_c(o->name, "size")) sb_put(out, "\n\n" GRID_SIZE_FIELD_DOC);
         break;
     case OCC_ATTRIBUTE: {
@@ -3402,6 +3407,7 @@ static type member_type(const type t, const str member)
     }
     if (t.kind == TY_STRING && str_eq_c(member, "Length")) return (type){TY_INT, NULL};
     if (t.kind == TY_LIST && str_eq_c(member, "Count")) return (type){TY_INT, NULL};
+    if (t.kind == TY_RECORD && t.decl->array_of && str_eq_c(member, "count")) return (type){TY_INT, NULL};
     if (t.kind == TY_GRID && (str_eq_c(member, "size") || str_eq_c(member, "min") || str_eq_c(member, "max"))) {
         return (type){t.decl->dims == 3 ? TY_INT3 : TY_INT2, NULL};
     }
@@ -3450,6 +3456,7 @@ static type loop_variable_type(const scope *sc, const int use)
         }
         if (of.kind == TY_LIST) return of.decl->fields.items[0].type;
         if (of.kind == TY_GRID) return (type){of.decl->dims == 3 ? TY_INT3 : TY_INT2, NULL}; // A cell's position
+        if (of.kind == TY_RECORD && of.decl->array_of) return (type){TY_RECORD, of.decl->array_of}; // touches
         return (type){TY_ERROR, NULL};
     }
     return (type){TY_ERROR, NULL};
@@ -3519,6 +3526,7 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "a", CK_PROPERTY, "float", "Alpha, 0 to 1.", NULL);
     }
     if (t.kind == TY_LIST) item(c, "Count", CK_PROPERTY, "int", LIST_COUNT_DOC, NULL);
+    if (t.kind == TY_RECORD && t.decl->array_of) item(c, "count", CK_PROPERTY, "int", DEVICE_ARRAY_COUNT_DOC, NULL);
     if (t.kind == TY_GRID) item(c, "size", CK_PROPERTY, t.decl->dims == 3 ? "int3" : "int2", GRID_SIZE_FIELD_DOC, NULL);
     if (t.kind == TY_STRING) {
         item(c, "Length", CK_PROPERTY, "int", TEXT_LENGTH_DOC, NULL);

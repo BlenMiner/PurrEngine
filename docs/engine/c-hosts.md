@@ -78,6 +78,7 @@ The generated header is the API between the game and its host. Namespaced declar
   tide_input input = tide_input_sample(&sampled, &local);
   tide_devices_consume(&devices);
   ```
+- `tide_platform_poll(&devices)` fills the devices from the window, once a frame. A host that fills them itself sets buttons with `tide_button_set`, and the mouse's fields; reports fingers with `tide_touches_poll` once a frame, then `tide_touch_event` for each one that touched, moved, lifted or was canceled (`tide/devices.h`), which keeps their slots and ids; and calls `tide_pointer_poll(&devices, mouse_used)` last, which points the pointer, and with it the GUI, at the mouse or the primary touch, whichever was used.
 - `tide_world_set_input(w, player, input)` sets a player's input for the next tick, and `tide_world_set_server_input(w, input)` the server's. Both repair the input first: NaN, bounds, then `Sanitize`.
 
 **Sessions**

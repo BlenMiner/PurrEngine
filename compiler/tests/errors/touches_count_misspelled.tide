@@ -1,0 +1,6 @@
+// expect: Touch[10] has 'count', and its elements by index, not 'Count'
+local singleton Fingers { int slots; }
+view Show(mut Fingers f)
+{
+    f.slots = Devices.touchscreen.touches.Count;
+}

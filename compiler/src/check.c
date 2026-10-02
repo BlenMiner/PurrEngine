@@ -412,28 +412,116 @@ static void note_operator_call(checker *c, decl *op, const expr *e)
     vec_push(c->calls, site);
 }
 
-// Match code reads device leaf `leaf` (an index in program.device_leaves):
-// the input sends it. Reads of this machine's `Devices` don't count.
-static void note_device_leaf(const checker *c, const expr *e, const int leaf)
+static bool device_group_type(const type t)
 {
-    decl *code = reading_code(c);
-    if (!code) return;
-    code->device_uses[leaf / 64] |= (uint64_t)1 << (leaf % 64);
-    if (leaf == c->prog->position_leaf && !code->position_at.line) code->position_at = e->at;
+    return t.kind == TY_RECORD && t.decl->device_group;
 }
 
 static bool reads_this_machine(const expr *e)
 {
-    while (e->kind == E_MEMBER) e = e->object;
+    while (e->kind == E_MEMBER || e->kind == E_INDEX) e = e->object;
     return e->kind == E_NAME && e->bind == BIND_DEVICES;
+}
+
+// Where device values are in program.device_leaves: `times` runs of `count`,
+// `stride` apart.
+typedef struct leaf_range {
+    int first, count, stride, times;
+} leaf_range;
+
+// Where `e`, a device record or value, is when it's named from a Devices
+// parameter. False when it's a copy, or a function's parameter, which could be
+// any place its record has.
+static bool device_range(const program *prog, const expr *e, leaf_range *r)
+{
+    if (e->kind == E_NAME) {
+        if (e->bind != BIND_PARAM || e->type.kind != TY_RECORD || e->type.decl != prog->devices) return false;
+        *r = (leaf_range){0, prog->devices->leaves_count, 0, 1};
+        return true;
+    }
+    if (e->kind == E_MEMBER) {
+        if (!e->field || !e->field->leaf || !device_range(prog, e->object, r)) return false;
+        r->first += e->field->leaf - 1;
+        r->count = device_group_type(e->field->type) ? e->field->type.decl->leaves_count : 1;
+        return true;
+    }
+    if (e->kind == E_INDEX) {
+        const type array = e->object->type;
+        if (array.kind != TY_RECORD || !array.decl->array_of || !device_range(prog, e->object, r)) return false;
+        const int size = array.decl->array_of->leaves_count;
+        r->count = size;
+        if (e->lhs->kind == E_INT && e->lhs->int_value >= 0 && e->lhs->int_value < array.decl->array_length) {
+            r->first += (int)e->lhs->int_value * size;
+        } else { // Any of them
+            if (r->times > 1) return false;
+            r->stride = size;
+            r->times = array.decl->array_length;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Match code reads the device values in `r`: the input sends them. A record
+// read whole, as a copy, leaves out its positions in the window: reading one
+// of the copy's counts.
+static void note_device_range(const checker *c, const leaf_range r, const bool whole)
+{
+    decl *code = reading_code(c);
+    if (!code) return;
+    for (int t = 0; t < r.times; t++) {
+        for (int i = 0; i < r.count; i++) {
+            const int leaf = r.first + t * r.stride + i;
+            if (whole && c->prog->device_leaves.items[leaf].field->window) continue;
+            code->device_uses[leaf / 64] |= (uint64_t)1 << (leaf % 64);
+        }
+    }
+}
+
+// Notes the device record `record`, or a value in it (`f`, or NULL for all of
+// it), at every place `record` has in the devices.
+static void note_device_places(const checker *c, const decl *record, const field *f)
+{
+    for (int i = 0; i < record->instances.count; i++) {
+        const int at = record->instances.items[i];
+        const leaf_range r = f ? (leaf_range){at + f->leaf - 1, 1, 0, 1} : (leaf_range){at, record->leaves_count, 0, 1};
+        note_device_range(c, r, !f);
+    }
+}
+
+// Whose position in the window a value is, for the error that says the match
+// can't read it.
+static const char *window_value(const decl *record, const field *f)
+{
+    if (str_eq_c(record->name, "Mouse")) return "the mouse's position";
+    if (str_eq_c(record->name, "Pointer")) return "the pointer's position";
+    return str_eq_c(f->name, "startPosition") ? "a touch's start position" : "a touch's position";
+}
+
+// `e` names a device value, like 'devices.keyboard.space': match code reads
+// it. Reads of this machine's `Devices` don't count.
+static void note_device_member(const checker *c, const expr *e)
+{
+    decl *code = reading_code(c);
+    if (!code || reads_this_machine(e)) return;
+    const decl *record = e->object->type.decl;
+    if (e->field->window && !code->position_at.line) {
+        code->position_at = e->at;
+        code->position_what = window_value(record, e->field);
+    }
+    leaf_range r;
+    if (device_range(c->prog, e, &r)) note_device_range(c, r, false);
+    else note_device_places(c, record, e->field);
 }
 
 // A device record used whole, like 'var pad = devices.gamepad;': every value
 // in it counts as read.
 static void note_device_value(const checker *c, const expr *e, const type t)
 {
-    if (t.kind != TY_RECORD || !t.decl->device_group || reads_this_machine(e)) return;
-    for (int i = 0; i < t.decl->leaves_count; i++) note_device_leaf(c, e, t.decl->leaves_first + i);
+    if (!device_group_type(t) || reads_this_machine(e)) return;
+    leaf_range r;
+    if (device_range(c->prog, e, &r)) note_device_range(c, r, true);
+    else note_device_places(c, t.decl, NULL);
 }
 static bool holds_text(type t);
 
@@ -491,7 +579,7 @@ static type list_of(program *prog, const type element)
     sb name = {0};
     sb_printf(&name, "List<%s>", type_name(element));
     d->name = (str){name.data, (int)name.len};
-    const field item = {str_from("item"), str_from(""), {0, 0, 0}, element, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
+    const field item = {str_from("item"), str_from(""), {0, 0, 0}, element, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
     vec_push(d->fields, item);
     d->index = prog->lists.count;
     vec_push(prog->lists, d);
@@ -721,7 +809,7 @@ static type grid_of(program *prog, const type cell, const int dims)
     sb name = {0};
     sb_printf(&name, "Grid%d<%s>", dims, type_name(cell));
     d->name = (str){name.data, (int)name.len};
-    const field item = {str_from("cell"), str_from(""), {0, 0, 0}, cell, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
+    const field item = {str_from("cell"), str_from(""), {0, 0, 0}, cell, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
     vec_push(d->fields, item);
     d->index = prog->grids.count;
     vec_push(prog->grids, d);
@@ -2772,6 +2860,22 @@ static type check_member(checker *c, expr *e)
         }
     }
 
+    // touches.count: how many a device array holds, in use or not.
+    if (obj.kind == TY_RECORD && obj.decl->array_of) {
+        if (str_eq_c(e->member, "count")) {
+            sb count = {0};
+            sb_printf(&count, "%d", obj.decl->array_length);
+            e->c_constant = count.data;
+            return T_INT_;
+        }
+        diag_error(e->at, "%s has 'count', and its elements by index, not '" STR_FMT "'", type_name(obj), STR_ARG(e->member));
+        suggestion s = suggest_start(e->member);
+        suggest_consider_c(&s, "count");
+        if (s.distance <= 1) suggest_note(&s);
+        else diag_note("its elements are 'touches[i]', or 'foreach (var touch in touches)'");
+        return T_ERR;
+    }
+
     // session.room: the code of the room the match is in, and gone.message: a
     // kick's message, for Disconnected. The host keeps them beside the local
     // state (tide_local's tide_room and tide_message), so they need no heap.
@@ -2787,7 +2891,7 @@ static type check_member(checker *c, expr *e)
             field *f = &obj.decl->fields.items[i];
             if (str_eq(f->name, e->member) && !f->hidden) {
                 e->field = f;
-                if (f->leaf && !reads_this_machine(e)) note_device_leaf(c, e, f->leaf - 1);
+                if (f->leaf && !device_group_type(f->type)) note_device_member(c, e);
                 return f->type;
             }
         }
@@ -2992,6 +3096,7 @@ static type check_conditional(checker *c, expr *e)
 // items[i]: a list's element, a copy.
 static type check_index(checker *c, expr *e)
 {
+    c->device_whole_ok = e->object; // devices.touchscreen.touches[0] reads the one it names
     const type obj = check_expr(c, e->object);
     if (obj.kind == TY_GRID) { // cells[int2(x, y)], or cells[x, y], which the parser makes the same
         const bool flat = obj.decl->dims == 2;
@@ -3006,6 +3111,7 @@ static type check_index(checker *c, expr *e)
     const type index = check_expr(c, e->lhs);
     if (index.kind != TY_ERROR && index.kind != TY_INT) diag_error(e->lhs->at, "a list's index is an int, not %s", type_name(index));
     if (obj.kind == TY_ERROR) return T_ERR;
+    if (obj.kind == TY_RECORD && obj.decl->array_of) return (type){TY_RECORD, obj.decl->array_of}; // touches[i]
     if (obj.kind != TY_LIST) {
         diag_error(e->at, "only lists have elements to index, and this is %s", type_name(obj));
         if (obj.kind == TY_STRING) diag_note("a piece of text is 'text.Substring(start, length)'");
@@ -3627,6 +3733,14 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
         diag_error(target->at, "'this' is the entity the code runs for, so it can't change");
         if (called) diag_note("store it in a 'mut var' first");
         return false;
+    }
+    for (const expr *part = target; part->kind == E_MEMBER || part->kind == E_INDEX; part = part->object) {
+        if (part->kind == E_INDEX && part->object->type.kind == TY_RECORD && part->object->type.decl->array_of) {
+            // touches[i], even of a copy
+            diag_error(target->at, "devices can only be read");
+            diag_note("copy the touch into a 'mut var' to change it");
+            return false;
+        }
     }
     for (const expr *part = target;; part = part->object) {
         if (part->bind == BIND_CONST) {
@@ -4726,12 +4840,15 @@ static void check_stmt(checker *c, stmt *s)
         check_parallel(c, s);
         break;
     case S_FOREACH: {
+        c->device_whole_ok = s->value; // Touches count as read by what the loop reads of them
         const type list = check_expr(c, s->value);
         type element = T_ERR;
         if (list.kind == TY_LIST) {
             element = list_element(list);
         } else if (list.kind == TY_GRID) { // Its cells' positions, in order
             element = list.decl->dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
+        } else if (list.kind == TY_RECORD && list.decl->array_of) { // touches: every one, in use or not
+            element = (type){TY_RECORD, list.decl->array_of};
         } else if (list.kind != TY_ERROR) {
             diag_error(s->value->at, "foreach goes through a list or a grid, and this is %s", type_name(list));
         }
@@ -6239,8 +6356,8 @@ static void add_builtins(program *prog)
     time->kind = DECL_SINGLETON;
     time->name = str_from("Time");
     time->builtin = true;
-    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
-    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
+    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
+    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
@@ -6249,7 +6366,7 @@ static void add_builtins(program *prog)
     owner->kind = DECL_COMPONENT;
     owner->name = str_from("Owner");
     owner->builtin = true;
-    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
     vec_push(owner->fields, player);
     prog->owner = owner;
 
@@ -6319,7 +6436,7 @@ static void add_builtins(program *prog)
         {"state", "SessionState"}, {"player", "PlayerID"}, {"ping", "int"}, {"server", "bool"}, {"open", "bool"}};
     for (int i = 0; i < (int)(sizeof session_fields / sizeof session_fields[0]); i++) {
         const field f = {str_from(session_fields[i][0]), str_from(session_fields[i][1]), {0, 0, 0}, {0}, NULL, {0, 0, 0},
-                         {0}, {0, 0, 0}, false, 0};
+                         {0}, {0, 0, 0}, false, 0, false};
         vec_push(session->fields, f);
     }
     prog->session = session;
@@ -6328,7 +6445,7 @@ static void add_builtins(program *prog)
     prog->connected->is_local = true;
     prog->disconnected->is_local = true;
     const field reason_field = {str_from("reason"), str_from("DisconnectReason"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0},
-                                {0, 0, 0}, false, 0};
+                                {0, 0, 0}, false, 0, false};
     vec_push(prog->disconnected->fields, reason_field);
 
     VEC(decl *) decls = {0};
@@ -6364,38 +6481,83 @@ static decl *new_record(program *prog, const char *name, const char *c_name)
 
 static void record_field(decl *d, const char *name, const type t)
 {
-    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
+    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
     vec_push(d->fields, f);
 }
 
-// Numbers the device values under record `d`, reached from tide_devices by
-// `path`: its own first, then its records', so each record's are in a row.
-static void number_leaves(program *prog, decl *d, const char *path)
+// A record of device values, rather than a value: a Button is one.
+static bool device_group_field(const field *f)
 {
+    return f->type.kind == TY_RECORD && !str_eq_c(f->type.decl->name, "Button");
+}
+
+// Lays out the device values in record `d`: its own first, then its records',
+// so each record's are in a row, and an array's elements one after another.
+// Each field's leaf is 1 + where its values start among `d`'s.
+static void layout_leaves(decl *d)
+{
+    if (d->device_group) return; // A record in several places is laid out once
     d->device_group = true;
-    d->leaves_first = prog->device_leaves.count;
+    if (d->array_of) {
+        layout_leaves(d->array_of);
+        d->leaves_count = d->array_length * d->array_of->leaves_count;
+        return;
+    }
+    int at = 0;
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < d->fields.count; i++) {
             field *f = &d->fields.items[i];
-            const bool group = f->type.kind == TY_RECORD && !str_eq_c(f->type.decl->name, "Button");
+            const bool group = device_group_field(f);
+            if (group != (pass == 1)) continue;
+            f->leaf = 1 + at;
+            if (group) layout_leaves(f->type.decl);
+            at += group ? f->type.decl->leaves_count : 1;
+        }
+    }
+    d->leaves_count = at;
+}
+
+// Lists the device values of record `d` in the place reached from
+// tide_devices by `path`, in program.device_leaves, in the order
+// layout_leaves gave them.
+static void list_leaves(program *prog, decl *d, const char *path)
+{
+    vec_push(d->instances, prog->device_leaves.count);
+    if (d->array_of) {
+        for (int k = 0; k < d->array_length; k++) {
+            sb at = {0};
+            sb_printf(&at, "%s.at[%d]", path, k);
+            list_leaves(prog, d->array_of, at.data);
+        }
+        return;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < d->fields.count; i++) {
+            field *f = &d->fields.items[i];
+            const bool group = device_group_field(f);
             if (group != (pass == 1)) continue;
             sb at = {0};
             sb_printf(&at, "%s%s" STR_FMT, path, path[0] ? "." : "", STR_ARG(f->name));
             if (group) {
-                number_leaves(prog, f->type.decl, at.data);
+                list_leaves(prog, f->type.decl, at.data);
                 continue;
             }
             if (prog->device_leaves.count == DEVICE_WORDS * 64) {
                 fprintf(stderr, "tidec: too many device values (raise DEVICE_WORDS)\n");
                 exit(1);
             }
-            if (strcmp(at.data, "mouse.position") == 0) prog->position_leaf = prog->device_leaves.count;
             const device_leaf leaf = {at.data, f};
             vec_push(prog->device_leaves, leaf);
-            f->leaf = prog->device_leaves.count;
         }
     }
-    d->leaves_count = prog->device_leaves.count - d->leaves_first;
+}
+
+// A field that's a position in this machine's window.
+static void window_field(decl *d, const char *name)
+{
+    for (int i = 0; i < d->fields.count; i++) {
+        if (str_eq_c(d->fields.items[i].name, name)) d->fields.items[i].window = true;
+    }
 }
 
 // The device records: `Devices`, which views and the input's Sample read, and
@@ -6442,12 +6604,47 @@ static void add_device_records(program *prog)
 #undef TRIGGER
 #undef GAMEPAD_BUTTON
 
+    decl *touch = new_record(prog, "Touch", "tide_touch");
+    record_field(touch, "press", t_button);
+    record_field(touch, "id", (type){TY_INT, NULL});
+#define TOUCH_AXIS(name) record_field(touch, #name, t_float2);
+    TIDE_TOUCH_AXES(TOUCH_AXIS)
+#undef TOUCH_AXIS
+    window_field(touch, "position");
+    window_field(touch, "startPosition");
+    // A touchscreen's fingers, a slot each: an array, whose type Tide has no
+    // name for yet, so it's not among the records code names.
+    decl *touches = NEW(decl);
+    touches->kind = DECL_RECORD;
+    sb touches_name = {0};
+    sb_printf(&touches_name, "Touch[%d]", TIDE_TOUCHES);
+    touches->name = str_from(touches_name.data);
+    touches->c_name = "tide_touches";
+    touches->builtin = true;
+    touches->array_of = touch;
+    touches->array_length = TIDE_TOUCHES;
+    decl *touchscreen = new_record(prog, "Touchscreen", "tide_touchscreen");
+    record_field(touchscreen, "connected", t_bool);
+    record_field(touchscreen, "primaryTouch", (type){TY_RECORD, touch});
+    record_field(touchscreen, "touches", (type){TY_RECORD, touches});
+
+    decl *pointer = new_record(prog, "Pointer", "tide_pointer");
+#define POINTER_AXIS(name) record_field(pointer, #name, t_float2);
+    TIDE_POINTER_AXES(POINTER_AXIS)
+#undef POINTER_AXIS
+    record_field(pointer, "press", t_button);
+    window_field(mouse, "position");
+    window_field(pointer, "position");
+
     decl *devices = new_record(prog, "Devices", "tide_devices");
     record_field(devices, "keyboard", (type){TY_RECORD, keyboard});
     record_field(devices, "mouse", (type){TY_RECORD, mouse});
     record_field(devices, "gamepad", (type){TY_RECORD, gamepad});
+    record_field(devices, "touchscreen", (type){TY_RECORD, touchscreen});
+    record_field(devices, "pointer", (type){TY_RECORD, pointer});
     prog->devices = devices;
-    number_leaves(prog, devices, "");
+    layout_leaves(devices);
+    list_leaves(prog, devices, "");
 }
 
 // Names the language reserves: built-in types and function groups.
@@ -7204,7 +7401,7 @@ static void collect_device_uses(checker *c)
         const decl *d = reached.items[r];
         for (int w = 0; w < DEVICE_WORDS; w++) prog->device_uses[w] |= d->device_uses[w];
         if (d->position_at.line) {
-            diag_error(d->position_at, "the match can't read the mouse's position: it's in this machine's window");
+            diag_error(d->position_at, "the match can't read %s: it's in this machine's window", d->position_what);
             diag_note("work out what the match needs from it in the input's Sample, like an aim direction, and "
                       "read that from the input");
         }

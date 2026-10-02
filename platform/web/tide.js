@@ -262,6 +262,35 @@
         event.preventDefault();
     }, { passive: false });
 
+    // Fingers on the canvas, from pointer events, in the order they happened;
+    // the program takes them each frame. A finger is only the touchscreen's:
+    // the browser makes no mouse events of it (its touch events' defaults are
+    // canceled), and takes no gestures of its own on the canvas (touch-action).
+    // Phases are tide_touch_phase's.
+    const touches = [];
+    let touchTaken = null;
+    function onTouch(event, phase) {
+        if (event.pointerType !== 'touch') return;
+        event.preventDefault();
+        if (phase === 1 && touches.length >= 1024) return; // The program isn't taking them: moves can go
+        const rect = canvas.getBoundingClientRect();
+        touches.push({
+            phase,
+            source: event.pointerId >>> 0,
+            x: (event.clientX - rect.left) * size.width / (rect.width || 1),
+            y: (event.clientY - rect.top) * size.height / (rect.height || 1),
+        });
+        if (phase === 0) canvas.focus();
+    }
+    canvas.style.touchAction = 'none';
+    canvas.addEventListener('pointerdown', event => onTouch(event, 0));
+    canvas.addEventListener('pointermove', event => onTouch(event, 1));
+    canvas.addEventListener('pointerup', event => onTouch(event, 2));
+    canvas.addEventListener('pointercancel', event => onTouch(event, 3));
+    for (const name of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+        canvas.addEventListener(name, event => event.preventDefault(), { passive: false });
+    }
+
     // Frames come on animation frames or, with `timerFrames`, as fast as
     // timers allow (headless pages have no animation frames). A hidden page
     // gets neither at its pace: browsers stop its animation frames and slow its
@@ -359,6 +388,12 @@
         mouse_buttons() { const held = mouse.buttons | mouse.tapped; mouse.tapped = 0; return held; },
         take_wheel_x() { const v = mouse.wheelX; mouse.wheelX = 0; return v; },
         take_wheel_y() { const v = mouse.wheelY; mouse.wheelY = 0; return v; },
+        touchscreen: () => (navigator.maxTouchPoints || 0) > 0 ? 1 : 0,
+        take_touch() { touchTaken = touches.shift() || null; return touchTaken ? 1 : 0; },
+        touch_phase: () => touchTaken ? touchTaken.phase : 0,
+        touch_source: () => touchTaken ? touchTaken.source : 0,
+        touch_x: () => touchTaken ? touchTaken.x : 0,
+        touch_y: () => touchTaken ? touchTaken.y : 0,
         watch_key(index, codePtr) {
             keyIndex.set(string(codePtr), index);
             if (index >= keysHeld.length) {

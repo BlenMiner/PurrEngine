@@ -8,6 +8,10 @@ component Walker
     int jumps;
     float throttle;
     bool connected;
+    int taps;
+    float2 swipe;
+    int fingers;
+    int slots;
 }
 
 scene Main { }
@@ -36,4 +40,25 @@ system Walk(Devices devices, Time time, mut Walker w)
     if (Jumped(devices)) w.jumps += 1;
     w.throttle = devices.gamepad.rightTrigger;
     w.connected = devices.gamepad.connected;
+}
+
+// A touch passed on: what the function reads is sent, of every touch it could be.
+bool Tapped(Touch touch)
+{
+    return touch.press.down;
+}
+
+// Fingers: the first slot's movement, and every slot's press. Their positions
+// are in this machine's window, so they're never sent.
+system Swipe(Devices devices, mut Walker w)
+{
+    if (Tapped(devices.touchscreen.primaryTouch)) w.taps += 1;
+    w.swipe += devices.touchscreen.touches[0].delta;
+    mut var fingers = 0;
+    foreach (var touch in devices.touchscreen.touches)
+    {
+        if (touch.press.pressed) fingers += 1;
+    }
+    w.fingers = fingers;
+    w.slots = devices.touchscreen.touches.count;
 }

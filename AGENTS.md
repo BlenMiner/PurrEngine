@@ -22,6 +22,9 @@ A networking-first game engine:
 ## Platforms
 
 - The main targets are desktop and consoles.
+- Mobile is a target too: Android first, then iOS.
+- A phone that goes to the background, or closes, can no longer simulate, so it leaves the match: with host migration on (see Networking), another player's machine takes over the match it hosted. Nothing keeps a phone's match running in the background.
+- Touch is input on every platform, not only phones: the web (on phones and desktops) and desktop touchscreens have it.
 - The web (WebAssembly, rendering with WebGL) is actively supported and tested, not an afterthought. Changes must keep the web build working.
 - Determinism holds on every platform, the web included, so web and desktop players can share one simulation.
 
@@ -221,7 +224,9 @@ It's for quick iteration, and only under `tide run`, native and web: `tide build
 - `platform/` (the platform layer), `demo/`, `bench/` and `relay/` are Claude's too, on the same terms.
   - The platform layer reads keys by physical position everywhere. On the web, the page reads the DOM's `code`, never the typed character, which follows the keyboard layout. `platform/tests/web_keys.c` guards this with AZERTY-style events. Hosts and views should read input from `Devices` too, never raylib's key functions.
   - The characters typed, which do follow the layout, are a separate channel (`tide_devices.text`, since the last poll) that only the GUI reads.
-  - On the web, a key or mouse button pressed and released between two frames reads as held for one, so taps aren't lost when frames are slow.
+  - On the web, a key or mouse button pressed and released between two frames reads as held for one, so taps aren't lost when frames are slow. A finger that touches and lifts between two polls does too, on every platform (`engine/src/devices.c`).
+  - A finger is the touchscreen's, never the mouse's, as in Unity's Input System. Platforms report fingers as events (`tide_touch_event`), and the engine keeps their slots and ids. On the web, the page reads the canvas's pointer events and cancels its touch events' defaults, so the browser makes no mouse of them (`platform/tests/web_touch.c`). On Windows, the window's `WM_POINTER` messages for touch are handled before GLFW's (`platform/src/touch_win32.c`), so the system makes no mouse of them either. GLFW has no touch, so other desktops have none yet.
+  - The pointer (`tide_pointer_poll`) follows the mouse or the primary touch, whichever was used last, as Unity's `Pointer.current`, and the GUI follows the pointer. A host that fills the devices itself calls it, or the GUI sees no mouse.
   - Pixels (the window's size, the mouse, what's drawn) are the display's logical pixels, as a browser's CSS pixels are, and rendering is at the display's full resolution: raylib's `FLAG_WINDOW_HIGHDPI` on desktop, and on the web a canvas `devicePixelRatio` times its CSS size.
   - On the web, `tide_platform_run` never returns (the browser drives the frames), so hosts do all their work in the frame function.
 

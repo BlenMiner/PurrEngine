@@ -223,6 +223,23 @@ static tide_button frame_button(const tide_button now, const tide_button last)
     return (tide_button){.pressed = now.held, .down = now.held && !last.held, .up = !now.held && last.held, .held = now.held};
 }
 
+// A touch as views see it. A finger that lifted shows its last frame with its
+// id, and one that came in its slot since shows as new.
+static void frame_touch(tide_touch *d, const tide_touch *now, const tide_touch *last)
+{
+    const bool same = now->id == last->id;
+    const tide_button before = same ? last->press : (tide_button){0};
+    if (now->id == 0 && last->press.held) { // It lifted, and a sample cleared its slot
+        *d = *last;
+        d->press = frame_button((tide_button){0}, before);
+        d->delta = tide_f2(0.0f, 0.0f);
+        return;
+    }
+    *d = *now;
+    d->press = frame_button(now->press, before);
+    d->delta = now->poll_delta;
+}
+
 // The devices views read this frame, from the platform's.
 static void frame_devices(tide_gui *g, const tide_devices *now)
 {
@@ -249,6 +266,15 @@ static void frame_devices(tide_gui *g, const tide_devices *now)
     d->gamepad.rightStick = now->gamepad.rightStick;
     d->gamepad.leftTrigger = now->gamepad.leftTrigger;
     d->gamepad.rightTrigger = now->gamepad.rightTrigger;
+    d->touchscreen.connected = now->touchscreen.connected;
+    frame_touch(&d->touchscreen.primaryTouch, &now->touchscreen.primaryTouch, &last->touchscreen.primaryTouch);
+    for (int i = 0; i < TIDE_TOUCHES; i++) {
+        frame_touch(&d->touchscreen.touches.at[i], &now->touchscreen.touches.at[i], &last->touchscreen.touches.at[i]);
+    }
+    d->pointer.position = now->pointer.position;
+    d->pointer.delta = now->pointer.poll_delta;
+    d->pointer.press = frame_button(now->pointer.press, last->pointer.press);
+    d->pointer.touch = now->pointer.touch;
     g->last = *now;
 }
 
@@ -274,10 +300,22 @@ static void hide(const tide_gui *g, tide_devices *d)
 #define RELEASE_MOUSE(name) RELEASE(d->mouse.name)
         TIDE_MOUSE_BUTTONS(RELEASE_MOUSE)
 #undef RELEASE_MOUSE
-#undef RELEASE
         d->mouse.scroll = tide_f2(0.0f, 0.0f);
+        // The finger on the GUI: the primary touch, in its slot too.
+        RELEASE(d->pointer.press)
+        tide_touchscreen *s = &d->touchscreen;
+        if (d->pointer.touch && s->primaryTouch.id != 0) {
+            for (int i = 0; i < TIDE_TOUCHES; i++) {
+                if (s->touches.at[i].id == s->primaryTouch.id) RELEASE(s->touches.at[i].press)
+            }
+            RELEASE(s->primaryTouch.press)
+        }
+#undef RELEASE
     }
-    if (g->modal) d->mouse.delta = tide_f2(0.0f, 0.0f);
+    if (g->modal) {
+        d->mouse.delta = tide_f2(0.0f, 0.0f);
+        d->pointer.delta = tide_f2(0.0f, 0.0f);
+    }
 }
 
 // Moves the focus with Tab, the arrows and the d-pad, in last frame's order.
@@ -316,10 +354,13 @@ void tide_gui_begin(tide_gui *g, const tide_devices *devices, const tide_float2 
     g->height = screen.y;
     g->measure = measure ? measure : guess_width;
 
-    // The devices count the mouse from the bottom left, y up; the GUI from the top left, y down.
-    const tide_mouse *m = &devices->mouse;
-    g->mouse = tide_f2(m->position.x, screen.y - m->position.y);
-    g->mouse_held = m->left.held;
+    // The pointer: the mouse, or a finger. The devices count from the bottom
+    // left, y up; the GUI from the top left, y down. A finger that's off the
+    // screen is nowhere, once it lifted, so nothing stays hovered.
+    const tide_pointer *p = &devices->pointer;
+    g->mouse = tide_f2(p->position.x, screen.y - p->position.y);
+    g->mouse_held = p->press.held;
+    if (p->touch && !g->mouse_held && !g->mouse_was_held) g->mouse = tide_f2(-1e30f, -1e30f);
     g->mouse_pressed = g->mouse_held && !g->mouse_was_held;
     g->mouse_released = !g->mouse_held && g->mouse_was_held;
     g->mouse_was_held = g->mouse_held;
