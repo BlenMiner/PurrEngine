@@ -9,4 +9,5 @@ if(TIDE_WEB)
 else()
     # Opens a hidden window, so it needs a desktop session with working OpenGL.
     add_test(NAME demo_smoke COMMAND demo --smoke)
+    set_tests_properties(demo_smoke PROPERTIES LABELS gpu)
 endif()

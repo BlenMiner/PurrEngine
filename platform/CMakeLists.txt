@@ -160,6 +160,19 @@ if(NOT TIDE_WEB)
     add_test(NAME tide_platform_udp COMMAND tide_platform_udp)
 endif()
 
+# The renderer: shapes, text and the GUI, read back from an offscreen render.
+# `tide_platform_draw --bench` (`?bench` on the web) times frames of many shapes.
+add_executable(tide_platform_draw tests/draw.c)
+target_link_libraries(tide_platform_draw PRIVATE tide_platform)
+if(TIDE_WEB)
+    tide_web_page(tide_platform_draw SHELL web/test_shell.html)
+    tide_add_web_test(tide_platform_draw TARGET tide_platform_draw)
+else()
+    # A hidden window, so it needs a desktop session with working OpenGL.
+    add_test(NAME tide_platform_draw COMMAND tide_platform_draw)
+    set_tests_properties(tide_platform_draw PROPERTIES LABELS gpu)
+endif()
+
 if(TIDE_WEB)
     # Keys by physical position on the web, where the typed character would be wrong.
     add_executable(tide_platform_web_keys tests/web_keys.c)

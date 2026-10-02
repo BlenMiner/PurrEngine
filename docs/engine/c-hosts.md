@@ -72,6 +72,8 @@ The generated header is the API between the game and its host. Namespaced declar
 
 ## A frame
 
+A zeroed `tide_draw_list` and `tide_gui` are ready to use. A draw list grows as a frame needs, keeps its memory for the next one, and `tide_draw_free` lets it go.
+
 ```c
 tide_draw_reset(&draw);
 tide_gui_begin(&gui, &devices, tide_platform_screen_size(), tide_platform_measure_text);

@@ -14,7 +14,8 @@
   const show = text => { console.log(text); log.textContent += text + '\n'; };
   var Tide = {
     canvas: document.getElementById('canvas'),
-    checkGL: true,
+    checkGL: !/[?&]bench\b/.test(location.search), // Timings can't: each check waits for the GPU
+    arguments: location.search ? location.search.slice(1).split('&').map(a => '--' + a) : [], // ?bench is --bench
     print: show,
     printErr: show,
     onExit: code => { document.body.dataset.exit = code; },

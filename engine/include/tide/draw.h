@@ -17,14 +17,6 @@
 // frame that starts black. After a TIDE_DRAW_GUI command, they're the GUI's
 // instead: in pixels, from the top left with y down.
 
-#ifndef TIDE_DRAW_MAX_COMMANDS
-#define TIDE_DRAW_MAX_COMMANDS 16384u
-#endif
-
-#ifndef TIDE_DRAW_TEXT_BYTES
-#define TIDE_DRAW_TEXT_BYTES 65536u
-#endif
-
 typedef enum tide_draw_kind {
     TIDE_DRAW_CLEAR,       // color
     TIDE_DRAW_CAMERA,      // a = center, b.x = size
@@ -45,17 +37,23 @@ typedef struct tide_draw_command {
     tide_color color;
 } tide_draw_command;
 
-// One frame's commands. Not simulation state: it lives outside the world.
+// One frame's commands. Not simulation state: it lives outside the world. A
+// zeroed list is ready to use, and it grows as it needs, with no limit but
+// memory: running out ends the program, as it does for worlds.
 typedef struct tide_draw_list {
+    tide_draw_command *commands; // `count` of them, with room for `capacity`
     uint32_t count;
+    uint32_t capacity;
+    char *text; // The commands' text, `text_used` bytes, with room for `text_capacity`
     uint32_t text_used;
-    uint32_t dropped; // Commands that didn't fit this frame
-    tide_draw_command commands[TIDE_DRAW_MAX_COMMANDS];
-    char text[TIDE_DRAW_TEXT_BYTES];
+    uint32_t text_capacity;
 } tide_draw_list;
 
-// Empties the list for a new frame.
+// Empties the list for a new frame. It keeps its memory for the next.
 void tide_draw_reset(tide_draw_list *d);
+
+// Lets the list's memory go: it's empty, and ready to use again.
+void tide_draw_free(tide_draw_list *d);
 
 // Fills the whole screen.
 void tide_draw_clear(tide_draw_list *d, tide_color color);

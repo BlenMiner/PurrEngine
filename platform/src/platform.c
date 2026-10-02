@@ -6,6 +6,9 @@
 #include <string.h>
 
 #include <raylib.h>
+#include <rlgl.h>
+
+#include "tide/page.h"
 
 #ifdef __wasm__
 #include "tide_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
@@ -362,9 +365,226 @@ static Color to_raylib(const tide_color c)
     return (Color){color_channel(c.r), color_channel(c.g), color_channel(c.b), color_channel(c.a)};
 }
 
+// ---------------------------------------------------------------------------
+// Shapes (rects, circles, their outlines and lines) go to the GPU as instances
+// of one quad, each its shape in window pixels, so a run of them between
+// other commands is one draw call, however many there are. Text goes through
+// raylib, which batches it on its own.
+
+enum { SHAPE_RECT, SHAPE_WIRE_RECT, SHAPE_CIRCLE, SHAPE_WIRE_CIRCLE, SHAPE_LINE };
+
+typedef struct shape {
+    float a[2];       // Its middle, or a line's start
+    float b[2];       // Half its size (a circle's radius, twice), or a line's end
+    uint8_t color[4]; // RGBA
+    float kind;       // SHAPE_*
+} shape;
+
+// What a list comes to, in order: runs of shapes, clears and text.
+enum { STEP_SHAPES, STEP_CLEAR, STEP_TEXT };
+
+typedef struct draw_step {
+    uint32_t kind;  // STEP_*
+    uint32_t first; // STEP_SHAPES: its shapes; STEP_TEXT: its text's offset in the list
+    uint32_t count;
+    Vector2 at; // STEP_TEXT: its top left corner in window pixels, and its height
+    float size;
+    Color color;
+} draw_step;
+
+static shape *shapes;
+static uint32_t shape_count, shape_capacity;
+static draw_step *steps;
+static uint32_t step_count, step_capacity;
+
+static draw_step *add_step(const uint32_t kind)
+{
+    if (step_count == step_capacity) {
+        const uint32_t capacity = step_capacity ? step_capacity * 2u : 64u;
+        steps = tide_realloc(steps, step_capacity * sizeof(draw_step), capacity * sizeof(draw_step));
+        step_capacity = capacity;
+    }
+    draw_step *s = &steps[step_count++];
+    *s = (draw_step){.kind = kind};
+    return s;
+}
+
+static void add_shape(const int kind, const float ax, const float ay, const float bx, const float by,
+                      const Color color)
+{
+    if (shape_count == shape_capacity) {
+        const uint32_t capacity = shape_capacity ? shape_capacity * 2u : 1024u;
+        if (capacity > UINT32_MAX / sizeof(shape)) tide_out_of_memory();
+        shapes = tide_realloc(shapes, shape_capacity * sizeof(shape), capacity * sizeof(shape));
+        shape_capacity = capacity;
+    }
+    if (step_count == 0 || steps[step_count - 1].kind != STEP_SHAPES) add_step(STEP_SHAPES)->first = shape_count;
+    steps[step_count - 1].count++;
+    shapes[shape_count++] = (shape){{ax, ay}, {bx, by}, {color.r, color.g, color.b, color.a}, (float)kind};
+}
+
+#ifdef __wasm__
+#define GLSL_VERSION "#version 300 es\nprecision highp float;\n"
+#else
+#define GLSL_VERSION "#version 330\n"
+#endif
+
+// Each instance's quad covers its shape in window pixels, which the camera
+// already applied, and rlgl's matrices take to the screen (or a render
+// texture), as they do for raylib's own drawing.
+static const char shape_vertex[] = GLSL_VERSION
+    "in vec2 corner;\n" // A corner of the quad, 0 to 1
+    "in vec4 shape;\n"  // a, then b
+    "in vec4 color;\n"
+    "in float kind;\n"
+    "uniform mat4 mvp;\n"
+    "out vec2 local;\n"  // Pixels from its middle; for a line, along and across it
+    "out vec2 extent;\n" // Half its size in pixels
+    "out vec4 tint;\n"
+    "out float form;\n"
+    "void main() {\n"
+    "    vec2 c = corner * 2.0 - 1.0;\n"
+    "    vec2 p;\n"
+    "    if (kind > 3.5) {\n" // A line: a pixel wide, reaching half a pixel past its ends
+    "        vec2 d = shape.zw - shape.xy;\n"
+    "        float len = length(d);\n"
+    "        vec2 along = len > 0.0 ? d / len : vec2(1.0, 0.0);\n"
+    "        extent = vec2(len * 0.5 + 0.5, 0.5);\n"
+    "        local = c * extent;\n"
+    "        p = (shape.xy + shape.zw) * 0.5 + along * local.x + vec2(-along.y, along.x) * local.y;\n"
+    "    } else {\n"
+    "        extent = abs(shape.zw);\n"
+    "        local = c * (extent + (kind > 1.5 ? 1.0 : 0.0));\n" // Room for a circle's smooth edge
+    "        p = shape.xy + local;\n"
+    "    }\n"
+    "    tint = color;\n"
+    "    form = kind;\n"
+    "    gl_Position = mvp * vec4(p, 0.0, 1.0);\n"
+    "}\n";
+
+static const char shape_fragment[] = GLSL_VERSION
+    "in vec2 local;\n"
+    "in vec2 extent;\n"
+    "in vec4 tint;\n"
+    "in float form;\n"
+    "out vec4 pixel;\n"
+    "void main() {\n"
+    "    float cover = 1.0;\n"
+    "    if (form > 0.5 && form < 1.5) {\n" // A rect's outline: the pixel inside its edge
+    "        if (all(lessThan(abs(local), extent - 1.0))) discard;\n"
+    "    } else if (form > 1.5 && form < 3.5) {\n" // Circles, with a smooth edge
+    "        float d = length(local);\n"
+    "        cover = clamp(extent.x - d + 0.5, 0.0, 1.0);\n"
+    "        if (form > 2.5) cover *= clamp(d - extent.x + 1.5, 0.0, 1.0);\n" // An outline: the pixel inside it
+    "        if (cover <= 0.0) discard;\n"
+    "    }\n"
+    "    pixel = vec4(tint.rgb, tint.a * cover);\n"
+    "}\n";
+
+static struct {
+    unsigned int shader, vao, corners, instances;
+    uint32_t capacity; // Shapes the instance buffer holds
+    int mvp, corner, shape, color, kind;
+} gpu;
+
+// rlgl's matrices, as its own drawing uses them (rlMatrixMultiply(modelview,
+// projection) in rlgl.h).
+static Matrix shape_mvp(void)
+{
+    const Matrix l = rlGetMatrixModelview();
+    const Matrix r = rlGetMatrixProjection();
+    Matrix m;
+    m.m0 = l.m0 * r.m0 + l.m1 * r.m4 + l.m2 * r.m8 + l.m3 * r.m12;
+    m.m1 = l.m0 * r.m1 + l.m1 * r.m5 + l.m2 * r.m9 + l.m3 * r.m13;
+    m.m2 = l.m0 * r.m2 + l.m1 * r.m6 + l.m2 * r.m10 + l.m3 * r.m14;
+    m.m3 = l.m0 * r.m3 + l.m1 * r.m7 + l.m2 * r.m11 + l.m3 * r.m15;
+    m.m4 = l.m4 * r.m0 + l.m5 * r.m4 + l.m6 * r.m8 + l.m7 * r.m12;
+    m.m5 = l.m4 * r.m1 + l.m5 * r.m5 + l.m6 * r.m9 + l.m7 * r.m13;
+    m.m6 = l.m4 * r.m2 + l.m5 * r.m6 + l.m6 * r.m10 + l.m7 * r.m14;
+    m.m7 = l.m4 * r.m3 + l.m5 * r.m7 + l.m6 * r.m11 + l.m7 * r.m15;
+    m.m8 = l.m8 * r.m0 + l.m9 * r.m4 + l.m10 * r.m8 + l.m11 * r.m12;
+    m.m9 = l.m8 * r.m1 + l.m9 * r.m5 + l.m10 * r.m9 + l.m11 * r.m13;
+    m.m10 = l.m8 * r.m2 + l.m9 * r.m6 + l.m10 * r.m10 + l.m11 * r.m14;
+    m.m11 = l.m8 * r.m3 + l.m9 * r.m7 + l.m10 * r.m11 + l.m11 * r.m15;
+    m.m12 = l.m12 * r.m0 + l.m13 * r.m4 + l.m14 * r.m8 + l.m15 * r.m12;
+    m.m13 = l.m12 * r.m1 + l.m13 * r.m5 + l.m14 * r.m9 + l.m15 * r.m13;
+    m.m14 = l.m12 * r.m2 + l.m13 * r.m6 + l.m14 * r.m10 + l.m15 * r.m14;
+    m.m15 = l.m12 * r.m3 + l.m13 * r.m7 + l.m14 * r.m11 + l.m15 * r.m15;
+    return m;
+}
+
+// The shader and the quad, the first time they're needed.
+static void shapes_start(void)
+{
+    if (gpu.shader) return;
+    gpu.shader = rlLoadShaderProgram(shape_vertex, shape_fragment);
+    if (gpu.shader == 0 || gpu.shader == rlGetShaderIdDefault()) {
+        TraceLog(LOG_FATAL, "DRAW: the shapes' shader didn't compile (see above)");
+        abort();
+    }
+    gpu.mvp = rlGetLocationUniform(gpu.shader, "mvp");
+    gpu.corner = rlGetLocationAttrib(gpu.shader, "corner");
+    gpu.shape = rlGetLocationAttrib(gpu.shader, "shape");
+    gpu.color = rlGetLocationAttrib(gpu.shader, "color");
+    gpu.kind = rlGetLocationAttrib(gpu.shader, "kind");
+    gpu.vao = rlLoadVertexArray();
+    rlEnableVertexArray(gpu.vao);
+    // Counterclockwise on screen, as rlgl culls the back faces of what's drawn
+    static const float corners[12] = {0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0};
+    gpu.corners = rlLoadVertexBuffer(corners, sizeof corners, false);
+    rlSetVertexAttribute((unsigned)gpu.corner, 2, RL_FLOAT, false, 0, 0);
+    rlEnableVertexAttribute((unsigned)gpu.corner);
+    rlDisableVertexArray();
+}
+
+// The instance buffer's attributes, from shape `first` on.
+static void point_at(const uint32_t first)
+{
+    const int at = (int)(first * sizeof(shape));
+    rlEnableVertexBuffer(gpu.instances);
+    rlSetVertexAttribute((unsigned)gpu.shape, 4, RL_FLOAT, false, sizeof(shape), at + (int)offsetof(shape, a));
+    rlSetVertexAttribute((unsigned)gpu.color, 4, RL_UNSIGNED_BYTE, true, sizeof(shape), at + (int)offsetof(shape, color));
+    rlSetVertexAttribute((unsigned)gpu.kind, 1, RL_FLOAT, false, sizeof(shape), at + (int)offsetof(shape, kind));
+}
+
+// This list's shapes into the instance buffer, which grows as they need.
+static void upload_shapes(void)
+{
+    if (shape_count > gpu.capacity) {
+        uint32_t capacity = gpu.capacity ? gpu.capacity : 1024u;
+        while (capacity < shape_count) capacity *= 2u;
+        rlEnableVertexArray(gpu.vao);
+        if (gpu.instances) rlUnloadVertexBuffer(gpu.instances);
+        gpu.instances = rlLoadVertexBuffer(NULL, (int)(capacity * sizeof(shape)), true);
+        gpu.capacity = capacity;
+        point_at(0);
+        const int per_instance[] = {gpu.shape, gpu.color, gpu.kind};
+        for (int i = 0; i < 3; i++) {
+            rlEnableVertexAttribute((unsigned)per_instance[i]);
+            rlSetVertexAttributeDivisor((unsigned)per_instance[i], 1);
+        }
+        rlDisableVertexArray();
+    }
+    if (shape_count) rlUpdateVertexBuffer(gpu.instances, shapes, (int)(shape_count * sizeof(shape)), 0);
+}
+
+static void draw_shapes(const uint32_t first, const uint32_t count)
+{
+    rlDrawRenderBatchActive(); // What raylib batched before them (text) goes first
+    rlEnableShader(gpu.shader);
+    rlSetUniformMatrix(gpu.mvp, shape_mvp());
+    rlEnableVertexArray(gpu.vao);
+    point_at(first);
+    rlDrawVertexArrayInstanced(0, 6, (int)count);
+    rlDisableVertexArray();
+    rlDisableShader();
+}
+
 static void draw_list(const tide_draw_list *list)
 {
-    ClearBackground(BLACK); // Every frame starts black; Draw.Clear picks another color
+    shapes_start();
+    shape_count = 0;
+    step_count = 0;
     camera cam = {{0.0f, 0.0f}, 1.0f, false};
     camera world = cam; // The last world camera, for tide_platform_world_to_screen
     for (uint32_t i = 0; i < list->count; i++) {
@@ -372,7 +592,7 @@ static void draw_list(const tide_draw_list *list)
         const Color color = to_raylib(c->color);
         switch ((tide_draw_kind)c->kind) {
         case TIDE_DRAW_CLEAR:
-            ClearBackground(color);
+            add_step(STEP_CLEAR)->color = color;
             break;
         case TIDE_DRAW_CAMERA:
             cam.center = c->a;
@@ -385,36 +605,52 @@ static void draw_list(const tide_draw_list *list)
             cam.gui = true;
             break;
         case TIDE_DRAW_CIRCLE:
-            DrawCircleV(to_screen(&cam, c->a), c->b.x * cam.scale, color);
+        case TIDE_DRAW_WIRE_CIRCLE: {
+            const Vector2 p = to_screen(&cam, c->a);
+            const float r = c->b.x * cam.scale;
+            add_shape(c->kind == TIDE_DRAW_CIRCLE ? SHAPE_CIRCLE : SHAPE_WIRE_CIRCLE, p.x, p.y, r, r, color);
             break;
-        case TIDE_DRAW_WIRE_CIRCLE:
-            DrawCircleLinesV(to_screen(&cam, c->a), c->b.x * cam.scale, color);
-            break;
+        }
         case TIDE_DRAW_RECT:
         case TIDE_DRAW_WIRE_RECT: {
             const Vector2 top_left = rect_corner(&cam, c);
-            const Rectangle r = {top_left.x, top_left.y, c->b.x * cam.scale, c->b.y * cam.scale};
-            if (c->kind == TIDE_DRAW_RECT) DrawRectangleRec(r, color);
-            else DrawRectangleLinesEx(r, 1.0f, color);
+            const float hw = c->b.x * cam.scale * 0.5f;
+            const float hh = c->b.y * cam.scale * 0.5f;
+            add_shape(c->kind == TIDE_DRAW_RECT ? SHAPE_RECT : SHAPE_WIRE_RECT, top_left.x + hw, top_left.y + hh, hw,
+                      hh, color);
             break;
         }
-        case TIDE_DRAW_LINE:
-            DrawLineV(to_screen(&cam, c->a), to_screen(&cam, c->b), color);
+        case TIDE_DRAW_LINE: {
+            const Vector2 from = to_screen(&cam, c->a);
+            const Vector2 to = to_screen(&cam, c->b);
+            add_shape(SHAPE_LINE, from.x, from.y, to.x, to.y, color);
             break;
+        }
         case TIDE_DRAW_TEXT: {
-            const float size = c->b.x * cam.scale;
-            DrawTextEx(GetFontDefault(), list->text + c->text, to_screen(&cam, c->a), size, size / 10.0f, color);
+            draw_step *s = add_step(STEP_TEXT);
+            s->first = c->text;
+            s->at = to_screen(&cam, c->a);
+            s->size = c->b.x * cam.scale;
+            s->color = color;
             break;
         }
         }
     }
     last_camera = world;
 
-    static bool warned;
-    if (list->dropped > 0 && !warned) {
-        TraceLog(LOG_WARNING, "DRAW: %u commands didn't fit in the draw list (raise TIDE_DRAW_MAX_COMMANDS)",
-                 (unsigned)list->dropped);
-        warned = true;
+    upload_shapes();
+    rlDrawRenderBatchActive(); // What came before the list goes under it, and is cleared
+    ClearBackground(BLACK);    // Every frame starts black; Draw.Clear picks another color
+    for (uint32_t i = 0; i < step_count; i++) {
+        const draw_step *s = &steps[i];
+        if (s->kind == STEP_SHAPES) {
+            draw_shapes(s->first, s->count);
+        } else if (s->kind == STEP_CLEAR) {
+            rlDrawRenderBatchActive(); // Text before it is cleared too
+            ClearBackground(s->color);
+        } else {
+            DrawTextEx(GetFontDefault(), list->text + s->first, s->at, s->size, s->size / 10.0f, s->color);
+        }
     }
 }
 

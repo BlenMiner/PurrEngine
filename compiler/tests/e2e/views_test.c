@@ -56,7 +56,6 @@ TIDE_TEST(views_run_in_declaration_order)
 {
     draw_frame();
     TIDE_REQUIRE(draw.count == 11);
-    TIDE_CHECK(draw.dropped == 0);
     TIDE_CHECK(command(0)->kind == TIDE_DRAW_CLEAR);
     TIDE_CHECK(command(3)->kind == TIDE_DRAW_CIRCLE);
     TIDE_CHECK(command(7)->kind == TIDE_DRAW_LINE);

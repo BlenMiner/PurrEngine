@@ -131,13 +131,14 @@ jobs:
           key: lto-${{ hashFiles('cmake/LLVM.cmake', 'compiler/cli/llvm/cc.cpp') }}
           restore-keys: lto-
 
-      # The demo's smoke test opens a window, which needs a GPU the runners
-      # don't have; the web one runs in headless Chrome.
+      # Native tests that open a window (label gpu: the demo's smoke test, the
+      # renderer's) need a GPU the runners don't have; the web ones run in
+      # headless Chrome.
       - name: Test (native)
         run: |
           cmake --preset release
           cmake --build --preset release
-          ctest --preset release -E demo_smoke
+          ctest --preset release -LE gpu
       - name: Test (web)
         run: cmake --workflow --preset web-release
       # The target tide builds Windows games for; its platform layer goes in the package.
@@ -146,7 +147,7 @@ jobs:
         run: |
           cmake --preset mingw-release
           cmake --build --preset mingw-release
-          ctest --preset mingw-release -E demo_smoke
+          ctest --preset mingw-release -LE gpu
 
       - name: Package
         run: |

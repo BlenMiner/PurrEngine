@@ -15,7 +15,7 @@ view DrawHud(Arena arena)
 }
 ```
 
-Drawing is immediate mode: views call `Draw` functions every frame, and nothing is kept between frames. Views run after the frame's ticks, in the order they're declared, and later ones draw on top.
+Drawing is immediate mode: views call `Draw` functions every frame, and nothing is kept between frames. Views run after the frame's ticks, in the order they're declared, and later ones draw on top. A frame can draw as much as it needs: shapes go to the GPU together, so tens of thousands of rects or circles a frame are cheap, on the web too.
 
 A view's `mut` parameters, `Spawn`, `Add`, `Remove`, `Destroy` and `Send` are all local: views can change this machine's own state, like particles or a menu, but not the match (see [Local state](./local-state.md)). Only views, and the functions they call, can draw.
 
