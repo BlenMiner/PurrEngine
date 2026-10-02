@@ -1662,6 +1662,43 @@ TIDE_TEST(lsp_folding)
     TIDE_CHECK(has(folds, "{\"startLine\":0,\"endLine\":2,\"kind\":\"comment\"}"));
     TIDE_CHECK(has(folds, "{\"startLine\":3,\"endLine\":5}")); // From `component Body`, keeping `}` in sight
     TIDE_CHECK(has(folds, "{\"startLine\":7,\"endLine\":9}"));
+
+    // Comments in /* */, lists of arguments and elements, and using lines
+    open_document("using A;\nusing B;\n/* One\n   two */\nnamespace C;\nvoid Draw(int x,\n          int y)\n{\n}\n"
+                  "void Call()\n{\n    Draw(\n        1,\n        2\n    );\n    List<int> xs = [\n        1,\n        2];\n}\n");
+    folds = request("textDocument/foldingRange");
+    TIDE_CHECK(has(folds, "{\"startLine\":0,\"endLine\":1,\"kind\":\"imports\"}"));
+    TIDE_CHECK(has(folds, "{\"startLine\":2,\"endLine\":3,\"kind\":\"comment\"}"));
+    TIDE_CHECK(has(folds, "{\"startLine\":5,\"endLine\":6}"));   // The parameters, with their `)`
+    TIDE_CHECK(has(folds, "{\"startLine\":11,\"endLine\":13}")); // The arguments, keeping `);` in sight
+    TIDE_CHECK(has(folds, "{\"startLine\":15,\"endLine\":17}")); // The list's elements
+}
+
+// Braceless bodies under loops keep their level, however deep; and an enum
+// with a backing type gets its brace moved like any other.
+TIDE_TEST(lsp_format_braceless_loops)
+{
+    start();
+    static const char messy[] = "singleton F { List<int> xs; Grid2<int> cells; }\nscene Main { }\n"
+                                "system S(mut F f)\n{\nwhile (f.xs.Count > 3)\nif (f.xs.Count > 4)\nreturn;\n"
+                                "foreach (var x in f.xs)\nfor (var i = 0; i < x; i++)\nif (i > 2)\nreturn;\n"
+                                "parallel (var at in f.cells)\nf.cells[at] = 1;\nreturn;\n}\n";
+    static const char expected[] = "singleton F { List<int> xs; Grid2<int> cells; }\nscene Main { }\n"
+                                   "system S(mut F f)\n{\n    while (f.xs.Count > 3)\n        if (f.xs.Count > 4)\n"
+                                   "            return;\n    foreach (var x in f.xs)\n        for (var i = 0; i < x; i++)\n"
+                                   "            if (i > 2)\n                return;\n    parallel (var at in f.cells)\n"
+                                   "        f.cells[at] = 1;\n    return;\n}\n";
+    format_reply(messy);
+    const char *formatted = apply_reply(messy, NULL);
+    TIDE_CHECK(strcmp(formatted, expected) == 0);
+    if (strcmp(formatted, expected) != 0) printf("--- got:\n%s---\n", formatted);
+    TIDE_CHECK(has(format_reply(expected), "\"result\":[]"));
+
+    static const char backed[] = "enum Voxel : byte {\n    Air,\n    Stone,\n}\nenum Page {\n    Title,\n}\nscene Main { }\n";
+    static const char braced[] = "enum Voxel : byte\n{\n    Air,\n    Stone,\n}\nenum Page\n{\n    Title,\n}\nscene Main { }\n";
+    format_reply(backed);
+    TIDE_CHECK(strcmp(apply_reply(backed, NULL), braced) == 0);
+    TIDE_CHECK(has(format_reply(braced), "\"result\":[]"));
 }
 
 // A code action at a 0-based line.

@@ -2176,21 +2176,32 @@ static void folding_range(jbuf *out, int *written, const int first, const int la
               kind ? kind : "", kind ? "\"" : "");
 }
 
+static const char *token_start(const token *t);
+static int line_of(const char *p);
+static const unit *doc_unit(void);
+
 void analysis_folding_ranges(jbuf *out)
 {
     jb_put(out, "[");
     int written = 0;
     // A block folds from the line that introduces it, even when its `{` is on
-    // a line of its own below, and keeps its `}` in sight.
+    // a line of its own below, and keeps its `}` in sight. So do arguments,
+    // parameters and a list's elements over several lines, keeping their `)`
+    // or `]` in sight when it starts a line.
     int *open = arena_alloc(sizeof(int) * ((size_t)DOC->tok_count + 1));
     int depth = 0;
     for (int i = 0; i < DOC->tok_count; i++) {
         const token *t = &DOC->toks[i];
-        if (t->kind == T_LBRACE) {
+        if (t->kind == T_LBRACE || t->kind == T_LPAREN || t->kind == T_LBRACKET) {
             open[depth++] = i;
-        } else if (t->kind == T_RBRACE && depth > 0) {
+        } else if ((t->kind == T_RBRACE || t->kind == T_RPAREN || t->kind == T_RBRACKET) && depth > 0) {
             const int o = open[--depth];
             int first = DOC->toks[o].at.line;
+            if (t->kind != T_RBRACE) {
+                const bool starts_line = DOC->toks[i - 1].at.line != t->at.line;
+                folding_range(out, &written, first, starts_line ? t->at.line - 1 : t->at.line, NULL);
+                continue;
+            }
             if (o > 0 && DOC->toks[o - 1].at.line == first - 1 && DOC->toks[o - 1].kind != T_RBRACE
                 && DOC->toks[o - 1].kind != T_SEMI) {
                 first--; // component Body\n{
@@ -2198,12 +2209,36 @@ void analysis_folding_ranges(jbuf *out)
             folding_range(out, &written, first, t->at.line - 1, NULL);
         }
     }
-    // Comment lines one after another, three or more.
+    // Comment lines one after another, three or more, and comments in /* */
+    // over several lines: between tokens, where they are.
     for (int line = 1; line <= DOC->lines.count;) {
         int end = line;
         while (end <= DOC->lines.count && comment_line(end)) end++;
         if (end - line >= 3) folding_range(out, &written, line, end - 1, "comment");
         line = end > line ? end : line + 1;
+    }
+    const char *p = DOC->src.text;
+    for (int i = 0; i <= DOC->tok_count; i++) {
+        const char *next = i < DOC->tok_count ? token_start(&DOC->toks[i]) : DOC->src.text + DOC->src.len;
+        for (; p + 1 < next; p++) {
+            if (p[0] == '/' && p[1] == '/') {
+                while (p < next && *p != '\n') p++;
+            } else if (p[0] == '/' && p[1] == '*') {
+                const char *start = p;
+                for (p += 2; p + 1 < next && !(p[0] == '*' && p[1] == '/'); p++) {
+                }
+                folding_range(out, &written, line_of(start), line_of(p), "comment");
+            }
+        }
+        if (i < DOC->tok_count) p = next + token_len(&DOC->toks[i]);
+    }
+    // using lines one after another
+    const unit *u = doc_unit();
+    for (int k = 0; u && k < u->using_at.count;) {
+        int last = k;
+        while (last + 1 < u->using_at.count && u->using_at.items[last + 1].line == u->using_at.items[last].line + 1) last++;
+        folding_range(out, &written, u->using_at.items[k].line, u->using_at.items[last].line, "imports");
+        k = last + 1;
     }
     jb_put(out, "]");
 }
@@ -4702,12 +4737,29 @@ static bool space_between(const fmt_item *a, const fmt_item *b)
 static bool opens_literal(const int i)
 {
     int k = i - 1;
-    if (k < 0 || DOC->toks[k].kind != T_IDENT) return false;
+    if (k < 0 || DOC->toks[k].kind != T_IDENT || opens_enum(i)) return false; // `enum Voxel : byte {` isn't one
     while (k >= 2 && DOC->toks[k - 1].kind == T_DOT && DOC->toks[k - 2].kind == T_IDENT) k -= 2;
     if (k == 0) return false;
     const tok_kind before = DOC->toks[k - 1].kind;
     return before != T_IDENT && before != T_COMPONENT && before != T_SINGLETON && before != T_SEMI
         && before != T_LBRACE && before != T_RBRACE && before != T_RBRACKET;
+}
+
+// Whether the ')' at token `i` ends the header of an if or a loop, whose
+// body can be a statement without braces on the next line.
+static bool closes_header(const int i)
+{
+    if (DOC->toks[i].kind != T_RPAREN) return false;
+    int parens = 0;
+    for (int k = i; k > 0; k--) {
+        if (DOC->toks[k].kind == T_RPAREN) {
+            parens++;
+        } else if (DOC->toks[k].kind == T_LPAREN && --parens == 0) {
+            const tok_kind keyword = DOC->toks[k - 1].kind;
+            return keyword == T_IF || keyword == T_WHILE || keyword == T_FOR || keyword == T_FOREACH || keyword == T_PARALLEL;
+        }
+    }
+    return false;
 }
 
 // How many levels deeper than its braces each token goes for the switch
@@ -4919,11 +4971,8 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
             const fmt_item *to = &items->items[starts[piece + 1]];
 
             int last_tok = -1;
-            bool has_if = false;
             for (const fmt_item *item = from; item < to; item++) {
-                if (item->tok < 0) continue;
-                last_tok = item->tok;
-                if (DOC->toks[item->tok].kind == T_IF) has_if = true;
+                if (item->tok >= 0) last_tok = item->tok;
             }
 
             if (!verbatim[l]) {
@@ -4986,7 +5035,7 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
                 const bool label = k == T_COLON && is_label_colon(last_tok);
                 if (k == T_SEMI || k == T_LBRACE || k == T_RBRACE || label) {
                     pending = 0;
-                } else if ((k == T_RPAREN && has_if && parens == 0) || k == T_ELSE) {
+                } else if ((k == T_RPAREN && parens == 0 && closes_header(last_tok)) || k == T_ELSE) {
                     pending++;
                     opened_pending = true;
                 }
