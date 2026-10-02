@@ -4,9 +4,10 @@
     <vendor url="https://github.com/BlenMiner/tide-engine">Tide</vendor>
     <description><![CDATA[
         <p>The language of the <a href="https://github.com/BlenMiner/tide-engine">Tide</a> game engine.</p>
-        <p>Highlighting, completion, errors as you type with quick fixes, hover, go to definition, find usages, rename,
-        formatting, parameter hints, inlay hints, the structure view, symbols across the game, folding, moving a
-        declaration to a file of its own, and each system's schedule above it, for <code>.tide</code> files.</p>
+        <p>Highlighting, completion, errors as you type with quick fixes, hover, go to definition, type definition and
+        implementation, find usages, highlights, rename, the call hierarchy, formatting, parameter hints, inlay hints,
+        the structure view, symbols across the game, folding, extending a selection, moving a declaration to a file of
+        its own, and each system's schedule above it, for <code>.tide</code> files.</p>
         <p>Run a game from its <code>.tide</code> files: in a window of its own, or on the web, in the IDE. Saving a
         file reloads it as it runs.</p>
         <p>It runs <code>tidels</code>, the language server that comes with tide: install tide first
