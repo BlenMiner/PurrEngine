@@ -26,6 +26,11 @@ target_include_directories(tide_cli_tests PRIVATE . ../lsp "${PROJECT_SOURCE_DIR
 target_link_libraries(tide_cli_tests PRIVATE tide)
 add_test(NAME tide_cli_tests COMMAND tide_cli_tests)
 
+# tide editors, with fake editors where their installers put them.
+add_test(NAME tide_cli_editors
+    COMMAND "${CMAKE_COMMAND}" "-DTIDE=$<TARGET_FILE:tide_cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/editors_test"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/editors_test.cmake")
+
 # Packages build clang and lld into tide, so users need no compiler of their
 # own (see cmake/LLVM.cmake).
 option(TIDE_EMBED_LLVM "Build clang and lld into tide, from LLVM's static libraries" OFF)
