@@ -1,0 +1,58 @@
+// Particles: a million entities fall, bounce off the floor and the walls.
+// The ECS at its plainest: a system that streams through one component.
+
+const float GRAVITY = 9.81;
+const float WIDTH = 100;   // The walls are at 0 and here
+const float BOUNCE = 0.9;  // What the floor gives back
+
+scene Main { }
+
+// The benchmark sets the count before the first tick, which spawns them.
+singleton Swarm
+{
+    int count = 1000;
+    bool ready;
+}
+
+component Particle
+{
+    float2 position;
+    float2 velocity;
+}
+
+system Setup(mut Swarm swarm)
+{
+    if (swarm.ready) return;
+    swarm.ready = true;
+    for (var i = 0; i < swarm.count; i++)
+    {
+        var h = Math.Hash(int2(i, 0));
+        var g = Math.Hash(int2(i, 1));
+        Spawn(Particle
+        {
+            position = float2(float(h % 10000) * 0.01, float(g % 10000) * 0.01),
+            velocity = float2(float(h % 201 - 100) * 0.1, float(g % 201 - 100) * 0.1)
+        });
+    }
+}
+
+system Move(mut Particle p, Time time)
+{
+    p.velocity.y -= GRAVITY * time.dt;
+    p.position += p.velocity * time.dt;
+    if (p.position.y < 0)
+    {
+        p.position.y = -p.position.y;
+        p.velocity.y = -p.velocity.y * BOUNCE;
+    }
+    if (p.position.x < 0)
+    {
+        p.position.x = -p.position.x;
+        p.velocity.x = -p.velocity.x;
+    }
+    else if (p.position.x > WIDTH)
+    {
+        p.position.x = WIDTH * 2 - p.position.x;
+        p.velocity.x = -p.velocity.x;
+    }
+}

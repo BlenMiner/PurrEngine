@@ -1,0 +1,47 @@
+// Life: Conway's Game of Life. Every cell of a grid counts its eight
+// neighbours each tick, and lives on with two or three, or comes alive with
+// three, all at once.
+
+scene Main { }
+
+// The benchmark sets the size before the first tick, which makes the grid.
+singleton Board
+{
+    Grid2<bool> cells;
+    int size = 256;
+    bool ready;
+}
+
+// A third of the cells alive, at random.
+system Setup(mut Board board)
+{
+    if (board.ready) return;
+    board.ready = true;
+    var size = board.size;
+    board.cells = Grid2(size, size);
+    for (var y = 0; y < size; y++)
+    {
+        for (var x = 0; x < size; x++)
+        {
+            if (Math.Hash(int2(x, y)) % 3 == 0) board.cells[x, y] = true;
+        }
+    }
+}
+
+int Count(bool alive)
+{
+    return alive ? 1 : 0;
+}
+
+// Past the grid's edge, cells read as dead.
+system Step(mut Board board)
+{
+    parallel (var at in board.cells)
+    {
+        var around = Count(board.cells[at + int2(-1, -1)]) + Count(board.cells[at + int2(0, -1)])
+            + Count(board.cells[at + int2(1, -1)]) + Count(board.cells[at + int2(-1, 0)])
+            + Count(board.cells[at + int2(1, 0)]) + Count(board.cells[at + int2(-1, 1)])
+            + Count(board.cells[at + int2(0, 1)]) + Count(board.cells[at + int2(1, 1)]);
+        board.cells[at] = around == 3 || (around == 2 && board.cells[at]);
+    }
+}

@@ -1,0 +1,34 @@
+// Churn: entities come and go. Bullets are fired every tick, fly, and are
+// destroyed when their time runs out, each at its own time, so the ones that
+// go leave holes all through the rest.
+
+scene Main { }
+
+// The benchmark sets the rate before the first tick.
+singleton Gun
+{
+    int rate = 100; // Bullets a tick
+}
+
+component Bullet
+{
+    float2 position;
+    float2 velocity;
+    int life; // Ticks left
+}
+
+system Fire(Gun gun, Time time)
+{
+    for (var i = 0; i < gun.rate; i++)
+    {
+        var h = Math.Hash(int2(time.tick, i));
+        Spawn(Bullet { velocity = float2(float(h % 201 - 100), float(h / 201 % 201 - 100)), life = 20 + h % 160 });
+    }
+}
+
+system Fly(mut Bullet bullet, Time time)
+{
+    bullet.position += bullet.velocity * time.dt;
+    bullet.life--;
+    if (bullet.life <= 0) this.Destroy();
+}

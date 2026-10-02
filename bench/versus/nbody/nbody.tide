@@ -1,0 +1,64 @@
+// N-body: every body pulls on every other. Systems can't look at other
+// entities yet, so the bodies are a list in a singleton, which one system
+// goes through with parallel loops: each body's pull from every other at
+// once, then every move.
+
+const float SOFTENING = 0.01; // Keeps bodies that come close from flinging each other off
+
+scene Main { }
+
+struct Body
+{
+    float3 position;
+    float3 velocity;
+    float mass;
+}
+
+// The benchmark sets the count before the first tick, which makes them.
+singleton Space
+{
+    List<Body> bodies;
+    int count = 100;
+    bool ready;
+}
+
+system Setup(mut Space space)
+{
+    if (space.ready) return;
+    space.ready = true;
+    for (var i = 0; i < space.count; i++)
+    {
+        var a = Math.Hash(int2(i, 0));
+        var b = Math.Hash(int2(i, 1));
+        var c = Math.Hash(int2(i, 2));
+        var position = float3(float(a % 2001 - 1000), float(b % 2001 - 1000), float(c % 2001 - 1000)) * 0.01;
+        space.bodies.Add(Body { position = position, mass = 1 + float(a % 100) * 0.01 });
+    }
+}
+
+// Every pull from where the bodies were, then every move. Each step reads the
+// list as its loop found it, so the order they run in never shows.
+system Gravity(mut Space space, Time time)
+{
+    var n = space.bodies.Count;
+    parallel (var i in space.bodies)
+    {
+        mut var body = space.bodies[i];
+        mut var pull = float3(0);
+        for (var j = 0; j < n; j++)
+        {
+            var other = space.bodies[j];
+            var d = other.position - body.position;
+            var r2 = Math.Dot(d, d) + SOFTENING;
+            pull += d * (other.mass / (r2 * Math.Sqrt(r2)));
+        }
+        body.velocity += pull * time.dt;
+        space.bodies[i] = body;
+    }
+    parallel (var i in space.bodies)
+    {
+        mut var body = space.bodies[i];
+        body.position += body.velocity * time.dt;
+        space.bodies[i] = body;
+    }
+}

@@ -1,0 +1,55 @@
+// Events: entities act on each other through events. Every turret hits its
+// target with a Hit each tick, and the target's handler takes the damage,
+// at the end of the tick, in the order they were sent.
+
+scene Main { }
+
+// The benchmark sets the counts before the first tick, which spawns them.
+singleton Range
+{
+    int targets = 1000;
+    int turrets = 4000;
+    List<Entity> spawned; // The targets
+    bool ready;
+}
+
+component Health
+{
+    int value = 1000;
+}
+
+component Turret
+{
+    Entity target;
+    int damage;
+}
+
+event Hit
+{
+    int damage;
+}
+
+// Each turret aims at a target at random.
+system Setup(mut Range range)
+{
+    if (range.ready) return;
+    range.ready = true;
+    for (var i = 0; i < range.targets; i++) range.spawned.Add(Spawn(Health));
+    for (var i = 0; i < range.turrets; i++)
+    {
+        var h = Math.Hash(int2(i, 7));
+        Spawn(Turret { target = range.spawned[h % range.targets], damage = 1 + h / range.targets % 50 });
+    }
+}
+
+system Shoot(Turret turret)
+{
+    turret.target.Send(Hit { damage = turret.damage });
+}
+
+// A target that runs out heals up again.
+event(Hit hit) TakeHit(mut Health health)
+{
+    health.value -= hit.damage;
+    if (health.value <= 0) health.value += 1000;
+}

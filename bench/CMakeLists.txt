@@ -19,3 +19,7 @@ tide_add_game(sand SOURCES sand/sand.tide sand/play.tide TITLE "Tide sand" STATS
 tide_add_game(bench_gallery SOURCES gallery/gallery.tide NAME gallery HOST gallery/main.c)
 target_link_libraries(bench_gallery PRIVATE tide_bench)
 add_test(NAME bench_gallery COMMAND bench_gallery --quick --expect 0x91a304c5d0c9aceb)
+
+# C against Tide: concepts written both ways, as fast as each language allows,
+# timed on the same work (see versus/versus.h).
+add_subdirectory(versus)
