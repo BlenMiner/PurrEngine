@@ -594,6 +594,7 @@ static void initialize(lsp_server *s, const json *id, const json *params)
                "\"documentHighlightProvider\":true,"
                "\"renameProvider\":{\"prepareProvider\":true},"
                "\"documentFormattingProvider\":true,"
+               "\"documentRangeFormattingProvider\":true,"
                "\"signatureHelpProvider\":{\"triggerCharacters\":[\"(\",\",\"],\"retriggerCharacters\":[\",\"]},"
                "\"documentSymbolProvider\":true,"
                "\"workspaceSymbolProvider\":true,"
@@ -649,10 +650,18 @@ static void document_request(lsp_server *s, const char *method, const json *id, 
     } else if (strcmp(method, "textDocument/rename") == 0) {
         const char *new_name = json_str(json_get(params, "newName"));
         error = new_name ? analysis_rename(uri, line, character, new_name, &b) : "No new name given.";
-    } else if (strcmp(method, "textDocument/formatting") == 0) {
+    } else if (strcmp(method, "textDocument/formatting") == 0 || strcmp(method, "textDocument/rangeFormatting") == 0) {
         const json *spaces = json_path(params, "options", "insertSpaces", NULL);
+        const json *range = json_get(params, "range");
+        int first = 0;
+        int last = 1 << 30;
+        if (range) { // A range ending at a line's start leaves that line out
+            first = json_int(json_path(range, "start", "line", NULL), 0);
+            last = json_int(json_path(range, "end", "line", NULL), 0);
+            if (last > first && json_int(json_path(range, "end", "character", NULL), 0) == 0) last--;
+        }
         error = analysis_format(json_int(json_path(params, "options", "tabSize", NULL), 4),
-                                !spaces || spaces->kind != JSON_FALSE, &b);
+                                !spaces || spaces->kind != JSON_FALSE, first, last, &b);
     } else if (strcmp(method, "textDocument/documentSymbol") == 0) {
         analysis_symbols(&b);
     } else if (strcmp(method, "textDocument/codeLens") == 0) {
@@ -781,7 +790,7 @@ static bool is_document_request(const char *method)
         "textDocument/rename", "textDocument/formatting", "textDocument/documentSymbol",
         "textDocument/codeLens", "textDocument/codeAction", "textDocument/inlayHint", "textDocument/foldingRange",
         "textDocument/semanticTokens/full", "textDocument/typeDefinition", "textDocument/implementation",
-        "textDocument/prepareCallHierarchy",
+        "textDocument/prepareCallHierarchy", "textDocument/rangeFormatting",
     };
     for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
         if (strcmp(method, methods[i]) == 0) return true;

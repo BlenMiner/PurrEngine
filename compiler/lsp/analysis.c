@@ -5334,22 +5334,35 @@ static unsigned char *brace_breaks(void)
     return breaks;
 }
 
-static void write_edit(jbuf *out, int *count, const loc start, const loc end, const char *text, const size_t len)
+// The formatter's edits, each a line's (or the final line break): those that
+// start on lines `first` to `last` (0-based) are written.
+typedef struct line_edits {
+    jbuf *out;
+    int count;
+    int first;
+    int last;
+} line_edits;
+
+static void write_edit(line_edits *edits, const loc start, const loc end, const char *text, const size_t len)
 {
-    if ((*count)++) jb_put(out, ",");
-    jb_put(out, "{\"range\":{\"start\":");
-    write_position(out, start);
-    jb_put(out, ",\"end\":");
-    write_position(out, end);
-    jb_put(out, "},\"newText\":");
-    jb_string_n(out, text, len);
-    jb_put(out, "}");
+    if (start.line - 1 < edits->first || start.line - 1 > edits->last) return;
+    if (edits->count++) jb_put(edits->out, ",");
+    jb_put(edits->out, "{\"range\":{\"start\":");
+    write_position(edits->out, start);
+    jb_put(edits->out, ",\"end\":");
+    write_position(edits->out, end);
+    jb_put(edits->out, "},\"newText\":");
+    jb_string_n(edits->out, text, len);
+    jb_put(edits->out, "}");
 }
 
-const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
+const char *analysis_format(int tab_size, const bool insert_spaces, const int first_line, const int last_line, jbuf *out)
 {
     if (DOC->lex_errors > 0) return "The file has text Tide can't read. Fix that first.";
     if (tab_size <= 0) tab_size = 4;
+    // Each line's indentation depends on the lines before it, so the whole
+    // document is formatted, and only the range's lines are changed.
+    line_edits edits = {out, 0, first_line, last_line};
 
     const bool final_newline = DOC->src.len > 0 && DOC->src.text[DOC->src.len - 1] == '\n';
     const int line_count = DOC->lines.count - (final_newline ? 1 : 0); // The empty "line" after a final \n isn't one
@@ -5402,7 +5415,6 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
     const char *newline = first_break && first_break > DOC->src.text && first_break[-1] == '\r' ? "\r\n" : "\n";
 
     jb_put(out, "[");
-    int edits = 0;
     int depth = 0;
     int parens = 0;
     // `parens` at each brace depth: inside a literal in a call, like
@@ -5426,9 +5438,9 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
             // Blank: at most one in a row, none at the start or the end.
             const bool drop = blank_before || l > last_content;
             if (drop && l < DOC->lines.count) {
-                write_edit(out, &edits, start, (loc){l + 1, 1, A.doc}, "", 0);
+                write_edit(&edits, start, (loc){l + 1, 1, A.doc}, "", 0);
             } else if (original.len > 0) {
-                write_edit(out, &edits, start, end, "", 0);
+                write_edit(&edits, start, end, "", 0);
             }
             blank_before = true;
             continue;
@@ -5529,14 +5541,14 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
             }
         }
         if (!verbatim[l] && (text.len != (size_t)original.len || memcmp(text.data, original.ptr, text.len) != 0)) {
-            write_edit(out, &edits, start, end, text.data, text.len);
+            write_edit(&edits, start, end, text.data, text.len);
         }
     }
 
     // End with exactly one line break.
     if (!final_newline && last_content > 0 && last_content == line_count) {
         const loc end = {line_count, line_text(line_count).len + 1, A.doc};
-        write_edit(out, &edits, end, end, newline, strlen(newline));
+        write_edit(&edits, end, end, newline, strlen(newline));
     }
     jb_put(out, "]");
     return NULL;

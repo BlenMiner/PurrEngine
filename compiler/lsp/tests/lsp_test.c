@@ -2234,6 +2234,23 @@ TIDE_TEST(lsp_format)
                       "system Main()\n{\n    var x = 1\n        + 2;\n    Spawn(Owner,\n          Owner);\n}\n") == 0);
 }
 
+// Formatting a range changes its lines only, as formatting everything would.
+TIDE_TEST(lsp_range_formatting)
+{
+    start();
+    TIDE_CHECK(has(last_sent(), "\"documentRangeFormattingProvider\":true"));
+    static const char messy[] = "scene Main { }\nsystem S()\n{\nmut var n = 0;\nif (n > 0)\nn+=1;\nn+=2;\n}\n";
+    open_document(messy);
+    request_with("textDocument/rangeFormatting", "\"range\":{\"start\":{\"line\":5,\"character\":0},\"end\":"
+                                                 "{\"line\":6,\"character\":0}},\"options\":{\"tabSize\":4,\"insertSpaces\":true}");
+    const char *formatted = apply_reply(messy, NULL);
+    // Its indentation as the lines before it make it, though they stay as they are
+    TIDE_CHECK(strcmp(formatted, "scene Main { }\nsystem S()\n{\nmut var n = 0;\nif (n > 0)\n        n += 1;\nn+=2;\n}\n") == 0);
+    if (strcmp(formatted, "scene Main { }\nsystem S()\n{\nmut var n = 0;\nif (n > 0)\n        n += 1;\nn+=2;\n}\n") != 0) {
+        printf("--- got:\n%s---\n", formatted);
+    }
+}
+
 // C#-style braces: a block that spans lines has its braces on lines of their
 // own. Actions on one line and literals stay as they are.
 TIDE_TEST(lsp_format_braces)
