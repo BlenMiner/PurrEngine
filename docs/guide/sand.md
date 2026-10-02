@@ -8,13 +8,13 @@ Sand, water and walls that everyone in a room paints into at once, built for the
 
 <iframe class="demo-frame square-ish" :src="withBase('/sand/')" title="Tide sand" allow="fullscreen"></iframe>
 
-| | |
+| | Mouse and keyboard |
 |---|---|
 | Paint | Left mouse button |
 | Erase | Right mouse button |
 | Pick sand, water, wall or the eraser | `1` to `4`, or the buttons |
 
-[Open it on a page of its own](/sand/){target="_self"}.
+<a :href="withBase('/sand/')" target="_self">Open it on a page of its own</a>.
 
 ## Paint together
 

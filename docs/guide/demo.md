@@ -14,7 +14,7 @@ The engine's demo, built for the web from the code below. Click it to give it th
 | Fire | Space | A (south) |
 | Options | Escape | Start |
 
-[Open it on a page of its own](/demo/){target="_self"}. It's the same simulation as the desktop build, down to the bit.
+<a :href="withBase('/demo/')" target="_self">Open it on a page of its own</a>. It's the same simulation as the desktop build, down to the bit.
 
 ## The code
 

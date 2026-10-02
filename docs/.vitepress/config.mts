@@ -12,8 +12,6 @@ export default defineConfig({
     base: '/tide-engine/',
     cleanUrls: true,
     head: [['link', { rel: 'icon', href: '/tide-engine/favicon.svg' }]],
-    // The web demo and sand, which the workflow builds with CMake and copies to public/demo/ and public/sand/.
-    ignoreDeadLinks: [/^\/demo\/$/, /^\/sand\/$/],
 
     markdown: {
         // The same grammar as the editors, so code looks the same here.
