@@ -50,14 +50,16 @@ function Compare-Version([string]$a, [string]$b) {
     return [Math]::Sign($xs.Count - $ys.Count)
 }
 
-# The channel's highest version, not the last one published (as tide upgrade
-# picks, compiler/cli/release.c). Nightly takes stable releases too, when
-# they're newer. Stable also asks for GitHub's latest release, since nightly
-# ones can push it out of the list.
+# The channel's highest version with this platform's package, not the last one
+# published (as tide upgrade picks, compiler/cli/release.c): some old
+# nightlies have none for macOS. Nightly takes stable releases
+# too, when they're newer. Stable also asks for GitHub's latest release, since
+# nightly ones can push it out of the list.
 function Select-Release($releases, [string]$channel) {
     $best = $null
     foreach ($r in $releases) {
         if ($r.draft -or ($channel -eq 'stable' -and $r.prerelease) -or $r.tag_name -notmatch $versionPattern) { continue }
+        if (-not ($r.assets | Where-Object name -eq $package)) { continue }
         if (-not $best -or (Compare-Version $r.tag_name $best.tag_name) -gt 0) { $best = $r }
     }
     return $best
@@ -69,7 +71,7 @@ if ($channel -eq 'stable') {
     try { $releases += Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" } catch { }
 }
 $release = Select-Release $releases $channel
-if (-not $release) { throw "There's no $channel release of tide yet." }
+if (-not $release) { throw "There's no $channel release of tide for this platform yet." }
 $zipUrl = ($release.assets | Where-Object name -eq $package).browser_download_url
 $sumsUrl = ($release.assets | Where-Object name -eq 'SHA256SUMS').browser_download_url
 if (-not $zipUrl -or -not $sumsUrl) { throw "Release $($release.tag_name) has no $package." }

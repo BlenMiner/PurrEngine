@@ -35,17 +35,18 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# The channel's highest version, not the last one published (as tide upgrade
-# picks, compiler/cli/release.c). Nightly takes stable releases too, when
-# they're newer. Stable also asks for GitHub's latest release, since nightly
-# ones can push it out of the list.
+# The channel's highest version with this platform's package, not the last one
+# published (as tide upgrade picks, compiler/cli/release.c): some old
+# nightlies have none for macOS. Nightly takes stable releases
+# too, when they're newer. Stable also asks for GitHub's latest release, since
+# nightly ones can push it out of the list.
 curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=100" -o "$work/releases.json"
 echo '{}' > "$work/latest.json"
 if [ "$channel" = "stable" ]; then
     curl -fsSL "https://api.github.com/repos/$repo/releases/latest" -o "$work/latest.json" ||
         echo '{}' > "$work/latest.json"
 fi
-tag="$(python3 - "$work/releases.json" "$work/latest.json" "$channel" <<'EOF'
+tag="$(python3 - "$work/releases.json" "$work/latest.json" "$channel" "$package" <<'EOF'
 import json, re, sys
 releases = json.load(open(sys.argv[1])) + [json.load(open(sys.argv[2]))]
 
@@ -64,13 +65,15 @@ for r in releases:
     key = order(r.get("tag_name"))
     if key is None or r.get("draft") or (sys.argv[3] == "stable" and r.get("prerelease")):
         continue
+    if sys.argv[4] not in [a.get("name") for a in r.get("assets") or []]:
+        continue
     if best is None or key > best[0]:
         best = (key, r["tag_name"])
 print(best[1] if best else "")
 EOF
 )"
 if [ -z "$tag" ]; then
-    echo "There's no $channel release of tide yet." >&2
+    echo "There's no $channel release of tide for this platform yet." >&2
     exit 1
 fi
 
