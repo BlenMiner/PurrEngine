@@ -19,7 +19,7 @@ if(WIN32)
 elseif(APPLE)
     target_link_libraries(tide_platform PUBLIC "-framework Security") # TLS, for the relay
 endif()
-if(NOT WIN32 AND NOT TIDE_WEB)
+if(NOT WIN32 AND NOT TIDE_WEB AND NOT TIDE_ANDROID) # Android's are in its C library
     # Threads for ticks (src/jobs.c)
     find_package(Threads REQUIRED)
     target_link_libraries(tide_platform PUBLIC Threads::Threads)
@@ -60,6 +60,42 @@ function(tide_web_page target)
         COMMENT "Web page for ${target}"
         VERBATIM)
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${shell}" "${TIDE_WEB_SCRIPT}")
+endfunction()
+
+# tide_android_app(<target> [LABEL <name>])
+#
+# Android builds: makes the shared library <target> an app, <target>.apk next
+# to it, which runs the program's main() in Android's NativeActivity
+# (platform/android/raylib/rcore_android_tide.c). Its ID is dev.tide.<target>,
+# and it's signed with a key every build of this repo shares
+# (build/android-debug.key, made the first time), so a new build installs
+# over the last. Does nothing in other builds, so it can be called
+# unconditionally.
+set(TIDE_ANDROID_KEY "${PROJECT_SOURCE_DIR}/build/android-debug.key" CACHE FILEPATH "The key Android builds sign their apps with")
+if(TIDE_ANDROID)
+    # Made once, before any app, so apps built at once share it.
+    add_custom_target(tide_android_key COMMAND "${TIDE_APK_PATH}" --key "${TIDE_ANDROID_KEY}" VERBATIM)
+    add_dependencies(tide_android_key tidec_host)
+endif()
+function(tide_android_app target)
+    if(NOT TIDE_ANDROID)
+        return()
+    endif()
+    cmake_parse_arguments(ARG "" "LABEL" "" ${ARGN})
+    set(label "${target}")
+    if(ARG_LABEL)
+        set(label "${ARG_LABEL}")
+    endif()
+    # The activity's way in is in raylib, which nothing in the program calls.
+    target_link_options(${target} PRIVATE -Wl,-u,ANativeActivity_onCreate)
+    string(REPLACE "-" "_" id "${target}")
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND "${TIDE_APK_PATH}" "$<TARGET_FILE_DIR:${target}>/${target}.apk" --package "dev.tide.${id}"
+            --label "${label}" --lib "${target}" --key "${TIDE_ANDROID_KEY}" --min ${TIDE_ANDROID_API} --debuggable
+            "${TIDE_ANDROID_ABI}=$<TARGET_FILE:${target}>"
+        COMMENT "Android app ${target}.apk"
+        VERBATIM)
+    add_dependencies(${target} tide_android_key)
 endfunction()
 
 # In the package, the platform layer is prebuilt: tide links games with it and
@@ -138,20 +174,23 @@ if(NOT TIDE_WEB)
     set_tests_properties(tide_platform_rtc_fuzz PROPERTIES ENVIRONMENT TIDE_RTC_LOCAL=1)
 
     # Its crypto against Node's (OpenSSL's), on random inputs every run.
-    add_executable(tide_platform_rtc_vectors tests/rtc_vectors.c)
-    target_include_directories(tide_platform_rtc_vectors PRIVATE src)
-    target_link_libraries(tide_platform_rtc_vectors PRIVATE tide_platform)
-    if(TIDE_NODE)
-        add_test(NAME tide_platform_rtc_vectors
-            COMMAND "${TIDE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/rtc_vectors.mjs"
-                $<TARGET_FILE:tide_platform_rtc_vectors> "${CMAKE_CURRENT_BINARY_DIR}")
+    # Node runs it on this machine, so not on Android.
+    if(NOT TIDE_ANDROID)
+        add_executable(tide_platform_rtc_vectors tests/rtc_vectors.c)
+        target_include_directories(tide_platform_rtc_vectors PRIVATE src)
+        target_link_libraries(tide_platform_rtc_vectors PRIVATE tide_platform)
+        if(TIDE_NODE)
+            add_test(NAME tide_platform_rtc_vectors
+                COMMAND "${TIDE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/rtc_vectors.mjs"
+                    $<TARGET_FILE:tide_platform_rtc_vectors> "${CMAKE_CURRENT_BINARY_DIR}")
+        endif()
     endif()
 
     # Rooms on desktop, through a relay on this machine: two desktop players,
     # and a browser's WebRTC against ours, both ways round (tests/rooms.mjs).
     add_executable(tide_platform_rooms tests/rooms_native.c)
     target_link_libraries(tide_platform_rooms PRIVATE tide_platform)
-    if(TIDE_NODE)
+    if(TIDE_NODE AND NOT TIDE_ANDROID)
         add_test(NAME tide_platform_rooms
             COMMAND "${TIDE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/rooms.mjs" "${TIDE_BROWSER}"
                 $<TARGET_FILE:tide_platform_rooms> "${CMAKE_CURRENT_BINARY_DIR}/tide_platform_rooms-browser"
@@ -173,7 +212,7 @@ target_link_libraries(tide_platform_draw PRIVATE tide_platform)
 if(TIDE_WEB)
     tide_web_page(tide_platform_draw SHELL web/test_shell.html)
     tide_add_web_test(tide_platform_draw TARGET tide_platform_draw)
-else()
+elseif(NOT TIDE_ANDROID)
     # A hidden window, so it needs a desktop session with working OpenGL.
     add_test(NAME tide_platform_draw COMMAND tide_platform_draw)
     set_tests_properties(tide_platform_draw PROPERTIES LABELS gpu)

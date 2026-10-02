@@ -18,11 +18,11 @@ else()
 endif()
 install(TARGETS tide_cli RUNTIME DESTINATION bin COMPONENT tide)
 
-# Versions and picking releases, without the network, and which platform
-# libraries are for.
-add_executable(tide_cli_tests tests/release_test.c tests/libraries_test.c release.c libraries.c
-    "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c" "${PROJECT_SOURCE_DIR}/tests/test_main.c")
-target_include_directories(tide_cli_tests PRIVATE . ../lsp "${PROJECT_SOURCE_DIR}/tests")
+# Versions and picking releases, without the network, which platform
+# libraries are for, and Android apps as Android checks them.
+add_executable(tide_cli_tests tests/release_test.c tests/libraries_test.c tests/apk_test.c release.c libraries.c
+    ${TIDE_APK_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/../lsp/json.c" "${PROJECT_SOURCE_DIR}/tests/test_main.c")
+target_include_directories(tide_cli_tests PRIVATE . ../lsp "${PROJECT_SOURCE_DIR}/tests" "${PROJECT_SOURCE_DIR}/platform/src/rtc")
 target_link_libraries(tide_cli_tests PRIVATE tide)
 add_test(NAME tide_cli_tests COMMAND tide_cli_tests)
 

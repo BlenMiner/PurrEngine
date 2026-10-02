@@ -38,8 +38,11 @@ else()
     set(TIDE_WEB OFF)
 endif()
 # Android builds: through clang with Android's NDK (cmake/android-toolchain.cmake).
+# Games are shared libraries the app loads, which link the engine's static
+# libraries, so everything is position-independent.
 if(CMAKE_C_COMPILER_TARGET MATCHES "android")
     set(TIDE_ANDROID ON)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 else()
     set(TIDE_ANDROID OFF)
 endif()

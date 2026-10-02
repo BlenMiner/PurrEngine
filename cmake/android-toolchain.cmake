@@ -10,7 +10,10 @@
 #
 # Tests run on a device or emulator through adb (cmake/run_android.mjs).
 
-set(TIDE_ANDROID_API 26 CACHE STRING "The oldest Android version builds run on, as an API level (26: Android 8.0)")
+# Android 10 (API 29) and up: the first with thread-locals of its own, which
+# the engine uses on its hot paths; older ones need clang to emulate them, a
+# call each time.
+set(TIDE_ANDROID_API 29 CACHE STRING "The oldest Android version builds run on, as an API level (29: Android 10)")
 set(TIDE_ANDROID_ABI x86_64 CACHE STRING "arm64-v8a (devices) or x86_64 (the emulator)")
 if(TIDE_ANDROID_ABI STREQUAL "arm64-v8a")
     set(_tide_android_arch aarch64)

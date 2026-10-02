@@ -1,4 +1,4 @@
-# tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>]
+# tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [WINDOW] [NAME <name>]
 #               [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])
 #
 # Builds a Tide game as the program <target>. The game is every .tide file
@@ -11,9 +11,12 @@
 # or the game's title setting, or <target>, and runs (see
 # platform/include/tide/run.h). STATS shows the frame rate, ping, bandwidth
 # (what goes over the network each second, up and down), tick, entity count
-# and the threads ticks run on in a corner. On the web it's <target>.html.
+# and the threads ticks run on in a corner. On the web it's <target>.html, and
+# on Android an app (see tide_android_app).
 #
 # With HOST, those C files are the program instead, for tests and custom hosts.
+# WINDOW says they open a window, so that on Android they're an app too, rather
+# than a program that runs from a shell.
 # They include the game's generated header, <name>.h (NAME defaults to
 # <target>), and drive the game through its API (see AGENTS.md). LAYOUT also
 # describes the game's data layout, as tide run does for hot reloading
@@ -32,7 +35,7 @@ set(TIDE_GAMES_MANIFEST "${PROJECT_SOURCE_DIR}/build/tools/games.txt")
 set(TIDE_RUN_TIDEC "${CMAKE_CURRENT_LIST_DIR}/run_tidec.cmake")
 
 function(tide_add_game target)
-    cmake_parse_arguments(ARG "STATS;LAYOUT" "NAME;TITLE" "SOURCES;HOST;WARNINGS" ${ARGN})
+    cmake_parse_arguments(ARG "STATS;LAYOUT;WINDOW" "NAME;TITLE" "SOURCES;HOST;WARNINGS" ${ARGN})
     if("SOURCES" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "tide_add_game(${target}): list the game's .tide files after SOURCES, or leave "
                             "SOURCES out to use every .tide file in ${CMAKE_CURRENT_SOURCE_DIR} and its subfolders")
@@ -113,7 +116,11 @@ function(tide_add_game target)
         COMMENT "tidec ${target}"
         VERBATIM)
 
-    if(ARG_HOST)
+    if(ARG_HOST AND ARG_WINDOW AND TIDE_ANDROID)
+        add_library(${target} SHARED ${ARG_HOST} "${out_c}" "${out_h}" ${c_sources})
+        target_link_libraries(${target} PRIVATE tide tide_platform)
+        tide_android_app(${target} LABEL "${title}")
+    elseif(ARG_HOST)
         add_executable(${target} ${ARG_HOST} "${out_c}" "${out_h}" ${c_sources})
         target_link_libraries(${target} PRIVATE tide)
     else()
@@ -136,9 +143,15 @@ int main(int argc, char **argv)
     tide_run(&(tide_run_desc){.@title_field@ = "@title@", .stats = @stats@, .argc = argc, .argv = argv});
 }
 ]])
-        add_executable(${target} "${main}" "${out_c}" "${out_h}" ${c_sources})
-        target_link_libraries(${target} PRIVATE tide_platform)
-        tide_web_page(${target})
+        if(TIDE_ANDROID)
+            add_library(${target} SHARED "${main}" "${out_c}" "${out_h}" ${c_sources})
+            target_link_libraries(${target} PRIVATE tide_platform)
+            tide_android_app(${target} LABEL "${title}")
+        else()
+            add_executable(${target} "${main}" "${out_c}" "${out_h}" ${c_sources})
+            target_link_libraries(${target} PRIVATE tide_platform)
+            tide_web_page(${target})
+        endif()
     endif()
     target_include_directories(${target} PRIVATE "${out_dir}")
 

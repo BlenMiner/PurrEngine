@@ -9,11 +9,11 @@
 #include <rlgl.h>
 
 #include "tide/page.h"
-#include "touch.h"
+#include "native.h"
 
 #ifdef __wasm__
 #include "tide_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
-#else
+#elif !defined(__ANDROID__)
 // GLFW, which raylib's desktop windows run on, built into raylib: waiting on
 // the window's events, rather than sleeping past them. raylib's window is the
 // one whose context is current (GetWindowHandle is the system's, an HWND on
@@ -141,8 +141,8 @@ void tide_platform_open(const tide_window_desc *desc)
     // On the web, a resizable window is a canvas that fills the page. Tests
     // keep the size they asked for.
     if (!desc->hidden) flags |= FLAG_WINDOW_RESIZABLE;
-#ifndef __wasm__
-    // The browser paces web frames itself.
+#if !defined(__wasm__) && !defined(__ANDROID__)
+    // The browser paces web frames itself, and Android's backend its own.
     flags |= desc->hidden ? FLAG_WINDOW_HIDDEN : FLAG_VSYNC_HINT;
     // raylib stops the loop while the window is minimized, which would stop a
     // match for the other players: it goes on, paced in step().
@@ -193,7 +193,16 @@ static int step(void)
     BeginDrawing();
     const int code = run_frame(run_user, seconds);
     EndDrawing(); // Also polls the OS for input
-#ifndef __wasm__
+#ifdef __ANDROID__
+    // An app in the background has no window: frames come when the frame
+    // function asked, and draw nothing, until the system freezes it. It waits
+    // on the activity, so a window given back goes on at once.
+    while (IsWindowMinimized() && !WindowShouldClose()) {
+        const double left = frame_due - GetTime();
+        if (left <= 0.0) break;
+        tide_android_wait(left);
+    }
+#elif !defined(__wasm__)
     // A minimized window has no vsync to wait for: the next frame comes when
     // the frame function asked, and draws nothing (see tide_platform_draw).
     // It waits on the window's events, so a window restored or closed meanwhile
@@ -274,8 +283,9 @@ static bool poll_mouse(tide_mouse *m)
     return used;
 }
 
-// Fingers on a touchscreen: on the web, the page's; on Windows, the window's.
-// Elsewhere on desktop, there are none yet: GLFW has no touch.
+// Fingers on a touchscreen: on the web, the page's; on Windows, the window's;
+// on Android, the activity's. Elsewhere on desktop, there are none yet: GLFW
+// has no touch.
 static void poll_touches(tide_touchscreen *s)
 {
     tide_touches_poll(s);
@@ -288,10 +298,10 @@ static void poll_touches(tide_touchscreen *s)
         tide_touch_event(s, (tide_touch_phase)tide_web_touch_phase(), tide_web_touch_source(), at);
     }
     (void)width;
-#elif defined(_WIN32)
-    s->connected = tide_win32_touchscreen();
+#elif defined(_WIN32) || defined(__ANDROID__)
+    s->connected = tide_native_touchscreen();
     tide_touch_report r;
-    while (tide_win32_take_touch(&r)) tide_touch_event(s, r.phase, r.source, tide_f2(r.x * width, height - r.y * height));
+    while (tide_native_take_touch(&r)) tide_touch_event(s, r.phase, r.source, tide_f2(r.x * width, height - r.y * height));
 #else
     (void)width;
     (void)height;
@@ -502,7 +512,8 @@ static void add_shape(const int kind, const float ax, const float ay, const floa
     shapes[shape_count++] = (shape){{ax, ay}, {bx, by}, {color.r, color.g, color.b, color.a}, (float)kind};
 }
 
-#ifdef __wasm__
+// OpenGL ES 3 on the web and Android, OpenGL 3.3 on desktop.
+#if defined(__wasm__) || defined(__ANDROID__)
 #define GLSL_VERSION "#version 300 es\nprecision highp float;\n"
 #else
 #define GLSL_VERSION "#version 330\n"

@@ -54,8 +54,7 @@
       "name": "android-base",
       "hidden": true,
       "inherits": "base",
-      "toolchainFile": "${sourceDir}/cmake/android-toolchain.cmake",
-      "cacheVariables": { "TIDE_PLATFORM": "OFF" }
+      "toolchainFile": "${sourceDir}/cmake/android-toolchain.cmake"
     },
     {
       "name": "android-debug",

@@ -50,7 +50,10 @@ if (push.status !== 0) {
     process.exit(1);
 }
 const quote = s => `'${String(s).replaceAll("'", `'\\''`)}'`;
-const command = `cd ${folder} && chmod 755 ./${quote(name)} && ./${[quote(name), ...args.map(quote)].join(' ')}`;
+// Tide's settings (TIDE_RTC_LOCAL and the like) go along, as tests set them.
+const settings = Object.entries(process.env).filter(([key]) => /^TIDE_[A-Z0-9_]+$/.test(key))
+    .map(([key, value]) => `${key}=${quote(value)} `).join('');
+const command = `cd ${folder} && chmod 755 ./${quote(name)} && ${settings}./${[quote(name), ...args.map(quote)].join(' ')}`;
 const result = run(['shell', command], true);
 run(['shell', `rm -rf ${folder}`]);
 process.exit(result.status ?? 1);
