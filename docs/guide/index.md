@@ -49,4 +49,4 @@ The screen updates every **frame**, as fast as the display allows:
 - [Install tide](./install.md), then make [your first game](./first-game.md).
 - Read about [the language](../language/basics.md), a topic at a time.
 - See how the engine keeps every machine in step: [determinism](../engine/determinism.md) and [networking](../engine/networking.md).
-- [Try the demo](./demo.md), running in your browser.
+- [Play falling sand](./sand.md) in your browser, alone or with friends.

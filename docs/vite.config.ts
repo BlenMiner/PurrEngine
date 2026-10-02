@@ -9,7 +9,7 @@ import { defineConfig, type Plugin } from 'vite';
 import { headers } from './headers.js';
 
 // `npm run dev` serves what server.js does in production: the site's headers
-// on every response, and static/demo/index.html at /demo/.
+// on every response, and static/sand/index.html at /sand/.
 const asInProduction: Plugin = {
     name: 'as-in-production',
     configureServer(server) {
@@ -31,9 +31,9 @@ export default defineConfig(({ command }) => ({
             adapter: adapter(),
             prerender: {
                 handleHttpError: ({ path, message }) => {
-                    // The demos (static/demo/ and static/sand/) are built by
-                    // CMake and copied in; a build without them still works.
-                    if (path === '/demo/' || path === '/sand/') return;
+                    // Sand (static/sand/) is built by CMake and copied in; a
+                    // build without it still works.
+                    if (path === '/sand/') return;
                     throw new Error(message);
                 },
             },

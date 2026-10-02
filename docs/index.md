@@ -14,7 +14,7 @@ hero:
       link: /guide
     - theme: alt
       text: Try the demo
-      link: /guide/demo
+      link: /guide/sand
     - theme: alt
       text: GitHub
       link: https://github.com/BlenMiner/tide-engine

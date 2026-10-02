@@ -236,4 +236,4 @@ view DrawPlayers(Body body, Owner owner, Session session)
 
 - `tide schedule` shows which of these systems could run at the same time, and why the others wait. See [the schedule](../engine/schedule.md).
 - Learn the language a topic at a time, starting with [the basics](../language/basics.md).
-- The [demo](./demo.md) is a slightly bigger game, with firing and an options menu.
+- [Falling sand](./sand.md) is a bigger game, with a grid, a parallel loop and rooms to play in together.

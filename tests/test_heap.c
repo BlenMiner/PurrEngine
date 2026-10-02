@@ -97,6 +97,59 @@ TIDE_TEST(heap_grows_past_its_pages)
     free(big);
 }
 
+// A heap whose first block is a page or more starts it on the next page, with
+// a page before it: every page as far as it's handed out is there, for
+// copying, hashing and packing it.
+TIDE_TEST(heap_starts_with_a_block_of_a_page)
+{
+    for (uint32_t places = 1; places <= 2; places++) {
+        start();
+        const uint32_t bytes = (places << TIDE_HEAP_PAGE_SHIFT) - (uint32_t)sizeof(tide_block);
+        const uint32_t block = tide_heap_alloc(&world.heap, bytes);
+        TIDE_REQUIRE(block != 0);
+        TIDE_CHECK(world.heap.pages == places + 1u);
+        for (uint32_t i = 0; i < world.heap.pages; i++) TIDE_REQUIRE(world.heap.page[i] != NULL);
+        uint8_t *data = (uint8_t *)(tide_heap_write(&world.heap, block) + 1);
+        data[0] = 1;
+        data[bytes - 1u] = 2;
+        const uint32_t small = tide_heap_alloc(&world.heap, 10);
+        TIDE_CHECK(small >= block + (places << TIDE_HEAP_PAGE_SHIFT));
+        TIDE_REQUIRE(world.heap.page[world.heap.pages - 1u] != NULL);
+
+        tide_heap copy = {0};
+        tide_heap_copy(&copy, &world.heap);
+        TIDE_CHECK(tide_heap_hash(1, &copy) == tide_heap_hash(1, &world.heap));
+        tide_heap_free(&copy);
+
+        const uint32_t size = tide_heap_packed_size(&world.heap);
+        uint8_t *packed = malloc(size);
+        tide_writer w = {packed, size, 0, false, false};
+        tide_heap_pack(&world.heap, &w);
+        TIDE_CHECK(!w.overflow && w.size == size);
+        tide_heap back = {0};
+        tide_reader r = {packed, size, 0, false};
+        TIDE_REQUIRE(tide_heap_unpack(&back, &r));
+        TIDE_CHECK(tide_heap_hash(1, &back) == tide_heap_hash(1, &world.heap));
+        const uint8_t *read = (const uint8_t *)(tide_heap_block(&back, block) + 1);
+        TIDE_CHECK(read[0] == 1 && read[bytes - 1u] == 2);
+        free(packed);
+        tide_heap_free(&back);
+
+        tide_delta_writer d;
+        tide_delta_begin(&d, false, NULL, 0, 42);
+        tide_heap_pack_delta(&world.heap, NULL, &d);
+        uint32_t delta_size = 0;
+        uint8_t *delta = tide_delta_end(&d, &delta_size);
+        tide_delta_reader dr;
+        uint64_t hash = 0;
+        TIDE_REQUIRE(tide_delta_open(&dr, delta, delta_size, false, &hash));
+        TIDE_REQUIRE(tide_heap_unpack_delta(&back, NULL, &dr));
+        TIDE_CHECK(tide_heap_hash(1, &back) == tide_heap_hash(1, &world.heap));
+        free(delta);
+        tide_heap_free(&back);
+    }
+}
+
 // A snapshot shares the heap's pages: text written after it, in either,
 // leaves the other as it was, and both hash as what they hold.
 TIDE_TEST(heap_snapshots_share_until_changed)

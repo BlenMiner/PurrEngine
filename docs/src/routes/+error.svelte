@@ -31,10 +31,7 @@
         margin: 0;
         font-size: 64px;
         font-weight: 700;
-        background: linear-gradient(120deg, #f59e0b 30%, #e0457b);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+        color: var(--brand-2);
     }
 
     h1 {

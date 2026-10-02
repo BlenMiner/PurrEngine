@@ -91,6 +91,9 @@ uint32_t tide_heap_alloc(tide_heap *h, const uint32_t bytes)
     uint32_t at = h->used;
     if ((at & (PAGE - 1u)) + block_size > PAGE) at = (at + PAGE - 1u) & ~(PAGE - 1u);
     if ((uint64_t)at + block_size > LIMIT) tide_out_of_memory();
+    // Every place before the block's has its page too: a block of a page or
+    // more starts past an empty heap's first, which nothing else is in yet
+    while (at >> TIDE_HEAP_PAGE_SHIFT > h->pages) add_page(h, 1u);
     if (at >> TIDE_HEAP_PAGE_SHIFT == h->pages) {
         add_page(h, block_size > PAGE ? (uint32_t)(block_size >> TIDE_HEAP_PAGE_SHIFT) : 1u);
     }

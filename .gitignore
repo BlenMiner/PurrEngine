@@ -9,5 +9,4 @@ CMakeUserPresets.json
 docs/node_modules/
 docs/.svelte-kit/
 docs/build/
-docs/static/demo/
 docs/static/sand/

@@ -1,4 +1,4 @@
-# Builds the docs site (docs/, SvelteKit), with the web demos in it, and
+# Builds the docs site (docs/, SvelteKit), with sand for the web in it, and
 # deploys it to Fly.io (docs/fly.toml) on pushes to dev. Pull requests only
 # build it, which also checks its links. It tests the editors' grammar first,
 # through the Shiki the site highlights Tide with.
@@ -44,14 +44,12 @@ jobs:
           path: build/wasi-sdk-*
           key: wasi-sdk-${{ hashFiles('cmake/wasi-toolchain.cmake') }}
 
-      # The demo's page (docs/guide/demo.md) shows it at demo/, and the sand
-      # page (docs/guide/sand.md) sand at sand/.
-      - name: Build the demos
+      # The sand page (docs/guide/sand.md) shows it at sand/.
+      - name: Build sand
         run: |
           cmake --preset web-release
-          cmake --build --preset web-release --target demo sand
-          mkdir -p docs/static/demo docs/static/sand
-          cp build/web-release/bin/demo.html docs/static/demo/index.html
+          cmake --build --preset web-release --target sand
+          mkdir -p docs/static/sand
           cp build/web-release/bin/sand.html docs/static/sand/index.html
       - name: Build the site
         working-directory: docs
