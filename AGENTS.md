@@ -62,7 +62,7 @@ Warnings are errors, wherever they come from, and one that's already there gets 
 - tidec's, in the games `tide_add_game` builds (`cmake/run_tidec.cmake`). A test of what tidec generates for a program it warns about lists those warnings after `WARNINGS`, and the build checks they're there.
 - The browser's, in web tests: test pages set `Tide.checkGL`, so a GL error stops the program and names the call (`platform/web/tide.js`), where WebGL would only warn in the console. It checks every call, which is too slow for pages that ship.
 
-Every native build also copies the language server to `build/tools/tidels`, the fixed path editors run: the VS Code extension and the JetBrains plugin use it when the open folder is this repo (see `tools/`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
+Every native build also copies the language server to `build/tools/tidels`, the fixed path editors run: the VS Code extension and the JetBrains plugin use it when the open folder is this repo and the editor trusts it (see `tools/`). On Windows, a build replaces the server while an editor still runs the old one: the running file is renamed aside and deleted by a later build.
 
 The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with `-DTIDE_PLATFORM=OFF` to build without the platform layer and the demo, for example offline.
 
@@ -145,7 +145,7 @@ The generated header is the API between the game and the host. Namespaced declar
 - Every response has `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (`docs/headers.js`, in `npm run dev` too), so pages are cross-origin isolated and the demos in them run on threads. A page in a frame is only isolated when the page around it is, and moving between pages loads no new one, so every page has them: everything a page loads comes from the site itself (fonts included), or has to say it may be embedded (CORP or CORS).
 - `.github/workflows/docs.yml` builds it on pull requests, and on pushes to `dev` deploys it (the `FLY_API_TOKEN` secret, a deploy token for the app) and puts a redirect on GitHub Pages, where the site used to be, that takes `blenminer.github.io/tide-engine/<page>` to the same page here.
 - The workflow builds the web demo (`web-release`, target `demo`) and puts it at `demo/`, where `docs/guide/demo.md` shows it, and sand (target `sand`, see Benchmarks) at `sand/`, where `docs/guide/sand.md` does. To see them locally, copy `build/web-release/bin/demo.html` to `docs/static/demo/index.html` and `sand.html` to `docs/static/sand/index.html`; a build without them still works.
-- The docs' Markdown fences Tide as `csharp`, which GitHub highlights; the site highlights it with the editors' grammar (`tools/tide-syntax`).
+- The docs' Markdown fences Tide as `csharp`, which GitHub highlights; the site highlights it with the editors' grammar (`tools/tide-syntax`). The workflow tests the grammar first, through the site's Shiki: `npm run test:grammar` in `docs/` checks the scopes of `tools/tide-syntax/test/probe.tide`'s cases and of the compiler's test programs.
 
 ## Packaging and releases
 
