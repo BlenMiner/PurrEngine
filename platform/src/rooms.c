@@ -373,8 +373,7 @@ static void pump(native_room *r)
             relay_send(r, wrapped);
         }
         if (p->peer->state == RTC_PEER_OPEN && !r->hosting && !r->connected) {
-            r->connected = true;
-            relay_close(r); // Joined: the relay's part is done
+            r->connected = true; // The relay closes once the host sends (backend_receive)
         } else if (p->peer->state == RTC_PEER_FAILED) {
             if (!r->hosting && !r->connected && !r->failed) {
                 r->failed = true;
@@ -495,6 +494,11 @@ static uint32_t backend_receive(const uint32_t number, uint32_t *from, void *dat
             const int i = (room->next_read + k) % room->peer_count;
             const size_t n = rtc_peer_receive(room->peers[i].peer, data, capacity);
             if (n) {
+                // Joined: the relay's part is done once the host sends, which
+                // it only does with its end open. Not before: the relay tells
+                // the host this one left, and a host that hasn't caught up
+                // with its own end yet takes it for a player who gave up
+                if (!room->hosting && room->ws_live) relay_close(room);
                 *from = room->peers[i].number;
                 room->next_read = (i + 1) % room->peer_count;
                 return (uint32_t)n;

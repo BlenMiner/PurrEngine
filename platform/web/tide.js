@@ -548,20 +548,28 @@
 
     function useChannel(r, peer, channel) {
         channel.binaryType = 'arraybuffer';
-        channel.onopen = () => {
+        const opened = () => {
+            if (peer.open) return;
             peer.open = true;
-            if (!r.hosting) {
-                r.connected = true;
-                if (r.ws) r.ws.close(); // Joined: the relay's part is done
-            }
+            if (!r.hosting) r.connected = true;
         };
+        channel.onopen = opened;
         channel.onmessage = event => {
+            // Joined: the relay's part is done once the host sends over the
+            // channel, which it only does with its end open. Not before: the
+            // relay tells the host this one left, and a host that hasn't
+            // caught up with its own end yet takes it for a player who gave up
+            if (!r.hosting && r.ws) r.ws.close();
             if (room === r && r.inbox.length < 4096 && event.data instanceof ArrayBuffer) {
                 r.inbox.push([peer.number, new Uint8Array(event.data)]);
             }
         };
         channel.onclose = () => dropPeer(r, peer);
         peer.channel = channel;
+        // A channel the other end made can be open already by the time the
+        // page hears of it (ondatachannel), with no open event to come: it
+        // would never be sent to, and its player never let in
+        if (channel.readyState === 'open') opened();
     }
 
     function dropPeer(r, peer) {

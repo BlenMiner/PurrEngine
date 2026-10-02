@@ -17,7 +17,10 @@
 //                     {missing: "K7QF2M"}        No room has that code
 //                     {full: "K7QF2M"}           Too many players are joining it at once
 //   relay -> host     {peer: 3}                  Player 3 is joining
-//                     {left: 3}                  ...or gave up, or connected and hung up
+//                     {left: 3}                  ...or gave up, or connected and hung up: a player hangs
+//                                                up once the host sent it something over their channel,
+//                                                so a host that hasn't seen its channel open yet can
+//                                                take {left} for giving up
 //   joiner -> relay   {signal: ...}              Passed on to the host as {from: 3, signal: ...}
 //   host  -> relay    {to: 3, signal: ...}       Passed on to player 3 as {signal: ...}
 //   relay -> joiner   {closed: "K7QF2M"}         The host closed the room
