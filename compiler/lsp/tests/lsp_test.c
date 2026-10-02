@@ -1930,6 +1930,76 @@ TIDE_TEST(lsp_grid_positions_keep_their_names)
                    "field.cells[column, 2] = column;"));
 }
 
+// Go to definition on an enum's member, and hovers that had none or were stale.
+TIDE_TEST(lsp_enum_members_and_hovers)
+{
+    start();
+    open_document("enum Page { Title, Options }\nsingleton Menu { Page page; }\nscene Main { }\n"
+                  "system S(mut Menu menu) { menu.page = Page.Opt$ions; }\n");
+    TIDE_CHECK(has(request("textDocument/definition"), "\"range\":{\"start\":{\"line\":0,\"character\":19}"));
+    // The engine's enums have no source to go to, and keep their names.
+    open_document("scene Arena { }\nscene Main { }\n"
+                  "event(Spawned) Setup(with Main) { Scene.Load(Arena, SceneVisibility.Priv$ate); }\n");
+    TIDE_CHECK(has(request("textDocument/definition"), "\"result\":null"));
+    TIDE_CHECK(has(request("textDocument/prepareRename"), "Members of the engine's enums can't be renamed."));
+
+    // Session's calls, as the checker has them
+    open_document("local scene Main { }\nview Menu()\n{\n    Sess$ion.Leave();\n}\n");
+    const char *session = request("textDocument/hover");
+    TIDE_CHECK(has(session, "Start, Open, Close, Kick, KickAll, Join, Connect, Leave and End") && !has(session, "Play"));
+    open_document("[Native$Name(\"c_noise\")]\nextern float Noise(float x);\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "The C function the extern function after it calls"));
+    open_document("enum Voxel : by$te { Air, Stone }\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "one byte, so its members go from 0 to 255"));
+    // byte reads as a keyword (11), like int
+    TIDE_CHECK(has(request("textDocument/semanticTokens/full"), "\"data\":[0,5,5,13,1,0,8,4,11,0,"));
+}
+
+// Renaming refuses every keyword, the lexer's and the parser's.
+TIDE_TEST(lsp_rename_keywords)
+{
+    start();
+    open_document(GAME_TYPES "system Mo$ve(mut Body body)\n{\n    body.radius = 1;\n}\n");
+    static const char *const keywords[] = {"while", "for", "foreach", "parallel", "continue", "this", "await", "null",
+                                           "struct", "event", "const", "async", "fails", "in", "void"};
+    for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
+        char extra[64];
+        snprintf(extra, sizeof extra, "\"newName\":\"%s\"", keywords[i]);
+        TIDE_CHECK(has(request_with("textDocument/rename", extra), "keyword"));
+    }
+    TIDE_CHECK(has(request_with("textDocument/rename", "\"newName\":\"string\""), "built into the language"));
+    // A local can take a word that only starts declarations, as the parser allows.
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    var spe$ed = 1;\n    body.radius = speed;\n}\n");
+    TIDE_CHECK(has(request_with("textDocument/rename", "\"newName\":\"scene\""), "\"changes\""));
+    TIDE_CHECK(has(request_with("textDocument/rename", "\"newName\":\"while\""), "keyword"));
+}
+
+// The input's Sample and Sanitize are in the outline.
+TIDE_TEST(lsp_outline_of_input)
+{
+    start();
+    open_document("local singleton Menu { bool open; }\ninput Keys\n{\n    bool fire;\n\n    Sample(Menu menu) { }\n"
+                  "    Sanitize() { }\n}\nscene Main { }\n");
+    const char *symbols = request("textDocument/documentSymbol");
+    TIDE_CHECK(has(symbols, "{\"name\":\"Sample\",\"detail\":\"Sample(Menu menu)\",\"kind\":6,\"range\":{\"start\":{\"line\":5,"
+                            "\"character\":4},\"end\":{\"line\":5,\"character\":25}}"));
+    TIDE_CHECK(has(symbols, "\"name\":\"Sanitize\",\"detail\":\"Sanitize()\",\"kind\":6"));
+}
+
+// Highlights tell what an assignment changes from what it reads.
+TIDE_TEST(lsp_highlights_writes)
+{
+    start();
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    mut var n$ = 1;\n    n = 2;\n    n += body.radius;\n"
+                  "    n++;\n    body.radius = n;\n}\n");
+    const char *local = request("textDocument/documentHighlight");
+    TIDE_CHECK(count(local, "\"kind\":3") == 4); // Declared, set, added to, incremented
+    TIDE_CHECK(count(local, "\"kind\":2") == 1); // Read into body.radius
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.rad$ius = 1;\n    var r = body.radius;\n}\n");
+    const char *field = request("textDocument/documentHighlight");
+    TIDE_CHECK(count(field, "\"kind\":3") == 2 && count(field, "\"kind\":2") == 1); // Its declaration is in the file too
+}
+
 TIDE_TEST(lsp_signature_help)
 {
     start();

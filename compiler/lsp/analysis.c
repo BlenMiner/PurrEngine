@@ -58,6 +58,8 @@ typedef struct occurrence {
     const char *c_name; // Functions and constants: what they are in C, like tide_draw_circle
     builtin_call call;  // Built-in methods: which kind, CALL_LIST for items.Add(...)
     int order;          // When it was found, which decides between two at one position
+    bool write;         // What an assignment changes: `x` in `x = 1`, `radius` in `body.radius += 1`
+    bool backing;       // An enum's backing type: byte in `enum Voxel : byte`
 } occurrence;
 
 // One file of the game being analysed.
@@ -287,6 +289,16 @@ static const decl *walk_fields_of;
 // The system, view, handler, method or function being walked: whose `this` it is.
 static const decl *walk_code;
 
+// What the assignment being walked changes: a name or a member.
+static const expr *walk_written;
+
+// The name or member an assignment to `target` changes: cells for cells[x].
+static const expr *written_place(const expr *target)
+{
+    while (target && target->kind == E_INDEX) target = target->object;
+    return target;
+}
+
 // A game's method, function or operator, which calls and declarations point at.
 static bool is_routine(const decl *d)
 {
@@ -372,7 +384,7 @@ static void walk_expr(const expr *e)
         break;
 
     case E_NAME: {
-        occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type};
+        occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type, .write = e == walk_written};
         switch (e->bind) {
         case BIND_PARAM:
             o.kind = OCC_PARAM;
@@ -420,7 +432,7 @@ static void walk_expr(const expr *e)
     case E_MEMBER: {
         walk_expr(e->object);
         occurrence o = {.at = e->at, .len = e->member.len, .name = e->member, .type = e->type,
-                        .object_type = e->object->type};
+                        .object_type = e->object->type, .write = e == walk_written};
         if (e->bind == BIND_TYPE && e->type_decl) { // Combat.Health, in Spawn(Combat.Health)
             o.kind = OCC_TYPE;
             o.decl = e->type_decl;
@@ -595,7 +607,9 @@ static void walk_stmt(const stmt *s)
             add_occ((occurrence){.at = s->at, .len = operator_len(s->op), .kind = OCC_METHOD, .decl = s->operator_decl,
                                  .name = s->operator_decl->name});
         }
+        walk_written = written_place(s->target);
         walk_expr(s->target);
+        walk_written = NULL;
         walk_expr(s->value);
         break;
     case S_EXPR:
@@ -720,6 +734,10 @@ static void index_program(void)
         }
         add_occ((occurrence){.at = d->at, .len = d->name.len, .kind = OCC_TYPE, .declaration = true, .decl = d,
                              .name = d->name});
+        if (d->kind == DECL_ENUM && d->backing.len > 0) { // enum Voxel : byte
+            add_occ((occurrence){.at = d->backing_at, .len = d->backing.len, .kind = OCC_TYPE, .name = d->backing,
+                                 .type = {TY_INT, NULL}, .backing = true});
+        }
         for (int m = 0; m < d->members.count; m++) {
             const enum_member *member = &d->members.items[m];
             add_occ((occurrence){.at = member->at, .len = member->name.len, .kind = OCC_ENUM_MEMBER, .declaration = true,
@@ -1049,12 +1067,22 @@ static const char *button_field_doc(const decl *d, const str name)
     return NULL;
 }
 
-// Scene's functions: for hovers, completion and signature help.
-static const struct {
+// A built-in call the checker takes by name, for hovers, completion, signature
+// help and inlay hints: its form and what it does.
+typedef struct method_form {
     const char *name;
-    const char *form;
+    const char *form; // In a list's and a grid's methods, T is the element or the cell
     const char *doc;
-} scene_calls[] = {
+} method_form;
+
+// "Start, Open and Close": the names of the calls in `forms`.
+static void put_names(sb *out, const method_form *forms, const size_t count)
+{
+    for (size_t i = 0; i < count; i++) sb_printf(out, "%s%s", i == 0 ? "" : i + 1 == count ? " and " : ", ", forms[i].name);
+}
+
+// Scene's functions.
+static const method_form scene_calls[] = {
     {"Load", "Scene.Load(scene, SceneVisibility visibility)",
      "Loads a scene and returns its entity. Its `Spawned` handlers set it up at the end of the tick; it's public unless it's `SceneVisibility.Private`."},
     {"Unload", "Scene.Unload(scene)", "Unloads a scene at the end of the tick, destroying every entity in it."},
@@ -1063,11 +1091,7 @@ static const struct {
 };
 
 // Session's calls, from views and local handlers.
-static const struct {
-    const char *name;
-    const char *form;
-    const char *doc;
-} session_calls[] = {
+static const method_form session_calls[] = {
     {"Start", "Session.Start(scene)",
      "Starts a match on this machine, in `scene`: it runs the server, and no one else joins until it's opened. It leaves "
      "the match it's in first."},
@@ -1106,11 +1130,7 @@ static const struct {
     "clipboard into the text field that has the focus."
 
 // What async code waits for, after `await`.
-static const struct {
-    const char *name;
-    const char *form;
-    const char *doc;
-} wait_calls[] = {
+static const method_form wait_calls[] = {
     {"Ticks", "await Wait.Ticks(int ticks)",
      "Waits for the match's ticks: the task goes on `ticks` ticks later, in the task pass at the end of the tick. "
      "Match code only."},
@@ -1120,13 +1140,6 @@ static const struct {
      "Waits for `seconds`: in the match, the nearest whole number of ticks, the same on every machine; in local code, "
      "this machine's time, frame by frame."},
 };
-
-// A built-in method: its form, after what it's called on, and what it does.
-typedef struct method_form {
-    const char *name;
-    const char *form; // In a list's and a grid's, T is the element or the cell
-    const char *doc;
-} method_form;
 
 // A list's methods, as the checker takes them.
 static const method_form list_calls[] = {
@@ -1243,7 +1256,12 @@ static void describe(const occurrence *o, sb *out)
         describe_default(o->type, out);
         break;
     case OCC_TYPE:
-        if (o->decl) {
+        if (o->backing) {
+            code_block(out, str_to_cstr(o->name));
+            sb_put(out, str_eq_c(o->name, "byte")     ? "\n\nWhat the enum is stored as: one byte, so its members go from 0 to 255."
+                      : str_eq_c(o->name, "ushort") ? "\n\nWhat the enum is stored as: two bytes, so its members go from 0 to 65535."
+                                                    : "\n\nWhat the enum is stored as: four bytes, as it is without one.");
+        } else if (o->decl) {
             format_data_decl(o->decl, &code);
             code_block(out, code.data);
             if (o->decl->kind == DECL_EVENT && o->decl->builtin) sb_printf(out, "\n\n%s", builtin_event_doc(A.prog, o->decl));
@@ -1339,22 +1357,32 @@ static void describe(const occurrence *o, sb *out)
     }
     case OCC_OWNER:
         code_block(out, str_to_cstr(o->name));
-        sb_put(out, str_eq_c(o->name, "Draw")        ? "\n\nImmediate-mode drawing, in views and the functions they call."
-                  : str_eq_c(o->name, "GUI")       ? "\n\nThe GUI's widgets, each at a Rect. In views and the functions they call."
-                  : str_eq_c(o->name, "GUILayout") ? "\n\nThe GUI's widgets, laid out one after another, and containers "
-                                                     "that arrange them. In views and the functions they call."
-                  : str_eq_c(o->name, "Screen")    ? "\n\nThe window's size, in pixels."
-                  : str_eq_c(o->name, "Devices")   ? "\n\nThis machine's keyboard, mouse and gamepad. Views read them once "
-                                                     "per frame, and the input's Sample once per tick. Systems take a "
-                                                     "`Devices` parameter instead: the devices of the entity's owner."
-                  : str_eq_c(o->name, "Scene")     ? "\n\nLoads and unloads scenes: groups of entities that come and go together."
-                  : str_eq_c(o->name, "Session")   ? "\n\nWhich match this machine is in: Play, Host, Join, Connect and Leave, from views "
-                                                     "and local handlers. Take `Session session` to read where it stands."
-                  : str_eq_c(o->name, "Clipboard") ? "\n\nThis machine's clipboard: Copy, from views and local handlers. "
-                                                     "Ctrl+V pastes into text fields by itself."
-                  : str_eq_c(o->name, "Wait")      ? "\n\nWhat async code waits for, after `await`: the match's ticks, this "
-                                                     "machine's frames, or seconds."
-                                                   : "\n\nMath functions and constants, deterministic on every platform.");
+        // The calls of the owners whose calls the checker takes by name, from the tables above
+        if (str_eq_c(o->name, "Scene")) {
+            sb_put(out, "\n\nLoads and unloads scenes, groups of entities that come and go together: ");
+            put_names(out, scene_calls, sizeof scene_calls / sizeof scene_calls[0]);
+            sb_put(out, ".");
+        } else if (str_eq_c(o->name, "Session")) {
+            sb_put(out, "\n\nWhich match this machine is in, and who's in the one it runs: ");
+            put_names(out, session_calls, sizeof session_calls / sizeof session_calls[0]);
+            sb_put(out, ", from views and local handlers. Take `Session session` to read where it stands.");
+        } else if (str_eq_c(o->name, "Wait")) {
+            sb_put(out, "\n\nWhat async code waits for, after `await`: ");
+            put_names(out, wait_calls, sizeof wait_calls / sizeof wait_calls[0]);
+            sb_put(out, ", the match's ticks, this machine's frames, or seconds.");
+        } else {
+            sb_put(out, str_eq_c(o->name, "Draw")        ? "\n\nImmediate-mode drawing, in views and the functions they call."
+                      : str_eq_c(o->name, "GUI")       ? "\n\nThe GUI's widgets, each at a Rect. In views and the functions they call."
+                      : str_eq_c(o->name, "GUILayout") ? "\n\nThe GUI's widgets, laid out one after another, and containers "
+                                                         "that arrange them. In views and the functions they call."
+                      : str_eq_c(o->name, "Screen")    ? "\n\nThe window's size, in pixels."
+                      : str_eq_c(o->name, "Devices")   ? "\n\nThis machine's keyboard, mouse and gamepad. Views read them once "
+                                                         "per frame, and the input's Sample once per tick. Systems take a "
+                                                         "`Devices` parameter instead: the devices of the entity's owner."
+                      : str_eq_c(o->name, "Clipboard") ? "\n\nThis machine's clipboard: Copy, from views and local handlers. "
+                                                         "Ctrl+V pastes into text fields by itself."
+                                                       : "\n\nMath functions and constants, deterministic on every platform.");
+        }
         break;
     case OCC_FUNCTION:
     case OCC_CONSTANT:
@@ -1467,6 +1495,8 @@ static void describe(const occurrence *o, sb *out)
             {"Max", "[Max(x)]", "Keeps this input field at most x, before Sanitize runs."},
             {"Snap", "[Snap]", "Views see this field as it is at the latest tick, not blended between the last two: "
                                "for angles that wrap and values that jump."},
+            {"NativeName", "[NativeName(\"c_function\")]",
+             "The C function the extern function after it calls, when its name isn't the function's own."},
         };
         for (size_t i = 0; i < sizeof attributes / sizeof attributes[0]; i++) {
             if (!str_eq_c(o->name, attributes[i].name)) continue;
@@ -1967,6 +1997,13 @@ void analysis_definition(const char *uri, const int line, const int character, j
         } else if (o->kind == OCC_LOCAL) {
             target = o->local->name_at;
             len = o->local->name.len;
+        } else if (o->kind == OCC_ENUM_MEMBER && o->decl && !o->decl->builtin) { // Options in Page.Options
+            for (int i = 0; i < o->decl->members.count && target.line == 0; i++) {
+                const enum_member *m = &o->decl->members.items[i];
+                if (!str_eq(m->name, o->name)) continue;
+                target = m->at;
+                len = m->name.len;
+            }
         } else if (o->kind == OCC_NAMESPACE) {
             // The first file that declares it (or a namespace inside it)
             for (int i = 0; i < A.occs.count && target.line == 0; i++) {
@@ -2071,6 +2108,30 @@ void analysis_symbols(jbuf *out)
             write_position(out, (loc){m->end.line, m->end.col + 1, m->end.file});
             jb_put(out, "},\"selectionRange\":");
             write_range(out, m->at, m->name.len);
+            jb_put(out, "}");
+        }
+        // The input's Sample and Sanitize
+        for (int k = 0; d->kind == DECL_INPUT && k < 2; k++) {
+            const stmt *body = k == 0 ? d->body : d->sanitize;
+            if (!body) continue;
+            const loc at = k == 0 ? d->body_at : d->sanitize_at;
+            sb detail = {0};
+            sb_put(&detail, k == 0 ? "Sample(" : "Sanitize(");
+            for (int i = 0; k == 0 && i < d->params.count; i++) {
+                if (i) sb_put(&detail, ", ");
+                format_param(&d->params.items[i], &detail);
+            }
+            sb_put(&detail, ")");
+            if (!first_child) jb_put(out, ",");
+            first_child = false;
+            jb_printf(out, "{\"name\":\"%s\",\"detail\":", k == 0 ? "Sample" : "Sanitize");
+            jb_string(out, detail.data);
+            jb_printf(out, ",\"kind\":%d,\"range\":{\"start\":", SYMBOL_METHOD);
+            write_position(out, at);
+            jb_put(out, ",\"end\":");
+            write_position(out, (loc){body->end.line, body->end.col + 1, body->end.file});
+            jb_put(out, "},\"selectionRange\":");
+            write_range(out, at, k == 0 ? 6 : 8);
             jb_put(out, "}");
         }
         jb_put(out, "]}");
@@ -2366,6 +2427,11 @@ static void classify(const occurrence *o, int *type, int *mods)
     *mods = o->declaration ? SM_DECLARATION : 0;
     switch (o->kind) {
     case OCC_TYPE:
+        if (o->backing) { // byte, like int
+            *type = ST_KEYWORD;
+            *mods = 0;
+            break;
+        }
         if (!o->decl) {
             *type = is_keyword_type(o->type) ? ST_KEYWORD : ST_TYPE; // Color, Entity, PlayerID are types
             *mods = is_keyword_type(o->type) ? 0 : *mods | SM_DEFAULT_LIBRARY;
@@ -3821,7 +3887,9 @@ static bool same_symbol(const occurrence *a, const occurrence *b)
 {
     if (a->kind != b->kind) return false;
     switch (a->kind) {
-    case OCC_TYPE: return a->decl ? a->decl == b->decl : !b->decl && a->type.kind == b->type.kind;
+    case OCC_TYPE:
+        if (a->backing || b->backing) return a->backing == b->backing && str_eq(a->name, b->name);
+        return a->decl ? a->decl == b->decl : !b->decl && a->type.kind == b->type.kind;
     case OCC_SYSTEM: return a->decl == b->decl;
     case OCC_FIELD: return a->field == b->field;
     case OCC_PARAM: return a->param == b->param;
@@ -3878,7 +3946,7 @@ void analysis_highlights(const int line, const int character, jbuf *out)
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"range\":");
         write_range(out, o->at, o->len);
-        jb_printf(out, ",\"kind\":%d}", o->declaration ? HIGHLIGHT_WRITE : HIGHLIGHT_READ);
+        jb_printf(out, ",\"kind\":%d}", o->declaration || o->write ? HIGHLIGHT_WRITE : HIGHLIGHT_READ);
     }
     jb_put(out, "]");
 }
@@ -3898,10 +3966,12 @@ static const char *rename_target(const int line, const int character, const occu
     case OCC_FIELD:
         if (!o->decl || o->decl->builtin) return "Fields of built-in types can't be renamed.";
         return NULL;
+    case OCC_ENUM_MEMBER:
+        if (!o->decl || o->decl->builtin) return "Members of the engine's enums can't be renamed.";
+        return NULL;
     case OCC_SYSTEM:
     case OCC_PARAM:
     case OCC_LOCAL:
-    case OCC_ENUM_MEMBER:
     case OCC_NAMESPACE:
     case OCC_CONST:
         return NULL;
@@ -3996,21 +4066,31 @@ static bool param_named(const decl *d, const str name)
 // Whether `name` can replace the target's name, or why not.
 static const char *check_new_name(const occurrence *target, const str name)
 {
-    static const char *const keywords[] = {"component", "singleton", "system", "mut", "var", "with", "without", "if",
-                                           "else", "return", "true", "false", "switch", "case", "default", "break",
-                                           "fail", "try", "is", "null", "await"};
+    // Words the parser reads as keywords where a declaration or a part of one
+    // goes, though the lexer reads them as names. The first ones only start
+    // declarations, so parameters and locals can still take them.
+    static const char *const contextual[] = {"input", "view", "struct", "event", "enum", "scene", "local", "namespace",
+                                             "using", "extern", "const", "async", "settings", "operator", "fails", "in",
+                                             "by", "offset", "void"};
+    enum { DECL_WORDS = 11 };
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
                                            "GUI", "GUILayout", "Screen", "Anchor", "Action", "Session", "SessionState", "Clipboard",
-                                           "DisconnectReason", "Connected", "Disconnected"};
+                                           "DisconnectReason", "Connected", "Disconnected", "Wait", "List", "Grid2", "Grid3",
+                                           "string", "Sample", "Sanitize"};
     static char message[160];
 
     if (name.len == 0 || !(isalpha((unsigned char)name.ptr[0]) || name.ptr[0] == '_')) return "Names start with a letter.";
     for (int i = 0; i < name.len; i++) {
         if (!isalnum((unsigned char)name.ptr[i]) && name.ptr[i] != '_') return "Names use letters, digits and '_' only.";
     }
-    for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) {
-        if (str_eq_c(name, keywords[i])) return "That's a keyword.";
+    // The lexer's own keywords: it reads them as something other than a name.
+    const source text = {"", name.ptr, (size_t)name.len, 0};
+    const token *word = lex_all(&text);
+    if (!word || word[0].kind != T_IDENT) return "That's a keyword.";
+    const bool variable = target->kind == OCC_PARAM || target->kind == OCC_LOCAL;
+    for (size_t i = variable ? DECL_WORDS : 0; i < sizeof contextual / sizeof contextual[0]; i++) {
+        if (str_eq_c(name, contextual[i])) return "That's a keyword.";
     }
     type ignored;
     for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
