@@ -1,6 +1,9 @@
 // Tide for VS Code (and Cursor, VSCodium, Windsurf): the grammar colors
 // the text, and tidels, the language server that comes with tide, does the rest.
 // Tide: Run plays the game in a window, and Run on the Web beside the code.
+//
+// In Restricted Mode (an untrusted workspace), nothing from the workspace
+// runs: the server is the one that comes with tide, and games don't run.
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -11,6 +14,8 @@ const { LanguageClient } = require('vscode-languageclient/node');
 
 const suffix = process.platform === 'win32' ? '.exe' : '';
 let client = null;
+let output = null; // The Tide output channel, which every client shares
+let trace = null; // Where tide.trace.server shows what VS Code and tidels say
 
 function isFile(file) {
     try {
@@ -24,21 +29,79 @@ function openFolders() {
     return (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
 }
 
-// A program a setting names; `${workspaceFolder}` is the open folder. null
-// when there's none there.
-function settingProgram(setting) {
-    const file = setting.replaceAll('${workspaceFolder}', openFolders()[0] ?? '');
-    if (process.platform === 'win32' && !isFile(file) && isFile(file + '.exe')) return file + '.exe';
-    return isFile(file) ? file : null;
+// Whether `file` is `folder` or in it.
+function inFolder(file, folder) {
+    const relative = path.relative(folder, file);
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+}
+
+// The setting tide.<key> for `resource` (a game's folder, or none for the
+// language server, which serves them all), and the workspace folder it comes
+// from: the one whose settings set it (the resource's, or for the server, the
+// first that does); else, for user and workspace settings, the resource's, or
+// the first. Only the user's own settings count until the workspace is
+// trusted.
+function setting(key, resource) {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const own = resource ? vscode.workspace.getWorkspaceFolder(resource) : undefined;
+    const trusted = vscode.workspace.isTrusted;
+    if (trusted) {
+        for (const folder of resource ? (own ? [own] : []) : folders) {
+            const value = vscode.workspace.getConfiguration('tide', folder.uri).inspect(key)?.workspaceFolderValue;
+            if (value) return { value, folder: folder.uri.fsPath };
+        }
+    }
+    const inspected = vscode.workspace.getConfiguration('tide', resource).inspect(key);
+    const value = (trusted ? inspected?.workspaceValue : undefined) || inspected?.globalValue || '';
+    return { value, folder: (own ?? folders[0])?.uri.fsPath };
+}
+
+// The path a setting holds: `~` is the home folder, `${workspaceFolder}` and
+// relative paths are in `folder`, and `${workspaceFolder:name}` is the open
+// folder of that name. null when it names a folder that isn't open.
+function settingPath(value, folder) {
+    const home = os.homedir();
+    let missing = false;
+    let file = value.trim()
+        .replace(/^~(?=$|[\\/])/, home)
+        .replace(/\$\{userHome\}/g, home)
+        .replace(/\$\{workspaceFolder(?::([^}]*))?\}/g, (_, name) => {
+            const found = name ? vscode.workspace.workspaceFolders?.find(f => f.name === name)?.uri.fsPath : folder;
+            if (!found) missing = true;
+            return found ?? '';
+        });
+    if (missing) return null;
+    if (!path.isAbsolute(file)) {
+        if (!folder) return null;
+        file = path.resolve(folder, file);
+    }
+    return path.normalize(file);
+}
+
+// The program the setting tide.<key> names, `what` it is: null when it's
+// empty; else { file }, or { error } saying why there's none to run, and
+// whether that's only for want of trust (`untrusted`).
+function settingProgram(key, what, resource) {
+    const { value, folder } = setting(key, resource);
+    if (!value) return null;
+    const named = `tide.${key} is set to ${value}`;
+    const file = settingPath(value, folder);
+    if (!file) return { error: `${named}, which is in a folder that isn't open.` };
+    if (!vscode.workspace.isTrusted && openFolders().some(f => inFolder(file, f))) {
+        return { error: `${named}, which is in this workspace: it runs once you trust the workspace.`, untrusted: true };
+    }
+    if (process.platform === 'win32' && !isFile(file) && isFile(file + '.exe')) return { file: file + '.exe' };
+    return isFile(file) ? { file } : { error: `${named}, and there's no ${what} there.` };
 }
 
 // A program that comes with tide: on PATH, else where the installers put
 // tide, as an editor started before tide was installed doesn't have it on its
-// PATH yet.
+// PATH yet. Only PATH's absolute folders: a relative one would be wherever
+// the editor runs.
 function installedProgram(name) {
     const exe = name + suffix;
     for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-        if (dir && isFile(path.join(dir, exe))) return path.join(dir, exe);
+        if (dir && path.isAbsolute(dir) && isFile(path.join(dir, exe))) return path.join(dir, exe);
     }
     const installed = process.platform === 'win32'
         ? path.join(process.env.LOCALAPPDATA ?? '', 'Tide', 'bin', exe)
@@ -56,57 +119,114 @@ async function missing(message, setting) {
     }
 }
 
-// The setting; else the open folder's own build/tools/tidels, when it's
-// Tide itself; else the one that comes with tide.
+// The language server: the setting's; else the open folder's own
+// build/tools/tidels, when it's Tide itself; else the one that comes with
+// tide. In an untrusted workspace, never one in the workspace. { file }, or
+// { error }.
 function findServer() {
-    const setting = vscode.workspace.getConfiguration('tide').get('server.path');
-    if (setting) return settingProgram(setting);
-    for (const folder of openFolders()) {
-        const built = path.join(folder, 'build', 'tools', 'tidels' + suffix);
-        if (isFile(built)) return built;
+    const configured = settingProgram('server.path', 'language server');
+    if (configured && !configured.untrusted) return configured;
+    if (vscode.workspace.isTrusted) {
+        for (const folder of openFolders()) {
+            const built = path.join(folder, 'build', 'tools', 'tidels' + suffix);
+            if (isFile(built)) return { file: built };
+        }
     }
-    return installedProgram('tidels');
+    const installed = installedProgram('tidels');
+    if (installed) return { file: installed };
+    return configured ?? { error: "couldn't find tidels, the language server that comes with tide. Install tide, or set tide.server.path." };
 }
 
+// The trace of what VS Code and tidels say to each other, as tide.trace.server
+// asks. The language client only traces into a log channel whose level is
+// Trace, so this one is at Trace while the setting isn't off.
+function traceChannel() {
+    const channel = vscode.window.createOutputChannel('Tide Trace');
+    const changed = new vscode.EventEmitter();
+    const level = () => vscode.workspace.getConfiguration('tide').get('trace.server') === 'off' ? vscode.LogLevel.Info : vscode.LogLevel.Trace;
+    const listener = vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('tide.trace.server')) changed.fire(level());
+    });
+    const write = message => channel.appendLine(`[${new Date().toLocaleTimeString()}] ${message instanceof Error ? message.message : message}`);
+    return {
+        name: channel.name,
+        get logLevel() {
+            return level();
+        },
+        onDidChangeLogLevel: changed.event,
+        trace: write,
+        debug: write,
+        info: write,
+        warn: write,
+        error: write,
+        append: value => channel.append(value),
+        appendLine: value => channel.appendLine(value),
+        replace: value => channel.replace(value),
+        clear: () => channel.clear(),
+        show: (...args) => channel.show(...args),
+        hide: () => channel.hide(),
+        dispose: () => {
+            listener.dispose();
+            changed.dispose();
+            channel.dispose();
+        },
+    };
+}
+
+// Starts the language server. It never throws: what went wrong shows in a
+// notification, so that Restart Language Server always has a server to stop.
 async function start() {
     const server = findServer();
-    if (!server) {
-        const setting = vscode.workspace.getConfiguration('tide').get('server.path');
-        await missing(setting
-            ? `Tide: tide.server.path is set to ${setting}, and there's no language server there.`
-            : "Tide: couldn't find tidels, the language server that comes with tide. Install tide, or set tide.server.path.",
-            'tide.server.path');
+    if (server.error) {
+        missing(`Tide: ${server.error}`, 'tide.server.path'); // Not awaited: the editor goes on meanwhile
         return;
     }
-    client = new LanguageClient('tide', 'Tide', { command: server }, {
+    const next = new LanguageClient('tide', 'Tide', { command: server.file }, {
         documentSelector: [
             { scheme: 'file', language: 'tide' },
             { scheme: 'untitled', language: 'tide' },
         ],
+        outputChannel: output,
+        traceOutputChannel: trace,
     });
-    await client.start();
+    client = next;
+    try {
+        await next.start();
+    } catch {
+        // The client said why, in a notification and in the Tide output.
+    }
 }
 
+// Stops the language server, whatever state it's in: a server that failed to
+// start can't be stopped, only let go.
 async function stop() {
-    if (!client) return;
     const running = client;
     client = null;
-    await running.stop();
+    if (!running) return;
+    try {
+        await running.dispose();
+    } catch {
+        // It never started, or it stopped already.
+    }
 }
 
-async function restart() {
-    await stop();
-    await start();
+// Starts and stops one after the other, as settings changes and the restart
+// command come in.
+let queue = Promise.resolve();
+function serially(step) {
+    queue = queue.then(step).catch(() => {});
+    return queue;
+}
+
+function restart() {
+    return serially(async () => {
+        await stop();
+        await start();
+    });
 }
 
 // ---------------------------------------------------------------------------
 // Run, and Run on the Web
-
-// Whether `file` is `folder` or in it.
-function inFolder(file, folder) {
-    const relative = path.relative(folder, file);
-    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
-}
 
 // The games of the open folders that build them with CMake, like Tide
 // itself: tide_add_game lists them in build/tools/games.txt, a game and one of
@@ -304,42 +424,72 @@ let lastGame = null;
 let lastPage = null; // The web run's address in the editor
 
 // Runs the game, starting it over if it's running: in a window of its own, or
-// on the web, in the editor.
+// on the web, in the editor. Running a game runs its code, so not in an
+// untrusted workspace.
 async function run(web) {
-    const setting = vscode.workspace.getConfiguration('tide').get('path');
-    const tide = setting ? settingProgram(setting) : installedProgram('tide');
-    if (!tide) {
-        await missing(setting
-            ? `Tide: tide.path is set to ${setting}, and there's no tide there.`
-            : "Tide: couldn't find tide. Install it, or set tide.path.",
-            'tide.path');
+    if (!vscode.workspace.isTrusted) {
+        const choice = await vscode.window.showErrorMessage(
+            "Tide: running a game runs its code, so it only runs once you trust this workspace.", 'Manage Workspace Trust');
+        if (choice) vscode.commands.executeCommand('workbench.trust.manage');
         return;
     }
     const game = await pickGame(lastGame);
     if (!game) return;
+    const configured = settingProgram('path', 'tide', vscode.Uri.file(game));
+    const tide = configured ? configured.file : installedProgram('tide');
+    if (!tide) {
+        await missing(configured ? `Tide: ${configured.error}` : "Tide: couldn't find tide. Install it, or set tide.path.", 'tide.path');
+        return;
+    }
     lastGame = game;
     const kind = web ? 'web' : 'desktop';
     runs[kind]?.dispose();
     runs[kind] = new Run(tide, game, web, web ? async address => {
         lastPage = await showPage(address, lastPage);
+        vscode.commands.executeCommand('setContext', 'tide.gamePage', true);
     } : null);
 }
 
+// The developer tools of the game's page, whose console shows what each
+// reload did: the integrated browser's own, on the game's tab; or, for the
+// Simple Browser, the window's, which reach into the pages it shows.
+async function openDevTools() {
+    if (!lastPage) {
+        vscode.window.showInformationMessage('Tide: run the game on the web first (Tide: Run on the Web).');
+        return;
+    }
+    const commands = await vscode.commands.getCommands(true);
+    if (commands.includes('workbench.action.browser.open') && commands.includes('workbench.action.browser.toggleDevTools')) {
+        // Without a url, the page's tab comes forward without loading again.
+        await vscode.commands.executeCommand('workbench.action.browser.open', { openToSide: true, reuseUrlFilter: lastPage });
+        await vscode.commands.executeCommand('workbench.action.browser.toggleDevTools');
+        return;
+    }
+    await vscode.commands.executeCommand('workbench.action.webview.openDeveloperTools');
+}
+
 function activate(context) {
+    output = vscode.window.createOutputChannel('Tide', { log: true });
+    trace = traceChannel();
     context.subscriptions.push(
+        output,
+        trace,
         vscode.commands.registerCommand('tide.restartServer', restart),
         vscode.commands.registerCommand('tide.run', () => run(false)),
         vscode.commands.registerCommand('tide.runWeb', () => run(true)),
+        vscode.commands.registerCommand('tide.openDevTools', openDevTools),
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('tide.server.path')) restart();
         }),
+        // Trusted now: the workspace's own server and settings can run.
+        vscode.workspace.onDidGrantWorkspaceTrust(restart),
         { dispose: () => Object.values(runs).forEach(r => r?.dispose()) },
     );
-    return start();
+    serially(start);
 }
 
 function deactivate() {
-    return stop();
+    return serially(stop);
 }
 
 module.exports = { activate, deactivate };

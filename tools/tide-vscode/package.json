@@ -20,6 +20,16 @@
   "activationEvents": [
     "onLanguage:tide"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In Restricted Mode, nothing from the workspace runs: the language server is the tidels that comes with tide (or one your user settings name outside the workspace), never the workspace's build/tools/tidels or one its settings name, and games don't run, as running one runs its code.",
+      "restrictedConfigurations": [
+        "tide.server.path",
+        "tide.path"
+      ]
+    }
+  },
   "contributes": {
     "languages": [
       {
@@ -52,13 +62,29 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "The language server to run. Empty: the open folder's `build/tools/tidels` when it's Tide itself, else `tidels` from `PATH`, or from where tide is installed. `${workspaceFolder}` is the open folder."
+          "markdownDescription": "The language server to run. Empty: the open folder's `build/tools/tidels` when it's Tide itself, else `tidels` from `PATH`, or from where tide is installed. `~` is your home folder; `${workspaceFolder}` and relative paths are the folder whose settings set it, or for user and workspace settings, the first open folder; `${workspaceFolder:name}` is the open folder of that name. In Restricted Mode, only your user settings count, and never for a server in the workspace."
         },
         "tide.path": {
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "The `tide` that **Tide: Run** and **Tide: Run on the Web** run. Empty: `tide` from `PATH`, or from where tide is installed. `${workspaceFolder}` is the open folder."
+          "markdownDescription": "The `tide` that **Tide: Run** and **Tide: Run on the Web** run. Empty: `tide` from `PATH`, or from where tide is installed. `~` is your home folder; `${workspaceFolder}` and relative paths are the folder whose settings set it, or for user and workspace settings, the game's folder; `${workspaceFolder:name}` is the open folder of that name."
+        },
+        "tide.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "enumDescriptions": [
+            "Nothing",
+            "The name of each message",
+            "Each message, whole"
+          ],
+          "default": "off",
+          "scope": "window",
+          "markdownDescription": "Shows what VS Code and the language server say to each other in the **Tide Trace** output, for reporting a problem with the server."
         }
       }
     },
@@ -79,17 +105,36 @@
         "title": "Run on the Web",
         "category": "Tide",
         "icon": "$(globe)"
+      },
+      {
+        "command": "tide.openDevTools",
+        "title": "Game Developer Tools",
+        "category": "Tide",
+        "icon": "$(tools)"
       }
     ],
     "menus": {
       "editor/title/run": [
         {
           "command": "tide.run",
-          "when": "resourceLangId == tide"
+          "when": "resourceLangId == tide && isWorkspaceTrusted"
         },
         {
           "command": "tide.runWeb",
-          "when": "resourceLangId == tide"
+          "when": "resourceLangId == tide && isWorkspaceTrusted"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "tide.openDevTools",
+          "when": "activeWebviewPanelId == 'simpleBrowser.view' && tide.gamePage",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "tide.openDevTools",
+          "when": "tide.gamePage"
         }
       ]
     },

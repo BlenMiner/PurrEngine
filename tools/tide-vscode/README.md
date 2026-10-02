@@ -28,10 +28,29 @@ Either runs `tide` in a terminal of its own, so saving a file reloads the
 game, and typing `r` and Enter there starts it over. Running it again starts
 the game over.
 
+On the web, each reload says what it did in the page's console. **Tide: Game
+Developer Tools** shows it: the integrated browser's developer tools for the
+game's tab, or in the Simple Browser (where it's also a button above the
+page), the window's.
+
 ## Settings
 
 - `tide.server.path`: another language server to run.
-  `${workspaceFolder}` is the open folder.
 - `tide.path`: another `tide` to run the game with.
+- `tide.trace.server`: `messages` or `verbose` shows what VS Code and the
+  language server say to each other, in the **Tide Trace** output.
+
+In the paths, `~` is your home folder. `${workspaceFolder}` and relative paths
+are the folder whose settings set them; set in your user or workspace
+settings, they're the first open folder (for `tide.path`, the game's).
+`${workspaceFolder:name}` is the open folder of that name.
 
 After a server update, run **Tide: Restart Language Server**.
+
+## Restricted Mode
+
+In a workspace you haven't trusted, nothing from it runs: the language server
+is the `tidels` that comes with tide (or one your user settings name outside
+the workspace), never the workspace's `build/tools/tidels` or one its settings
+name, and games don't run, since running one runs its code. Trusting the
+workspace restarts the server.
