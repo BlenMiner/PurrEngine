@@ -10,8 +10,8 @@
 # Without HOST, the game is the whole program: it opens a window titled TITLE,
 # or the game's title setting, or <target>, and runs (see
 # platform/include/tide/run.h). STATS shows the frame rate, ping, bandwidth
-# (what goes over the network each second, up and down), tick and entity
-# count in a corner. On the web it's <target>.html.
+# (what goes over the network each second, up and down), tick, entity count
+# and the threads ticks run on in a corner. On the web it's <target>.html.
 #
 # With HOST, those C files are the program instead, for tests and custom hosts.
 # They include the game's generated header, <name>.h (NAME defaults to

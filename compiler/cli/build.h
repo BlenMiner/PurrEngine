@@ -8,7 +8,7 @@ typedef struct build_options {
     bool web;           // One self-contained .html, with clang's WebAssembly target
     const char *output; // Where the program goes; NULL for <folder>/build/<name>
     const char *title;  // The window's title, over the game's title setting; NULL for that, or else the folder's name
-    bool stats;         // Show the tick, entity count and frame rate
+    bool stats;         // Show the frame rate, ping, bandwidth, tick, entity count and threads
 } build_options;
 
 // Builds a game with the engine files installed in `root` (see AGENTS.md,

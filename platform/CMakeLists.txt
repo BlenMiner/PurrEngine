@@ -70,19 +70,25 @@ if(TIDE_WEB)
     set(TIDE_PACKAGE_LIBS lib/web)
     install(FILES web/tide.js DESTINATION web COMPONENT tide)
     # The C library tide links web games with, from cmake/wasi-toolchain.cmake:
-    # only what its target's C programs use (threads are in libc.a).
-    install(DIRECTORY "${TIDE_WASI_SYSROOT}/include/${TIDE_WASI_TARGET}" DESTINATION wasi/sysroot/include COMPONENT tide)
+    # only what its target's C programs use (threads are in libc.a). Games are
+    # C, so not the C++ headers.
+    install(DIRECTORY "${TIDE_WASI_SYSROOT}/include/${TIDE_WASI_TARGET}" DESTINATION wasi/sysroot/include COMPONENT tide
+        PATTERN c++ EXCLUDE)
     install(FILES "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}/crt1-command.o"
         "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}/libc.a" "${TIDE_WASI_SYSROOT}/lib/${TIDE_WASI_TARGET}/libm.a"
         DESTINATION wasi/sysroot/lib/${TIDE_WASI_TARGET} COMPONENT tide)
     install(FILES "${TIDE_WASI_BUILTINS}" DESTINATION wasi RENAME libclang_rt.builtins.a COMPONENT tide)
 elseif(MINGW)
     # tide builds Windows games for MinGW, with this C runtime (see
-    # cmake/mingw-toolchain.cmake): every header, and only the libraries games
-    # link (compiler/cli/build.c).
+    # cmake/mingw-toolchain.cmake): every C header, since a game's C can include
+    # any of Windows', and only the libraries games link (compiler/cli/build.c).
+    # Not the C++ headers (the Windows Runtime's C++ library's too), nor the
+    # interface definitions and type libraries, which only MIDL and C++ read.
     set(TIDE_PACKAGE_LIBS lib/native)
     set(mingw_target "${TIDE_MINGW_SYSROOT}/x86_64-w64-mingw32")
-    install(DIRECTORY "${mingw_target}/include" DESTINATION mingw/sysroot/x86_64-w64-mingw32 COMPONENT tide)
+    install(DIRECTORY "${mingw_target}/include" DESTINATION mingw/sysroot/x86_64-w64-mingw32 COMPONENT tide
+        PATTERN c++ EXCLUDE PATTERN wrl EXCLUDE PATTERN wrl.h EXCLUDE PATTERN "*.hxx" EXCLUDE PATTERN "*.idl" EXCLUDE
+        PATTERN "*.tlb" EXCLUDE)
     set(mingw_libs crt2.o dllcrt2.o crtbegin.o crtend.o)
     foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 opengl32 winmm ws2_32
                          secur32)
