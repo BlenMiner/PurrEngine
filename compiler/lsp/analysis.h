@@ -57,3 +57,8 @@ void analysis_code_actions(int start_line, int end_line, jbuf *out);         // 
 // Whether the editor can create files in an edit, which moving a declaration
 // to a file of its own needs. From its capabilities, at initialization.
 void analysis_set_can_create_files(bool can);
+
+// Whether the editor shows a diagnostic's notes about other places there
+// (relatedInformation), so they can leave its message. Also from its
+// capabilities.
+void analysis_set_related_information(bool shows);

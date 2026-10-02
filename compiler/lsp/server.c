@@ -562,6 +562,8 @@ static bool client_creates_files(const json *params)
 static void initialize(lsp_server *s, const json *id, const json *params)
 {
     analysis_set_can_create_files(client_creates_files(params));
+    const json *related = json_path(params, "capabilities", "textDocument", "publishDiagnostics", "relatedInformation", NULL);
+    analysis_set_related_information(related && related->kind == JSON_TRUE);
     const json *watch = json_path(params, "capabilities", "workspace", "didChangeWatchedFiles", NULL);
     const json *dynamic = json_get(watch, "dynamicRegistration");
     const json *relative = json_get(watch, "relativePatternSupport");

@@ -14,10 +14,20 @@
 // Everything here points into the compiler's arena, so it all belongs to the
 // last analysis and is reset by the next one.
 
+// A note about another place in the code, which the editor can show there.
+typedef struct related_note {
+    loc at;
+    const char *message;
+} related_note;
+
 typedef struct diagnostic {
     diag_severity severity;
     loc at;
-    sb message; // Notes are appended on their own lines.
+    sb message; // Notes are appended on their own lines, but those about another place where the editor shows them there
+    VEC(related_note) related;
+    loc fix_at; // A "did you mean": the name written, `fix_len` bytes, which `fix` replaces
+    int fix_len;
+    str fix;
 } diagnostic;
 
 // A name in the source and what it refers to.
@@ -171,16 +181,57 @@ static int token_len(const token *t)
 // ---------------------------------------------------------------------------
 // Running the compiler
 
+// Whether the editor shows diagnostics' notes about other places there
+// (relatedInformation). From its capabilities, at initialization.
+static bool related_information;
+
+void analysis_set_related_information(const bool shows)
+{
+    related_information = shows;
+}
+
 static void collect(void *user, const diag_severity severity, const loc at, const char *message)
 {
     (void)user;
     if (severity == DIAG_NOTE) {
-        if (A.diags.count > 0) sb_printf(&A.diags.items[A.diags.count - 1].message, "\nnote: %s", message);
+        if (A.diags.count == 0) return;
+        diagnostic *d = &A.diags.items[A.diags.count - 1];
+        if (at.line > 0) {
+            char *copy = arena_alloc(strlen(message) + 1);
+            memcpy(copy, message, strlen(message));
+            const related_note note = {at, copy};
+            vec_push(d->related, note);
+            if (related_information) return;
+        }
+        sb_printf(&d->message, "\nnote: %s", message);
         return;
     }
-    diagnostic d = {severity, at, {0}};
+    diagnostic d = {severity, at, {0}, {0}, {0, 0, 0}, 0, {NULL, 0}};
     sb_put(&d.message, message);
     vec_push(A.diags, d);
+}
+
+static str last_part(str text);
+
+// A "did you mean" for the last diagnostic: the name written, where it's a
+// slice of a file's text, and the one meant, which a quick fix puts there.
+static void collect_suggestion(void *user, const str wrong, const str best)
+{
+    (void)user;
+    if (A.diags.count == 0 || best.len == 0) return;
+    for (int f = 0; f < A.file_count; f++) {
+        const afile *file = &A.files[f];
+        if (wrong.ptr < file->src.text || wrong.ptr + wrong.len > file->src.text + file->src.len) continue;
+        // Combat.Helth for Health: its last part
+        const str written = memchr(best.ptr, '.', (size_t)best.len) ? wrong : last_part(wrong);
+        int line = 0;
+        while (line + 1 < file->lines.count && file->lines.items[line + 1] <= written.ptr) line++;
+        diagnostic *d = &A.diags.items[A.diags.count - 1];
+        d->fix_at = (loc){line + 1, (int)(written.ptr - file->lines.items[line]) + 1, f};
+        d->fix_len = written.len;
+        d->fix = best;
+        return;
+    }
 }
 
 static void add_occ(occurrence o)
@@ -799,6 +850,7 @@ void analysis_run(const analysis_file *files, const int count)
     memset(&A, 0, sizeof A);
     diag_reset();
     diag_set_sink(collect, NULL);
+    diag_set_suggestion_sink(collect_suggestion, NULL);
 
     A.file_count = count;
     A.files = arena_alloc(sizeof(afile) * (size_t)(count > 0 ? count : 1));
@@ -827,6 +879,7 @@ void analysis_run(const analysis_file *files, const int count)
     A.syntax_errors = diag_error_count();
     check(A.prog);
     diag_set_sink(NULL, NULL);
+    diag_set_suggestion_sink(NULL, NULL);
 
     index_program();
 }
@@ -860,21 +913,62 @@ const char *analysis_file_path(const int file)
 // ---------------------------------------------------------------------------
 // Diagnostics
 
+// A range over the token at `at`, or a character where there's none.
+static void write_token_range(jbuf *out, const loc at)
+{
+    const int t = token_at(at);
+    write_range(out, at, t >= 0 ? token_len(&A.files[at.file].toks[t]) : 1);
+}
+
+// Whether a warning is about access a system declares and doesn't use: a
+// parameter never used, or mut and never written. Editors fade it out.
+static bool unused_access(const diagnostic *d)
+{
+    for (int i = 0; d->severity == DIAG_WARNING && i < A.prog->decls.count; i++) {
+        const decl *sys = A.prog->decls.items[i];
+        for (int k = 0; sys->kind == DECL_SYSTEM && k < sys->params.count; k++) {
+            const param *p = &sys->params.items[k];
+            if (p->name.len == 0 || (p->type.kind != TY_COMPONENT && p->type.kind != TY_SINGLETON)) continue;
+            if (!p->read && loc_cmp(d->at, p->name_at) == 0) return true;
+            if (p->read && p->mode == PARAM_MUT && !p->written && loc_cmp(d->at, p->at) == 0) return true;
+        }
+    }
+    return false;
+}
+
+static void write_diagnostic(jbuf *out, const diagnostic *d)
+{
+    const loc at = d->at.line > 0 ? d->at : (loc){1, 1, d->at.file};
+    jb_put(out, "{\"range\":");
+    write_token_range(out, at);
+    jb_printf(out, ",\"severity\":%d,\"source\":\"tidec\",\"message\":", d->severity == DIAG_ERROR ? 1 : 2);
+    jb_string(out, d->message.data ? d->message.data : "");
+    if (unused_access(d)) jb_put(out, ",\"tags\":[1]"); // Unnecessary
+    if (d->related.count > 0) {
+        jb_put(out, ",\"relatedInformation\":[");
+        for (int i = 0; i < d->related.count; i++) {
+            const related_note *note = &d->related.items[i];
+            jb_put(out, i ? ",{\"location\":{\"uri\":" : "{\"location\":{\"uri\":");
+            jb_string(out, A.files[note->at.file].uri);
+            jb_put(out, ",\"range\":");
+            write_token_range(out, note->at);
+            jb_put(out, "},\"message\":");
+            jb_string(out, note->message);
+            jb_put(out, "}");
+        }
+        jb_put(out, "]");
+    }
+    jb_put(out, "}");
+}
+
 void analysis_diagnostics(const int file, jbuf *out)
 {
     jb_put(out, "[");
     int written = 0;
     for (int i = 0; i < A.diags.count; i++) {
-        const diagnostic *d = &A.diags.items[i];
-        if (d->at.file != file) continue;
-        const loc at = d->at.line > 0 ? d->at : (loc){1, 1, file};
-        const int t = token_at(at);
+        if (A.diags.items[i].at.file != file) continue;
         if (written++) jb_put(out, ",");
-        jb_put(out, "{\"range\":");
-        write_range(out, at, t >= 0 ? token_len(&A.files[file].toks[t]) : 1);
-        jb_printf(out, ",\"severity\":%d,\"source\":\"tidec\",\"message\":", d->severity == DIAG_ERROR ? 1 : 2);
-        jb_string(out, d->message.data ? d->message.data : "");
-        jb_put(out, "}");
+        write_diagnostic(out, &A.diags.items[i]);
     }
     jb_put(out, "]");
 }
@@ -1817,15 +1911,136 @@ static void use_this_action(const param *p, jbuf *out, int *written)
     jb_put(out, "]}}}");
 }
 
+// The diagnostic at `at`, or NULL.
+static const diagnostic *diagnostic_at(const loc at)
+{
+    for (int i = 0; i < A.diags.count; i++) {
+        if (loc_cmp(A.diags.items[i].at, at) == 0) return &A.diags.items[i];
+    }
+    return NULL;
+}
+
+// A quick fix that replaces `start` to `end` in the document with `text`, and
+// fixes `d`, if it says which diagnostic.
+static void quick_fix(jbuf *out, int *written, const char *title, const bool preferred, const diagnostic *d,
+                      const loc start, const loc end, const char *text)
+{
+    if ((*written)++) jb_put(out, ",");
+    jb_put(out, "{\"title\":");
+    jb_string(out, title);
+    jb_printf(out, ",\"kind\":\"quickfix\",\"isPreferred\":%s", preferred ? "true" : "false");
+    if (d) {
+        jb_put(out, ",\"diagnostics\":[");
+        write_diagnostic(out, d);
+        jb_put(out, "]");
+    }
+    jb_put(out, ",\"edit\":{\"changes\":{");
+    jb_string(out, A.files[A.doc].uri);
+    jb_put(out, ":[{\"range\":");
+    write_edit_range(out, start, end);
+    jb_put(out, ",\"newText\":");
+    jb_string(out, text);
+    jb_put(out, "}]}}}");
+}
+
+static loc expr_start(const expr *e);
+static loc expr_end(const expr *e);
+static const unit *doc_unit(void);
+static bool visible_by_name(const decl *d);
+
+// A failable call's or a T?'s value that nothing handles: carry on with its
+// default (`!`), or in a function that fails with the same error, pass it on
+// (`try`), as the checker's note says.
+static void unwrap_actions(const fix *f, jbuf *out, int *written)
+{
+    const diagnostic *d = diagnostic_at(f->at);
+    const loc end = expr_end(f->call);
+    quick_fix(out, written, "Carry on with the default if there's none: add '!'", true, d, end, end, "!");
+    if (!f->method) return;
+    sb title = {0};
+    sb_printf(&title, "Pass the error on to the caller of '" STR_FMT "': add 'try'", STR_ARG(f->method->name));
+    const loc start = expr_start(f->call);
+    quick_fix(out, written, title.data, false, d, start, start, "try ");
+}
+
+// "did you mean" in a diagnostic, as the checker suggested it: the name meant
+// in the place of the one written.
+static void suggestion_actions(const int start_line, const int end_line, jbuf *out, int *written)
+{
+    for (int i = 0; i < A.diags.count; i++) {
+        const diagnostic *d = &A.diags.items[i];
+        if (d->fix_len == 0 || d->fix_at.file != A.doc || d->at.line - 1 < start_line || d->at.line - 1 > end_line) continue;
+        sb title = {0};
+        sb_printf(&title, "Change to '" STR_FMT "'", STR_ARG(d->fix));
+        const loc end = {d->fix_at.line, d->fix_at.col + d->fix_len, d->fix_at.file};
+        quick_fix(out, written, title.data, true, d, d->fix_at, end, str_to_cstr(d->fix));
+    }
+}
+
+// An unknown name that another namespace declares: write it with its
+// namespace, or add a `using` for it.
+static void namespace_actions(const int start_line, const int end_line, jbuf *out, int *written)
+{
+    const unit *u = doc_unit();
+    for (int i = 0; i < A.diags.count; i++) {
+        const diagnostic *d = &A.diags.items[i];
+        if (d->severity != DIAG_ERROR || d->at.file != A.doc || d->at.line - 1 < start_line || d->at.line - 1 > end_line) continue;
+        const int t = token_at(d->at);
+        if (t < 0 || DOC->toks[t].kind != T_IDENT || (t > 0 && DOC->toks[t - 1].kind == T_DOT)) continue;
+        bool known = false; // The name means something there already: the error's about something else
+        for (int k = 0; k < A.occs.count && !known; k++) known = loc_cmp(A.occs.items[k].at, d->at) == 0;
+        const str name = DOC->toks[t].text;
+        VEC(str) offered = {0};
+        for (int k = 0; !known && k < A.prog->decls.count; k++) {
+            const decl *other = A.prog->decls.items[k];
+            if (other->builtin || !other->unit || other->unit->ns.len == 0 || !str_eq(other->name, name)) continue;
+            if (visible_by_name(other)) continue;
+            bool repeated = false;
+            for (int j = 0; j < offered.count; j++) repeated |= str_eq(offered.items[j], other->unit->ns);
+            if (repeated) continue;
+            vec_push(offered, other->unit->ns);
+        }
+        for (int k = 0; k < offered.count; k++) {
+            const str ns = offered.items[k];
+            sb title = {0};
+            sb text = {0};
+            sb_printf(&text, STR_FMT "." STR_FMT, STR_ARG(ns), STR_ARG(name));
+            sb_printf(&title, "Write '%s'", text.data);
+            const loc end = {d->at.line, d->at.col + name.len, d->at.file};
+            quick_fix(out, written, title.data, false, d, d->at, end, text.data);
+            // After the file's usings, or its namespace, or at its top
+            int line = 1;
+            const char *after = "\n";
+            for (int j = 0; u && j < u->using_at.count; j++) {
+                if (u->using_at.items[j].line >= line) line = u->using_at.items[j].line + 1;
+            }
+            if (u && u->using_at.count == 0 && u->ns.len > 0) line = u->ns_at.line + 1;
+            if (u && (u->using_at.count > 0 || u->ns.len > 0)) after = "";
+            sb using_text = {0};
+            sb title_using = {0};
+            sb_printf(&using_text, "using " STR_FMT ";\n%s", STR_ARG(ns), after);
+            sb_printf(&title_using, "Add 'using " STR_FMT ";'", STR_ARG(ns));
+            const loc at = {line, 1, A.doc};
+            quick_fix(out, written, title_using.data, offered.count == 1, d, at, at, using_text.data);
+        }
+    }
+}
+
 void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
 {
     jb_put(out, "[");
     int written = 0;
+    suggestion_actions(start_line, end_line, out, &written);
+    namespace_actions(start_line, end_line, out, &written);
     for (int i = 0; i < A.prog->fixes.count; i++) {
         const fix *f = &A.prog->fixes.items[i];
         if (f->at.file != A.doc || f->at.line - 1 < start_line || f->at.line - 1 > end_line) continue;
         if (f->kind == FIX_USE_THIS) {
             use_this_action(f->param, out, &written);
+            continue;
+        }
+        if (f->kind == FIX_UNWRAP) {
+            unwrap_actions(f, out, &written);
             continue;
         }
         const param *p = f->param;
@@ -1894,18 +2109,9 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
             preferred = false;
             break;
         }
-        case FIX_USE_THIS: continue; // use_this_action
+        case FIX_USE_THIS: case FIX_UNWRAP: continue; // Their own actions, above
         }
-        if (written++) jb_put(out, ",");
-        jb_put(out, "{\"title\":");
-        jb_string(out, title.data);
-        jb_printf(out, ",\"kind\":\"quickfix\",\"isPreferred\":%s,\"edit\":{\"changes\":{", preferred ? "true" : "false");
-        jb_string(out, A.files[A.doc].uri);
-        jb_put(out, ":[{\"range\":");
-        write_edit_range(out, start, end);
-        jb_put(out, ",\"newText\":");
-        jb_string(out, text.data ? text.data : "");
-        jb_put(out, "}]}}}");
+        quick_fix(out, &written, title.data, preferred, NULL, start, end, text.data ? text.data : "");
     }
     move_to_file_action(start_line, out, &written);
     jb_put(out, "]");
@@ -2296,6 +2502,61 @@ static int token_from(const loc at)
 }
 
 static loc token_end(const token *t);
+
+// The bracket that closes the one at token `open` of the expression's file:
+// its index, or the last token's where a syntax error left it open.
+static int closing(const loc at, const int open)
+{
+    const afile *f = &A.files[at.file];
+    int depth = 0;
+    for (int i = open; i < f->tok_count; i++) {
+        const tok_kind k = f->toks[i].kind;
+        if (k == T_LPAREN || k == T_LBRACKET || k == T_LBRACE) depth++;
+        else if ((k == T_RPAREN || k == T_RBRACKET || k == T_RBRACE) && --depth == 0) return i;
+    }
+    return f->tok_count - 1;
+}
+
+static loc stmt_end(const stmt *s);
+
+// Just past an expression's last token.
+static loc expr_end(const expr *e)
+{
+    const afile *f = &A.files[e->at.file];
+    const int t = token_at(e->at);
+    switch (e->kind) {
+    case E_NAME: return (loc){e->at.line, e->at.col + e->name.len, e->at.file};
+    case E_MEMBER: return (loc){e->at.line, e->at.col + e->member.len, e->at.file};
+    case E_BINARY: case E_COALESCE: case E_CONDITIONAL: return expr_end(e->rhs);
+    case E_UNARY: case E_TRY: case E_AWAIT: return expr_end(e->lhs);
+    case E_IS:
+        if (e->binding) return (loc){e->binding->name_at.line, e->binding->name_at.col + e->binding->name.len, e->at.file};
+        return (loc){e->pattern_at.line, e->pattern_at.col + last_part(e->pattern).len, e->at.file};
+    case E_CALL: case E_METHOD:
+        if (e->block) return stmt_end(e->block); // Its block, after the call
+        if (t < 0 || t + 1 >= f->tok_count || f->toks[t + 1].kind != T_LPAREN) {
+            return e->args.count > 0 ? expr_end(e->args.items[e->args.count - 1]) : e->at; // cells[x, y]'s position
+        }
+        return token_end(&f->toks[closing(e->at, t + 1)]);
+    case E_LITERAL: // Body { ... }: the '{' after its name
+        if (t >= 0 && t + 1 < f->tok_count && f->toks[t + 1].kind == T_LBRACE) return token_end(&f->toks[closing(e->at, t + 1)]);
+        break;
+    case E_INDEX: case E_LIST: // `at` is the '['
+        if (t >= 0) return token_end(&f->toks[closing(e->at, t)]);
+        break;
+    case E_INTERP: // To the part that ends with the quote, past those of text in its values
+        for (int i = t, depth = 0; i >= 0 && i < f->tok_count; i++) {
+            const token *part = &f->toks[i];
+            if (part->kind != T_INTERP && part->kind != T_INTERP_PART) continue;
+            if (part->kind == T_INTERP) depth++;
+            if (part->text.ptr[part->text.len - 1] == '"' && --depth == 0) return token_end(part);
+        }
+        break;
+    default:
+        break;
+    }
+    return t >= 0 ? token_end(&f->toks[t]) : e->at; // A literal, this, default, null, or a value's `!`
+}
 
 // Just past a statement's last token: its ';', or its block's '}'.
 static loc stmt_end(const stmt *s)

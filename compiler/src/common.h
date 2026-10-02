@@ -84,7 +84,7 @@ typedef struct source {
 typedef enum diag_severity {
     DIAG_ERROR,
     DIAG_WARNING,
-    DIAG_NOTE, // Belongs to the previous error or warning; `at` is zero.
+    DIAG_NOTE, // Belongs to the previous error or warning; `at` is zero, or where it points.
 } diag_severity;
 
 // Receives diagnostics instead of stderr, for tools such as the language server.
@@ -100,6 +100,9 @@ void diag_set_sink(diag_sink sink, void *user); // NULL prints to stderr again.
 void diag_error(loc at, const char *fmt, ...);
 void diag_warning(loc at, const char *fmt, ...);
 void diag_note(const char *fmt, ...); // Attaches to the previous error or warning.
+// A note about another place in the code, which its text names too: a sink
+// gets `at`, where diag_note gives it none.
+void diag_note_at(loc at, const char *fmt, ...);
 int diag_error_count(void);
 
 // "did you mean ...?" for a misspelled name: offer every name that would have
@@ -115,6 +118,12 @@ suggestion suggest_start(str wrong);
 void suggest_consider(suggestion *s, str candidate);
 void suggest_consider_c(suggestion *s, const char *candidate);
 void suggest_note(const suggestion *s);
+
+// Receives the name each "did you mean" note suggests, after the note, with
+// the name written (a slice of the source, where it's the source's): for
+// editors, to offer the change. The note belongs to the previous diagnostic.
+typedef void (*diag_suggestion_sink)(void *user, str wrong, str best);
+void diag_set_suggestion_sink(diag_suggestion_sink sink, void *user); // NULL for none
 
 // The order of a game's files, which decides the default order of its systems:
 // byte by byte, with backslashes as forward slashes, so it's the same on every

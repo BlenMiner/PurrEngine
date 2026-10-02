@@ -136,6 +136,8 @@ static int source_count;
 static int error_count;
 static diag_sink sink;
 static void *sink_user;
+static diag_suggestion_sink suggestion_sink;
+static void *suggestion_user;
 
 void diag_reset(void)
 {
@@ -167,6 +169,12 @@ void diag_set_sink(const diag_sink new_sink, void *user)
 {
     sink = new_sink;
     sink_user = user;
+}
+
+void diag_set_suggestion_sink(const diag_suggestion_sink new_sink, void *user)
+{
+    suggestion_sink = new_sink;
+    suggestion_user = user;
 }
 
 static void to_sink(const diag_severity severity, const loc at, const char *fmt, va_list args)
@@ -223,17 +231,31 @@ void diag_warning(const loc at, const char *fmt, ...)
     va_end(args);
 }
 
-void diag_note(const char *fmt, ...)
+// Not const: va_list is an array on some targets, and vfprintf takes it as is.
+static void note(const loc at, const char *fmt, va_list args)
 {
-    va_list args;
-    va_start(args, fmt);
     if (sink) {
-        to_sink(DIAG_NOTE, (loc){0, 0, 0}, fmt, args);
+        to_sink(DIAG_NOTE, at, fmt, args);
     } else {
         fputs("      = note: ", stderr);
         vfprintf(stderr, fmt, args);
         fputc('\n', stderr);
     }
+}
+
+void diag_note(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    note((loc){0, 0, 0}, fmt, args);
+    va_end(args);
+}
+
+void diag_note_at(const loc at, const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    note(at, fmt, args);
     va_end(args);
 }
 
@@ -299,7 +321,9 @@ void suggest_note(const suggestion *s)
 {
     // One typo in a short name, two in a longer one. Beyond that it's a guess.
     const int allowed = s->wrong.len <= 4 ? 1 : 2;
-    if (s->best.len > 0 && s->distance <= allowed) diag_note("did you mean '" STR_FMT "'?", STR_ARG(s->best));
+    if (s->best.len == 0 || s->distance > allowed) return;
+    diag_note("did you mean '" STR_FMT "'?", STR_ARG(s->best));
+    if (suggestion_sink) suggestion_sink(suggestion_user, s->wrong, s->best);
 }
 
 int path_compare(const char *a, const char *b)

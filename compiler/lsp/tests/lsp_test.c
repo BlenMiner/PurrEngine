@@ -1731,6 +1731,75 @@ TIDE_TEST(lsp_quick_fixes)
     TIDE_CHECK(has(actions_at(8), "Create component 'Velocity'"));
 }
 
+// The checker's "did you mean" is a quick fix, from where the name is, not
+// from the message.
+TIDE_TEST(lsp_quick_fixes_from_suggestions)
+{
+    start();
+    static const char typo[] = GAME_TYPES "system Move(mut Body body)\n{\n    body.radus = 1;\n}\n";
+    open_document(typo);
+    TIDE_CHECK(has(last_sent(), "did you mean 'radius'?"));
+    const char *fix = actions_at(24);
+    TIDE_CHECK(has(fix, "\"title\":\"Change to 'radius'\",\"kind\":\"quickfix\",\"isPreferred\":true,\"diagnostics\":[{"));
+    const json *reply = json_parse(last_sent(), strlen(last_sent()));
+    const json *edits = json_path(json_get(reply, "result")->items[0], "edit", "changes", "file:///test.tide", NULL);
+    char text[8192];
+    snprintf(text, sizeof text, "%s", GAME_TYPES "system Move(mut Body body)\n{\n    body.radus = 1;\n}\n");
+    apply_edits(text, sizeof text, edits);
+    json_release();
+    TIDE_CHECK(has(text, "    body.radius = 1;\n"));
+
+    // One of the engine's: a member of Math
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.radius = Math.Clmp(body.radius, 0, 1);\n}\n");
+    const char *math = actions_at(24);
+    TIDE_CHECK(has(math, "Change to 'Clamp'"));
+    TIDE_CHECK(has(math, "{\"range\":{\"start\":{\"line\":24,\"character\":23},\"end\":{\"line\":24,\"character\":27}},"
+                         "\"newText\":\"Clamp\"}"));
+    TIDE_CHECK(!has(actions_at(23), "Change to")); // Only on its line
+}
+
+// An error nothing handles: carry on with the default, or pass it on.
+TIDE_TEST(lsp_quick_fixes_for_errors)
+{
+    start();
+    open_document("enum ParseError { Empty }\nint Parse(string t) fails ParseError { return 1; }\n"
+                  "int Twice(string t) fails ParseError\n{\n    Parse(t);\n    var n = Parse(t) + 1;\n    return n;\n}\n"
+                  "scene Main { }\nsystem S()\n{\n    Parse(\"1\");\n}\n");
+    const char *statement = actions_at(4);
+    TIDE_CHECK(has(statement, "add '!'\",\"kind\":\"quickfix\",\"isPreferred\":true"));
+    TIDE_CHECK(has(statement, "{\"range\":{\"start\":{\"line\":4,\"character\":12},\"end\":{\"line\":4,\"character\":12}},"
+                              "\"newText\":\"!\"}"));
+    TIDE_CHECK(has(statement, "Pass the error on to the caller of 'Twice': add 'try'"));
+    TIDE_CHECK(has(statement, "{\"range\":{\"start\":{\"line\":4,\"character\":4},\"end\":{\"line\":4,\"character\":4}},"
+                              "\"newText\":\"try \"}"));
+    const char *value = actions_at(5);
+    TIDE_CHECK(has(value, "\"newText\":\"!\"") && has(value, "{\"line\":5,\"character\":20}"));
+    // A system has no caller to pass it to
+    const char *system = actions_at(11);
+    TIDE_CHECK(has(system, "add '!'") && !has(system, "add 'try'"));
+}
+
+// Notes about another place go there, and access a system doesn't use is
+// marked as unnecessary.
+TIDE_TEST(lsp_diagnostic_notes_and_tags)
+{
+    static const char twice[] = "settings { tickRate = 30; }\nsettings { title = \"x\"; }\nscene Main { }\n";
+    start_with("{\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{\"relatedInformation\":true}}}}");
+    open_document(twice);
+    TIDE_CHECK(has(last_sent(), "\"message\":\"a game has one 'settings' block\",\"relatedInformation\":[{\"location\":"
+                                "{\"uri\":\"file:///test.tide\",\"range\":{\"start\":{\"line\":0,\"character\":0}"));
+    TIDE_CHECK(has(last_sent(), "\"message\":\"the other one is in /test.tide, on line 1\"}]"));
+    TIDE_CHECK(!has(last_sent(), "\\nnote: the other one"));
+    start(); // An editor that doesn't show them keeps them in the message
+    open_document(twice);
+    TIDE_CHECK(has(last_sent(), "a game has one 'settings' block\\nnote: the other one is in"));
+
+    open_document("component Body { float2 position; }\nsingleton Score { int total; }\n"
+                  "event(Spawned) Setup(with Main) { Spawn(Body); }\n"
+                  "system Look(mut Body body, Score s) { if (body.position.x > 0) return; }\nscene Main { }\n");
+    TIDE_CHECK(count(last_sent(), "\"tags\":[1]") == 2); // mut never written, and never used
+}
+
 TIDE_TEST(lsp_move_to_file)
 {
     start();
@@ -2731,6 +2800,38 @@ TIDE_TEST(lsp_workspace_symbols_of_every_game)
     remove_folder("lsp_symbols/build/tools");
     remove_folder("lsp_symbols/build");
     remove_folder("lsp_symbols");
+    clear_sent();
+    lsp_free(&server);
+}
+
+// A name another namespace declares: write it with it, or use it.
+TIDE_TEST(lsp_quick_fixes_for_namespaces)
+{
+    if (!find_game_dir()) return;
+    make_folder("lsp_using");
+    static const char main_file[] = "namespace Game;\nusing Other;\n\nscene Main { }\nevent(Spawned) Setup(with Main) { Spawn(Body); }\n";
+    write_file("lsp_using/physics.tide", "namespace Physics;\ncomponent Body { float2 position; }\n");
+    write_file("lsp_using/main.tide", main_file);
+    write_file("lsp_using/other.tide", "namespace Other;\ncomponent Shape { float2 position; }\n");
+    char root[700], uri_main[700];
+    const char *dir = game_dir[0] == '/' ? game_dir + 1 : game_dir;
+    snprintf(root, sizeof root, "file:///%s/lsp_using", dir);
+    snprintf(uri_main, sizeof uri_main, "file:///%s/lsp_using/main.tide", dir);
+
+    start_in(root);
+    open_uri(uri_main, main_file);
+    const char *fixes = request_at(uri_main, "textDocument/codeAction", 4, 0,
+                                   "\"range\":{\"start\":{\"line\":4,\"character\":0},\"end\":{\"line\":4,\"character\":0}}");
+    TIDE_CHECK(has(fixes, "\"title\":\"Write 'Physics.Body'\""));
+    TIDE_CHECK(has(fixes, "\"newText\":\"Physics.Body\""));
+    TIDE_CHECK(has(fixes, "\"title\":\"Add 'using Physics;'\",\"kind\":\"quickfix\",\"isPreferred\":true"));
+    TIDE_CHECK(has(fixes, "{\"range\":{\"start\":{\"line\":2,\"character\":0},\"end\":{\"line\":2,\"character\":0}},"
+                          "\"newText\":\"using Physics;\\n\"}")); // After the usings
+
+    remove_game_file("lsp_using/physics.tide");
+    remove_game_file("lsp_using/main.tide");
+    remove_game_file("lsp_using/other.tide");
+    remove_folder("lsp_using");
     clear_sent();
     lsp_free(&server);
 }

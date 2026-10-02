@@ -617,6 +617,7 @@ typedef enum fix_kind {
     FIX_CREATE_STRUCT,    // An unknown type where a struct fits: declare one
     FIX_CREATE_COMPONENT, // An unknown type where a component fits: declare one
     FIX_USE_THIS,   // An Entity or LocalEntity parameter: remove it, and name the entity `this`
+    FIX_UNWRAP,     // A failable call's or a T?'s value that nothing handles: `!` after it, or `try` before it
 } fix_kind;
 
 typedef struct fix {
@@ -624,8 +625,8 @@ typedef struct fix {
     loc at; // Where the diagnostic points
     const param *param;
     const stmt *local;   // FIX_MUT_LOCAL
-    const decl *method;  // FIX_MUT_METHOD
-    const expr *call;    // FIX_CREATE_FUNCTION
+    const decl *method;  // FIX_MUT_METHOD; FIX_UNWRAP: the function `try` would pass the error on from, if it fits
+    const expr *call;    // FIX_CREATE_FUNCTION; FIX_UNWRAP: the value to unwrap
     str name;            // FIX_CREATE_STRUCT and FIX_CREATE_COMPONENT
 } fix;
 

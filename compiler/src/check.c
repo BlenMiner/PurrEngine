@@ -608,6 +608,19 @@ static const char *wrapped_what(const expr *e)
     return buf;
 }
 
+// The quick fixes for a failable call's or T?'s value that nothing handles:
+// `!` after it, and `try` before a call whose error the function it's in
+// fails with too.
+static void unwrap_fix(const checker *c, const expr *e, const type t)
+{
+    const decl *m = c->method;
+    const type error = t.kind == TY_FAILABLE ? wrapped_error(t) : T_ERR;
+    const bool passes_on = t.kind == TY_FAILABLE && e->kind != E_AWAIT && m && m->fails.kind != TY_VOID
+                        && !m->takes_action && m->fails.kind == error.kind && m->fails.decl == error.decl;
+    const fix f = {.kind = FIX_UNWRAP, .at = e->at, .method = passes_on ? m : NULL, .call = e};
+    vec_push(c->prog->fixes, f);
+}
+
 // A failable call's or T?'s value used without unwrapping it: says how to.
 static void unwrap_error(const expr *e, const type t)
 {
@@ -858,6 +871,7 @@ static type check_expr_want(checker *c, expr *e, const type want)
     const type t = check_expr_want_any(c, e, want);
     if (is_wrapped(t) && !(t.kind == want.kind && t.decl == want.decl)) {
         unwrap_error(e, t);
+        unwrap_fix(c, e, t);
         return e->type = T_ERR; // Reported: what takes it doesn't again
     }
     return t;
@@ -3412,6 +3426,7 @@ static type check_expr(checker *c, expr *e)
     const type t = check_expr_any(c, e);
     if (!is_wrapped(t)) return t;
     unwrap_error(e, t);
+    unwrap_fix(c, e, t);
     return e->type = T_ERR; // Reported: what takes it doesn't again
 }
 
@@ -4682,6 +4697,7 @@ static void check_stmt(checker *c, stmt *s)
             diag_note("handle it with 'is %s', pass it on with 'try', or carry on without it: '%s" STR_FMT "(...)!'",
                       pattern_example(wrapped_error(e->type), true), e->kind == E_AWAIT ? "await " : "",
                       STR_ARG(named->method ? named->method->name : named->name));
+            unwrap_fix(c, e, e->type);
         }
         if (e->block) {
             // The block after a call: the caller's own code, run where the function runs it.
@@ -4903,7 +4919,7 @@ static void check_settings(checker *c)
             diag_error(block->at, "a game has one 'settings' block");
             const decl *first = prog->settings.items[0];
             const source *src = diag_source(first->at.file);
-            if (src) diag_note("the other one is in %s, on line %d", src->path, first->at.line);
+            if (src) diag_note_at(first->at, "the other one is in %s, on line %d", src->path, first->at.line);
         }
         for (int i = 0; i < block->fields.count; i++) {
             field *f = &block->fields.items[i];
@@ -6346,7 +6362,9 @@ static void collect_decls(program *prog)
                     } else {
                         diag_error(d->at, "'" STR_FMT "' is already declared", STR_ARG(d->qualified));
                         const source *src = diag_source(other->at.file);
-                        if (src && other->at.file != d->at.file) diag_note("the other one is in %s", src->path);
+                        if (src && other->at.file != d->at.file) {
+                            diag_note_at(other->at, "the other one is in %s", src->path);
+                        }
                     }
                     continue;
                 }
@@ -6404,7 +6422,7 @@ static void collect_decls(program *prog)
                 if (prog->main) {
                     diag_error(d->at, "there can only be one 'scene Main'");
                     const source *src = diag_source(prog->main->at.file);
-                    if (src) diag_note("the other one is in %s", src->path);
+                    if (src) diag_note_at(prog->main->at, "the other one is in %s", src->path);
                 } else {
                     prog->main = d;
                 }
@@ -6956,10 +6974,11 @@ static void check_drawing_calls(checker *c)
         }
         diag_error(site->call->at, "'" STR_FMT "' %s, so only views and the functions they call can call it",
                    STR_ARG(site->to->name), devices ? "reads this frame's Devices" : "draws");
-        diag_note("it %s on line %d, and %s", devices ? "reads them" : "draws", site->to->draws_at.line,
-                  site->from->kind == DECL_METHOD ? "methods can't"
-                  : site->from->kind == DECL_INPUT ? "the input's code runs without a frame"
-                                                   : "systems and handlers run in the tick, without a frame");
+        diag_note_at(site->to->draws_at, "it %s on line %d, and %s", devices ? "reads them" : "draws",
+                     site->to->draws_at.line,
+                     site->from->kind == DECL_METHOD ? "methods can't"
+                     : site->from->kind == DECL_INPUT ? "the input's code runs without a frame"
+                                                      : "systems and handlers run in the tick, without a frame");
         if (devices && site->from->kind == DECL_INPUT) {
             diag_note("pass them instead: take 'Devices devices', and call it with 'Devices'");
         } else if (devices && site->from->kind == DECL_SYSTEM) {
@@ -7011,7 +7030,7 @@ static void check_this_calls(const checker *c)
         diag_note("a component belongs to an entity where code takes it as a parameter, like 'system Name(" STR_FMT
                   " %s)'; a copy doesn't",
                   STR_ARG(m->owner->name), name);
-        diag_note("'" STR_FMT "' uses 'this' on line %d", STR_ARG(m->name), m->this_at.line);
+        diag_note_at(m->this_at, "'" STR_FMT "' uses 'this' on line %d", STR_ARG(m->name), m->this_at.line);
     }
 }
 
