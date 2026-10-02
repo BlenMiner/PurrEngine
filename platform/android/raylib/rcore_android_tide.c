@@ -542,12 +542,46 @@ static void keyboard_on_ui(const bool show)
 }
 
 // The main thread's looper calls it when the program asked: '1' shows, '0' hides.
+// What to put on the clipboard, which the main thread takes ('c').
+static char copy_text[4096];
+
+static void copy_on_ui(void)
+{
+    if (!app.activity) return;
+    JNIEnv *env = app.activity->env;
+    (*env)->PushLocalFrame(env, 16);
+    pthread_mutex_lock(&app.lock);
+    jstring text = (*env)->NewStringUTF(env, copy_text);
+    pthread_mutex_unlock(&app.lock);
+    jstring service = (*env)->NewStringUTF(env, "clipboard");
+    jobject clipboard = call(env, app.activity->clazz, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", service);
+    jclass clip_class = (*env)->FindClass(env, "android/content/ClipData");
+    jmethodID plain = clip_class ? (*env)->GetStaticMethodID(env, clip_class, "newPlainText",
+                                                             "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;")
+                                 : NULL;
+    jstring label = (*env)->NewStringUTF(env, "tide");
+    jobject clip = plain ? (*env)->CallStaticObjectMethod(env, clip_class, plain, label, text) : NULL;
+    if (clipboard && clip) call(env, clipboard, "setPrimaryClip", "(Landroid/content/ClipData;)V", clip);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->PopLocalFrame(env, NULL);
+}
+
+// The main thread's looper calls it when the program asked: '1' shows the
+// keyboard and '0' hides it (the last word goes), 'c' copies.
 static int on_keyboard_asked(int fd, int events, void *data)
 {
     (void)events, (void)data;
-    char asked[16];
+    char asked[64];
     const ssize_t n = read(fd, asked, sizeof asked);
-    if (n > 0) keyboard_on_ui(asked[n - 1] == '1'); // The last word goes
+    char keyboard = 0;
+    for (ssize_t i = 0; i < n; i++) {
+        if (asked[i] == 'c') copy_on_ui();
+        else keyboard = asked[i];
+    }
+    if (keyboard) keyboard_on_ui(keyboard == '1');
     return 1;
 }
 
@@ -717,8 +751,42 @@ Vector2 GetWindowScaleDPI(void)
     const Size s = CORE.Window.screen, r = CORE.Window.render;
     return (Vector2){s.width ? (float)r.width / (float)s.width : 1.0f, s.height ? (float)r.height / (float)s.height : 1.0f};
 }
-void SetClipboardText(const char *text) { (void)text; }
-const char *GetClipboardText(void) { return ""; }
+// The clipboard is Java's: what's copied goes from the main thread, and what's
+// pasted comes on the program's (Ctrl+V on a keyboard).
+void SetClipboardText(const char *text)
+{
+    pthread_mutex_lock(&app.lock);
+    snprintf(copy_text, sizeof copy_text, "%s", text ? text : "");
+    pthread_mutex_unlock(&app.lock);
+    const char asked = 'c';
+    if (ui_keyboard_pipe[1] >= 0 && write(ui_keyboard_pipe[1], &asked, 1) < 0) { } // The main thread is gone
+}
+
+const char *GetClipboardText(void)
+{
+    static char pasted[4096];
+    pasted[0] = '\0';
+    JNIEnv *env = NULL;
+    if (!java_vm || !app.activity || (*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != JNI_OK) return pasted;
+    (*env)->PushLocalFrame(env, 16);
+    jstring service = (*env)->NewStringUTF(env, "clipboard");
+    jobject clipboard = call(env, app.activity->clazz, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", service);
+    jobject clip = clipboard ? call(env, clipboard, "getPrimaryClip", "()Landroid/content/ClipData;") : NULL;
+    jobject item = clip ? call(env, clip, "getItemAt", "(I)Landroid/content/ClipData$Item;", 0) : NULL;
+    jobject text = item ? call(env, item, "coerceToText", "(Landroid/content/Context;)Ljava/lang/CharSequence;",
+                               app.activity->clazz) : NULL;
+    jstring string = text ? (jstring)call(env, text, "toString", "()Ljava/lang/String;") : NULL;
+    if (string) {
+        const char *chars = (*env)->GetStringUTFChars(env, string, NULL);
+        if (chars) {
+            snprintf(pasted, sizeof pasted, "%s", chars);
+            (*env)->ReleaseStringUTFChars(env, string, chars);
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->PopLocalFrame(env, NULL);
+    return pasted;
+}
 Image GetClipboardImage(void) { return (Image){0}; }
 void ShowCursor(void) { CORE.Input.Mouse.cursorHidden = false; }
 void HideCursor(void) { CORE.Input.Mouse.cursorHidden = true; }
