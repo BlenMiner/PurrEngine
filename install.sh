@@ -21,7 +21,15 @@ bin="$root/bin"
 
 if [ -x "$bin/tide" ]; then
     echo "tide is already installed in $root; upgrading it."
-    exec "$bin/tide" upgrade "--$channel"
+    # It keeps its channel, unless TIDE_CHANNEL says which.
+    if [ -n "${TIDE_CHANNEL:-}" ]; then
+        "$bin/tide" upgrade "--$channel"
+    else
+        "$bin/tide" upgrade
+    fi
+    # Tide in the editors installed since.
+    "$bin/tide" editors || true
+    exit 0
 fi
 
 work="$(mktemp -d)"
@@ -87,9 +95,27 @@ mkdir -p "$root"
 tar -xzf "$work/$package" -C "$root"
 printf '%s' "$channel" > "$root/channel"
 
-# tide's bin folder on PATH, for new terminals.
+# tide's bin folder on PATH, for new terminals: in each shell profile there is,
+# and in the login shell's own, made when it has none (a new Mac's zsh has no
+# ~/.zshrc). macOS's bash reads ~/.bash_profile or ~/.profile, and one made
+# would hide the other, so it gets ~/.profile only when it has neither.
 line="export PATH=\"\$HOME/.tide/bin:\$PATH\""
-for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+case "$(basename "${SHELL:-sh}")" in
+    zsh) touch "$HOME/.zshrc" ;;
+    bash)
+        if [ "$(uname -s)" != "Darwin" ]; then
+            touch "$HOME/.bashrc"
+        elif [ ! -f "$HOME/.bash_profile" ] && [ ! -f "$HOME/.bash_login" ] && [ ! -f "$HOME/.profile" ]; then
+            touch "$HOME/.profile"
+        fi
+        ;;
+esac
+if [ "$(basename "${SHELL:-sh}")" = "fish" ] || [ -d "$HOME/.config/fish" ]; then
+    mkdir -p "$HOME/.config/fish/conf.d"
+    printf '# tide\ncontains -- "$HOME/.tide/bin" $PATH; or set -gx PATH "$HOME/.tide/bin" $PATH\n' \
+        > "$HOME/.config/fish/conf.d/tide.fish"
+fi
+for profile in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.zshrc" "$HOME/.profile"; do
     if [ -f "$profile" ] && ! grep -qs '.tide/bin' "$profile"; then
         printf '\n# tide\n%s\n' "$line" >> "$profile"
     fi

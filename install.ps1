@@ -15,7 +15,11 @@ $bin = Join-Path $root 'bin'
 
 if (Test-Path (Join-Path $bin 'tide.exe')) {
     Write-Host "tide is already installed in $root; upgrading it."
-    & (Join-Path $bin 'tide.exe') upgrade "--$channel"
+    $tide = Join-Path $bin 'tide.exe'
+    # It keeps its channel, unless TIDE_CHANNEL says which.
+    if ($env:TIDE_CHANNEL) { & $tide upgrade "--$channel" } else { & $tide upgrade }
+    # Tide in the editors installed since.
+    & $tide editors
     return
 }
 
