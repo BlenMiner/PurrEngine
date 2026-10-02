@@ -10,13 +10,25 @@
 // See tide/jobs.h.
 
 // Below this much work in all (see tide_system_tasks.count), a tick runs on
-// one thread: waking the others would cost more than they'd save. It's about a
-// tenth of a millisecond's work, or on the web, where waking a worker takes
-// longer, three.
+// one thread: waking the others, and then reading on this one what they
+// changed from their caches, would cost more than they'd save. It's about half
+// a millisecond's work, or on the web, where waking a worker takes longer,
+// one and a half.
 #ifdef __wasm__
-#define PARALLEL_WORK 6000000u
+#define PARALLEL_WORK 60000000u
 #else
-#define PARALLEL_WORK 2000000u
+#define PARALLEL_WORK 20000000u
+#endif
+
+// A parallel loop's steps go to the other threads past this much work: they're
+// awake already, running the tick's tasks, so only a loop with next to nothing
+// to do stays on its thread. tidec can't tell how long the loops inside a
+// step go on, so a step can be far more work than it reckons: low, so a loop
+// that's more work than it looks is shared too.
+#ifdef __wasm__
+#define LOOP_WORK 300000u
+#else
+#define LOOP_WORK 100000u
 #endif
 
 #define NONE UINT32_MAX
@@ -30,11 +42,7 @@ typedef struct task_context {
 } task_context;
 
 static TIDE_THREAD_LOCAL task_context *running;
-
-tide_queue *tide_recording(tide_queue *world)
-{
-    return running && running->queue ? running->queue : world;
-}
+TIDE_THREAD_LOCAL tide_queue *tide_task_queue;
 
 tide_entity tide_new_entity(tide_entities *t)
 {
@@ -57,9 +65,12 @@ static void *zeroed(const size_t count, const size_t size)
 
 static void run_task(void *world, const tide_system_tasks *system, task_context *context, const uint32_t task)
 {
+    tide_memory_sync(); // Its queue's pages, which another thread may have made in an earlier tick
     running = context;
+    tide_task_queue = context->queue;
     system->run(world, task);
     running = NULL;
+    tide_task_queue = NULL;
 }
 
 // A system's spawns get their IDs, in the order one thread would have given
@@ -254,7 +265,7 @@ void tide_parallel_for(const uint32_t count, void (*work_fn)(void *context, uint
     atomic_init(&job.next, 0u);
     atomic_init(&job.done, 0u);
     loop_slot *slot = NULL;
-    for (uint32_t i = 0; r && count > 1u && cost >= PARALLEL_WORK && i < LOOP_SLOTS && !slot; i++) {
+    for (uint32_t i = 0; r && count > 1u && cost >= LOOP_WORK && i < LOOP_SLOTS && !slot; i++) {
         loop_job *none = NULL;
         if (atomic_compare_exchange_strong(&r->loops[i].job, &none, &job)) slot = &r->loops[i];
     }
@@ -272,6 +283,30 @@ void tide_parallel_for(const uint32_t count, void (*work_fn)(void *context, uint
     atomic_store(&slot->job, NULL);
     while (atomic_load(&slot->users)) relax();
     tide_memory_sync(); // What the other threads made (see tide/page.h)
+}
+
+// Each task's queue, kept from tick to tick by the thread that runs ticks, so
+// their pages are made once rather than every tick: queues for items of one
+// size (a game's changes and events).
+static TIDE_THREAD_LOCAL tide_queue *kept_queues;
+static TIDE_THREAD_LOCAL uint32_t kept_count;
+static TIDE_THREAD_LOCAL uint32_t kept_item_size;
+
+static tide_queue *task_queues(const uint32_t tasks, const uint32_t item_size)
+{
+    if (item_size != kept_item_size) { // Another game's, as a reloaded build can have
+        for (uint32_t t = 0; t < kept_count; t++) tide_queue_free(&kept_queues[t]);
+        free(kept_queues);
+        kept_queues = NULL;
+        kept_count = 0;
+        kept_item_size = item_size;
+    }
+    if (tasks > kept_count) {
+        kept_queues = tide_realloc(kept_queues, kept_count * sizeof *kept_queues, tasks * sizeof *kept_queues);
+        memset(&kept_queues[kept_count], 0, (tasks - kept_count) * sizeof *kept_queues);
+        kept_count = tasks;
+    }
+    return kept_queues;
 }
 
 static void run_on_threads(void *world, const tide_tick_systems *tick, const tide_jobs *jobs)
@@ -319,7 +354,7 @@ static void run_on_threads(void *world, const tide_tick_systems *tick, const tid
         }
     }
     free(filled);
-    r.queues = zeroed(tasks, sizeof(tide_queue));
+    r.queues = task_queues(tasks, tick->item_size);
     r.spawned = zeroed(tasks, sizeof(uint32_t));
     atomic_init(&r.finished, 0u);
 
@@ -328,14 +363,10 @@ static void run_on_threads(void *world, const tide_tick_systems *tick, const tid
 
     // What they recorded, in the order one thread would have
     for (uint32_t t = 0; t < tasks; t++) {
-        const tide_queue *q = &r.queues[t];
-        for (uint32_t i = 0; i < q->count; i++) {
-            memcpy(tide_queue_push(tick->queue, tick->item_size), tide_queue_at(q, i, tick->item_size), tick->item_size);
-        }
-        tide_queue_free(&r.queues[t]);
+        tide_queue_append(tick->queue, &r.queues[t], tick->item_size);
+        tide_queue_clear(&r.queues[t], tick->item_size);
     }
     free(r.spawned);
-    free(r.queues);
     free(r.dependents);
     free(r.first_dependent);
     free(r.state);

@@ -46,14 +46,14 @@ TIDE_TEST(tasks_get_their_component_again_after_waiting)
 {
     tide_world_init(&world, 0.1f);
     ticks(1); // StartDash starts it: 10 at once
-    const Body *body = TIDE_AT(&world, arch0_Body, Body, 0);
-    TIDE_CHECK(body->speed == 10.0f);
+    const Body body = TIDE_AT(&world, arch0_Body, Body, 0);
+    TIDE_CHECK(body.speed == 10.0f);
     TIDE_CHECK(world.tide_tasks_function_Dash.count == 1);
     ticks(1);
-    TIDE_CHECK(TIDE_AT(&world, arch0_Body, Body, 0)->speed == 10.0f);
+    TIDE_CHECK(TIDE_AT(&world, arch0_Body, Body, 0).speed == 10.0f);
     ticks(1); // Two ticks after it started
-    TIDE_CHECK(TIDE_AT(&world, arch0_Body, Body, 0)->speed == 1.0f);
-    TIDE_CHECK(TIDE_AT(&world, arch0_Body, Body, 0)->dashes == 1);
+    TIDE_CHECK(TIDE_AT(&world, arch0_Body, Body, 0).speed == 1.0f);
+    TIDE_CHECK(TIDE_AT(&world, arch0_Body, Body, 0).dashes == 1);
     TIDE_CHECK(world.tide_tasks_function_Dash.count == 0);
 }
 

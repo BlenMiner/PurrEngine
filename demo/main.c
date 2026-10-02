@@ -107,13 +107,16 @@ static void smoke_input(const uint32_t t)
     devices.gamepad.leftStick = t >= 150 && t < 200 ? tide_f2(-0.6f, -0.3f) : tide_f2(0.0f, 0.0f);
 }
 
-static const Body *find_player(const tide_world *w)
+// The player's Body, into `body`: false when there's none.
+static bool find_player(const tide_world *w, Body *body)
 {
     for (uint32_t i = 0; i < w->entities.next_unused; i++) {
         const tide_entity e = tide_entity_in_slot(&w->entities, i);
-        if (tide_read_Owner(w, e)) return tide_read_Body(w, e);
+        if (!tide_has_Owner(w, e) || !tide_has_Body(w, e)) continue;
+        *body = tide_get_Body(w, e);
+        return true;
     }
-    return NULL;
+    return false;
 }
 
 static uint64_t fnv1a(uint64_t h, const void *data, const size_t size)
@@ -129,10 +132,10 @@ static uint64_t world_hash(const tide_world *w)
     uint64_t h = 0xcbf29ce484222325ull;
     for (uint32_t i = 0; i < w->entities.next_unused; i++) {
         const tide_entity e = tide_entity_in_slot(&w->entities, i);
-        const Body *body = tide_read_Body(w, e);
-        if (!body) continue;
+        const Body body = tide_get_Body(w, e);
+        if (!tide_has_Body(w, e)) continue;
         h = fnv1a(h, &e, sizeof e);
-        h = fnv1a(h, body, sizeof *body);
+        h = fnv1a(h, &body, sizeof body);
     }
     return h;
 }
@@ -143,12 +146,12 @@ static uint64_t world_hash(const tide_world *w)
 // tide_platform_world_to_screen.
 static bool smoke_pixels(const tide_world *w)
 {
-    const Body *player = find_player(w);
-    if (!player) {
+    Body player;
+    if (!find_player(w, &player)) {
         printf("smoke: no player\n");
         return false;
     }
-    const tide_float2 points[2] = {tide_platform_world_to_screen(player->position), tide_f2(2.0f, 2.0f)};
+    const tide_float2 points[2] = {tide_platform_world_to_screen(player.position), tide_f2(2.0f, 2.0f)};
     uint32_t rgba[2];
     tide_platform_read_pixels(&draw, points, 2, rgba);
 

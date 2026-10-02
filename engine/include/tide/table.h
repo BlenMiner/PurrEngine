@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "tide/entity.h"
 #include "tide/net.h"
@@ -58,8 +59,32 @@ static inline const void *tide_table_get(const tide_table *t, const tide_columns
     return rows + (size_t)(row & ((1u << c->shift) - 1u)) * c->sizes[column];
 }
 
+// A component in an archetype is in lanes: its bytes `width` at a time, each a
+// column of its own, so a loop over a chunk's rows reads and writes each field
+// side by side, as SIMD wants them. The width is 4 bytes, or 2 or 1 for a
+// component whose size isn't a multiple of 4 (or 2). Generated code knows
+// every component's lanes; this is what hosts and tools that read a world's
+// bytes go by.
+static inline uint32_t tide_lane_width(const uint32_t component_size)
+{
+    return component_size % 4u == 0 ? 4u : component_size % 2u == 0 ? 2u : 1u;
+}
+
+// A row's component, from its `lanes` columns of `width` bytes starting at
+// column `first`, into `value`; and to change, from `value` into them, their
+// pages made this table's own.
+void tide_table_gather(const tide_table *t, const tide_columns *c, uint32_t row, uint32_t first, uint32_t lanes, uint32_t width,
+                       void *value);
+void tide_table_scatter(tide_table *t, const tide_columns *c, uint32_t row, uint32_t first, uint32_t lanes, uint32_t width,
+                        const void *value);
+
 // The same to change: the page is made this table's own.
-void *tide_table_column_mut(tide_table *t, const tide_columns *c, uint32_t chunk, uint32_t column);
+static inline void *tide_table_column_mut(tide_table *t, const tide_columns *c, const uint32_t chunk, const uint32_t column)
+{
+    tide_page **p = &t->pages[chunk * c->count + column];
+    *p = tide_page_own(*p, 1, tide_table_rows(t, c->shift, chunk) * c->sizes[column]);
+    return tide_page_data(*p);
+}
 void *tide_table_cell(tide_table *t, const tide_columns *c, uint32_t row, uint32_t column);
 
 // A new row at the end, zeroed: its number.
@@ -123,14 +148,26 @@ static inline void *tide_queue_at(const tide_queue *q, const uint32_t i, const u
     return (uint8_t *)q->page[i / TIDE_QUEUE_PAGE] + (size_t)(i % TIDE_QUEUE_PAGE) * size;
 }
 
-// A new item at the end, zeroed.
-void *tide_queue_push(tide_queue *q, uint32_t size);
+// A new item at the end, zeroed, on a new page.
+void *tide_queue_push_page(tide_queue *q, uint32_t size);
 
-// Empties it, zeroing what it had. It keeps the pages it used, for the next
-// tick, and lets go of the rest.
+// A new item at the end, zeroed.
+static inline void *tide_queue_push(tide_queue *q, const uint32_t size)
+{
+    if (q->count / TIDE_QUEUE_PAGE == q->pages || q->count == UINT32_MAX) return tide_queue_push_page(q, size);
+    void *item = tide_queue_at(q, q->count++, size);
+    memset(item, 0, size);
+    return item;
+}
+
+// Empties it. It keeps the pages it used, for the next tick, and lets go of
+// the rest. Their items stay until they're pushed again, zeroed.
 void tide_queue_clear(tide_queue *q, uint32_t size);
 
 void tide_queue_copy(tide_queue *to, const tide_queue *from, uint32_t size);
+
+// Puts `from`'s items at the end of `to`, in order.
+void tide_queue_append(tide_queue *to, const tide_queue *from, uint32_t size);
 uint64_t tide_queue_hash(uint64_t h, const tide_queue *q, uint32_t size);
 void tide_queue_free(tide_queue *q);
 

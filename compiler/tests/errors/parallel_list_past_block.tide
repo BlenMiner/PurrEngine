@@ -1,0 +1,7 @@
+// expect: a parallel loop's step changes only its own block: elements from 'i' up to the block's size
+singleton Field { List<int> items; }
+system Step(mut Field field)
+{
+    parallel (var i in field.items by 2) { field.items[i + 2] = 1; }
+}
+scene Main { }

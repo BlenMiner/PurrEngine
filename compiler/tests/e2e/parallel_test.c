@@ -45,3 +45,26 @@ TIDE_TEST(parallel_loops_match_their_rules_by_hand)
     TIDE_CHECK(tide_scratch_mark() == 0);
     tide_world_free(&world);
 }
+
+static int32_t value(const tide_list l, const int32_t i)
+{
+    return *(const int32_t *)tide_list_read(&world.heap, l, i, sizeof(int32_t));
+}
+
+// Parallel loops over lists give what the same rules give by hand: each element
+// from the list as it was, and blocks of two that never overlap.
+TIDE_TEST(parallel_list_loops_match_their_rules_by_hand)
+{
+    tide_world_init(&world, 1.0f);
+    tide_world_tick(&world);
+    const int32_t first = value(world.Wave.values, 1); // Smoothed once already
+    for (int i = 0; i < 40; i++) tide_world_tick(&world);
+    if (world.Wave.mismatches) printf("    %d elements differ\n", (int)world.Wave.mismatches);
+    TIDE_CHECK(world.Wave.mismatches == 0);
+    TIDE_CHECK(value(world.Wave.values, 1) != first); // They went on changing
+    const tide_int2 *a = tide_list_read(&world.heap, world.Wave.pairs, 0, sizeof(tide_int2));
+    const tide_int2 *b = tide_list_read(&world.heap, world.Wave.pairs, 1, sizeof(tide_int2));
+    TIDE_CHECK(a->x <= b->x); // In order, the pair at the start
+    TIDE_CHECK(tide_scratch_mark() == 0);
+    tide_world_free(&world);
+}

@@ -112,6 +112,35 @@ static inline void *tide_list_at_mut(const tide_list l, const int32_t i, const u
     return (char *)(tide_heap_write(heap, chunk) + 1) + place;
 }
 
+// The run of elements code last read from a world's list, so a loop over its
+// elements finds each chunk once rather than at every element: generated code
+// keeps one for each list type in each function. It holds while the list's
+// heap hasn't moved or released a block since (tide_heap.moves), and only for
+// elements below the list's count as it is then, so whatever the code does to
+// the list meanwhile, it never reads where it shouldn't.
+typedef struct tide_list_cache {
+    uint32_t at;              // The list (its tide_list.at), 0 for none
+    uint32_t moves;           // Its heap's moves when it was looked up
+    const tide_heap *heap;    // ...that heap
+    const tide_block *header; // The list's block, whose `a` is its count
+    uint32_t first;           // The run: elements from `first`, `count` of them, side by side from `elements`
+    uint32_t count;
+    const uint8_t *elements;
+} tide_list_cache;
+
+// tide_list_at, filling the cache with the run element `i` is in.
+const void *tide_list_cache_fill(tide_list_cache *c, tide_list l, int32_t i, uint32_t size);
+
+// tide_list_at, through a cache.
+static inline const void *tide_list_cached_at(tide_list_cache *c, const tide_list l, const int32_t i, const uint32_t size)
+{
+    if (c->at == l.at && c->at && (uint32_t)i - c->first < c->count && (uint32_t)i < c->header->a
+        && __atomic_load_n(&c->heap->moves, __ATOMIC_RELAXED) == c->moves) {
+        return c->elements + (size_t)((uint32_t)i - c->first) * size;
+    }
+    return tide_list_cache_fill(c, l, i, size);
+}
+
 // A world's list, read from outside, like a host reading a component: its
 // count, and its element at `i` (NULL past the end).
 int32_t tide_list_read_count(const tide_heap *heap, tide_list l);
@@ -157,3 +186,37 @@ void tide_list_release(tide_list *l, uint32_t where);
 // which it was.
 void *tide_list_flatten(tide_list l, uint32_t size, bool changes, bool *copied);
 void tide_list_unflatten(tide_list l, void *flat, uint32_t size, bool changes, bool copied);
+
+// ---------------------------------------------------------------------------
+// Parallel loops over a list's elements, by index: `parallel (var i in items)`
+// and `parallel (var i in items by 2 offset o)` (see docs/spec.md, Lists).
+// Their steps run at once, on threads (tide_parallel_for): each reads the list
+// as the loop found it, and writes only its own element or block, into its
+// task's copy of its blocks' elements. The loop's end puts what changed into
+// the list, chunk by chunk, so the result is the same however the steps were
+// shared out, and a chunk nothing changed stays as it was. A block that would
+// go past the list's end is left out.
+
+typedef struct tide_par_list {
+    tide_list *list;
+    uint32_t size;      // An element's bytes
+    int32_t block;      // Each step's block, in elements
+    int32_t offset;     // Where the blocks start
+    int32_t lo, hi;     // Blocks within the list, by index: from lo up to hi
+    int32_t per_task;   // Blocks in a task; the last has what's left
+    uint32_t tasks;
+    uint8_t **copies;   // Each task's copy of its blocks' elements, once it's run
+    uint64_t steps;     // Blocks in all: how much work it is
+} tide_par_list;
+
+// Sets `l` up to go over a world's list `list` of elements of `size` bytes, in
+// blocks of `block` elements starting at `offset`.
+void tide_par_list_begin(tide_par_list *l, tide_list *list, uint32_t size, int32_t block, int32_t offset);
+
+// Task `task`'s blocks, by index: from *from up to *to. Its copy of their
+// elements, as the loop found them, which its steps write: the first is the
+// element `offset + *from * block`.
+void *tide_par_list_task(tide_par_list *l, uint32_t task, int32_t *from, int32_t *to);
+
+// Puts what the steps changed into the list and lets the copies go.
+void tide_par_list_end(tide_par_list *l);

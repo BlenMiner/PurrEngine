@@ -52,14 +52,14 @@ typedef struct tide_layout_enum {
 } tide_layout_enum;
 
 // Where a singleton is in its world's struct, or which column of an
-// archetype a component is.
+// archetype a component's lanes start at (tide_lane_width bytes of it in each).
 typedef struct tide_layout_place {
     int32_t type;
     uint32_t offset;
 } tide_layout_place;
 
 // An archetype's columns (tide/table.h): the entity, the scene each is in
-// (`scenes`), then its components.
+// (`scenes`), then its components' lanes.
 typedef struct tide_layout_archetype {
     bool scenes;
     uint32_t component_count;

@@ -1,4 +1,4 @@
-// expect: a parallel loop's steps run at once, so each changes only its own cell or block, and the variables it declares
+// expect: a parallel loop's steps run at once, so each changes only its own place (a grid's cell or block, a list's element or block), and the variables it declares
 singleton Field { Grid2<int> cells = Grid2(8, 8); int total; }
 void Add(mut int total, int n) { total += n; }
 system Step(mut Field field)

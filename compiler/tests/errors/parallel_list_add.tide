@@ -1,0 +1,7 @@
+// expect: a parallel loop's steps run at once, so each changes only its own place
+singleton Field { List<int> items; }
+system Step(mut Field field)
+{
+    parallel (var i in field.items) { field.items.Add(i); }
+}
+scene Main { }

@@ -85,6 +85,8 @@ A step can declare variables, call functions (and C) and read any cell. What it 
 
 To add things up, use a `for` loop, or a foreach that goes in order (see below).
 
+A list's elements go through a parallel loop the same way, by index (see [Lists](./text-and-lists.md#going-through-every-element-at-once)).
+
 A parallel loop goes in a system, a view, or an event handler that isn't async: not in functions, methods, async code or an input's `Sample`.
 
 ### Moving things: blocks

@@ -67,10 +67,10 @@ TIDE_TEST(local_views_change_local_state)
     TIDE_CHECK(local.Frames.lit == 2);    // Each spark's Spawned
     TIDE_CHECK(tide_local_entity_count(&local) == 2);
     TIDE_CHECK(tide_world_entity_count(&world) == 3); // The Main scene and two balls
-    const Spark *newest = tide_get_Spark(&local, local.Frames.newest);
-    TIDE_REQUIRE(newest != NULL);
-    TIDE_CHECK(newest->position.x == 3.0f && newest->position.y == 4.0f);
-    TIDE_CHECK(newest->lit);
+    const Spark newest = tide_get_Spark(&local, local.Frames.newest);
+    TIDE_REQUIRE(tide_has_Spark(&local, local.Frames.newest));
+    TIDE_CHECK(newest.position.x == 3.0f && newest.position.y == 4.0f);
+    TIDE_CHECK(newest.lit);
     TIDE_CHECK(tide_entity_equal(local.Frames.selected, (tide_entity){2, 1})); // The second ball
 }
 

@@ -126,11 +126,11 @@ TIDE_TEST(gui_entities_have_their_own_widgets)
 {
     start();
     TIDE_REQUIRE(click("Tag", 1));
-    const Tag *first = tide_get_Tag(&local, (tide_entity){1, 1});
-    const Tag *second = tide_get_Tag(&local, (tide_entity){2, 1});
-    TIDE_REQUIRE(first && second);
-    TIDE_CHECK(first->clicks == 0);
-    TIDE_CHECK(second->clicks == 1);
+    const Tag first = tide_get_Tag(&local, (tide_entity){1, 1});
+    const Tag second = tide_get_Tag(&local, (tide_entity){2, 1});
+    TIDE_REQUIRE(tide_has_Tag(&local, (tide_entity){1, 1}) && tide_has_Tag(&local, (tide_entity){2, 1}));
+    TIDE_CHECK(first.clicks == 0);
+    TIDE_CHECK(second.clicks == 1);
 }
 
 TIDE_TEST(gui_loops_make_widgets_of_their_own)

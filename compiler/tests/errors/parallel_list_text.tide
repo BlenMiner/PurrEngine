@@ -1,0 +1,7 @@
+// expect: a parallel loop goes through a list of plain values, and this one's elements hold text
+singleton Field { List<string> names; }
+system Step(mut Field field)
+{
+    parallel (var i in field.names) { }
+}
+scene Main { }

@@ -8,6 +8,7 @@
 #include "tide/entity.h"
 #include "tide/heap.h"
 #include "tide/net.h"
+#include "tide/table.h"
 
 // See tide/migrate.h.
 
@@ -182,26 +183,43 @@ static const char *lost_scene(const carry *c, const tide_layout_world *tw, const
 }
 
 // An archetype's columns, as a world's bytes have them (tide/table.h): the
-// entity, the scene each is in, then its components, each column's values
-// one after another.
-static uint32_t column_count(const tide_layout_archetype *a)
+// entity, the scene each is in, then its components' lanes (each component
+// `tide_lane_width` bytes at a time, from the column its place says), each
+// column's values one after another.
+static uint32_t lanes_of(const tide_layout *l, const tide_layout_place *p)
 {
-    return 1u + (a->scenes ? 1u : 0u) + a->component_count;
+    const uint32_t size = l->types[p->type].size;
+    return size / tide_lane_width(size);
+}
+
+static uint32_t column_count(const tide_layout *l, const tide_layout_archetype *a)
+{
+    uint32_t count = 1u + (a->scenes ? 1u : 0u);
+    for (uint32_t i = 0; i < a->component_count; i++) count += lanes_of(l, &a->components[i]);
+    return count;
+}
+
+// The component whose lanes take in column `column`, or NULL.
+static const tide_layout_place *component_at(const tide_layout *l, const tide_layout_archetype *a, const uint32_t column)
+{
+    for (uint32_t i = 0; i < a->component_count; i++) {
+        const tide_layout_place *p = &a->components[i];
+        if (column >= p->offset && column < p->offset + lanes_of(l, p)) return p;
+    }
+    return NULL;
 }
 
 static uint32_t column_size(const tide_layout *l, const tide_layout_archetype *a, const uint32_t column)
 {
     if (column == 0 || (a->scenes && column == 1)) return (uint32_t)sizeof(tide_entity);
-    for (uint32_t i = 0; i < a->component_count; i++) {
-        if (a->components[i].offset == column) return l->types[a->components[i].type].size;
-    }
-    return 0;
+    const tide_layout_place *p = component_at(l, a, column);
+    return p ? tide_lane_width(l->types[p->type].size) : 0u;
 }
 
 static uint64_t row_size(const tide_layout *l, const tide_layout_archetype *a)
 {
     uint64_t size = 0;
-    for (uint32_t k = 0; k < column_count(a); k++) size += column_size(l, a, k);
+    for (uint32_t k = 0; k < column_count(l, a); k++) size += column_size(l, a, k);
     return size;
 }
 
@@ -212,6 +230,14 @@ static const uint8_t *cell(const tide_layout *l, const tide_layout_archetype *a,
     uint64_t at = 0;
     for (uint32_t k = 0; k < column; k++) at += (uint64_t)count * column_size(l, a, k);
     return rows + at + (uint64_t)row * column_size(l, a, column);
+}
+
+// Row `row`'s component at `p`, gathered from its lanes into `value`.
+static void gather(const tide_layout *l, const tide_layout_archetype *a, const uint8_t *rows, const uint32_t count,
+                   const tide_layout_place *p, const uint32_t row, uint8_t *value)
+{
+    const uint32_t width = tide_lane_width(l->types[p->type].size);
+    for (uint32_t k = 0; k < lanes_of(l, p); k++) memcpy(value + k * width, cell(l, a, rows, count, p->offset + k, row), width);
 }
 
 // The new bytes, `n` more of them.
@@ -304,7 +330,12 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
     carry c = {from_layout, to_layout, calloc(to_layout->type_count ? to_layout->type_count : 1u, sizeof(int32_t))};
     uint32_t *counts = calloc(tw->archetype_count ? tw->archetype_count : 1u, sizeof *counts);
     int32_t *goes = calloc(fw->archetype_count ? fw->archetype_count : 1u, sizeof *goes);
-    bool ok = c.types && counts && goes;
+    uint32_t largest = 1; // A component's value, whole, on its way between lanes
+    for (uint32_t i = 0; i < from_layout->type_count; i++) largest = from_layout->types[i].size > largest ? from_layout->types[i].size : largest;
+    for (uint32_t i = 0; i < to_layout->type_count; i++) largest = to_layout->types[i].size > largest ? to_layout->types[i].size : largest;
+    uint8_t *old_value = malloc(largest);
+    uint8_t *new_value = malloc(largest);
+    bool ok = c.types && counts && goes && old_value && new_value;
     if (!ok) snprintf(m->failed, sizeof m->failed, "there wasn't enough memory");
     ok = ok && read_old(from_layout, fw, from, from_size, &old, m);
     for (uint32_t i = 0; ok && i < to_layout->type_count; i++) c.types[i] = find_type(from_layout, to_layout->types[i].name);
@@ -362,6 +393,8 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
         free(c.types);
         free(counts);
         free(goes);
+        free(old_value);
+        free(new_value);
         return false;
     }
     tide_writer w = {to, (uint32_t)size, tw->size, false, false};
@@ -392,21 +425,19 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
     for (uint32_t k = 0; k < tw->archetype_count; k++) {
         const tide_layout_archetype *ta = &tw->archetypes[k];
         tide_write_u32(&w, counts[k]);
-        for (uint32_t column = 0; column < column_count(ta); column++) {
+        for (uint32_t column = 0; column < column_count(to_layout, ta); column++) {
             const uint32_t bytes = column_size(to_layout, ta, column);
-            const tide_layout_place *tc = NULL;
-            for (uint32_t i = 0; i < ta->component_count; i++) {
-                if (ta->components[i].offset == column) tc = &ta->components[i];
-            }
+            const tide_layout_place *tc = component_at(to_layout, ta, column);
             for (uint32_t a = 0; a < fw->archetype_count; a++) {
                 if (goes[a] != (int32_t)k) continue;
                 const tide_layout_archetype *fa = &fw->archetypes[a];
                 for (uint32_t row = 0; row < old.counts[a]; row++) {
                     uint8_t *value = take(&w, bytes);
-                    if (tc) {
+                    if (tc) { // The whole value carried over, for the lane of it this column holds
                         const tide_layout_place *fc = old_component(&c, fa, tc->type);
-                        carry_value(&c, tc->type, fc->type, value,
-                                    cell(from_layout, fa, old.rows[a], old.counts[a], fc->offset, row));
+                        gather(from_layout, fa, old.rows[a], old.counts[a], fc, row, old_value);
+                        carry_value(&c, tc->type, fc->type, new_value, old_value);
+                        memcpy(value, new_value + (column - tc->offset) * bytes, bytes);
                     } else if (column == 0 || fa->scenes) { // The entity, and the scene it's in
                         memcpy(value, cell(from_layout, fa, old.rows[a], old.counts[a], column, row), bytes);
                     }
@@ -432,6 +463,8 @@ bool tide_migrate_world(const tide_layout *from_layout, const tide_layout_world 
     free(c.types);
     free(counts);
     free(goes);
+    free(old_value);
+    free(new_value);
     *to_bytes = to;
     *to_size = w.size;
     return true;

@@ -309,6 +309,19 @@ static inline void *tide_par_cell(tide_par_loop *l, tide_par_cache *c, const int
     return c->buffer + tide_grid_place(s, x, y, z);
 }
 
+// A task's window, which generated code reads and writes as plain memory:
+// the cells from lo to hi on each axis (both included), row by row from lo
+// (x fastest, then y, then z), as the loop found them. Zero where the grid
+// has no chunk and outside its size.
+void tide_par_window(const tide_par_loop *l, const int32_t lo[3], const int32_t hi[3], void *cells);
+
+// Puts the cells a task's steps wrote in its window into their chunks'
+// buffers: from `from` to `to` (both included), its blocks' cells, wherever
+// `cells` differs from `was`, the window as the loop found it. Rows that
+// didn't change make no buffer, so their chunks stay as they are.
+void tide_par_window_put(tide_par_loop *l, const int32_t lo[3], const int32_t hi[3], const int32_t from[3],
+                         const int32_t to[3], const void *cells, const void *was);
+
 // Puts what the steps wrote into the grid and lets the buffers go.
 void tide_par_end(tide_par_loop *l);
 

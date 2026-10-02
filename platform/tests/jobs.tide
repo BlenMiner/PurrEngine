@@ -296,3 +296,41 @@ system Spread(mut Heat heat)
         heat.cells[at] = next;
     }
 }
+
+// Bodies in a list, each pulled toward its neighbors in the list as they
+// were, every body at once; then pairs of them, from even ones one tick and
+// odd ones the next, trade places when they're out of order
+singleton Swarm
+{
+    List<float3> bodies;
+    bool ready;
+}
+
+system Gather(mut Swarm swarm)
+{
+    if (!swarm.ready)
+    {
+        swarm.ready = true;
+        for (var i = 0; i < 6000; i++) swarm.bodies.Add(float3(float(i * 37 % 1000), float(i % 13), 0));
+    }
+    var n = swarm.bodies.Count;
+    parallel (var i in swarm.bodies)
+    {
+        var near = swarm.bodies[(i + 1) % n] + swarm.bodies[(i + n - 1) % n];
+        swarm.bodies[i] = swarm.bodies[i] + (near * 0.5 - swarm.bodies[i]) * 0.1;
+    }
+}
+
+system Order(Time time, mut Swarm swarm)
+{
+    parallel (var i in swarm.bodies by 2 offset time.tick % 2)
+    {
+        var a = swarm.bodies[i];
+        var b = swarm.bodies[i + 1];
+        if (b.x < a.x)
+        {
+            swarm.bodies[i] = b;
+            swarm.bodies[i + 1] = a;
+        }
+    }
+}

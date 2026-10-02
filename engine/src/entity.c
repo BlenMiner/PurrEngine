@@ -100,26 +100,12 @@ bool tide_entity_destroy(tide_entities *t, const tide_entity e)
     return true;
 }
 
-bool tide_entity_alive(const tide_entities *t, const tide_entity e)
-{
-    return e.index < t->next_unused
-        && (e.generation & 1u)
-        && slot_of(t, e.index)->generation == e.generation;
-}
-
 void tide_entity_set_location(tide_entities *t, const tide_entity e, const tide_location loc)
 {
     if (!tide_entity_alive(t, e)) return;
     tide_entity_slot *slot = slot_to_change(t, e.index);
     slot->archetype = loc.archetype;
     slot->row = loc.row;
-}
-
-tide_location tide_entity_location(const tide_entities *t, const tide_entity e)
-{
-    if (!tide_entity_alive(t, e)) return (tide_location){TIDE_ARCHETYPE_NONE, 0};
-    const tide_entity_slot *slot = slot_of(t, e.index);
-    return (tide_location){slot->archetype, slot->row};
 }
 
 tide_entity tide_entity_in_slot(const tide_entities *t, const uint32_t index)

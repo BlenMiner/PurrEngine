@@ -126,12 +126,8 @@ tide_page *tide_page_copy(const tide_page *p, const uint32_t refs, const uint32_
     return copy;
 }
 
-tide_page *tide_page_own(tide_page *p, const uint32_t mine, const uint32_t keep)
+tide_page *tide_page_own_copy(tide_page *p, const uint32_t mine, const uint32_t keep)
 {
-    if (p->refs == mine) {
-        p->hashed = UINT32_MAX;
-        return p;
-    }
     tide_page *copy = tide_page_copy(p, mine, keep);
     p->refs -= mine;
     return copy;

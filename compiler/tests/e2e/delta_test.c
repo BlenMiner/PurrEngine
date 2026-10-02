@@ -56,9 +56,13 @@ static uint32_t whole_size(const tide_world *w)
 }
 
 // The Main scene is slot 0, the ground the next 3000, then the movers.
-static Mover *mover(tide_world *w, const uint32_t i)
+// Moves mover `i` up by `dy`, as a world's own code wouldn't.
+static void nudge(tide_world *w, const uint32_t i, const float dy)
 {
-    return tide_get_Mover(w, (tide_entity){3001u + i, 1});
+    const tide_entity e = {3001u + i, 1};
+    Mover m = tide_get_Mover(w, e);
+    m.position.y += dy;
+    tide_set_Mover(w, e, m);
 }
 
 TIDE_TEST(delta_from_nothing_is_the_whole_world)
@@ -177,7 +181,9 @@ TIDE_TEST(delta_needs_the_base_it_was_made_from)
     uint8_t lacks[512];
     const uint32_t lacks_size = tide_world_need_pages(&base, hashes, hashes_size, lacks, sizeof lacks);
     delta = tide_world_pack_delta(&world, NULL, lacks, lacks_size, &size);
-    tide_get_Ground(&other, (tide_entity){1, 1})->height += 1.0f;
+    Ground ground = tide_get_Ground(&other, (tide_entity){1, 1});
+    ground.height += 1.0f;
+    tide_set_Ground(&other, (tide_entity){1, 1}, ground);
     TIDE_CHECK(!tide_world_unpack_delta(&made, &other, delta, size));
     TIDE_CHECK(tide_world_unpack_delta(&made, &base, delta, size));
     TIDE_CHECK(same(&made, &world));
@@ -309,7 +315,7 @@ TIDE_TEST(delta_a_player_whose_world_went_wrong_gets_what_it_lacks)
     TIDE_CHECK(joined.world_bytes > 0);
 
     // Something went wrong on this machine: a mover is elsewhere
-    mover((tide_world *)tide_client_world(client), 3)->position.y += 3.0f;
+    nudge((tide_world *)tide_client_world(client), 3, 3.0f);
     run(5.0);
     const tide_client_status after = tide_client_status_of(client);
     TIDE_CHECK(after.state == TIDE_SESSION_CONNECTED);

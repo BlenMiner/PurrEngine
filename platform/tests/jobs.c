@@ -66,18 +66,18 @@ TIDE_TEST(jobs_threads_change_nothing)
     int shards = 0;
     for (uint32_t i = 0; i < many.entities.next_unused; i++) {
         const tide_entity e = tide_entity_in_slot(&many.entities, i);
-        const Trail *trail = tide_get_Trail(&many, e);
-        if (trail && trail->count) {
-            const Debris *debris = tide_get_Debris(&many, trail->last);
-            TIDE_CHECK(!tide_entity_is_temporary(trail->last) && tide_entity_equal(trail->last, trail->link.target));
-            TIDE_CHECK(debris && tide_entity_equal(debris->from, e) && tide_get_Size(&many, trail->last));
+        const Trail trail = tide_get_Trail(&many, e);
+        if (tide_has_Trail(&many, e) && trail.count) {
+            const Debris debris = tide_get_Debris(&many, trail.last);
+            TIDE_CHECK(!tide_entity_is_temporary(trail.last) && tide_entity_equal(trail.last, trail.link.target));
+            TIDE_CHECK(tide_has_Debris(&many, trail.last) && tide_entity_equal(debris.from, e) && tide_has_Size(&many, trail.last));
             trails++;
         }
-        const Shard *shard = tide_get_Shard(&many, e);
-        if (shard) {
-            TIDE_CHECK(!tide_entity_is_null(shard->of) && !tide_entity_is_temporary(shard->of));
-            if (shard->debris) TIDE_CHECK(tide_get_Debris(&many, shard->of)); // Rocks burn up, but debris stays
-            shards += shard->debris;
+        const Shard shard = tide_get_Shard(&many, e);
+        if (tide_has_Shard(&many, e)) {
+            TIDE_CHECK(!tide_entity_is_null(shard.of) && !tide_entity_is_temporary(shard.of));
+            if (shard.debris) TIDE_CHECK(tide_has_Debris(&many, shard.of)); // Rocks burn up, but debris stays
+            shards += shard.debris;
         }
     }
     TIDE_CHECK(trails == 6000 && shards == many.Stats.chipped);

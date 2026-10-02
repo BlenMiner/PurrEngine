@@ -100,6 +100,7 @@ typedef struct gen {
     const expr *raw_place; // A text field being generated as the tide_text it is, not read as text
     uint64_t game_hash;    // Of the header: tells builds of different games apart
     const decl *blending;  // The view whose run function is being generated: its blended parameters are copies
+    bool list_caches;      // The function being generated has tide_lc, a cache for each list type (gen_grid_caches)
     VEC(task_info) tasks;  // Every async function and handler that runs, callees before what awaits them
     gen_task *task;        // The task whose code is being generated, or NULL
     const decl *code;      // The system, view or handler whose body is being generated, or NULL
@@ -243,6 +244,75 @@ static bool decl_has_text(const decl *d)
         if (type_has_text(d->fields.items[i].type)) return true;
     }
     return false;
+}
+
+// Whether a value of type `t` is or holds text, a list or a grid, its own or
+// in its fields (components, events and the like too).
+static bool value_has_text(const type t)
+{
+    if (type_has_text(t)) return true;
+    return t.decl && t.kind != TY_ENUM && decl_has_text(t.decl);
+}
+
+typedef VEC(const decl *) decl_list;
+
+static bool stmt_touches_text(const stmt *s, decl_list *seen);
+
+static bool code_touches_text(const decl *code, decl_list *seen)
+{
+    for (int i = 0; i < seen->count; i++) {
+        if (seen->items[i] == code) return false; // Already looked at, or being looked at
+    }
+    vec_push(*seen, code);
+    return stmt_touches_text(code->body, seen);
+}
+
+static bool expr_touches_text(const expr *e, decl_list *seen)
+{
+    if (!e) return false;
+    if (e->kind == E_INTERP || value_has_text(e->type)) return true;
+    if (e->method && e->method->is_async) return true; // It starts a task, which gets its components itself
+    if (e->method && (e->call == CALL_FUNCTION || e->call == CALL_METHOD) && code_touches_text(e->method, seen)) return true;
+    if (expr_touches_text(e->object, seen) || expr_touches_text(e->lhs, seen) || expr_touches_text(e->rhs, seen)
+        || expr_touches_text(e->cond, seen)) {
+        return true;
+    }
+    for (int i = 0; i < e->args.count; i++) {
+        if (expr_touches_text(e->args.items[i], seen)) return true;
+    }
+    for (int i = 0; i < e->inits.count; i++) {
+        if (expr_touches_text(e->inits.items[i].value, seen)) return true;
+    }
+    return stmt_touches_text(e->block, seen);
+}
+
+static bool stmt_touches_text(const stmt *s, decl_list *seen)
+{
+    if (!s) return false;
+    if (s->kind == S_VAR && value_has_text(s->type)) return true;
+    for (int i = 0; i < s->stmts.count; i++) {
+        if (stmt_touches_text(s->stmts.items[i], seen)) return true;
+    }
+    for (int i = 0; i < s->cases.count; i++) {
+        for (int k = 0; k < s->cases.items[i].body.count; k++) {
+            if (stmt_touches_text(s->cases.items[i].body.items[k], seen)) return true;
+        }
+    }
+    return expr_touches_text(s->cond, seen) || expr_touches_text(s->value, seen) || expr_touches_text(s->target, seen)
+        || stmt_touches_text(s->init, seen) || stmt_touches_text(s->step, seen) || stmt_touches_text(s->then_stmt, seen)
+        || stmt_touches_text(s->else_stmt, seen);
+}
+
+// Whether a system's or handler's code makes text or lists in the scratch
+// area, or changes a world's text, lists or grids, itself or through the
+// functions it calls, or starts tasks: what's cleared after it runs for each
+// entity. Code that can't skips the clearing, which costs more than many a
+// step.
+static bool touches_text(const decl *code)
+{
+    if (code->is_async || (code->event && value_has_text((type){TY_EVENT, code->event}))) return true;
+    decl_list seen = {0}; // In the arena, like everything tidec makes
+    return code_touches_text(code, &seen);
 }
 
 // A field with heap data: text, a list (`list` is its type) or a grid (`grid`).
@@ -418,17 +488,42 @@ static bool is_load_archetype(const gen *g, const int a)
     return scene && g->prog->archetypes.items[a] == (uint64_t)1 << scene->index;
 }
 
+// A type's bytes and alignment (see Generated types, below).
+typedef struct layout {
+    int size;
+    int align;
+} layout;
+
+static layout decl_layout(const decl *d);
+
+// A component's lanes in its archetypes (tide/table.h, tide_lane_width): its
+// bytes `width` at a time, each a column of its own.
+static int comp_width(const decl *d)
+{
+    const int size = decl_layout(d).size;
+    return size % 4 == 0 ? 4 : size % 2 == 0 ? 2 : 1;
+}
+
+static int comp_lanes(const decl *d)
+{
+    return decl_layout(d).size / comp_width(d);
+}
+
 // Archetype `a`'s columns in its tide_table (tide/table.h): the entity, the
-// scene each is in (in a world with scenes), then its components in order.
+// scene each is in (in a world with scenes), then its components' lanes, the
+// components in order.
 static bool arch_scene_column(const gen *g, const int a)
 {
     return has_scenes(g->prog, arch_local(g, a));
 }
 
+// A component's first lane.
 static int arch_column(const gen *g, const int a, const int component)
 {
     int column = arch_scene_column(g, a) ? 2 : 1;
-    for (int i = 0; i < component; i++) column += has_component(g->prog->archetypes.items[a], i);
+    for (int i = 0; i < component; i++) {
+        if (has_component(g->prog->archetypes.items[a], i)) column += comp_lanes(g->prog->components.items[i]);
+    }
     return column;
 }
 
@@ -455,6 +550,29 @@ static const char *arch_cell(const gen *g, const char *world, const int a, const
     sb_printf(&b, "((%s%s *)tide_table_%s(&%s->%s, %s, %s, %d))", change ? "" : "const ", ctype, change ? "cell" : "get",
               world, arch_name(g, a), arch_columns(g, a), row, column);
     return b.data;
+}
+
+// A row's component `c` in archetype `a`, in its lanes: put from `value` (an
+// lvalue of its type), the lanes' pages made the world's own, or taken into
+// `out` (one too). `world` is a pointer to the world and `row` the row, as C.
+static const char *comp_lanes_call(const gen *g, const char *what, const char *world, const int a, const int c, const char *row,
+                                   const char *value)
+{
+    const decl *d = g->prog->components.items[c];
+    sb b = {0};
+    sb_printf(&b, "tide_table_%s(&%s->%s, %s, %s, %d, %du, %du, &(%s))", what, world, arch_name(g, a), arch_columns(g, a), row,
+              arch_column(g, a, c), comp_lanes(d), comp_width(d), value);
+    return b.data;
+}
+
+static const char *comp_put(const gen *g, const char *world, const int a, const int c, const char *row, const char *value)
+{
+    return comp_lanes_call(g, "scatter", world, a, c, row, value);
+}
+
+static const char *comp_take(const gen *g, const char *world, const int a, const int c, const char *row, const char *out)
+{
+    return comp_lanes_call(g, "gather", world, a, c, row, out);
 }
 
 // Where a world's text and lists are, for tide/text.h's `where`.
@@ -953,6 +1071,45 @@ static void gen_text_ref(gen *g, sb *o, const expr *e)
     }
 }
 
+static bool in_window(const gen *g, const expr *index);
+
+static bool scalar_kind(const type t)
+{
+    return t.kind == TY_BOOL || t.kind == TY_INT || t.kind == TY_FLOAT || t.kind == TY_ENUM;
+}
+
+// Whether working `e` out costs little and can do nothing but give its value:
+// numbers, variables, fields, cells of a parallel step's window, and
+// arithmetic and comparisons on them, with no calls and no division. Such a
+// value can be worked out whether it's needed or not.
+static bool branchless(const gen *g, const expr *e)
+{
+    switch (e->kind) {
+    case E_INT:
+    case E_FLOAT:
+    case E_BOOL:
+        return true;
+    case E_NAME:
+        return scalar_kind(e->type);
+    case E_MEMBER:
+        if (!scalar_kind(e->type)) return false;
+        for (const expr *part = e; part; part = part->object) { // A field of a field of a variable
+            if (part->kind == E_NAME || part->kind == E_THIS) return true;
+            if (part->kind != E_MEMBER || part->call != CALL_NONE || part->edge) return false;
+        }
+        return false;
+    case E_INDEX:
+        return e->object->type.kind == TY_GRID && in_window(g, e);
+    case E_UNARY:
+        return !e->method && scalar_kind(e->type) && branchless(g, e->lhs);
+    case E_BINARY:
+        return !e->method && scalar_kind(e->type) && scalar_kind(e->lhs->type) && scalar_kind(e->rhs->type)
+            && e->op != T_SLASH && e->op != T_PERCENT && branchless(g, e->lhs) && branchless(g, e->rhs);
+    default:
+        return false;
+    }
+}
+
 static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const type result, const decl *overload)
 {
     if (overload) {
@@ -1032,6 +1189,18 @@ static void gen_binary(gen *g, sb *o, const tok_kind op, expr *l, expr *r, const
         sb_put(o, ", ");
         gen_expr(g, o, r);
         sb_put(o, ")");
+        return;
+    }
+
+    // && and || whose right side is cheap and does nothing but give a value:
+    // both sides, with no branch, which the CPU can't guess wrong and a loop
+    // over cells can run with SIMD. Nothing can tell the difference.
+    if ((op == T_AND || op == T_OR) && branchless(g, l) && branchless(g, r)) { // C doesn't order &'s sides
+        sb_put(o, "(bool)((unsigned)(");
+        gen_expr(g, o, l);
+        sb_printf(o, ") %s (unsigned)(", op == T_AND ? "&" : "|");
+        gen_expr(g, o, r);
+        sb_put(o, "))");
         return;
     }
 
@@ -1507,6 +1676,29 @@ static const char *prev_input_access(gen *g, const expr *field_access)
     return b.data;
 }
 
+// Whether a cell of a grid goes through the parallel step's window
+// (tide_par_window): it's near the step's place, and the loop has one.
+static bool in_window(const gen *g, const expr *index)
+{
+    return g->par_loop && g->par_loop->windowed && index->window;
+}
+
+// Where a cell near the step's place is in its window: rows of tide_ww cells
+// from tide_lo, layers of tide_wh rows.
+static void gen_window_index(gen *g, sb *o, const expr *index)
+{
+    const char *at = local_cname(g, g->par_loop->name);
+    const int *d = index->window_offset;
+    if (g->par_loop->value->type.kind == TY_LIST) { // The task's copy of its elements, from tide_lo
+        sb_printf(o, "%s + (%d) - tide_lo", at, d[0]);
+    } else if (g->par_loop->value->type.decl->dims == 3) {
+        sb_printf(o, "((%s.z + (%d) - tide_lz) * tide_wh + (%s.y + (%d) - tide_ly)) * tide_ww + (%s.x + (%d) - tide_lx)", at, d[2],
+                  at, d[1], at, d[0]);
+    } else {
+        sb_printf(o, "(%s.y + (%d) - tide_ly) * tide_ww + (%s.x + (%d) - tide_lx)", at, d[1], at, d[0]);
+    }
+}
+
 static void gen_expr(gen *g, sb *o, const expr *e)
 {
     if (e->hoisted && (e->kind == E_BINARY || e->kind == E_UNARY || e->kind == E_CONDITIONAL)) {
@@ -1544,6 +1736,12 @@ static void gen_expr(gen *g, sb *o, const expr *e)
         gen_interp(g, o, e);
         break;
     case E_INDEX: // items[i], or its zero past the end
+        if (e->object->type.kind == TY_GRID && in_window(g, e)) { // A parallel step's cell near its place
+            sb_put(o, "tide_win[");
+            gen_window_index(g, o, e);
+            sb_put(o, "]");
+            break;
+        }
         if (e->object->type.kind == TY_GRID) { // cells[p], or zero where there's nothing
             sb_printf(o, "tide_grid%d_get(&tide_gc[%d], ", e->object->type.decl->index, e->object->type.decl->index);
             gen_expr(g, o, e->object);
@@ -1552,7 +1750,11 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             sb_put(o, ")");
             break;
         }
-        sb_printf(o, "tide_list%d_get(", e->object->type.decl->index);
+        if (g->list_caches) {
+            sb_printf(o, "tide_list%d_cget(&tide_lc[%d], ", e->object->type.decl->index, e->object->type.decl->index);
+        } else {
+            sb_printf(o, "tide_list%d_get(", e->object->type.decl->index);
+        }
         gen_expr(g, o, e->object);
         sb_put(o, ", ");
         gen_expr(g, o, e->lhs);
@@ -2093,6 +2295,8 @@ static void gen_as(gen *g, sb *o, expr *e, type want);
 // with its value in `name`. Wait.Ticks, Frames and Seconds wait for the
 // match's ticks, this machine's frames, or seconds (whole ticks in the
 // match); an async call runs in the task's frame until it's done.
+static void gen_entity_copies(gen *g, bool put);
+
 static void gen_await(gen *g, expr *e, const char *name)
 {
     sb *o = &g->c;
@@ -2167,7 +2371,9 @@ static void gen_await(gen *g, expr *e, const char *name)
     const char *worlds = task_worlds(g, t->local);
     line(g, o, "{");
     g->indent++;
+    gen_entity_copies(g, true);
     line(g, o, "const int32_t tide_r = %s(%s, &%s, tide_this, tide_this_local, tide_scene);", resume, worlds, child.data);
+    gen_entity_copies(g, false);
     line(g, o, "if (tide_r != TIDE_TASK_DONE) {");
     g->indent++;
     line(g, o, "if (tide_r == TIDE_TASK_GONE) return TIDE_TASK_GONE;");
@@ -2182,7 +2388,9 @@ static void gen_await(gen *g, expr *e, const char *name)
     line(g, o, "tide_resume%d:;", k);
     g->indent++;
     gen_reload_live(g);
+    gen_entity_copies(g, true);
     line(g, o, "const int32_t tide_r = %s(%s, &%s, tide_this, tide_this_local, tide_scene);", resume, worlds, child.data);
+    gen_entity_copies(g, false);
     line(g, o, "if (tide_r != TIDE_TASK_DONE) return tide_r;");
     g->indent--;
     line(g, o, "}");
@@ -2197,6 +2405,25 @@ static void gen_await(gen *g, expr *e, const char *name)
     }
     // Its text and lists go: its value's have been read, and stay until the task is done
     line(g, o, "tide_release_%s(&%s, %s);", type_cname(ci->frame), child.data, where);
+}
+
+// Code that runs for an entity has copies of its components (see
+// gen_row_copies and gen_task_resume). Starting a task, or going on with one
+// it awaits, runs code that gets the entity's components itself: before, the
+// copies it changed go back (`put`), and after, it takes them all again.
+static void gen_entity_copies(gen *g, const bool put)
+{
+    const decl *code = g->task ? g->task->info->fn : g->code;
+    if (!code || (!g->task && !code->per_entity)) return;
+    for (int i = 0; i < code->params.count; i++) {
+        const param *p = &code->params.items[i];
+        if (p->type.kind != TY_COMPONENT || (p->mode != PARAM_READ && p->mode != PARAM_MUT)) continue;
+        const decl *d = p->type.decl;
+        const char *world = d->is_local ? "tide_l" : "tide_w";
+        const char *name = local_cname(g, p->name);
+        if (put && p->mode == PARAM_MUT) line(g, &g->c, "tide_store_%s(%s, tide_this, %s);", type_cname(d), world, name);
+        if (!put) line(g, &g->c, "tide_load_%s(%s, tide_this, (%s *)%s);", type_cname(d), world, type_cname(d), name);
+    }
 }
 
 // The call an async function's start is, as a statement: `Load(name);` or
@@ -2242,7 +2469,9 @@ static void gen_task_start(gen *g, const expr *call)
         sb_put(&b, g->has_scene && g->scene_local == local ? "tide_scene" : "(tide_entity){0}");
         owner = b.data;
     }
+    gen_entity_copies(g, true);
     line(g, o, "%s(%s, &tide_start, %s);", task_start_name(fn, local), task_worlds(g, local), owner);
+    gen_entity_copies(g, false);
     g->indent--;
     line(g, o, "}");
 }
@@ -2838,6 +3067,7 @@ static void gen_inline(gen *g, const expr *e)
     g->frame = &frame;
     g->routine = fn;
     for (int i = 0; i < fn->body->stmts.count; i++) gen_stmt(g, fn->body->stmts.items[i]);
+    g->list_caches = false;
     g->frame = frame.caller;
     g->routine = frame.caller_routine;
     if (frame.end_used) line(g, o, "%s:;", frame.end);
@@ -3201,6 +3431,17 @@ static void gen_stmt(gen *g, const stmt *s)
 
     case S_ASSIGN: {
         const expr *target = s->target;
+        if (target->kind == E_INDEX && (target->object->type.kind == TY_GRID || target->object->type.kind == TY_LIST)
+            && in_window(g, target)) { // Into the step's window, or its task's copy of its elements
+            indent(g, o);
+            sb_put(o, "tide_wout[");
+            gen_window_index(g, o, target);
+            sb_put(o, "] = ");
+            if (s->op == T_ASSIGN) gen_as(g, o, s->value, target->type);
+            else gen_binary(g, o, compound_op(s->op), s->target, s->value, target->type, s->operator_decl);
+            sb_put(o, ";\n");
+            break;
+        }
         if (target->kind == E_INDEX && target->object->type.kind == TY_GRID) { // cells[p] = x
             const int k = target->object->type.decl->index;
             indent(g, o);
@@ -3460,13 +3701,6 @@ static void collect_tasks(gen *g)
 // compare memory directly. Every built-in type is 4-byte aligned with a size
 // that's a multiple of 4, except bool.
 
-typedef struct layout {
-    int size;
-    int align;
-} layout;
-
-static layout decl_layout(const decl *d);
-
 static layout type_layout(const type t)
 {
     if (t.kind == TY_BOOL) return (layout){1, 1};
@@ -3598,18 +3832,19 @@ static void gen_result_types(gen *g)
 }
 
 // Rows in each of archetype `a`'s chunks are 1 << this: as many as keep its
-// widest column's pages to 16 KiB, from 16 to 1024. Sizes are the same on
-// every platform, so chunks are too, and so is the world's hash.
+// widest column's pages to 16 KiB. Components go in lanes of 4 bytes at most,
+// so that's the entity column: 2048 rows. Sizes are the same on every
+// platform, so chunks are too, and so is the world's hash.
 static int arch_shift(const gen *g, const int a)
 {
     int widest = 8; // The entity column
     for (int i = 0; i < g->prog->components.count; i++) {
         if (!has_component(g->prog->archetypes.items[a], i)) continue;
-        const int size = decl_layout(g->prog->components.items[i]).size;
+        const int size = comp_width(g->prog->components.items[i]); // A lane's
         if (size > widest) widest = size;
     }
     int shift = 4;
-    while (shift < 10 && (16384 >> (shift + 1)) >= widest) shift++;
+    while ((16384 >> (shift + 1)) >= widest) shift++;
     return shift;
 }
 
@@ -3680,8 +3915,9 @@ static void gen_header(gen *g)
     }
 
     sb_put(o, "// Archetypes: storage for each component combination the program can create, a\n");
-    sb_put(o, "// tide_table each (tide/table.h), with these columns. Hosts and tests read a row's\n");
-    sb_put(o, "// component with TIDE_AT(world, arch0_Transform, Transform, row).\n\n");
+    sb_put(o, "// tide_table each (tide/table.h), with these columns: the entity, the scene each is\n");
+    sb_put(o, "// in, then each component's lanes, from the column named for it. Hosts and tests\n");
+    sb_put(o, "// read a row's component with TIDE_AT(world, arch0_Transform, Transform, row).\n\n");
     for (int a = 0; a < prog->archetypes.count; a++) {
         const uint64_t mask = prog->archetypes.items[a];
         const char *name = arch_name(g, a);
@@ -3694,8 +3930,16 @@ static void gen_header(gen *g)
         }
         sb_put(o, " };\n\n");
     }
+    for (int i = 0; i < prog->components.count; i++) {
+        const decl *d = prog->components.items[i];
+        const char *name = type_cname(d);
+        sb_printf(o, "static inline %s tide_row_%s(const tide_table *t, const tide_columns *c, uint32_t column, uint32_t row)\n{\n",
+                  name, name);
+        sb_printf(o, "    %s v;\n    tide_table_gather(t, c, row, column, %du, %du, &v);\n    return v;\n}\n", name, comp_lanes(d),
+                  comp_width(d));
+    }
     sb_put(o, "#define TIDE_AT(world, arch, Component, row) \\\n"
-              "    ((const Component *)tide_table_get(&(world)->arch, &tide_columns_##arch, (row), tide_column_##arch##_##Component))\n");
+              "    tide_row_##Component(&(world)->arch, &tide_columns_##arch, tide_column_##arch##_##Component, (row))\n");
     sb_put(o, "#define TIDE_ENTITY_AT(world, arch, row) \\\n"
               "    (*(const tide_entity *)tide_table_get(&(world)->arch, &tide_columns_##arch, (row), tide_column_##arch##_entity))\n\n");
 
@@ -3896,15 +4140,18 @@ static void gen_header(gen *g)
     sb_put(o, "uint32_t tide_local_entity_count(const tide_local *local);\n\n");
     sb_put(o, "// Prints every entity and its components, for debugging.\n");
     sb_put(o, "void tide_world_print(const tide_world *w);\n\n");
-    sb_put(o, "// Component of an entity, or NULL if the entity is dead or doesn't have it: to\n");
-    sb_put(o, "// change (tide_get_), or only to read (tide_read_), which leaves the pages the\n");
-    sb_put(o, "// world shares with its snapshots shared. Local components are in the local world.\n");
+    sb_put(o, "// An entity's components, which a world keeps in lanes (tide/table.h), so they're\n");
+    sb_put(o, "// values: whether it has one (false for a dead entity), a copy of it (zeros when\n");
+    sb_put(o, "// it has none), and setting it (false when it has none, and nothing changes).\n");
+    sb_put(o, "// Local components are in the local world.\n");
     for (int i = 0; i < prog->components.count; i++) {
         const decl *d = prog->components.items[i];
         const char *name = type_cname(d);
-        sb_printf(o, "%s *tide_get_%s(%s *%s, tide_entity e);\n", name, name, world_type(d->is_local), d->is_local ? "local" : "w");
-        sb_printf(o, "const %s *tide_read_%s(const %s *%s, tide_entity e);\n", name, name, world_type(d->is_local),
-                  d->is_local ? "local" : "w");
+        const char *w = world_type(d->is_local);
+        const char *arg = d->is_local ? "local" : "w";
+        sb_printf(o, "bool tide_has_%s(const %s *%s, tide_entity e);\n", name, w, arg);
+        sb_printf(o, "%s tide_get_%s(const %s *%s, tide_entity e);\n", name, name, w, arg);
+        sb_printf(o, "bool tide_set_%s(%s *%s, tide_entity e, %s value);\n", name, w, arg, name);
     }
 
     if (prog->input) {
@@ -3947,6 +4194,7 @@ static void gen_list_helpers(gen *g, const bool bodies)
         if (!bodies) {
             sb_printf(o, "// List<%s>\n", type_name(e));
             sb_printf(o, "TIDE_HELPER %s tide_list%d_get(tide_list l, int32_t i);\n", vc, k);
+            sb_printf(o, "TIDE_HELPER %s tide_list%d_cget(tide_list_cache *cache, tide_list l, int32_t i);\n", vc, k);
             sb_printf(o, "TIDE_HELPER void tide_list%d_set(tide_list *l, int32_t i, %s v, uint32_t where);\n", k, vc);
             sb_printf(o, "TIDE_HELPER void tide_list%d_add(tide_list *l, %s v, uint32_t where);\n", k, vc);
             sb_printf(o, "TIDE_HELPER void tide_list%d_insert(tide_list *l, int32_t i, %s v, uint32_t where);\n", k, vc);
@@ -3968,6 +4216,12 @@ static void gen_list_helpers(gen *g, const bool bodies)
         sb_printf(o, "// List<%s>: `where` is where the list is (see tide/text.h)\n", type_name(e));
         sb_printf(o, "TIDE_HELPER %s tide_list%d_get(const tide_list l, const int32_t i)\n{\n", vc, k);
         sb_printf(o, "    const %s *p = tide_list_at(l, i, sizeof(%s));\n", ec, sz);
+        if (e.kind == TY_STRING) sb_put(o, "    return p ? tide_text_view(*p) : TIDE_STR_EMPTY;\n}\n\n");
+        else sb_printf(o, "    return p ? *p : (%s){0};\n}\n\n", ec);
+        // The same through the function's cache for this list type (tide_lc), so
+        // a loop over its elements finds each chunk once
+        sb_printf(o, "TIDE_HELPER %s tide_list%d_cget(tide_list_cache *cache, const tide_list l, const int32_t i)\n{\n", vc, k);
+        sb_printf(o, "    const %s *p = tide_list_cached_at(cache, l, i, sizeof(%s));\n", ec, sz);
         if (e.kind == TY_STRING) sb_put(o, "    return p ? tide_text_view(*p) : TIDE_STR_EMPTY;\n}\n\n");
         else sb_printf(o, "    return p ? *p : (%s){0};\n}\n\n", ec);
         // Putting a value in a slot, and taking one out: its text the list's own
@@ -4050,6 +4304,11 @@ void grid_shape(const decl *grid, int *cell, int shift[3])
 // doesn't use costs nothing, as the compiler drops it.
 static void gen_grid_caches(gen *g)
 {
+    if (g->prog->lists.count) { // And a run cache for each list type (tide/list.h)
+        line(g, &g->c, "tide_list_cache tide_lc[%d] = {{0}};", g->prog->lists.count);
+        line(g, &g->c, "(void)tide_lc;");
+        g->list_caches = true;
+    }
     if (g->prog->grids.count == 0) return;
     line(g, &g->c, "tide_grid_cache tide_gc[%d] = {{0}};", g->prog->grids.count);
     line(g, &g->c, "(void)tide_gc;");
@@ -4352,18 +4611,11 @@ static void gen_blend_helpers(gen *g)
             gen_blend_fields(g, d);
             sb_put(o, "}\n\n");
             if (side) continue;
-            // An entity's in last tick's world, unless it wasn't there or it jumped since
-            sb_printf(o, "TIDE_HELPER const %s *tide_prev_%s(const tide_world *w, const tide_world *now, tide_entity e)\n{\n",
-                      name, name);
-            sb_put(o, "    const tide_location at = tide_entity_location(&w->entities, e);\n");
-            sb_put(o, "    if (at.archetype == TIDE_ARCHETYPE_NONE) return NULL;\n");
+            // An entity's in last tick's world, into `out`, unless it wasn't there or it jumped since
+            sb_printf(o, "TIDE_HELPER const %s *tide_prev_%s(const tide_world *w, const tide_world *now, tide_entity e, %s *out)\n{\n",
+                      name, name, name);
             sb_put(o, "    if (tide_entity_snaps(&w->entities, e) != tide_entity_snaps(&now->entities, e)) return NULL;\n");
-            sb_put(o, "    switch (at.archetype) {\n");
-            for (int a = 0; a < prog->archetypes.count; a++) {
-                if (arch_local(g, a) || !has_component(prog->archetypes.items[a], d->index)) continue;
-                sb_printf(o, "    case %d: return %s;\n", a, arch_cell(g, "w", a, arch_column(g, a, d->index), name, "at.row", false));
-            }
-            sb_put(o, "    default: return NULL;\n    }\n}\n\n");
+            sb_printf(o, "    return tide_load_%s(w, e, out) ? out : NULL;\n}\n\n", name);
         }
     }
     g->indent = 0;
@@ -4451,10 +4703,63 @@ static void gen_columns(gen *g)
         sb_printf(o, "static const uint32_t tide_sizes_%s[] = {sizeof(tide_entity)", name);
         if (arch_scene_column(g, a)) sb_put(o, ", sizeof(tide_entity)");
         for (int i = 0; i < prog->components.count; i++) {
-            if (has_component(prog->archetypes.items[a], i)) sb_printf(o, ", sizeof(%s)", type_cname(prog->components.items[i]));
+            if (!has_component(prog->archetypes.items[a], i)) continue;
+            const decl *d = prog->components.items[i];
+            for (int k = 0; k < comp_lanes(d); k++) sb_printf(o, ", %du", comp_width(d)); // Its lanes
         }
         sb_printf(o, "};\nconst tide_columns tide_columns_%s = {%d, %d, tide_sizes_%s};\n\n", name, arch_column_count(g, a),
                   arch_shift(g, a), name);
+    }
+}
+
+// Components in lanes (tide/table.h): one row's value from a chunk's lanes of
+// it, or into them, which a loop over a chunk's rows does row by row; and an
+// entity's, through its archetype. Code changes a component in a copy, and
+// puts the copy back.
+static void gen_component_access(gen *g)
+{
+    const program *prog = g->prog;
+    sb *o = &g->c;
+    sb_put(o, "// Components in lanes: a row's from a chunk's lanes of it, or into them; and an\n");
+    sb_put(o, "// entity's, through its archetype\n\n");
+    for (int c = 0; c < prog->components.count; c++) {
+        const decl *d = prog->components.items[c];
+        const char *name = type_cname(d);
+        const char *w = world_type(d->is_local);
+        const int lanes = comp_lanes(d), width = comp_width(d);
+        sb_printf(o, "TIDE_HELPER void tide_gather_%s(%s *v, const uint8_t *const *lanes, const uint32_t i)\n{\n", name, name);
+        for (int k = 0; k < lanes; k++) {
+            sb_printf(o, "    memcpy((uint8_t *)v + %d, lanes[%d] + (size_t)i * %d, %d);\n", k * width, k, width, width);
+        }
+        sb_put(o, "}\n\n");
+        sb_printf(o, "TIDE_HELPER void tide_scatter_%s(uint8_t *const *lanes, const uint32_t i, const %s *v)\n{\n", name, name);
+        for (int k = 0; k < lanes; k++) {
+            sb_printf(o, "    memcpy(lanes[%d] + (size_t)i * %d, (const uint8_t *)v + %d, %d);\n", k, width, k * width, width);
+        }
+        sb_put(o, "}\n\n");
+        // By entity: false when it's gone, or has none
+        for (int put = 0; put < 2; put++) {
+            sb_printf(o, "TIDE_HELPER bool tide_%s_%s(%s%s *w, tide_entity e, %s%s *v)\n{\n", put ? "store" : "load", name,
+                      put ? "" : "const ", w, put ? "const " : "", name);
+            sb_put(o, "    (void)v;\n    const tide_location loc = tide_entity_location(&w->entities, e);\n    switch (loc.archetype) {\n");
+            for (int a = 0; a < prog->archetypes.count; a++) {
+                if (!has_component(prog->archetypes.items[a], c)) continue;
+                sb_printf(o, "    case %d: tide_table_%s(&w->%s, %s, loc.row, %d, %du, %du, v); return true;\n", a,
+                          put ? "scatter" : "gather", arch_name(g, a), arch_columns(g, a), arch_column(g, a, c), lanes, width);
+            }
+            sb_put(o, "    default: return false;\n    }\n}\n\n");
+        }
+        // For hosts (see the header)
+        sb_printf(o, "bool tide_has_%s(const %s *w, tide_entity e)\n{\n    switch (tide_entity_location(&w->entities, e).archetype) {\n",
+                  name, w);
+        for (int a = 0; a < prog->archetypes.count; a++) {
+            if (has_component(prog->archetypes.items[a], c)) sb_printf(o, "    case %d:\n", a);
+        }
+        sb_put(o, "        return true;\n    default: return false;\n    }\n}\n\n");
+        sb_printf(o, "%s tide_get_%s(const %s *w, tide_entity e)\n{\n    %s v;\n    memset(&v, 0, sizeof v);\n", name, name, w, name);
+        sb_printf(o, "    tide_load_%s(w, e, &v);\n    return v;\n}\n\n", name);
+        sb_printf(o, "bool tide_set_%s(%s *w, tide_entity e, %s value)\n{\n    return tide_store_%s(w, e, &value);\n}\n\n", name, w,
+                  name, name);
     }
 }
 
@@ -4508,8 +4813,11 @@ static void gen_moves(gen *g)
                   arch_label(g, to));
         sb_printf(o, "static const int32_t tide_map%d_%d[] = {0", from, to);
         if (arch_scene_column(g, to)) sb_put(o, ", 1");
-        for (int c = 0; c < prog->components.count; c++) {
-            if (has_component(to_mask, c)) sb_printf(o, ", %d", has_component(from_mask, c) ? arch_column(g, from, c) : -1);
+        for (int c = 0; c < prog->components.count; c++) { // Lane by lane
+            if (!has_component(to_mask, c)) continue;
+            for (int k = 0; k < comp_lanes(prog->components.items[c]); k++) {
+                sb_printf(o, ", %d", has_component(from_mask, c) ? arch_column(g, from, c) + k : -1);
+            }
         }
         sb_put(o, "};\n");
         sb_printf(o, "TIDE_HELPER uint32_t tide_move%d_%d(%s *w, uint32_t row)\n{\n", from, to, world_type(arch_local(g, from)));
@@ -4710,8 +5018,9 @@ static void gen_apply(gen *g, const bool local)
         if (has_scenes(prog, local)) sb_printf(o, "        *%s = c->scene;\n", arch_cell(g, "w", a, 1, "tide_entity", "row", true));
         for (int i = 0; i < prog->components.count; i++) {
             if (!has_component(mask, i)) continue;
-            const char *comp = type_cname(prog->components.items[i]);
-            sb_printf(o, "        *%s = c->data.spawn%d.%s;\n", arch_cell(g, "w", a, arch_column(g, a, i), comp, "row", true), a, comp);
+            sb value = {0};
+            sb_printf(&value, "c->data.spawn%d.%s", a, type_cname(prog->components.items[i]));
+            sb_printf(o, "        %s;\n", comp_put(g, "w", a, i, "row", value.data));
         }
         sb_printf(o, "        tide_entity_set_location(&w->entities, c->entity, (tide_location){%d, row});\n", a);
         if (handled_for(prog, prog->spawned, a)) sb_printf(o, "        %sdispatch_%s(w, c->entity, &(%s){0});\n", p, spawned, spawned);
@@ -4738,18 +5047,20 @@ static void gen_apply(gen *g, const bool local)
         for (int a = 0; a < prog->archetypes.count; a++) {
             if (arch_local(g, a) != local) continue;
             const uint64_t mask = prog->archetypes.items[a];
+            sb value = {0};
+            sb_printf(&value, "c->data.%s", comp);
             if (has_component(mask, comp_i)) {
-                const char *cell = arch_cell(g, "w", a, arch_column(g, a, comp_i), comp, "loc.row", true);
-                if (decl_has_text(prog->components.items[comp_i])) {
-                    sb_printf(o, "        case %d: tide_release_%s(%s, %s); *%s = c->data.%s; break;\n", a, comp, cell, world_where(local),
-                              cell, comp);
+                if (decl_has_text(prog->components.items[comp_i])) { // The old value's text goes
+                    sb_printf(o, "        case %d: { %s tide_old; %s; tide_release_%s(&tide_old, %s); %s; break; }\n", a, comp,
+                              comp_take(g, "w", a, comp_i, "loc.row", "tide_old"), comp, world_where(local),
+                              comp_put(g, "w", a, comp_i, "loc.row", value.data));
                 } else {
-                    sb_printf(o, "        case %d: *%s = c->data.%s; break;\n", a, cell, comp);
+                    sb_printf(o, "        case %d: %s; break;\n", a, comp_put(g, "w", a, comp_i, "loc.row", value.data));
                 }
             } else {
                 const int to = find_arch(g, mask | ((uint64_t)1 << comp_i), local);
-                sb_printf(o, "        case %d: { const uint32_t row = tide_move%d_%d(w, loc.row); *%s = c->data.%s; break; }\n", a, a, to,
-                          arch_cell(g, "w", to, arch_column(g, to, comp_i), comp, "row", true), comp);
+                sb_printf(o, "        case %d: { const uint32_t row = tide_move%d_%d(w, loc.row); %s; break; }\n", a, a, to,
+                          comp_put(g, "w", to, comp_i, "row", value.data));
             }
         }
         sb_put(o, "        default: break;\n        }\n        break;\n");
@@ -4770,8 +5081,9 @@ static void gen_apply(gen *g, const bool local)
             const int to = find_arch(g, mask & ~((uint64_t)1 << comp_i), local);
             const decl *comp = prog->components.items[comp_i];
             if (decl_has_text(comp)) {
-                sb_printf(o, "        case %d: tide_release_%s(%s, %s); tide_move%d_%d(w, loc.row); break;\n", a, type_cname(comp),
-                          arch_cell(g, "w", a, arch_column(g, a, comp_i), type_cname(comp), "loc.row", true), world_where(local), a, to);
+                sb_printf(o, "        case %d: { %s tide_old; %s; tide_release_%s(&tide_old, %s); tide_move%d_%d(w, loc.row); break; }\n",
+                          a, type_cname(comp), comp_take(g, "w", a, comp_i, "loc.row", "tide_old"), type_cname(comp), world_where(local),
+                          a, to);
             } else {
                 sb_printf(o, "        case %d: tide_move%d_%d(w, loc.row); break;\n", a, a, to);
             }
@@ -4792,8 +5104,8 @@ static void gen_apply(gen *g, const bool local)
         for (int c = 0; c < prog->components.count; c++) {
             const decl *comp = prog->components.items[c];
             if (!has_component(prog->archetypes.items[a], c) || !decl_has_text(comp)) continue;
-            sb_printf(o, " tide_release_%s(%s, %s);", type_cname(comp),
-                      arch_cell(g, "w", a, arch_column(g, a, c), type_cname(comp), "loc.row", true), world_where(local));
+            sb_printf(o, " { %s tide_old; %s; tide_release_%s(&tide_old, %s); }", type_cname(comp),
+                      comp_take(g, "w", a, c, "loc.row", "tide_old"), type_cname(comp), world_where(local));
         }
         sb_printf(o, " tide_table_remove(&w->%s, %s, loc.row, &w->entities, %d); break;\n", arch_name(g, a), arch_columns(g, a), a);
     }
@@ -4848,10 +5160,10 @@ static void gen_apply(gen *g, const bool local)
         for (int a = 0; a < prog->archetypes.count; a++) {
             const decl *scene = arch_scene(g, a);
             if (arch_local(g, a) || !scene) continue;
-            const char *cell = arch_cell(g, "w", a, arch_column(g, a, scene->index), type_cname(scene), "loc.row", true);
-            sb_printf(o, "    case %d:\n", a);
-            sb_printf(o, "        if (c->id) %s->tide_players |= bit;\n", cell);
-            sb_printf(o, "        else %s->tide_players &= ~bit;\n        break;\n", cell);
+            sb_printf(o, "    case %d: {\n        %s s;\n        %s;\n", a, type_cname(scene),
+                      comp_take(g, "w", a, scene->index, "loc.row", "s"));
+            sb_put(o, "        if (c->id) s.tide_players |= bit;\n        else s.tide_players &= ~bit;\n");
+            sb_printf(o, "        %s;\n        break;\n    }\n", comp_put(g, "w", a, scene->index, "loc.row", "s"));
         }
         sb_put(o, "    default: break;\n    }\n}\n\n");
     }
@@ -5092,7 +5404,8 @@ static void gen_par_heads(gen *g, const decl *sys)
     for (int i = 0; i < g->pars.count; i++) {
         const char *name = g->par_names.items[i];
         const capture_list caps = par_captures(g, sys, g->pars.items[i]);
-        sb_printf(o, "typedef struct %s_ctx {\n    tide_par_loop *loop;\n", name);
+        const bool list = g->pars.items[i]->value->type.kind == TY_LIST;
+        sb_printf(o, "typedef struct %s_ctx {\n    %s *loop;\n", name, list ? "tide_par_list" : "tide_par_loop");
         for (int k = 0; k < caps.count; k++) sb_printf(o, "    %s%s%s;\n", caps.items[k].ctype,
                                                        caps.items[k].ctype[strlen(caps.items[k].ctype) - 1] == '*' ? "" : " ",
                                                        caps.items[k].name);
@@ -5116,6 +5429,31 @@ static void gen_parallel_call(gen *g, const stmt *s)
     const char *name = g->par_names.items[index];
     const decl *grid = s->value->type.decl;
     const capture_list caps = par_captures(g, g->code, s);
+    const uint64_t cost = stmt_cost(s->then_stmt);
+    if (s->value->type.kind == TY_LIST) { // A list's elements, by index (tide/list.h)
+        line(g, o, "{");
+        g->indent++;
+        line(g, o, "tide_par_list tide_pl;");
+        indent(g, o);
+        sb_put(o, "const int32_t tide_o = ");
+        if (s->offset) gen_expr(g, o, s->offset);
+        else sb_put(o, "0");
+        sb_put(o, ";\n");
+        indent(g, o);
+        sb_put(o, "tide_par_list_begin(&tide_pl, &(");
+        gen_expr(g, o, s->value);
+        sb_printf(o, "), sizeof(%s), %d, tide_o);\n", elem_ctype(list_elem(grid)), s->block[0]);
+        indent(g, o);
+        sb_printf(o, "const %s_ctx tide_cx = {&tide_pl", name);
+        for (int k = 0; k < caps.count; k++) sb_printf(o, ", %s", caps.items[k].name);
+        sb_put(o, "};\n");
+        line(g, o, "tide_parallel_for(tide_pl.tasks, %s, (void *)(uintptr_t)&tide_cx, tide_pl.steps * %lluu);", name,
+             (unsigned long long)(cost < 1000000u ? cost : 1000000u));
+        line(g, o, "tide_par_list_end(&tide_pl);");
+        g->indent--;
+        line(g, o, "}");
+        return;
+    }
     line(g, o, "{");
     g->indent++;
     line(g, o, "tide_par_loop tide_pl;");
@@ -5138,12 +5476,64 @@ static void gen_parallel_call(gen *g, const stmt *s)
     sb_printf(o, "const %s_ctx tide_cx = {&tide_pl", name);
     for (int k = 0; k < caps.count; k++) sb_printf(o, ", %s", caps.items[k].name);
     sb_put(o, "};\n");
-    const uint64_t cost = stmt_cost(s->then_stmt);
     line(g, o, "tide_parallel_for(tide_pl.tasks, %s, (void *)(uintptr_t)&tide_cx, tide_pl.steps * %lluu);", name,
          (unsigned long long)(cost < 1000000u ? cost : 1000000u));
     line(g, o, "tide_par_end(&tide_pl);");
     g->indent--;
     line(g, o, "}");
+}
+
+// A task's loops over its blocks, `base` deep, with each step in them. Where
+// the grid has no chunk at the tile (`live`), a block that takes in none of
+// its chunks is outside the loop.
+static void gen_par_nest(gen *g, const decl *sys, const stmt *s, const int base, const bool live)
+{
+    sb *o = &g->c;
+    const bool list = s->value->type.kind == TY_LIST; // One axis: its elements' indices
+    const bool three = !list && s->value->type.decl->dims == 3;
+    const int *b = s->block;
+    int depth = base;
+    g->indent = base;
+    if (three) {
+        line(g, o, "for (int32_t tide_k2 = tide_z0; tide_k2 < tide_z1; tide_k2++) {");
+        g->indent = ++depth;
+    }
+    if (!list) {
+        line(g, o, "for (int32_t tide_k1 = tide_y0; tide_k1 < tide_y1; tide_k1++) {");
+        g->indent = ++depth;
+    }
+    line(g, o, "for (int32_t tide_k0 = tide_x0; tide_k0 < tide_x1; tide_k0++) {");
+    g->indent = ++depth;
+    const char *at = local_cname(g, s->name);
+    if (list) {
+        line(g, o, "const int32_t %s = tide_o0 + tide_k0 * %d;", at, b[0]);
+    } else if (three) {
+        line(g, o, "const tide_int3 %s = {tide_o[0] + tide_k0 * %d, tide_o[1] + tide_k1 * %d, tide_o[2] + tide_k2 * %d};", at,
+             b[0], b[1], b[2]);
+    } else {
+        line(g, o, "const tide_int2 %s = {tide_o[0] + tide_k0 * %d, tide_o[1] + tide_k1 * %d};", at, b[0], b[1]);
+    }
+    line(g, o, "(void)%s;", at);
+    if (live && three) line(g, o, "if (tide_sparse && !tide_par_live(tide_pl, %s.x, %s.y, %s.z)) continue;", at, at, at);
+    else if (live) line(g, o, "if (tide_sparse && !tide_par_live(tide_pl, %s.x, %s.y, 0)) continue;", at, at);
+    g->code = sys;
+    g->routine = NULL;
+    g->frame = NULL;
+    g->task = NULL;
+    g->par_loop = s;
+    g->list_caches = g->prog->lists.count > 0;
+    g->targets.count = 0;
+    const gen_target loop = {g->frame, g->containers.count, true, true, made_up(g, "loop_end"), false, made_up(g, "next"), false};
+    vec_push(g->targets, loop);
+    gen_body_stmt(g, s->then_stmt);
+    const gen_target done = g->targets.items[--g->targets.count];
+    if (done.next_used) line(g, o, "%s:;", done.next);
+    g->par_loop = NULL;
+    g->list_caches = false;
+    for (int d = depth - 1; d >= base; d--) {
+        g->indent = d;
+        line(g, o, "}");
+    }
 }
 
 // After a system's function: its loops' steps, each task a tile of blocks
@@ -5155,58 +5545,79 @@ static void gen_par_steps(gen *g, const decl *sys)
         const stmt *s = g->pars.items[i];
         const char *name = g->par_names.items[i];
         const decl *grid = s->value->type.decl;
-        const bool three = grid->dims == 3;
         const capture_list caps = par_captures(g, sys, s);
+        const bool list = s->value->type.kind == TY_LIST;
         sb_printf(o, "static void %s(void *tide_ctx, uint32_t tide_task)\n{\n", name);
-        sb_printf(o, "    const %s_ctx *tide_cx = tide_ctx;\n    tide_par_loop *const tide_pl = tide_cx->loop;\n", name);
+        sb_printf(o, "    const %s_ctx *tide_cx = tide_ctx;\n    %s *const tide_pl = tide_cx->loop;\n", name,
+                  list ? "tide_par_list" : "tide_par_loop");
         for (int k = 0; k < caps.count; k++) {
             const par_capture *c = &caps.items[k];
             sb_printf(o, "    %s%s%s = tide_cx->%s;\n    (void)%s;\n", c->ctype, c->ctype[strlen(c->ctype) - 1] == '*' ? "" : " ",
                       c->name, c->name, c->name);
         }
-        sb_printf(o, "    tide_grid_cache tide_gc[%d] = {{0}};\n    (void)tide_gc;\n", g->prog->grids.count);
-        sb_put(o, "    tide_par_cache tide_pc = {{0, 0, 0}, NULL};\n    const uint32_t tide_mark = tide_scratch_mark();\n");
+        if (g->prog->grids.count) sb_printf(o, "    tide_grid_cache tide_gc[%d] = {{0}};\n    (void)tide_gc;\n", g->prog->grids.count);
+        if (g->prog->lists.count) sb_printf(o, "    tide_list_cache tide_lc[%d] = {{0}};\n    (void)tide_lc;\n", g->prog->lists.count);
+        if (list) { // Its blocks of the list, and its copy of their elements, which its steps write
+            const char *element = elem_ctype(list_elem(grid));
+            sb_put(o, "    const uint32_t tide_mark = tide_scratch_mark();\n    int32_t tide_x0, tide_x1;\n");
+            sb_printf(o, "    %s *restrict const tide_wout = tide_par_list_task(tide_pl, tide_task, &tide_x0, &tide_x1);\n", element);
+            sb_printf(o, "    const int32_t tide_o0 = tide_pl->offset, tide_lo = tide_o0 + tide_x0 * %d;\n", s->block[0]);
+            sb_put(o, "    (void)tide_wout;\n    (void)tide_lo;\n");
+            gen_par_nest(g, sys, s, 1, false);
+            g->indent = 0;
+            sb_put(o, "    tide_scratch_reset(tide_mark);\n}\n\n");
+            line_reset(g);
+            continue;
+        }
+        if (!s->windowed) sb_put(o, "    tide_par_cache tide_pc = {{0, 0, 0}, NULL};\n");
+        sb_put(o, "    const uint32_t tide_mark = tide_scratch_mark();\n");
         sb_put(o, "    int32_t tide_from[3], tide_to[3];\n");
         sb_put(o, "    const bool tide_sparse = tide_par_tile(tide_pl, tide_task, tide_from, tide_to);\n");
-        int depth = 1;
-        g->indent = 1;
-        if (three) {
-            line(g, o, "for (int32_t tide_k2 = tide_from[2]; tide_k2 < tide_to[2]; tide_k2++) {");
-            g->indent = ++depth;
+        sb_put(o, "    const int32_t tide_o[3] = {tide_pl->offset[0], tide_pl->offset[1], tide_pl->offset[2]};\n");
+        // In variables of their own, which nothing the steps write can change
+        sb_put(o, "    const int32_t tide_x0 = tide_from[0], tide_x1 = tide_to[0], tide_y0 = tide_from[1], tide_y1 = tide_to[1];\n");
+        sb_put(o, "    const int32_t tide_z0 = tide_from[2], tide_z1 = tide_to[2];\n    (void)tide_z0;\n    (void)tide_z1;\n");
+        const int *b = s->block;
+        if (s->windowed) {
+            // The task's window: the cells its blocks reach, read once as the
+            // loop found them, and a copy its steps write in
+            const char *cell = c_type(grid->fields.items[0].type);
+            const int *lo = s->window_lo, *hi = s->window_hi;
+            sb_put(o, "    if (tide_from[0] >= tide_to[0] || tide_from[1] >= tide_to[1] || tide_from[2] >= tide_to[2]) {\n"
+                      "        tide_scratch_reset(tide_mark);\n        return;\n    }\n");
+            sb_printf(o, "    const int32_t tide_lo[3] = {tide_o[0] + tide_from[0] * %d + (%d), tide_o[1] + tide_from[1] * %d + (%d), "
+                         "tide_o[2] + tide_from[2] * %d + (%d)};\n",
+                      b[0], lo[0], b[1], lo[1], b[2], lo[2]);
+            sb_printf(o, "    const int32_t tide_hi[3] = {tide_o[0] + (tide_to[0] - 1) * %d + %d, tide_o[1] + (tide_to[1] - 1) * %d + %d, "
+                         "tide_o[2] + (tide_to[2] - 1) * %d + %d};\n",
+                      b[0], hi[0], b[1], hi[1], b[2], hi[2]);
+            sb_printf(o, "    const int32_t tide_own0[3] = {tide_o[0] + tide_from[0] * %d, tide_o[1] + tide_from[1] * %d, "
+                         "tide_o[2] + tide_from[2] * %d};\n",
+                      b[0], b[1], b[2]);
+            sb_printf(o, "    const int32_t tide_own1[3] = {tide_o[0] + tide_to[0] * %d - 1, tide_o[1] + tide_to[1] * %d - 1, "
+                         "tide_o[2] + tide_to[2] * %d - 1};\n",
+                      b[0], b[1], b[2]);
+            sb_put(o, "    const int32_t tide_lx = tide_lo[0], tide_ly = tide_lo[1], tide_lz = tide_lo[2];\n    (void)tide_lz;\n");
+            sb_put(o, "    const int32_t tide_ww = tide_hi[0] - tide_lo[0] + 1, tide_wh = tide_hi[1] - tide_lo[1] + 1;\n");
+            sb_put(o, "    (void)tide_wh;\n");
+            sb_put(o, "    const size_t tide_wn = (size_t)tide_ww * (size_t)tide_wh * (size_t)(tide_hi[2] - tide_lo[2] + 1);\n");
+            sb_printf(o, "    %s *const tide_wm = tide_scratch_memory(2u * tide_wn * sizeof(%s));\n", cell, cell);
+            sb_put(o, "    tide_par_window(tide_pl, tide_lo, tide_hi, tide_wm);\n");
+            sb_printf(o, "    memcpy(tide_wm + tide_wn, tide_wm, tide_wn * sizeof(%s));\n", cell);
+            sb_printf(o, "    const %s *restrict const tide_win = tide_wm;\n    %s *restrict const tide_wout = tide_wm + tide_wn;\n", cell,
+                      cell);
         }
-        line(g, o, "for (int32_t tide_k1 = tide_from[1]; tide_k1 < tide_to[1]; tide_k1++) {");
-        g->indent = ++depth;
-        line(g, o, "for (int32_t tide_k0 = tide_from[0]; tide_k0 < tide_to[0]; tide_k0++) {");
-        g->indent = ++depth;
-        if (three) {
-            line(g, o, "const tide_int3 %s = {tide_pl->offset[0] + tide_k0 * tide_pl->block[0], tide_pl->offset[1] + tide_k1 * "
-                       "tide_pl->block[1], tide_pl->offset[2] + tide_k2 * tide_pl->block[2]};", local_cname(g, s->name));
+        if (s->windowed) { // Two of its loops: a tile where the grid has no chunk checks each block first
+            sb_put(o, "    if (!tide_sparse) {\n");
+            gen_par_nest(g, sys, s, 2, false);
+            sb_put(o, "    } else {\n");
+            gen_par_nest(g, sys, s, 2, true);
+            sb_put(o, "    }\n");
         } else {
-            line(g, o, "const tide_int2 %s = {tide_pl->offset[0] + tide_k0 * tide_pl->block[0], tide_pl->offset[1] + tide_k1 * "
-                       "tide_pl->block[1]};", local_cname(g, s->name));
-        }
-        line(g, o, "(void)%s;", local_cname(g, s->name));
-        // Where the grid has no chunk, a block that takes in none of its chunks is outside the loop
-        const char *at = local_cname(g, s->name);
-        if (three) line(g, o, "if (tide_sparse && !tide_par_live(tide_pl, %s.x, %s.y, %s.z)) continue;", at, at, at);
-        else line(g, o, "if (tide_sparse && !tide_par_live(tide_pl, %s.x, %s.y, 0)) continue;", at, at);
-        g->code = sys;
-        g->routine = NULL;
-        g->frame = NULL;
-        g->task = NULL;
-        g->par_loop = s;
-        g->targets.count = 0;
-        const gen_target loop = {g->frame, g->containers.count, true, true, made_up(g, "loop_end"), false, made_up(g, "next"), false};
-        vec_push(g->targets, loop);
-        gen_body_stmt(g, s->then_stmt);
-        const gen_target done = g->targets.items[--g->targets.count];
-        if (done.next_used) line(g, o, "%s:;", done.next);
-        g->par_loop = NULL;
-        for (int d = depth - 1; d > 0; d--) {
-            g->indent = d;
-            line(g, o, "}");
+            gen_par_nest(g, sys, s, 1, true);
         }
         g->indent = 0;
+        if (s->windowed) sb_put(o, "    tide_par_window_put(tide_pl, tide_lo, tide_hi, tide_own0, tide_own1, tide_wout, tide_win);\n");
         sb_put(o, "    tide_scratch_reset(tide_mark);\n}\n\n");
         line_reset(g);
     }
@@ -5306,6 +5717,7 @@ static void gen_system_body(gen *g, const decl *sys)
     }
     gen_grid_caches(g);
     for (int i = 0; i < sys->body->stmts.count; i++) gen_stmt(g, sys->body->stmts.items[i]);
+    g->list_caches = false;
     g->indent = 0;
     sb_put(o, "}\n");
     line_reset(g);
@@ -5383,14 +5795,50 @@ static void gen_chunk_columns(gen *g, const decl *sys, const int a, const char *
             change |= p->mode == PARAM_MUT && !read_only;
         }
         if (!used) continue;
-        const char *comp = type_cname(prog->components.items[c]);
-        if (change) {
-            sb_printf(o, "%s%s *tide_col_%s = tide_table_column_mut(tide_t, %s, tide_c, %d);\n", pad, comp, comp, columns,
-                      arch_column(g, a, c));
-        } else {
-            sb_printf(o, "%sconst %s *tide_col_%s = tide_table_column(tide_t, %s, tide_c, %d);\n", pad, comp, comp, columns,
-                      arch_column(g, a, c));
+        // Its lanes in this chunk
+        const decl *d = prog->components.items[c];
+        const char *comp = type_cname(d);
+        sb_printf(o, "%s%suint8_t *const tide_col_%s[%d] = {", pad, change ? "" : "const ", comp, comp_lanes(d));
+        for (int k = 0; k < comp_lanes(d); k++) {
+            sb_printf(o, "%s(%suint8_t *)tide_table_column%s(tide_t, %s, tide_c, %d)", k ? ", " : "", change ? "" : "const ",
+                      change ? "_mut" : "", columns, arch_column(g, a, c) + k);
         }
+        sb_put(o, "};\n");
+    }
+}
+
+// Before a system or handler runs for row tide_i of a chunk: copies of its
+// components from their lanes (gen_chunk_columns), blended for a view, and its
+// Owner, for its input. After: the ones it changed, put back.
+static void gen_row_copies(gen *g, const decl *sys, const int a, const char *pad)
+{
+    sb *o = &g->c;
+    for (int i = 0; i < sys->params.count; i++) {
+        const param *p = &sys->params.items[i];
+        if (p->type.kind != TY_COMPONENT || (p->mode != PARAM_READ && p->mode != PARAM_MUT)) continue;
+        const char *c = type_cname(p->type.decl);
+        sb_printf(o, "%s%s tide_v%d;\n%stide_gather_%s(&tide_v%d, (const uint8_t *const *)tide_col_%s, tide_i);\n", pad, c, i, pad, c,
+                  i, c);
+        if (sys->is_view && param_blends(p)) {
+            sb_printf(o, "%sif (tide_blend) { %s tide_p%d; tide_blend_%s(&tide_v%d, tide_prev_%s(tide_prev, tide_w, tide_ent[tide_i], "
+                         "&tide_p%d), tide_alpha); }\n",
+                      pad, c, i, c, i, c, i);
+        }
+    }
+    if (reads_owner(g, sys, a)) {
+        const char *owner = type_cname(g->prog->owner);
+        sb_printf(o, "%s%s tide_owner;\n%stide_gather_%s(&tide_owner, (const uint8_t *const *)tide_col_%s, tide_i);\n", pad, owner, pad,
+                  owner, owner);
+    }
+}
+
+static void gen_row_puts(gen *g, const decl *sys, const char *pad, const bool read_only)
+{
+    for (int i = 0; i < sys->params.count && !read_only; i++) {
+        const param *p = &sys->params.items[i];
+        if (p->type.kind != TY_COMPONENT || p->mode != PARAM_MUT) continue;
+        sb_printf(&g->c, "%stide_scatter_%s(tide_col_%s, tide_i, &tide_v%d);\n", pad, type_cname(p->type.decl),
+                  type_cname(p->type.decl), i);
     }
 }
 
@@ -5402,7 +5850,6 @@ static void gen_system_args(gen *g, const decl *sys, const int a)
 {
     sb *o = &g->c;
     if (a >= 0) sb_put(o, ", tide_ent[tide_i]");
-    const char *owner = type_cname(g->prog->owner);
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
         switch (p->type.kind) {
@@ -5410,16 +5857,14 @@ static void gen_system_args(gen *g, const decl *sys, const int a)
             if (g->blending == sys && param_blends(p)) sb_printf(o, ", &tide_v%d", i);
             else sb_printf(o, ", &%s->%s", p->type.decl->is_local ? "tide_l" : "tide_w", type_cname(p->type.decl));
             break;
-        case TY_COMPONENT:
-            if (g->blending == sys && param_blends(p)) sb_printf(o, ", &tide_v%d", i);
-            else if (p->mode == PARAM_READ || p->mode == PARAM_MUT) sb_printf(o, ", &tide_col_%s[tide_i]", type_cname(p->type.decl));
+        case TY_COMPONENT: // Its copy, from gen_row_copies
+            if (p->mode == PARAM_READ || p->mode == PARAM_MUT) sb_printf(o, ", &tide_v%d", i);
             break;
         case TY_INPUT:
             // This tick's input and last tick's: the owner's, or the server's for
             // entities without an Owner and for systems that run once.
             if (reads_owner(g, sys, a)) {
-                sb_printf(o, ", tide_input_of(tide_w, tide_col_%s[tide_i].player, false)", owner);
-                sb_printf(o, ", tide_input_of(tide_w, tide_col_%s[tide_i].player, true)", owner);
+                sb_put(o, ", tide_input_of(tide_w, tide_owner.player, false), tide_input_of(tide_w, tide_owner.player, true)");
             } else {
                 sb_put(o, ", &tide_w->inputs[TIDE_SERVER_INPUT], &tide_w->previous_inputs[TIDE_SERVER_INPUT]");
             }
@@ -5427,7 +5872,7 @@ static void gen_system_args(gen *g, const decl *sys, const int a)
         case TY_RECORD:
             // The devices the input sent: the owner's, or the server's.
             if (reads_owner(g, sys, a)) {
-                sb_printf(o, ", &tide_input_of(tide_w, tide_col_%s[tide_i].player, false)->tide_dev", owner);
+                sb_put(o, ", &tide_input_of(tide_w, tide_owner.player, false)->tide_dev");
             } else {
                 sb_put(o, ", &tide_w->inputs[TIDE_SERVER_INPUT].tide_dev");
             }
@@ -5451,7 +5896,11 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
     const char *world = local ? "tide_l" : "tide_w";
     sb_printf(o, "// " STR_FMT "'s %shandlers, in the order they run\n", STR_ARG(event->qualified), local ? "local " : "");
     sb_printf(o, "%s\n{\n", dispatch_signature(event, local));
-    if (prog->uses_text) sb_put(o, "    const uint32_t tide_mark = tide_scratch_mark();\n    (void)tide_mark;\n");
+    bool text = false; // A handler of it makes text or changes the heap
+    for (int i = 0; i < event->handlers.count; i++) {
+        if (event->handlers.items[i]->is_local == local) text |= touches_text(event->handlers.items[i]);
+    }
+    if (prog->uses_text && text) sb_put(o, "    const uint32_t tide_mark = tide_scratch_mark();\n    (void)tide_mark;\n");
     sb_printf(o, "    const tide_location tide_loc = tide_entity_location(&%s->entities, tide_target);\n", world);
     sb_put(o, "    if (!tide_entity_is_null(tide_target) && tide_loc.archetype == TIDE_ARCHETYPE_NONE) return; // Gone by its turn\n");
     for (int i = 0; i < event->handlers.count; i++) {
@@ -5461,8 +5910,9 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
         sb_printf(&call, "tide_handler_%s(%s, tide_event", decl_cname(h), world);
         sb_printf(o, "    // " STR_FMT "\n", STR_ARG(h->qualified));
         sb clear_text = {0};
-        if (prog->uses_text) sb_put(&clear_text, " tide_scratch_reset(tide_mark);");
-        if (prog->uses_heap) sb_printf(&clear_text, " tide_heap_flush(&%s->heap);", world);
+        const bool its_text = touches_text(h);
+        if (prog->uses_text && its_text) sb_put(&clear_text, " tide_scratch_reset(tide_mark);");
+        if (prog->uses_heap && its_text) sb_printf(&clear_text, " tide_heap_flush(&%s->heap);", world);
         const char *clear = clear_text.data ? clear_text.data : "";
         if (h->is_async) { // A task: its frame has the event, and it gets its components itself
             const task_info *ti = task_of(g, h);
@@ -5503,9 +5953,12 @@ static void gen_dispatcher(gen *g, const decl *event, const bool local)
             sb_printf(o, "        const uint32_t tide_c = tide_loc.row >> %d;\n", shift);
             sb_printf(o, "        const uint32_t tide_i = tide_loc.row & %du;\n", (1 << shift) - 1);
             gen_chunk_columns(g, h, a, "        ", false);
+            gen_row_copies(g, h, a, "        ");
             sb_printf(o, "        %s", call.data);
             gen_system_args(g, h, a);
-            sb_printf(o, ");%s\n        break;\n    }\n", clear);
+            sb_printf(o, ");%s\n", clear);
+            gen_row_puts(g, h, "        ", false);
+            sb_put(o, "        break;\n    }\n");
         }
         sb_put(o, "    default: break;\n    }\n");
     }
@@ -5643,6 +6096,7 @@ static void gen_routine(gen *g, const decl *m)
     }
     gen_grid_caches(g);
     for (int i = 0; i < m->body->stmts.count; i++) gen_stmt(g, m->body->stmts.items[i]);
+    g->list_caches = false;
     // A function that can fail and returns nothing succeeds at its end.
     if (m->result.kind == TY_FAILABLE && m->return_type.kind == TY_VOID) line(g, o, "return (%s){.ok = true};", c_type(m->result));
     g->routine = NULL;
@@ -5673,18 +6127,26 @@ static void gen_task_resume(gen *g, task_info *ti, const bool local)
     g->scene_local = local;
     sb_printf(o, "// " STR_FMT ", as a task in %s: it goes on from where it stopped, until it waits or ends\n",
               STR_ARG(fn->qualified), local ? "the local world" : "the match");
-    sb_printf(o, "TIDE_HELPER int32_t %s(%s, %s *tide_f, const tide_entity tide_this, const bool tide_this_local, "
-                 "const tide_entity tide_scene)\n{\n",
-              task_resume_name(fn, local), local ? "const tide_world *tide_w, tide_local *tide_l" : "tide_world *tide_w",
-              type_cname(ti->frame));
+    // The task's code, with copies of its entity's components, which the
+    // function below (the resume function itself) takes and puts back
+    const char *worlds_decl = local ? "const tide_world *tide_w, tide_local *tide_l" : "tide_world *tide_w";
+    sb_printf(o, "static int32_t %s_body(%s, %s *tide_f, const tide_entity tide_this, const bool tide_this_local, "
+                 "const tide_entity tide_scene",
+              task_resume_name(fn, local), worlds_decl, type_cname(ti->frame));
+    for (int i = 0; i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (p->type.kind == TY_COMPONENT && (p->mode == PARAM_READ || p->mode == PARAM_MUT)) {
+            sb_printf(o, ", %s *%s", c_type(p->type), local_cname(g, p->name));
+        }
+    }
+    sb_put(o, ")\n{\n");
     g->indent = 1;
     line(g, o, "(void)tide_w;");
     if (local) line(g, o, "(void)tide_l;");
     line(g, o, "(void)tide_this;");
     line(g, o, "(void)tide_this_local;");
     line(g, o, "(void)tide_scene;");
-    // Its parameters: values from the frame, and components and singletons
-    // got again; when they're gone, so is the task.
+    // Its parameters: values from the frame, and singletons got again
     for (int i = 0; i < fn->params.count; i++) {
         const param *p = &fn->params.items[i];
         if (p->mode == PARAM_WITH || p->mode == PARAM_WITHOUT) continue;
@@ -5695,18 +6157,15 @@ static void gen_task_resume(gen *g, task_info *ti, const bool local)
             continue;
         }
         const char *name = local_cname(g, p->name);
-        if (p->type.kind == TY_COMPONENT || p->type.kind == TY_SINGLETON) {
+        if (p->type.kind == TY_COMPONENT) {
+            line(g, o, "(void)%s;", name);
+            continue;
+        }
+        if (p->type.kind == TY_SINGLETON) {
             const decl *d = p->type.decl;
-            const bool mut = p->mode == PARAM_MUT;
-            const char *world = d->is_local ? "tide_l" : "tide_w";
             const char *ct = c_type(p->type);
             if (!d->is_local && local) line(g, o, "if (!tide_w) return TIDE_TASK_GONE;");
-            if (p->type.kind == TY_SINGLETON) {
-                line(g, o, "%s%s *%s = &%s->%s;", mut ? "" : "const ", ct, name, world, ct);
-            } else {
-                line(g, o, "%s%s *%s = tide_%s_%s(%s, tide_this);", mut ? "" : "const ", ct, name, mut ? "get" : "read", ct, world);
-                line(g, o, "if (!%s) return TIDE_TASK_GONE;", name);
-            }
+            line(g, o, "%s%s *%s = &%s->%s;", p->mode == PARAM_MUT ? "" : "const ", ct, name, d->is_local ? "tide_l" : "tide_w", ct);
             line(g, o, "(void)%s;", name);
             continue;
         }
@@ -5720,6 +6179,7 @@ static void gen_task_resume(gen *g, task_info *ti, const bool local)
     line(g, o, "goto tide_dispatch;");
     line(g, o, "tide_start:;");
     for (int i = 0; i < fn->body->stmts.count; i++) gen_stmt(g, fn->body->stmts.items[i]);
+    g->list_caches = false;
     // Its end: a function that can fail and returns nothing succeeds there
     if (fn->kind == DECL_FUNCTION && fn->result.kind == TY_FAILABLE && fn->return_type.kind == TY_VOID) {
         line(g, o, "tide_f->tide_result_ok = true;");
@@ -5735,6 +6195,31 @@ static void gen_task_resume(gen *g, task_info *ti, const bool local)
     sb_put(o, "}\n");
     line_reset(g);
     sb_put(o, "\n");
+    // Its entity's components, copied out of their lanes; when they're gone, so
+    // is the task. What it changed goes back however the code stops.
+    sb_printf(o, "TIDE_HELPER int32_t %s(%s, %s *tide_f, const tide_entity tide_this, const bool tide_this_local, "
+                 "const tide_entity tide_scene)\n{\n",
+              task_resume_name(fn, local), worlds_decl, type_cname(ti->frame));
+    sb body = {0};
+    sb_printf(&body, "%s_body(%s, tide_f, tide_this, tide_this_local, tide_scene", task_resume_name(fn, local),
+              local ? "tide_w, tide_l" : "tide_w");
+    for (int i = 0; i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (p->type.kind != TY_COMPONENT || (p->mode != PARAM_READ && p->mode != PARAM_MUT)) continue;
+        const decl *d = p->type.decl;
+        if (!d->is_local && local) sb_put(o, "    if (!tide_w) return TIDE_TASK_GONE;\n");
+        sb_printf(o, "    %s tide_c%d;\n    if (!tide_load_%s(%s, tide_this, &tide_c%d)) return TIDE_TASK_GONE;\n", type_cname(d), i,
+                  type_cname(d), d->is_local ? "tide_l" : "tide_w", i);
+        sb_printf(&body, ", &tide_c%d", i);
+    }
+    sb_printf(o, "    const int32_t tide_r = %s);\n", body.data);
+    for (int i = 0; i < fn->params.count; i++) {
+        const param *p = &fn->params.items[i];
+        if (p->type.kind != TY_COMPONENT || p->mode != PARAM_MUT) continue;
+        sb_printf(o, "    tide_store_%s(%s, tide_this, &tide_c%d);\n", type_cname(p->type.decl), p->type.decl->is_local ? "tide_l" : "tide_w",
+                  i);
+    }
+    sb_put(o, "    return tide_r;\n}\n\n");
     g->labels = labels;
     g->task = NULL;
     mutable_locals = false;
@@ -6370,17 +6855,12 @@ static void gen_chunk(gen *g, const decl *sys, const int a, const char *call, co
     sb_printf(o, "%sconst uint32_t tide_n = tide_table_rows(tide_t, %d, tide_c);\n", pad, arch_shift(g, a));
     gen_chunk_columns(g, sys, a, pad, read_only);
     sb_printf(o, "%sfor (uint32_t tide_i = 0; tide_i < tide_n; tide_i++) {\n", pad);
-    for (int i = 0; sys->is_view && i < sys->params.count; i++) {
-        const param *p = &sys->params.items[i];
-        if (p->type.kind != TY_COMPONENT || !param_blends(p)) continue;
-        const char *c = type_cname(p->type.decl);
-        sb_printf(o, "%s%s tide_v%d = tide_col_%s[tide_i];\n", inner.data, c, i, c);
-        sb_printf(o, "%sif (tide_blend) tide_blend_%s(&tide_v%d, tide_prev_%s(tide_prev, tide_w, tide_ent[tide_i]), tide_alpha);\n",
-                  inner.data, c, i, c);
-    }
+    gen_row_copies(g, sys, a, inner.data);
     sb_printf(o, "%s%s", inner.data, call);
     gen_system_args(g, sys, a);
-    sb_printf(o, ");%s\n%s}\n", clear, pad);
+    sb_printf(o, ");%s\n", clear);
+    gen_row_puts(g, sys, inner.data, read_only);
+    sb_printf(o, "%s}\n", pad);
 }
 
 // Whether a system's spawns get temporary handles, settled once it's done
@@ -6429,14 +6909,18 @@ static void gen_system_settle(gen *g, const decl *sys)
             if (!paths.count) continue;
             const decl *d = sys->params.items[i].type.decl;
             const char *comp = type_cname(d);
-            sb_printf(o, "            %s *tide_col_%s = tide_table_column_mut(tide_t, %s, tide_c, %d);\n", comp, comp,
-                      arch_columns(g, a), arch_column(g, a, d->index));
-            sb_put(o, "            for (uint32_t tide_i = 0; tide_i < tide_n; tide_i++) {\n");
-            for (int k = 0; k < paths.count; k++) {
-                sb_printf(o, "                tide_col_%s[tide_i].%s = tide_settled(tide_m, tide_col_%s[tide_i].%s);\n", comp,
-                          paths.items[k].path, comp, paths.items[k].path);
+            sb_printf(o, "            uint8_t *const tide_col_%s[%d] = {", comp, comp_lanes(d));
+            for (int k = 0; k < comp_lanes(d); k++) {
+                sb_printf(o, "%s(uint8_t *)tide_table_column_mut(tide_t, %s, tide_c, %d)", k ? ", " : "", arch_columns(g, a),
+                          arch_column(g, a, d->index) + k);
             }
-            sb_put(o, "            }\n");
+            sb_put(o, "};\n            for (uint32_t tide_i = 0; tide_i < tide_n; tide_i++) {\n");
+            sb_printf(o, "                %s tide_v;\n                tide_gather_%s(&tide_v, (const uint8_t *const *)tide_col_%s, tide_i);\n",
+                      comp, comp, comp);
+            for (int k = 0; k < paths.count; k++) {
+                sb_printf(o, "                tide_v.%s = tide_settled(tide_m, tide_v.%s);\n", paths.items[k].path, paths.items[k].path);
+            }
+            sb_printf(o, "                tide_scatter_%s(tide_col_%s, tide_i, &tide_v);\n            }\n", comp, comp);
         }
         sb_put(o, "            return;\n        }\n        tide_task -= tide_t->chunks;\n    }\n");
     }
@@ -6578,8 +7062,11 @@ static void gen_system_run(gen *g, const decl *sys)
     // Text the code made goes once it's done: after each entity. Released heap
     // blocks only come from systems that change text.
     sb clear_text = {0};
-    if (prog->uses_text) sb_put(&clear_text, " tide_scratch_reset(tide_mark);");
-    if (prog->uses_heap && (view || sys->writes_text)) sb_printf(&clear_text, " tide_heap_flush(&%s->heap);", view ? "tide_l" : "tide_w");
+    const bool text = view || touches_text(sys);
+    if (prog->uses_text && text) sb_put(&clear_text, " tide_scratch_reset(tide_mark);");
+    if (prog->uses_heap && text && (view || sys->writes_text)) {
+        sb_printf(&clear_text, " tide_heap_flush(&%s->heap);", view ? "tide_l" : "tide_w");
+    }
     const char *clear = clear_text.data ? clear_text.data : "";
     if (prog->uses_text) sb_put(o, "    const uint32_t tide_mark = tide_scratch_mark();\n    (void)tide_mark;\n");
     if (!sys->per_entity) {
@@ -6904,21 +7391,6 @@ static void gen_api(gen *g)
         sb_put(o, "    (void)w;\n    return n;\n}\n\n");
     }
 
-    for (int c = 0; c < prog->components.count; c++) {
-        const decl *d = prog->components.items[c];
-        const char *comp = type_cname(d);
-        for (int change = 1; change >= 0; change--) {
-            sb_printf(o, "%s%s *tide_%s_%s(%s%s *w, tide_entity e)\n{\n", change ? "" : "const ", comp, change ? "get" : "read", comp,
-                      change ? "" : "const ", world_type(d->is_local));
-            sb_put(o, "    tide_location loc = tide_entity_location(&w->entities, e);\n    switch (loc.archetype) {\n");
-            for (int a = 0; a < prog->archetypes.count; a++) {
-                if (!has_component(prog->archetypes.items[a], c)) continue;
-                sb_printf(o, "    case %d: return %s;\n", a, arch_cell(g, "w", a, arch_column(g, a, c), comp, "loc.row", change));
-            }
-            sb_put(o, "    default: return NULL;\n    }\n}\n\n");
-        }
-    }
-
     sb_put(o, "void tide_world_print(const tide_world *w)\n{\n");
     if (prog->uses_heap) sb_put(o, "    tide_text_use((tide_heap *)(uintptr_t)&w->heap, NULL); // Its lists' heap\n");
     sb_put(o, "    printf(\"tick %d, %u entities\\n\", (int)w->Time.tick, (unsigned)tide_world_entity_count(w));\n");
@@ -6941,10 +7413,10 @@ static void gen_api(gen *g)
         for (int c = 0; c < prog->components.count; c++) {
             if (!has_component(mask, c)) continue;
             const char *comp = type_cname(prog->components.items[c]);
-            sb_printf(o, "        const %s *tide_value_%d = %s;\n        (void)tide_value_%d;\n", comp, c,
-                      arch_cell(g, "w", a, arch_column(g, a, c), comp, "i", false), c);
+            sb_printf(o, "        const %s tide_value_%d = tide_row_%s(&w->%s, %s, %d, i);\n        (void)tide_value_%d;\n", comp, c,
+                      comp, name, arch_columns(g, a), arch_column(g, a, c), c);
             char base[256];
-            snprintf(base, sizeof base, "(*tide_value_%d)", c);
+            snprintf(base, sizeof base, "tide_value_%d", c);
             gen_print_fields(o, prog->components.items[c], base);
         }
         sb_put(o, "        printf(\"\\n\");\n    }\n");
@@ -7812,6 +8284,7 @@ bool codegen(program *prog, const codegen_options *opts)
     gen_text_helpers(&g);
     gen_show_helpers(&g);
     gen_columns(&g);
+    gen_component_access(&g);
     gen_moves(&g);
     gen_command_recorders(&g);
     gen_dispatch_prototypes(&g);

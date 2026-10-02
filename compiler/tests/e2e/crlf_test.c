@@ -20,11 +20,11 @@ TIDE_TEST(crlf_text_ends_where_the_line_does)
     bool formatted = false;
     for (uint32_t i = 0; i < world.entities.next_unused; i++) {
         const tide_entity e = tide_entity_in_slot(&world.entities, i);
-        const Label *label = tide_get_Label(&world, e);
-        if (!label) continue;
+        const Label label = tide_get_Label(&world, e);
+        if (!tide_has_Label(&world, e)) continue;
         labels++;
-        plain |= text_is(label->text, "line end");
-        formatted |= text_is(label->text, "score 007 done");
+        plain |= text_is(label.text, "line end");
+        formatted |= text_is(label.text, "score 007 done");
     }
     TIDE_CHECK(labels == 2);
     TIDE_CHECK(plain);

@@ -22,14 +22,14 @@ TIDE_TEST(multi_file_namespaces)
 {
     tide_world_init(&world, 1.0f);
     const tide_entity e = {1, 1};
-    TIDE_REQUIRE(tide_get_Physics_Body(&world, e) != NULL);
-    TIDE_REQUIRE(tide_get_Combat_Health(&world, e) != NULL);
-    TIDE_REQUIRE(tide_get_Items_Health(&world, e) != NULL);
-    TIDE_CHECK(tide_get_Combat_Health(&world, e)->value == 10);
-    TIDE_CHECK(tide_get_Items_Health(&world, e)->value == 3);
+    TIDE_REQUIRE(tide_has_Physics_Body(&world, e));
+    TIDE_REQUIRE(tide_has_Combat_Health(&world, e));
+    TIDE_REQUIRE(tide_has_Items_Health(&world, e));
+    TIDE_CHECK(tide_get_Combat_Health(&world, e).value == 10);
+    TIDE_CHECK(tide_get_Items_Health(&world, e).value == 3);
     tide_world_tick(&world);
-    TIDE_CHECK(tide_get_Combat_Health(&world, e)->value == 10); // Heal changes Items.Health only
-    TIDE_CHECK(tide_get_Items_Health(&world, e)->value == 4);
+    TIDE_CHECK(tide_get_Combat_Health(&world, e).value == 10); // Heal changes Items.Health only
+    TIDE_CHECK(tide_get_Items_Health(&world, e).value == 4);
 }
 
 // A struct and a function used by their qualified names: Combat.Hit, as a

@@ -33,13 +33,13 @@ TIDE_TEST(text_fields_keep_their_own_text)
 {
     tide_world_init(&world, 1.0f);
     tide_world_tick(&world);
-    const Named *cat = tide_get_Named(&world, (tide_entity){1, 1});
-    const Named *nobody = tide_get_Named(&world, (tide_entity){2, 1});
-    TIDE_REQUIRE(cat && nobody);
-    TIDE_CHECK(reads(&world, cat->name, "cats"));
-    TIDE_CHECK(reads(&world, cat->tag.label, "pet!") && cat->tag.level == 2);
-    TIDE_CHECK(reads(&world, nobody->name, "nobodys"));
-    TIDE_CHECK(reads(&world, nobody->tag.label, "!"));
+    const Named cat = tide_get_Named(&world, (tide_entity){1, 1});
+    const Named nobody = tide_get_Named(&world, (tide_entity){2, 1});
+    TIDE_REQUIRE(tide_has_Named(&world, (tide_entity){1, 1}) && tide_has_Named(&world, (tide_entity){2, 1}));
+    TIDE_CHECK(reads(&world, cat.name, "cats"));
+    TIDE_CHECK(reads(&world, cat.tag.label, "pet!") && cat.tag.level == 2);
+    TIDE_CHECK(reads(&world, nobody.name, "nobodys"));
+    TIDE_CHECK(reads(&world, nobody.tag.label, "!"));
     TIDE_CHECK(world.Log.renames == 2);
     TIDE_CHECK(world.Log.kept == 2);
     TIDE_CHECK(world.Log.heard == 2);
@@ -48,7 +48,7 @@ TIDE_TEST(text_fields_keep_their_own_text)
     TIDE_CHECK(world.heap.pending == 0);
 
     tide_world_tick(&world);
-    TIDE_CHECK(tide_get_Named(&world, (tide_entity){2, 1}) == NULL); // Destroyed, its text released
+    TIDE_CHECK(!tide_has_Named(&world, (tide_entity){2, 1})); // Destroyed, its text released
     TIDE_CHECK(reads(&world, world.Log.last, "nobodyss said hi"));
     TIDE_CHECK(world.Log.heard == 4);
 }
@@ -73,8 +73,8 @@ TIDE_TEST(text_fields_reuse_their_memory)
     const uint32_t used = world.heap.used;
     for (int i = 0; i < 200; i++) tide_world_tick(&world);
     TIDE_CHECK(world.heap.used == used);
-    const Named *cat = tide_get_Named(&world, (tide_entity){1, 1});
-    TIDE_REQUIRE(cat != NULL);
-    TIDE_CHECK(reads(&world, cat->name, "CATSSSSSSSSS"));
+    const Named cat = tide_get_Named(&world, (tide_entity){1, 1});
+    TIDE_REQUIRE(tide_has_Named(&world, (tide_entity){1, 1}));
+    TIDE_CHECK(reads(&world, cat.name, "CATSSSSSSSSS"));
     tide_world_print(&world);
 }

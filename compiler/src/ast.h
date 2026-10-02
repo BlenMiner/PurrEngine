@@ -469,6 +469,12 @@ struct expr {
     is_pattern looks_for;
     struct stmt *binding;
     bool binding_ok;     // In an if's or loop's condition, joined by &&: its name is in scope where it's true
+
+    // E_INDEX of the grid a parallel loop goes over, at its step's place plus
+    // constants: read from, or written in, the step's window (the loop's
+    // `windowed`), this far from its place.
+    bool window;
+    int window_offset[3];
 };
 
 // ---------------------------------------------------------------------------
@@ -542,6 +548,13 @@ struct stmt {
     expr *offset;
     int block[3];
     bool parallel;
+    // A parallel loop whose steps read and write the cells near their places
+    // through a window: each task copies the cells its blocks reach, from
+    // window_lo to window_hi cells around a block's place, once, and its
+    // steps read and write those as plain memory (tide_par_window).
+    bool windowed;
+    int window_lo[3];
+    int window_hi[3];
 
     // S_ASSIGN
     expr *target;

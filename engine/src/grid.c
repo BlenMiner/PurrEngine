@@ -400,6 +400,69 @@ static const uint8_t *chunk_now(const tide_par_loop *l, const int32_t cx, const 
     return i ? tide_grid_chunk_at(heap, tide_grid_records(d)[i - 1u].block) : NULL;
 }
 
+// Buffers for parallel loops' chunks, kept for the next loop rather than
+// freed, as allocating and freeing a block this size takes about as long as a
+// step through all its cells. A loop's tasks take one for each chunk they
+// write in, on any thread, and its end gives them back.
+#define POOL_SIZES 8          // Chunk sizes it keeps buffers of
+#define POOL_MOST (32u << 20) // Bytes it keeps, at most
+
+typedef struct pooled {
+    struct pooled *next;
+} pooled;
+
+static struct {
+    uint32_t bytes; // 0 for a size not taken yet
+    pooled *first;
+} pools[POOL_SIZES];
+static uint32_t pool_kept; // Bytes
+static uint32_t pool_lock;
+
+// The pool's lock: held for a few instructions, so waiting spins (as the web's
+// main thread has to).
+static void pool_enter(void)
+{
+    while (__atomic_exchange_n(&pool_lock, 1u, __ATOMIC_ACQUIRE)) {
+    }
+}
+
+static void pool_leave(void)
+{
+    __atomic_store_n(&pool_lock, 0u, __ATOMIC_RELEASE);
+}
+
+static uint8_t *pool_take(const uint32_t bytes)
+{
+    pooled *got = NULL;
+    pool_enter();
+    for (uint32_t i = 0; i < POOL_SIZES && !got; i++) {
+        if (pools[i].bytes != bytes || !pools[i].first) continue;
+        got = pools[i].first;
+        pools[i].first = got->next;
+        pool_kept -= bytes;
+    }
+    pool_leave();
+    if (!got) return tide_alloc(bytes);
+    tide_memory_sync(); // Given back by another thread, maybe
+    return (uint8_t *)got;
+}
+
+static void pool_give(uint8_t *buffer, const uint32_t bytes)
+{
+    bool kept = false;
+    pool_enter();
+    for (uint32_t i = 0; i < POOL_SIZES && !kept && pool_kept + bytes <= POOL_MOST; i++) {
+        if (pools[i].bytes && pools[i].bytes != bytes) continue;
+        pools[i].bytes = bytes;
+        ((pooled *)(void *)buffer)->next = pools[i].first;
+        pools[i].first = (pooled *)(void *)buffer;
+        pool_kept += bytes;
+        kept = true;
+    }
+    pool_leave();
+    if (!kept) free(buffer);
+}
+
 uint8_t *tide_par_buffer(tide_par_loop *l, const int32_t cx, const int32_t cy, const int32_t cz)
 {
     // Where it is among the chunks the loop's blocks can write in, which is
@@ -417,16 +480,140 @@ uint8_t *tide_par_buffer(tide_par_loop *l, const int32_t cx, const int32_t cy, c
         return made;
     }
     const uint32_t bytes = tide_grid_chunk_bytes(l->shape);
-    uint8_t *buffer = tide_alloc(bytes);
+    uint8_t *buffer = pool_take(bytes);
     const uint8_t *now = chunk_now(l, cx, cy, cz);
     if (now) memcpy(buffer, now, bytes);
     else memset(buffer, 0, bytes);
     if (__atomic_compare_exchange_n(&l->buffers[low], &made, buffer, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         return buffer;
     }
-    free(buffer); // Another task's got there first: `made` is that one
+    pool_give(buffer, bytes); // Another task's got there first: `made` is that one
     tide_memory_sync();
     return made;
+}
+
+// The chunks a window takes in, each looked up once: a few around a tile, or
+// one at a time for a window too big for that.
+#define WINDOW_CHUNKS 27
+
+typedef struct window_chunks {
+    int32_t first[3]; // The first chunk, in chunks
+    int32_t count[3]; // Chunks along each axis
+    bool listed;      // count fits in `cells`: each looked up already
+    const uint8_t *cells[WINDOW_CHUNKS]; // By z, then y, then x; NULL where the grid has none
+} window_chunks;
+
+static void window_chunks_find(const tide_par_loop *l, window_chunks *w, const int32_t lo[3], const int32_t hi[3])
+{
+    const tide_grid_shape *s = l->shape;
+    int64_t total = 1;
+    for (uint32_t a = 0; a < 3; a++) {
+        w->first[a] = lo[a] >> s->shift[a];
+        w->count[a] = (hi[a] >> s->shift[a]) - w->first[a] + 1;
+        total *= w->count[a];
+    }
+    w->listed = total <= WINDOW_CHUNKS;
+    for (int32_t i = 0; w->listed && i < (int32_t)total; i++) {
+        const int32_t cx = w->first[0] + i % w->count[0];
+        const int32_t cy = w->first[1] + i / w->count[0] % w->count[1];
+        const int32_t cz = w->first[2] + i / (w->count[0] * w->count[1]);
+        w->cells[i] = chunk_now(l, cx, cy, cz);
+    }
+}
+
+static const uint8_t *window_chunk(const tide_par_loop *l, const window_chunks *w, const int32_t cx, const int32_t cy,
+                                   const int32_t cz)
+{
+    if (!w->listed) return chunk_now(l, cx, cy, cz);
+    return w->cells[((cz - w->first[2]) * w->count[1] + (cy - w->first[1])) * w->count[0] + (cx - w->first[0])];
+}
+
+// memcpy and memset for the few cells along a window's edges, which a call to
+// them costs more than: two moves of a fixed size that overlap as they need.
+static void copy_cells(uint8_t *to, const uint8_t *from, const size_t bytes)
+{
+    if (bytes > 16u) {
+        memcpy(to, from, bytes);
+    } else if (bytes >= 8u) {
+        memcpy(to, from, 8u);
+        memcpy(to + bytes - 8u, from + bytes - 8u, 8u);
+    } else if (bytes >= 4u) {
+        memcpy(to, from, 4u);
+        memcpy(to + bytes - 4u, from + bytes - 4u, 4u);
+    } else if (bytes >= 2u) {
+        memcpy(to, from, 2u);
+        memcpy(to + bytes - 2u, from + bytes - 2u, 2u);
+    } else if (bytes) {
+        *to = *from;
+    }
+}
+
+static void zero_cells(uint8_t *to, const size_t bytes)
+{
+    static const uint8_t zeros[16];
+    if (bytes > 16u) memset(to, 0, bytes);
+    else copy_cells(to, zeros, bytes);
+}
+
+void tide_par_window(const tide_par_loop *l, const int32_t lo[3], const int32_t hi[3], void *cells)
+{
+    const tide_grid_shape *s = l->shape;
+    const tide_grid_dir *d = dir_of(tide_heap_of(l->where), *l->grid);
+    const size_t cell = s->cell;
+    const size_t row = (size_t)((int64_t)hi[0] - lo[0] + 1) * cell;
+    uint8_t *out = cells;
+    window_chunks cache;
+    window_chunks_find(l, &cache, lo, hi);
+    for (int32_t z = lo[2]; z <= hi[2]; z++) {
+        for (int32_t y = lo[1]; y <= hi[1]; y++, out += row) {
+            // The row's cells within the grid's size, from x0 to x1: zero around them
+            int64_t x0 = lo[0], x1 = hi[0];
+            if (d->size[0]) {
+                if (x0 < 0) x0 = 0;
+                if (x1 > (int64_t)d->size[0] - 1) x1 = (int64_t)d->size[0] - 1;
+            }
+            const bool inside = (!d->size[1] || (y >= 0 && y < d->size[1])) && (!d->size[2] || (z >= 0 && z < d->size[2]));
+            if (!inside || !d->records || x0 > x1) {
+                zero_cells(out, row);
+                continue;
+            }
+            if (x0 > lo[0]) zero_cells(out, (size_t)(x0 - lo[0]) * cell);
+            if (x1 < hi[0]) zero_cells(out + (size_t)(x1 + 1 - lo[0]) * cell, (size_t)(hi[0] - x1) * cell);
+            for (int64_t x = x0; x <= x1;) { // Chunk by chunk
+                const int32_t cx = (int32_t)(x >> s->shift[0]);
+                const int64_t last = ((int64_t)cx + 1) * ((int64_t)1 << s->shift[0]) - 1;
+                const int64_t end = last < x1 ? last : x1;
+                const size_t bytes = (size_t)(end - x + 1) * cell;
+                uint8_t *to = out + (size_t)(x - lo[0]) * cell;
+                const uint8_t *chunk = window_chunk(l, &cache, cx, y >> s->shift[1], z >> s->shift[2]);
+                if (chunk) copy_cells(to, chunk + tide_grid_place(s, (int32_t)x, y, z), bytes);
+                else zero_cells(to, bytes);
+                x = end + 1;
+            }
+        }
+    }
+}
+
+void tide_par_window_put(tide_par_loop *l, const int32_t lo[3], const int32_t hi[3], const int32_t from[3],
+                         const int32_t to[3], const void *cells, const void *was)
+{
+    const tide_grid_shape *s = l->shape;
+    const size_t cell = s->cell;
+    const size_t width = (size_t)((int64_t)hi[0] - lo[0] + 1), height = (size_t)((int64_t)hi[1] - lo[1] + 1);
+    const uint8_t *now = cells, *before = was;
+    tide_par_cache cache = {{0, 0, 0}, NULL};
+    for (int32_t z = from[2]; z <= to[2]; z++) {
+        for (int32_t y = from[1]; y <= to[1]; y++) {
+            const size_t row = ((size_t)(z - lo[2]) * height + (size_t)(y - lo[1])) * width;
+            for (int64_t x = from[0]; x <= to[0];) { // Chunk by chunk
+                const int64_t last = (((int64_t)x >> s->shift[0]) + 1) * ((int64_t)1 << s->shift[0]) - 1;
+                const int64_t end = last < to[0] ? last : to[0];
+                const size_t at = (row + (size_t)(x - lo[0])) * cell, bytes = (size_t)(end - x + 1) * cell;
+                if (memcmp(now + at, before + at, bytes) != 0) memcpy(tide_par_cell(l, &cache, (int32_t)x, y, z), now + at, bytes);
+                x = end + 1;
+            }
+        }
+    }
 }
 
 void tide_par_end(tide_par_loop *l)
@@ -451,7 +638,7 @@ void tide_par_end(tide_par_loop *l)
             if (found) memcpy(tide_heap_write(heap, tide_grid_records(d)[found - 1u].block), buffer, bytes);
             else add_chunk(l->grid, heap, c[0], c[1], c[2], buffer, s);
         }
-        free(buffer);
+        pool_give(buffer, bytes);
     }
     free(l->buffers);
     free(l->chunk);

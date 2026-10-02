@@ -14,9 +14,9 @@ static tide_entity crowd(const uint32_t i)
 
 static bool labelled(const tide_world *w, const uint32_t i, const char *expected)
 {
-    const Crowd *c = tide_read_Crowd(w, crowd(i));
-    if (!c) return false;
-    const tide_str s = tide_text_read(&w->heap, c->label);
+    const Crowd c = tide_get_Crowd(w, crowd(i));
+    if (!tide_has_Crowd(w, crowd(i))) return false;
+    const tide_str s = tide_text_read(&w->heap, c.label);
     return s.bytes == (int32_t)strlen(expected) && memcmp(s.ptr, expected, strlen(expected)) == 0;
 }
 
@@ -34,9 +34,9 @@ TIDE_TEST(big_world_grows_past_the_old_limits)
     ticks(&world, 200);
     TIDE_CHECK(world.Counts.retired > 1000);
     TIDE_CHECK(tide_world_entity_count(&world) == 6001u - (uint32_t)world.Counts.retired);
-    const Crowd *c = tide_read_Crowd(&world, crowd(1));
-    TIDE_REQUIRE(c != NULL);
-    TIDE_CHECK(c->value == 201.0f);
+    const Crowd c = tide_get_Crowd(&world, crowd(1));
+    TIDE_REQUIRE(tide_has_Crowd(&world, crowd(1)));
+    TIDE_CHECK(c.value == 201.0f);
     TIDE_CHECK(labelled(&world, 5999, "crowd 5999"));
     tide_world_free(&world);
 }
@@ -53,7 +53,7 @@ TIDE_TEST(big_world_snapshots_keep_their_state)
     const uint64_t after = tide_world_hash(&world);
     TIDE_CHECK(after != before);
     TIDE_CHECK(tide_world_hash(&snapshot) == before);
-    TIDE_CHECK(tide_read_Crowd(&snapshot, crowd(10))->value == 13.0f);
+    TIDE_CHECK(tide_get_Crowd(&snapshot, crowd(10)).value == 13.0f);
     TIDE_CHECK(labelled(&snapshot, 10, "crowd 10"));
 
     tide_world_copy(&world, &snapshot);

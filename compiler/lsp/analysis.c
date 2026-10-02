@@ -991,7 +991,8 @@ static const char *builtin_type_doc(const type_kind kind)
     case TY_RECT: return "A rectangle on the screen, for the GUI: x and y from the top left, y down, then width and height.";
     case TY_STRING: return "Text, written in double quotes.";
     case TY_ACTION: return "Code the caller writes in braces after the call, run with `content();`.";
-    case TY_LIST: return "A list of values, which grows and shrinks: `Count`, `items[i]`, `Add`, `RemoveAt`, `foreach`.";
+    case TY_LIST: return "A list of values, which grows and shrinks: `Count`, `items[i]`, `Add`, `RemoveAt`, `foreach`, "
+                         "and `parallel` through its elements by index.";
     case TY_GRID: return "Cells at positions, kept in chunks only where something's set: `cells[x, y]`, `size`, `Clear()`, "
                          "and `foreach` or `parallel` through its cells. "
                          "Its size is given when it's made, `Grid2(1024, 1024)`; 0 or nothing is open.";
@@ -3901,11 +3902,11 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         static const char *const keywords[] = {"if", "else", "return", "var", "mut", "switch", "case", "default", "break",
                                                "while", "for", "foreach", "continue"};
         for (size_t i = 0; i < sizeof keywords / sizeof keywords[0]; i++) item(c, keywords[i], CK_KEYWORD, NULL, NULL, NULL);
-        // Every cell of a grid at once, in a system, view or handler that isn't async
+        // Every cell of a grid or element of a list at once, in a system, view or handler that isn't async
         if (sc.decl && sc.decl->kind == DECL_SYSTEM && !sc.decl->is_async) {
             item(c, "parallel", CK_KEYWORD, "parallel (var at in cells) { ... }",
-                 "Goes through a grid's cells, or with `by`, its blocks, all at once: each step reads the grid as the loop "
-                 "found it and changes only its own cell or block.",
+                 "Goes through a grid's cells or a list's elements (by index), or with `by`, their blocks, all at once: "
+                 "each step reads them as the loop found them and changes only its own cell, element or block.",
                  NULL);
         }
         // A function that can fail ends with its error

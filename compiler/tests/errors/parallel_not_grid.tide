@@ -1,7 +1,0 @@
-// expect: parallel goes through a grid's cells, and this is List<int>
-singleton Field { List<int> items; }
-system Step(mut Field field)
-{
-    parallel (var at in field.items) { }
-}
-scene Main { }

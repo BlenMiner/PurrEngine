@@ -1,0 +1,7 @@
+// expect: parallel goes through a grid's cells or a list's elements, and this is int
+singleton Field { int count; }
+system Step(mut Field field)
+{
+    parallel (var i in field.count) { }
+}
+scene Main { }

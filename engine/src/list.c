@@ -31,6 +31,28 @@ static uint32_t directory_room(const tide_block *b)
     return (uint32_t)((((uint64_t)16u << b->size_class) - sizeof(tide_block)) / sizeof(uint32_t));
 }
 
+const void *tide_list_cache_fill(tide_list_cache *c, const tide_list l, const int32_t i, const uint32_t size)
+{
+    *c = (tide_list_cache){0};
+    const tide_heap *heap = l.at ? tide_heap_of(l.at >> 30) : NULL;
+    if (!heap) return tide_list_at(l, i, size); // A list in the scratch area moves as it grows: never cached
+    const uint32_t moves = __atomic_load_n(&heap->moves, __ATOMIC_RELAXED); // Before finding anything
+    const void *found = tide_list_at(l, i, size);
+    if (!found) return NULL;
+    tide_page *const *pages = __atomic_load_n(&heap->page, __ATOMIC_ACQUIRE);
+    const tide_page *p = __atomic_load_n(&pages[OFFSET(l.at) >> TIDE_HEAP_PAGE_SHIFT], __ATOMIC_ACQUIRE);
+    const tide_block *b =
+        (const tide_block *)(const void *)((const uint8_t *)tide_page_data(p) + (OFFSET(l.at) - (p->first << TIDE_HEAP_PAGE_SHIFT)));
+    *c = (tide_list_cache){l.at, moves, heap, b, 0, b->a, (const uint8_t *)(b + 1)};
+    if (b->b & TIDE_LIST_CHUNKED) { // Its chunk's elements
+        const uint32_t per = TIDE_LIST_CHUNK / size;
+        c->first = (uint32_t)i / per * per;
+        c->count = per;
+        c->elements = (const uint8_t *)found - (size_t)((uint32_t)i - c->first) * size;
+    }
+    return found;
+}
+
 int32_t tide_list_read_count(const tide_heap *heap, const tide_list l)
 {
     return l.at ? (int32_t)tide_heap_block(heap, OFFSET(l.at))->a : 0;
@@ -337,4 +359,87 @@ void tide_list_unflatten(const tide_list l, void *flat, const uint32_t size, con
         }
     }
     free(flat);
+}
+
+// Parallel loops (see tide/list.h)
+
+static int32_t floor_div(const int32_t a, const int32_t b)
+{
+    return a / b - (a % b != 0 && (a < 0) != (b < 0) ? 1 : 0);
+}
+
+// Element `i` of a world's list, to read, and how many elements from it sit
+// side by side (to the end of its chunk, or of the list).
+static const uint8_t *list_run(const tide_list l, const int32_t i, const uint32_t size, int32_t *run)
+{
+    const uint8_t *at = tide_list_at(l, i, size);
+    const tide_block *b = tide_heap_block(tide_heap_of(l.at >> 30), OFFSET(l.at));
+    *run = (int32_t)b->a - i;
+    if (b->b & TIDE_LIST_CHUNKED) {
+        const uint32_t per = TIDE_LIST_CHUNK / size;
+        const int32_t in_chunk = (int32_t)(per - (uint32_t)i % per);
+        if (in_chunk < *run) *run = in_chunk;
+    }
+    return at;
+}
+
+void tide_par_list_begin(tide_par_list *l, tide_list *list, const uint32_t size, const int32_t block, const int32_t offset)
+{
+    *l = (tide_par_list){.list = list, .size = size, .block = block > 0 ? block : 1, .offset = offset};
+    const int32_t count = tide_list_count(*list);
+    l->lo = -floor_div(offset, l->block);                         // The first block from 0 on...
+    l->hi = floor_div(count - offset - l->block, l->block) + 1; // ...and past the last one wholly inside
+    if (!list->at || !tide_heap_of(list->at >> 30) || l->hi <= l->lo) return; // Nothing to go through
+    // Tasks of 16 blocks or more, so that steps that each take long share
+    // out well and steps that take little aren't swamped by their tasks
+    const int64_t blocks = (int64_t)l->hi - l->lo;
+    l->per_task = (int32_t)((blocks + 1023) / 1024);
+    if (l->per_task < 16) l->per_task = 16;
+    l->tasks = (uint32_t)((blocks + l->per_task - 1) / l->per_task);
+    l->steps = (uint64_t)blocks;
+    l->copies = tide_alloc_zeroed(l->tasks, sizeof *l->copies);
+}
+
+void *tide_par_list_task(tide_par_list *l, const uint32_t task, int32_t *from, int32_t *to)
+{
+    *from = l->lo + (int32_t)task * l->per_task;
+    *to = *from + l->per_task < l->hi ? *from + l->per_task : l->hi;
+    const int32_t first = l->offset + *from * l->block;
+    const int32_t count = (*to - *from) * l->block;
+    uint8_t *copy = tide_alloc((size_t)count * l->size);
+    for (int32_t i = 0; i < count;) { // Run by run
+        int32_t run;
+        const uint8_t *now = list_run(*l->list, first + i, l->size, &run);
+        if (run > count - i) run = count - i;
+        memcpy(copy + (size_t)i * l->size, now, (size_t)run * l->size);
+        i += run;
+    }
+    l->copies[task] = copy;
+    return copy;
+}
+
+void tide_par_list_end(tide_par_list *l)
+{
+    tide_memory_sync(); // What the steps made on other threads
+    for (uint32_t task = 0; task < l->tasks; task++) {
+        uint8_t *copy = l->copies[task];
+        if (!copy) continue;
+        const int32_t from = l->lo + (int32_t)task * l->per_task;
+        const int32_t to = from + l->per_task < l->hi ? from + l->per_task : l->hi;
+        const int32_t first = l->offset + from * l->block;
+        const int32_t count = (to - from) * l->block;
+        for (int32_t i = 0; i < count;) { // Run by run: a chunk nothing changed stays as it is
+            int32_t run;
+            const uint8_t *now = list_run(*l->list, first + i, l->size, &run);
+            if (run > count - i) run = count - i;
+            const uint8_t *mine = copy + (size_t)i * l->size;
+            if (memcmp(now, mine, (size_t)run * l->size) != 0) {
+                memcpy(tide_list_at_mut(*l->list, first + i, l->size), mine, (size_t)run * l->size);
+            }
+            i += run;
+        }
+        free(copy);
+    }
+    free(l->copies);
+    l->copies = NULL;
 }

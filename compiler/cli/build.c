@@ -293,7 +293,10 @@ static void config_flags(args *a, const build *b)
         arg(a, build_target.flag);
         arg(a, build_target.sysroot_flag);
     }
-    if (b->opts->web) arg(a, "-pthread");
+    if (b->opts->web) {
+        arg(a, "-pthread");
+        arg(a, "-msimd128"); // WebAssembly's SIMD, the same on every machine (not relaxed SIMD)
+    }
     arg_list(a, common_flags);
     arg_list(a, b->opts->release ? release_flags : debug_flags);
 #if !defined(_WIN32) && !defined(__APPLE__)

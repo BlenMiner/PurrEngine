@@ -164,3 +164,88 @@ system Compare(mut Heat heat)
     }
     heat.mismatches += wrong;
 }
+
+// Lists, by index: each element from the list as it was, and blocks of two
+// whose start moves each tick, against the same rules by hand. Past a page,
+// both kinds of list keep their elements in chunks, which tasks go across.
+singleton Wave
+{
+    List<int> values;   // Smoothed by a parallel loop
+    List<int> twin;     // ...and the same way by hand
+    List<int2> pairs;   // Put in order a pair at a time by a parallel loop
+    List<int2> paired;  // ...and by hand
+    int count = 5000;
+    int mismatches;
+    bool ready;
+}
+
+system SetupWave(mut Wave wave)
+{
+    if (wave.ready) return;
+    wave.ready = true;
+    for (var i = 0; i < wave.count; i++)
+    {
+        var v = i * 7919 % 1000;
+        wave.values.Add(v);
+        wave.twin.Add(v);
+        wave.pairs.Add(int2(v, i));
+        wave.paired.Add(int2(v, i));
+    }
+}
+
+// Each element becomes the average of itself and its neighbors, from the list
+// as it was: past its ends, the list reads as zero.
+system Smooth(mut Wave wave)
+{
+    parallel (var i in wave.values)
+    {
+        wave.values[i] = (wave.values[i - 1] + wave.values[i] * 2 + wave.values[i + 1]) / 4;
+    }
+}
+
+system SmoothByHand(mut Wave wave)
+{
+    var was = wave.twin;
+    for (var i = 0; i < was.Count; i++) wave.twin[i] = (was[i - 1] + was[i] * 2 + was[i + 1]) / 4;
+}
+
+// Each pair of neighbors, from even elements one tick and odd ones the next,
+// puts the smaller first.
+system SortPairs(Time time, mut Wave wave)
+{
+    parallel (var i in wave.pairs by 2 offset time.tick % 2)
+    {
+        var a = wave.pairs[i];
+        var b = wave.pairs[i + 1];
+        if (b.x < a.x)
+        {
+            wave.pairs[i] = b;
+            wave.pairs[i + 1] = a;
+        }
+    }
+}
+
+system SortPairsByHand(Time time, mut Wave wave)
+{
+    for (var i = time.tick % 2; i + 1 < wave.paired.Count; i += 2)
+    {
+        var a = wave.paired[i];
+        var b = wave.paired[i + 1];
+        if (b.x < a.x)
+        {
+            wave.paired[i] = b;
+            wave.paired[i + 1] = a;
+        }
+    }
+}
+
+system CompareWave(mut Wave wave)
+{
+    mut var wrong = 0;
+    for (var i = 0; i < wave.count; i++)
+    {
+        if (wave.values[i] != wave.twin[i]) wrong++;
+        if (wave.pairs[i].x != wave.paired[i].x || wave.pairs[i].y != wave.paired[i].y) wrong++;
+    }
+    wave.mismatches += wrong;
+}

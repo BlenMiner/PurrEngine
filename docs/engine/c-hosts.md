@@ -43,8 +43,17 @@ The generated header is the API between the game and its host. Namespaced declar
 - `tide_world_init(w, dt)` clears it (what it had goes), sets `Time.dt` and the singletons' defaults, and loads `Main` if it's the match's. `tide_world_start(w, dt, start)` starts in another scene.
 - `tide_world_tick(w)` runs every system once, then applies structural changes and events, and the tasks whose time has come go on. `tide_world_tick_on(w, jobs)` does the same on threads, with the same results: `tide_platform_jobs()` gives a pool with one per core (on the web, only in a cross-origin isolated page: NULL elsewhere), and sessions take it as `jobs` in their desc, as the standard host does. If that leaves no scene loaded, it loads `Main` again when it's the match's (`tide_frame` does the same for a local `Main`).
 - `tide_world_ended(w)` says whether the match is over: its last scene unloaded and `Main` is local. A server stops there and tells every player, who go offline with `TIDE_DISCONNECT_ENDED`.
-- `tide_get_<Component>(w, entity)` gives an entity's component to change, or `NULL`. `tide_read_<Component>(w, entity)` gives it only to read, which leaves the pages the world shares with its snapshots shared.
-- `TIDE_AT(w, arch0_Body, Body, row)` reads a row's component in an archetype's storage, and `TIDE_ENTITY_AT(w, arch0_Body, row)` its entity: for tests and tools that go through every entity.
+- Components are values: a world keeps each one's fields side by side with the same field of other entities, so there's no pointer to one to give. `tide_has_<Component>(w, entity)` says whether an entity has one, `tide_get_<Component>(w, entity)` gives a copy of it (zeros when it has none), and `tide_set_<Component>(w, entity, value)` puts it back changed (false when the entity has none, and nothing changes):
+
+  ```c
+  if (tide_has_Body(w, player)) {
+      Body body = tide_get_Body(w, player);
+      body.velocity.y = 0.0f;
+      tide_set_Body(w, player, body);
+  }
+  ```
+
+- `TIDE_AT(w, arch0_Body, Body, row)` gives a copy of a row's component in an archetype's storage, and `TIDE_ENTITY_AT(w, arch0_Body, row)` its entity: for tests and tools that go through every entity.
 - `tide_world_player_joined(w, player)` and `tide_world_player_left(w, player)` send `PlayerJoined` and `PlayerLeft`, handled at the end of the next tick.
 - `tide_world_copy(to, from)` and `tide_world_hash(w)`: snapshots and hashes. A snapshot shares the world's pages until one of them changes a page, so it costs the memory of what's different, and each page keeps its hash until it changes, so hashing reads what changed since the last time.
 - `tide_world_pack(w, out, capacity)` and `tide_world_unpack(w, data, size)`: the world as bytes, as hot reloading carries it over.

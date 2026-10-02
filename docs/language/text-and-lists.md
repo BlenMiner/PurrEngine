@@ -85,6 +85,48 @@ Changing a list needs something that can change: a `mut` component or singleton,
 
 Elements are built-in types, text, enums and structs. Lists of lists, and structs holding lists, aren't supported yet. ECS data doesn't go in lists either: keep an `Entity` instead.
 
+### Going through every element at once
+
+A `parallel` loop goes through a list's elements at once, on threads, as it goes through a grid's cells (see [Grids](./grids.md#going-through-every-cell)). Its places are the elements' indices:
+
+```csharp
+struct Body
+{
+    float3 position;
+    float3 velocity;
+    float mass;
+}
+
+singleton Space
+{
+    List<Body> bodies;
+}
+
+// Every body is pulled by every other, from where they all were
+system Gravity(mut Space space, Time time)
+{
+    var n = space.bodies.Count;
+    parallel (var i in space.bodies)
+    {
+        mut var body = space.bodies[i];
+        mut var pull = float3(0);
+        for (var j = 0; j < n; j++)
+        {
+            var other = space.bodies[j];
+            var d = other.position - body.position;
+            var r2 = Math.Dot(d, d) + 0.01;
+            pull += d * (other.mass / (r2 * Math.Sqrt(r2)));
+        }
+        body.velocity += pull * time.dt;
+        space.bodies[i] = body;
+    }
+}
+```
+
+Each step reads the list as the loop found it and changes only its own element, `space.bodies[i]`, so the result is exactly the same on one thread as on many. `by 2 offset o` gives each step a block of elements, from `i` up to `i + 1`, which it changes as `items[i]` and `items[i + 1]`: a block that would go past the end is left out. The rules are a grid's parallel loop's: a step changes nothing else, not the list's count either, and tidec says what to write instead.
+
+The list is one the world keeps, a component's or a singleton's, and its elements hold no text: the steps run on threads, where text can't be made.
+
 ## Where they live
 
 A world keeps the text and lists in its components in its **heap**, which is part of the world. So a snapshot has them with everything else. The heap grows as it needs, with no limit but memory.

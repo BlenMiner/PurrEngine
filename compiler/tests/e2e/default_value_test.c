@@ -16,23 +16,23 @@ TIDE_TEST(default_value_all_checks_pass)
 {
     tide_world_init(&world, 1.0f);
     tide_world_tick(&world);
-    const Results *r = tide_get_Results(&world, UNIT);
-    TIDE_REQUIRE(r != NULL);
-    if (r->firstFailure) printf("    check %d failed\n", (int)r->firstFailure);
-    TIDE_CHECK(r->checks == 23);
-    TIDE_CHECK(r->passed == r->checks);
+    const Results r = tide_get_Results(&world, UNIT);
+    TIDE_REQUIRE(tide_has_Results(&world, UNIT));
+    if (r.firstFailure) printf("    check %d failed\n", (int)r.firstFailure);
+    TIDE_CHECK(r.checks == 23);
+    TIDE_CHECK(r.passed == r.checks);
 }
 
 TIDE_TEST(default_value_field_defaults)
 {
     tide_world_init(&world, 1.0f);
-    const Unit *u = tide_get_Unit(&world, UNIT);
-    TIDE_REQUIRE(u != NULL);
-    TIDE_CHECK(u->level == 5);
-    TIDE_CHECK(u->reset == 0);
-    TIDE_CHECK(tide_entity_is_null(u->target));
-    TIDE_CHECK(u->stats.armor == 3);
-    TIDE_CHECK(u->stats.reach.hi == 1.0f);
+    const Unit u = tide_get_Unit(&world, UNIT);
+    TIDE_REQUIRE(tide_has_Unit(&world, UNIT));
+    TIDE_CHECK(u.level == 5);
+    TIDE_CHECK(u.reset == 0);
+    TIDE_CHECK(tide_entity_is_null(u.target));
+    TIDE_CHECK(u.stats.armor == 3);
+    TIDE_CHECK(u.stats.reach.hi == 1.0f);
 }
 
 TIDE_TEST(default_value_draw_arguments)

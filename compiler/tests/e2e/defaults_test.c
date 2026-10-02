@@ -26,28 +26,28 @@ TIDE_TEST(defaults_main_can_override_singleton_defaults)
 TIDE_TEST(defaults_bare_spawn_uses_defaults)
 {
     tide_world_init(&world, 1.0f);
-    Health *h = tide_get_Health(&world, BARE);
-    TIDE_REQUIRE(h != NULL);
-    TIDE_CHECK(h->value == 100);
-    TIDE_CHECK(h->max == 100);
-    TIDE_CHECK(tide_entity_is_null(h->attacker));
+    Health h = tide_get_Health(&world, BARE);
+    TIDE_REQUIRE(tide_has_Health(&world, BARE));
+    TIDE_CHECK(h.value == 100);
+    TIDE_CHECK(h.max == 100);
+    TIDE_CHECK(tide_entity_is_null(h.attacker));
 }
 
 TIDE_TEST(defaults_unset_fields_use_defaults_not_zero)
 {
     tide_world_init(&world, 1.0f);
-    Health *h = tide_get_Health(&world, PARTIAL);
-    TIDE_REQUIRE(h != NULL);
-    TIDE_CHECK(h->value == 100);
-    TIDE_CHECK(h->max == 200);
+    Health h = tide_get_Health(&world, PARTIAL);
+    TIDE_REQUIRE(tide_has_Health(&world, PARTIAL));
+    TIDE_CHECK(h.value == 100);
+    TIDE_CHECK(h.max == 200);
 }
 
 TIDE_TEST(defaults_bare_add_uses_defaults)
 {
     tide_world_init(&world, 1.0f);
-    Marker *m = tide_get_Marker(&world, BARE);
-    TIDE_REQUIRE(m != NULL);
-    TIDE_CHECK(m->id == -7);
+    Marker m = tide_get_Marker(&world, BARE);
+    TIDE_REQUIRE(tide_has_Marker(&world, BARE));
+    TIDE_CHECK(m.id == -7);
 }
 
 TIDE_TEST(defaults_hex_and_binary_literals)
@@ -69,13 +69,13 @@ TIDE_TEST(defaults_bitwise_operators)
 {
     tide_world_init(&world, 1.0f);
     tide_world_tick(&world);
-    Bits *b = tide_get_Bits(&world, BITS);
-    TIDE_REQUIRE(b != NULL);
-    TIDE_CHECK(b->shifted == 16);
-    TIDE_CHECK(b->negativeShift == -4);
-    TIDE_CHECK(b->bigShift == 2);
-    TIDE_CHECK(b->mixed == 5);
-    TIDE_CHECK(b->masked == 48);
-    TIDE_CHECK(b->negatedLowest == INT32_MIN);
-    TIDE_CHECK(b->fromHex == 16.0f);
+    Bits b = tide_get_Bits(&world, BITS);
+    TIDE_REQUIRE(tide_has_Bits(&world, BITS));
+    TIDE_CHECK(b.shifted == 16);
+    TIDE_CHECK(b.negativeShift == -4);
+    TIDE_CHECK(b.bigShift == 2);
+    TIDE_CHECK(b.mixed == 5);
+    TIDE_CHECK(b.masked == 48);
+    TIDE_CHECK(b.negatedLowest == INT32_MIN);
+    TIDE_CHECK(b.fromHex == 16.0f);
 }

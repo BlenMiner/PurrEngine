@@ -28,17 +28,32 @@ static uint32_t bytes_of(const uint64_t n)
     return (uint32_t)n;
 }
 
-void *tide_table_column_mut(tide_table *t, const tide_columns *c, const uint32_t chunk, const uint32_t column)
-{
-    tide_page **p = &t->pages[chunk * c->count + column];
-    *p = tide_page_own(*p, 1, tide_table_rows(t, c->shift, chunk) * c->sizes[column]);
-    return tide_page_data(*p);
-}
-
 void *tide_table_cell(tide_table *t, const tide_columns *c, const uint32_t row, const uint32_t column)
 {
     uint8_t *rows = tide_table_column_mut(t, c, row >> c->shift, column);
     return rows + (size_t)(row & (full_room(c) - 1u)) * c->sizes[column];
+}
+
+void tide_table_gather(const tide_table *t, const tide_columns *c, const uint32_t row, const uint32_t first, const uint32_t lanes,
+                       const uint32_t width, void *value)
+{
+    const uint32_t chunk = row >> c->shift;
+    const size_t at = (size_t)(row & (full_room(c) - 1u)) * width;
+    uint8_t *out = value;
+    for (uint32_t k = 0; k < lanes; k++) {
+        memcpy(out + (size_t)k * width, (const uint8_t *)tide_table_column(t, c, chunk, first + k) + at, width);
+    }
+}
+
+void tide_table_scatter(tide_table *t, const tide_columns *c, const uint32_t row, const uint32_t first, const uint32_t lanes,
+                        const uint32_t width, const void *value)
+{
+    const uint32_t chunk = row >> c->shift;
+    const size_t at = (size_t)(row & (full_room(c) - 1u)) * width;
+    const uint8_t *in = value;
+    for (uint32_t k = 0; k < lanes; k++) {
+        memcpy((uint8_t *)tide_table_column_mut(t, c, chunk, first + k) + at, in + (size_t)k * width, width);
+    }
 }
 
 uint32_t tide_table_add(tide_table *t, const tide_columns *c)
@@ -286,11 +301,15 @@ void tide_table_need_pages(const tide_table *base, const tide_columns *c, tide_n
 // ---------------------------------------------------------------------------
 // The queue
 
-void *tide_queue_push(tide_queue *q, const uint32_t size)
+void *tide_queue_push_page(tide_queue *q, const uint32_t size)
 {
     if (q->count == UINT32_MAX) tide_out_of_memory();
     if (q->count / TIDE_QUEUE_PAGE == q->pages) {
-        q->page = tide_realloc(q->page, q->pages * sizeof *q->page, (q->pages + 1u) * sizeof *q->page);
+        // Its table of pages grows by half again, when it's full: room for
+        // as many pages as the next power of two
+        if (q->pages == 0 || (q->pages & (q->pages - 1u)) == 0) {
+            q->page = tide_realloc(q->page, q->pages * sizeof *q->page, (q->pages ? 2u * q->pages : 1u) * sizeof *q->page);
+        }
         q->page[q->pages] = tide_alloc_zeroed(TIDE_QUEUE_PAGE, size);
         q->pages++;
     }
@@ -315,12 +334,33 @@ void tide_queue_clear(tide_queue *q, const uint32_t size)
 {
     // It keeps the pages this tick used, for the next, and lets go of the
     // rest: what a burst of changes needed goes once it's over.
+    // Pushing zeroes each item, and nothing reads past the count, so what it
+    // had stays until it's written over.
+    (void)size;
     const uint32_t used = queue_pages(q);
     const uint32_t keep = used ? used : 1u;
-    for (uint32_t p = 0; p < used; p++) memset(q->page[p], 0, (size_t)queued_on(q, p) * size);
     for (uint32_t p = keep; p < q->pages; p++) free(q->page[p]);
     if (q->pages > keep) q->pages = keep;
     q->count = 0;
+}
+
+void tide_queue_append(tide_queue *to, const tide_queue *from, const uint32_t size)
+{
+    uint32_t i = 0;
+    while (i < from->count) {
+        if (to->count % TIDE_QUEUE_PAGE == 0) { // Onto its next page, which pushing makes if it has to
+            memcpy(tide_queue_push(to, size), tide_queue_at(from, i++, size), size);
+            continue;
+        }
+        // A run as long as what's left of both their pages
+        uint32_t run = TIDE_QUEUE_PAGE - to->count % TIDE_QUEUE_PAGE;
+        const uint32_t here = TIDE_QUEUE_PAGE - i % TIDE_QUEUE_PAGE;
+        if (run > here) run = here;
+        if (run > from->count - i) run = from->count - i;
+        memcpy(tide_queue_at(to, to->count, size), tide_queue_at(from, i, size), (size_t)run * size);
+        to->count += run;
+        i += run;
+    }
 }
 
 void tide_queue_copy(tide_queue *to, const tide_queue *from, const uint32_t size)

@@ -13,7 +13,7 @@ Only the IEEE 754 basic operations, `+ - * /` and square root, give the same res
 - **The engine's own math library.** Vectors, matrices and quaternions are written in-house. `Sin`, `Exp`, `Pow` and the other transcendental functions are computed from the basic operations, never with the platform's math library, which differs between systems.
 - **No approximate instructions**, like `rsqrtps`, whose results differ between Intel and AMD.
 - **Denormals stay on**, on every thread and platform, since WebAssembly can't turn them off.
-- **No relaxed SIMD on the web**, whose fused multiply-add differs between machines, and no x87.
+- **SIMD on the web, but not relaxed SIMD.** Web builds use WebAssembly's SIMD, which gives the same results on every machine, so loops the compiler turns into SIMD run that way on the web too. Relaxed SIMD's fused multiply-add differs between machines, so it stays off, and so does x87.
 
 The engine compiles everything, your game included, with the flags that guarantee this.
 

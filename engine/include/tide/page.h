@@ -80,10 +80,18 @@ static inline void tide_page_retain(tide_page *p)
 // Lets go of `refs` references; the last one frees it. NULL does nothing.
 void tide_page_release(tide_page *p, uint32_t refs);
 
+// A copy of shared `p` to change, for tide_page_own.
+tide_page *tide_page_own_copy(tide_page *p, uint32_t mine, uint32_t keep);
+
 // `p` to change, through `mine` of its references: itself when nobody else
 // has it, or else a copy of its first `keep` bytes (the rest zero), which
 // takes those references over. Its hash is out of date either way.
-tide_page *tide_page_own(tide_page *p, uint32_t mine, uint32_t keep);
+static inline tide_page *tide_page_own(tide_page *p, const uint32_t mine, const uint32_t keep)
+{
+    if (p->refs != mine) return tide_page_own_copy(p, mine, keep);
+    p->hashed = UINT32_MAX;
+    return p;
+}
 
 // A copy of `p`'s first `keep` bytes (the rest zero), with `refs` references
 // and its hash out of date. `p` keeps its own.

@@ -73,13 +73,13 @@ TIDE_TEST(devices_are_the_owners)
     tide_world_set_server_input(&world, tide_input_sample(&server, NULL));
     tide_world_tick(&world);
 
-    const Walker *a = tide_get_Walker(&world, FIRST);
-    const Walker *b = tide_get_Walker(&world, SECOND);
-    const Walker *s = tide_get_Walker(&world, SERVER);
-    TIDE_REQUIRE(a && b && s);
-    TIDE_CHECK(a->position.x == 1.0f && a->jumps == 1 && a->connected && a->throttle == 0.0f);
-    TIDE_CHECK(b->position.x == 0.0f && b->jumps == 0 && !b->connected);
-    TIDE_CHECK(s->throttle == 0.5f && s->jumps == 0);
+    const Walker a = tide_get_Walker(&world, FIRST);
+    const Walker b = tide_get_Walker(&world, SECOND);
+    const Walker s = tide_get_Walker(&world, SERVER);
+    TIDE_REQUIRE(tide_has_Walker(&world, FIRST) && tide_has_Walker(&world, SECOND) && tide_has_Walker(&world, SERVER));
+    TIDE_CHECK(a.position.x == 1.0f && a.jumps == 1 && a.connected && a.throttle == 0.0f);
+    TIDE_CHECK(b.position.x == 0.0f && b.jumps == 0 && !b.connected);
+    TIDE_CHECK(s.throttle == 0.5f && s.jumps == 0);
 }
 
 // A button went down against last tick's input, so an input that repeats,
@@ -92,7 +92,7 @@ TIDE_TEST(devices_buttons_go_down_once)
     tide_world_set_input(&world, tide_player_from_index(0), tide_input_sample(&d, NULL));
     tide_world_tick(&world);
     tide_world_tick(&world); // Not set again: it repeats
-    TIDE_CHECK(tide_get_Walker(&world, FIRST)->jumps == 1);
+    TIDE_CHECK(tide_get_Walker(&world, FIRST).jumps == 1);
 
     // As a host does: sample, then start the next window.
     tide_devices_consume(&d);
@@ -103,5 +103,5 @@ TIDE_TEST(devices_buttons_go_down_once)
     tide_button_set(&d.keyboard.space, true);
     tide_world_set_input(&world, tide_player_from_index(0), tide_input_sample(&d, NULL));
     tide_world_tick(&world);
-    TIDE_CHECK(tide_get_Walker(&world, FIRST)->jumps == 2);
+    TIDE_CHECK(tide_get_Walker(&world, FIRST).jumps == 2);
 }

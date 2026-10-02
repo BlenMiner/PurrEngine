@@ -58,7 +58,20 @@ tide_entity tide_entity_create(tide_entities *t);
 // Returns false if the entity wasn't alive.
 bool tide_entity_destroy(tide_entities *t, tide_entity e);
 
-bool tide_entity_alive(const tide_entities *t, tide_entity e);
+// Slot `index`, below next_unused, as it is: read atomically, as another
+// thread may be growing the table (see above).
+static inline const tide_entity_slot *tide_entity_slot_of(const tide_entities *t, const uint32_t index)
+{
+    tide_page *const *pages = __atomic_load_n(&t->page, __ATOMIC_ACQUIRE);
+    const tide_entity_slot *slots = (const tide_entity_slot *)tide_page_data(
+        __atomic_load_n(&pages[index >> TIDE_ENTITY_PAGE_SHIFT], __ATOMIC_ACQUIRE));
+    return &slots[index & ((1u << TIDE_ENTITY_PAGE_SHIFT) - 1u)];
+}
+
+static inline bool tide_entity_alive(const tide_entities *t, const tide_entity e)
+{
+    return e.index < t->next_unused && (e.generation & 1u) && tide_entity_slot_of(t, e.index)->generation == e.generation;
+}
 
 void tide_entity_set_location(tide_entities *t, tide_entity e, tide_location loc);
 
@@ -69,7 +82,12 @@ void tide_entity_snap(tide_entities *t, tide_entity e);
 uint32_t tide_entity_snaps(const tide_entities *t, tide_entity e);
 
 // Archetype is TIDE_ARCHETYPE_NONE for dead entities and for pending spawns.
-tide_location tide_entity_location(const tide_entities *t, tide_entity e);
+static inline tide_location tide_entity_location(const tide_entities *t, const tide_entity e)
+{
+    if (!tide_entity_alive(t, e)) return (tide_location){TIDE_ARCHETYPE_NONE, 0};
+    const tide_entity_slot *slot = tide_entity_slot_of(t, e.index);
+    return (tide_location){slot->archetype, slot->row};
+}
 
 // The entity in slot `index` (below next_unused), or the null entity when the
 // slot is free.

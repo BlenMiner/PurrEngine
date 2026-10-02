@@ -111,7 +111,7 @@ TIDE_TEST(views_colors_in_the_world)
 {
     tide_world_init(&world, 1.0f);
     TIDE_CHECK(same_color(world.Palette.background, (tide_color){0.1f, 0.2f, 0.3f, 1.0f}));
-    const Tint *tint = tide_get_Tint(&world, (tide_entity){1, 1});
-    TIDE_REQUIRE(tint != NULL);
-    TIDE_CHECK(same_color(tint->color, TIDE_COLOR_RED));
+    const Tint tint = tide_get_Tint(&world, (tide_entity){1, 1});
+    TIDE_REQUIRE(tide_has_Tint(&world, (tide_entity){1, 1}));
+    TIDE_CHECK(same_color(tint.color, TIDE_COLOR_RED));
 }

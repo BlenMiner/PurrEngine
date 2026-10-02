@@ -445,8 +445,8 @@ TIDE_TEST(net_local_code_starts_a_match)
     uint32_t mains = 0;
     for (uint32_t i = 0; i < w->entities.next_unused; i++) {
         const tide_entity e = tide_entity_in_slot(&w->entities, i);
-        arenas += tide_read_Arena(w, e) != NULL;
-        mains += tide_read_Main(w, e) != NULL;
+        arenas += tide_has_Arena(w, e);
+        mains += tide_has_Main(w, e);
     }
     TIDE_CHECK(arenas == 1 && mains == 0);
 

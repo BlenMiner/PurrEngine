@@ -30,8 +30,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
     set(TIDE_WEB ON)
     set(CMAKE_EXECUTABLE_SUFFIX .wasm) # CMake's WASI platform leaves it empty
     # Threads, which older clang doesn't take from the target's name. Only when
-    # compiling: older clang warns that -pthread does nothing for a link.
-    add_compile_options(-pthread)
+    # compiling: older clang warns that -pthread does nothing for a link. And
+    # WebAssembly's SIMD, whose operations give the same results on every
+    # machine (relaxed SIMD's don't, and stays off: see AGENTS.md, Determinism).
+    add_compile_options(-pthread -msimd128)
 else()
     set(TIDE_WEB OFF)
 endif()

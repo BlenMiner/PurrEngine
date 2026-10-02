@@ -90,7 +90,11 @@ void tide_run_systems(void *world, const tide_tick_systems *tick, const tide_job
 
 // The queue code records into: the running task's own, on threads, or else
 // `world`, the world's.
-tide_queue *tide_recording(tide_queue *world);
+extern TIDE_THREAD_LOCAL tide_queue *tide_task_queue; // The running task's own, on threads
+static inline tide_queue *tide_recording(tide_queue *world)
+{
+    return tide_task_queue ? tide_task_queue : world;
+}
 
 // The entity a Spawn makes: a temporary handle in a task of a system that
 // settles its spawns, or else a new entity in `t`.

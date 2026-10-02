@@ -9,7 +9,7 @@ static tide_draw_list draw;
 static tide_gui gui;
 static tide_devices devices;
 
-static const Counter *counter(void)
+static Counter counter(void)
 {
     return tide_get_Counter(&world, (tide_entity){1, 1});
 }
@@ -18,16 +18,16 @@ TIDE_TEST(actions_run_as_the_callers_code)
 {
     tide_world_init(&world, 1.0f); // Loads Main, which spawns the counter
     tide_world_tick(&world);
-    const Counter *c = counter();
-    TIDE_REQUIRE(c != NULL);
-    TIDE_CHECK(c->twice == 2);
-    TIDE_CHECK(c->never == 0);
-    TIDE_CHECK(c->when == 10);
-    TIDE_CHECK(c->seen == 5); // The caller's x, not Shadow's
-    TIDE_CHECK(c->bumps == 1 && c->seenBumps == 1);
-    TIDE_CHECK(c->outer == 2);
-    TIDE_CHECK(c->picked == 1 && c->afterPick == 0); // The break left the system's switch
-    TIDE_CHECK(c->returned == 1 && c->after == 0);   // The return left the system
+    const Counter c = counter();
+    TIDE_REQUIRE(tide_has_Counter(&world, (tide_entity){1, 1}));
+    TIDE_CHECK(c.twice == 2);
+    TIDE_CHECK(c.never == 0);
+    TIDE_CHECK(c.when == 10);
+    TIDE_CHECK(c.seen == 5); // The caller's x, not Shadow's
+    TIDE_CHECK(c.bumps == 1 && c.seenBumps == 1);
+    TIDE_CHECK(c.outer == 2);
+    TIDE_CHECK(c.picked == 1 && c.afterPick == 0); // The break left the system's switch
+    TIDE_CHECK(c.returned == 1 && c.after == 0);   // The return left the system
 }
 
 static const tide_draw_command *find(const char *text)

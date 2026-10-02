@@ -3568,12 +3568,28 @@ static expr *assign_root(expr *target)
 // `called` on it, or passed to `called`'s mut parameter `arg_of`. Reports why not.
 static bool same_place(const expr *a, const expr *b);
 static bool own_offset(const expr *e, const stmt *loop, int dims, int64_t out[3]);
+static bool own_index(const expr *e, const stmt *loop, int64_t *out);
 
 // In a parallel loop's step: whether it may write `target`, its own cell or
-// block of the grid the loop goes over, or a variable it declares itself.
+// block of the grid the loop goes over, its own element or block of the list,
+// or a variable it declares itself.
 static bool check_step_write(checker *c, const expr *target)
 {
     const stmt *loop = c->parallel;
+    if (target->kind == E_INDEX && target->object->type.kind == TY_LIST && same_place(target->object, loop->value)) {
+        int64_t at = 0;
+        if (own_index(target->lhs, loop, &at) && at >= 0 && at < loop->block[0]) return true;
+        if (loop->by) {
+            diag_error(target->at, "a parallel loop's step changes only its own block: elements from '" STR_FMT "' up to "
+                                   "the block's size", STR_ARG(loop->name));
+            diag_note("write each element as '" STR_FMT " + 1', with constants from 0 up to the block's size",
+                      STR_ARG(loop->name));
+        } else {
+            diag_error(target->at, "a parallel loop's step changes only its own element: '" STR_FMT "'", STR_ARG(loop->name));
+            diag_note("steps run at once and read the list as the loop found it; a 'for' loop goes in order");
+        }
+        return false;
+    }
     if (target->kind == E_INDEX && target->object->type.kind == TY_GRID && same_place(target->object, loop->value)) {
         const int dims = target->object->type.decl->dims;
         int64_t at[3] = {0, 0, 0};
@@ -3598,8 +3614,8 @@ static bool check_step_write(checker *c, const expr *target)
             if (c->locals.items[i] == root->local) return true;
         }
     }
-    diag_error(target->at, "a parallel loop's steps run at once, so each changes only its own cell or block, and "
-                           "the variables it declares");
+    diag_error(target->at, "a parallel loop's steps run at once, so each changes only its own place (a grid's cell "
+                           "or block, a list's element or block), and the variables it declares");
     diag_note("work it out in the step, or in a 'for' loop, which goes in order");
     return false;
 }
@@ -3690,7 +3706,8 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
     }
     if (root->bind == BIND_LOCAL && (root->local->kind == S_PARALLEL
                                      || (root->local->kind == S_FOREACH && root->local->value->type.kind == TY_GRID))) {
-        diag_error(root->at, "'" STR_FMT "' is the step's place in the grid, so it can't change", STR_ARG(root->name));
+        diag_error(root->at, "'" STR_FMT "' is the step's place in the %s, so it can't change", STR_ARG(root->name),
+                   root->local->value->type.kind == TY_LIST ? "list" : "grid");
         diag_note("copy it into a 'mut var' to work with another place");
         return false;
     }
@@ -3815,6 +3832,26 @@ static bool own_offset(const expr *e, const stmt *loop, const int dims, int64_t 
     return false;
 }
 
+// How far an index is from a parallel loop's step's place in a list: i,
+// i + 1, 1 + i, i - 1 (constants). False when it isn't that.
+static bool own_index(const expr *e, const stmt *loop, int64_t *out)
+{
+    if (e->kind == E_NAME && e->bind == BIND_LOCAL && e->local == loop) {
+        *out = 0;
+        return true;
+    }
+    int64_t k;
+    if (e->kind == E_BINARY && (e->op == T_PLUS || e->op == T_MINUS) && own_index(e->lhs, loop, out) && fold_int(e->rhs, &k)) {
+        *out += e->op == T_PLUS ? k : -k;
+        return true;
+    }
+    if (e->kind == E_BINARY && e->op == T_PLUS && fold_int(e->lhs, &k) && own_index(e->rhs, loop, out)) {
+        *out += k;
+        return true;
+    }
+    return false;
+}
+
 static bool own_cell_only_expr(const expr *e, const stmt *loop);
 
 // Whether a foreach over a grid only reads and writes its own cell, and
@@ -3919,6 +3956,88 @@ static bool own_cell_only_expr(const expr *e, const stmt *loop)
     return true;
 }
 
+// How far from its place a step's window reaches, at most, along each axis.
+#define WINDOW_REACH 64
+
+static void window_stmt(stmt *s, stmt *loop);
+
+// The cells of the loop's grid a step reads or writes at its place plus
+// constants, which go through its window, and how far that window reaches.
+static void window_expr(expr *e, stmt *loop)
+{
+    if (!e) return;
+    if (e->kind == E_INDEX && e->object->type.kind == TY_GRID && same_place(e->object, loop->value)) {
+        const int dims = e->object->type.decl->dims;
+        int64_t at[3] = {0, 0, 0};
+        bool near = own_offset(e->lhs, loop, dims, at);
+        for (int i = 0; near && i < dims; i++) near = at[i] >= -WINDOW_REACH && at[i] <= WINDOW_REACH;
+        if (near) {
+            e->window = true;
+            for (int i = 0; i < 3; i++) {
+                e->window_offset[i] = (int)at[i];
+                if (at[i] < loop->window_lo[i]) loop->window_lo[i] = (int)at[i];
+                if (at[i] > loop->window_hi[i]) loop->window_hi[i] = (int)at[i];
+            }
+        }
+    }
+    window_expr(e->object, loop);
+    window_expr(e->lhs, loop);
+    window_expr(e->rhs, loop);
+    window_expr(e->cond, loop);
+    for (int i = 0; i < e->args.count; i++) window_expr(e->args.items[i], loop);
+    for (int i = 0; i < e->inits.count; i++) window_expr(e->inits.items[i].value, loop);
+    window_stmt(e->block, loop);
+}
+
+static void window_stmt(stmt *s, stmt *loop)
+{
+    if (!s) return;
+    for (int i = 0; i < s->stmts.count; i++) window_stmt(s->stmts.items[i], loop);
+    for (int i = 0; i < s->cases.count; i++) {
+        for (int k = 0; k < s->cases.items[i].labels.count; k++) window_expr(s->cases.items[i].labels.items[k], loop);
+        for (int k = 0; k < s->cases.items[i].body.count; k++) window_stmt(s->cases.items[i].body.items[k], loop);
+    }
+    window_expr(s->cond, loop);
+    window_expr(s->value, loop);
+    window_expr(s->target, loop);
+    if (s->kind == S_ASSIGN && s->target->kind == E_INDEX && s->target->object->type.kind == TY_LIST
+        && same_place(s->target->object, loop->value)) { // Its own element, in its task's copy
+        int64_t at = 0;
+        if (own_index(s->target->lhs, loop, &at)) {
+            s->target->window = true;
+            s->target->window_offset[0] = (int)at;
+        } else {
+            loop->windowed = false; // The checker said why already
+        }
+    }
+    if (s->kind == S_ASSIGN && s->target->kind == E_INDEX && s->target->object->type.kind == TY_GRID
+        && same_place(s->target->object, loop->value) && !s->target->window) {
+        loop->windowed = false; // A step only writes its own cells, but a write the window can't take goes the slow way
+    }
+    window_stmt(s->init, loop);
+    window_stmt(s->step, loop);
+    window_stmt(s->then_stmt, loop);
+    window_stmt(s->else_stmt, loop);
+}
+
+// A parallel loop's steps go through a window when they can: its block, and
+// the cells around it that they read at their place plus constants.
+static void plan_window(stmt *loop)
+{
+    if (loop->value->type.kind == TY_LIST) { // Its steps write their own elements into their task's copy
+        loop->windowed = true;
+        window_stmt(loop->then_stmt, loop);
+        return;
+    }
+    if (loop->value->type.kind != TY_GRID) return;
+    loop->windowed = true;
+    for (int i = 0; i < 3; i++) {
+        loop->window_lo[i] = 0;
+        loop->window_hi[i] = loop->block[i] - 1;
+    }
+    window_stmt(loop->then_stmt, loop);
+}
+
 // What a parallel loop's step can't do, which runs at once with the others:
 // end the loop, wait, or do anything whose order counts.
 static void check_step_stmt(checker *c, const stmt *s, int depth);
@@ -4014,14 +4133,26 @@ static void check_step_stmt(checker *c, const stmt *s, const int depth)
 static void check_parallel(checker *c, stmt *s)
 {
     const type grid = check_expr(c, s->value);
-    if (grid.kind != TY_GRID && grid.kind != TY_ERROR) {
-        diag_error(s->value->at, "parallel goes through a grid's cells, and this is %s", type_name(grid));
-        diag_note("a list goes through 'foreach', in order");
+    const bool list = grid.kind == TY_LIST; // Its places are its elements' indices
+    if (grid.kind != TY_GRID && !list && grid.kind != TY_ERROR) {
+        diag_error(s->value->at, "parallel goes through a grid's cells or a list's elements, and this is %s", type_name(grid));
     }
-    const int dims = grid.kind == TY_GRID ? grid.decl->dims : 2;
-    const type position = dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
+    const int dims = grid.kind == TY_GRID ? grid.decl->dims : list ? 1 : 2;
+    const type position = list ? (type){TY_INT, NULL} : dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
     for (int i = 0; i < 3; i++) s->block[i] = 1;
-    if (grid.kind == TY_GRID) check_writable(c, s->value, NULL, NULL); // It changes the grid
+    if (grid.kind == TY_GRID || list) check_writable(c, s->value, NULL, NULL); // It changes the grid or list
+    if (list && holds_text(list_element(grid))) {
+        diag_error(s->value->at, "a parallel loop goes through a list of plain values, and this one's elements hold text");
+        diag_note("steps run on threads, where text can't be made: keep a number for it in the list, or use a 'for' loop");
+    }
+    const expr *root = s->value;
+    while (root->kind == E_MEMBER) root = root->object;
+    if (list && root->kind == E_NAME && root->bind == BIND_LOCAL) {
+        diag_error(s->value->at, "a parallel loop goes through a list the world keeps: a component's or a singleton's, "
+                                 "and '" STR_FMT "' is a variable", STR_ARG(root->name));
+        diag_note("a variable's list lives on the thread that made it; keep the list in a component or singleton, or "
+                  "use a 'for' loop");
+    }
     if (s->by) {
         const type t = check_expr(c, s->by);
         int64_t size[3] = {0, 0, 0};
@@ -4034,13 +4165,15 @@ static void check_parallel(checker *c, stmt *s)
             known = fold_cell(s->by, dims, size);
         }
         if (t.kind != TY_ERROR && !known) {
-            diag_error(s->by->at, "a parallel loop's blocks are a size known while compiling: an int, or %s",
-                       dims == 2 ? "an int2" : "an int3");
-            diag_note("like 'by 2' or 'by int2(2, 1)'");
+            if (list) diag_error(s->by->at, "a parallel loop's blocks are a size known while compiling: an int");
+            else diag_error(s->by->at, "a parallel loop's blocks are a size known while compiling: an int, or %s",
+                            dims == 2 ? "an int2" : "an int3");
+            diag_note(list ? "like 'by 2'" : "like 'by 2' or 'by int2(2, 1)'");
         }
         for (int i = 0; known && i < dims; i++) {
             if (size[i] < 1 || size[i] > 64) {
-                diag_error(s->by->at, "a block is 1 to 64 cells along each axis, not %lld", (long long)size[i]);
+                if (list) diag_error(s->by->at, "a block is 1 to 64 elements, not %lld", (long long)size[i]);
+                else diag_error(s->by->at, "a block is 1 to 64 cells along each axis, not %lld", (long long)size[i]);
                 break;
             }
             s->block[i] = (int)size[i];
@@ -4049,14 +4182,17 @@ static void check_parallel(checker *c, stmt *s)
     if (s->offset) {
         const type t = check_expr(c, s->offset);
         if (t.kind != TY_ERROR && t.kind != TY_INT && t.kind != position.kind) {
-            diag_error(s->offset->at, "a parallel loop's offset is where its blocks start: an int, or %s, not %s",
-                       dims == 2 ? "an int2" : "an int3", type_name(t));
+            if (list) diag_error(s->offset->at, "a parallel loop's offset is where its blocks start: an int, not %s", type_name(t));
+            else diag_error(s->offset->at, "a parallel loop's offset is where its blocks start: an int, or %s, not %s",
+                            dims == 2 ? "an int2" : "an int3", type_name(t));
         }
     }
     if (s->type_name.len > 0) {
         const type declared = local_type(c, s);
         if (declared.kind != TY_ERROR && !same_type(declared, position)) {
-            diag_error(s->type_at, "a grid's places are %s, not %s", type_name(position), type_name(declared));
+            diag_error(s->type_at, "a %s's places are %s, not %s", list ? "list" : "grid", type_name(position),
+                       type_name(declared));
+            if (list) diag_note("a parallel loop over a list goes through its indices: read the element as 'items[i]'");
         }
     }
     s->type = position;
@@ -4085,6 +4221,7 @@ static void check_parallel(checker *c, stmt *s)
     check_stmt(c, s->then_stmt);
     pop_scope(c);
     check_step_stmt(c, s->then_stmt, 0);
+    plan_window(s);
     c->parallel = NULL;
     c->loop_depth = loops;
     c->switch_depth = switches;
@@ -4629,6 +4766,7 @@ static void check_stmt(checker *c, stmt *s)
             for (int i = 0; i < 3; i++) s->block[i] = 1;
             s->parallel = c->system && !c->method && !async_code(c) && !c->in_input && !c->parallel
                        && own_cell_only(s->then_stmt, s, 0);
+            if (s->parallel) plan_window(s);
             if (!s->parallel) c->prog->uses_text = true; // In order, it keeps where it is in the scratch area
         }
         break;

@@ -1,0 +1,7 @@
+// expect: a parallel loop goes through a list the world keeps: a component's or a singleton's, and 'items' is a variable
+system Step()
+{
+    mut List<int> items = [1, 2, 3];
+    parallel (var i in items) { items[i] = 0; }
+}
+scene Main { }

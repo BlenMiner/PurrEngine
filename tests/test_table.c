@@ -163,7 +163,30 @@ TIDE_TEST(table_queue_keeps_items_in_place)
     tide_queue_copy(&copy, &q, sizeof(int32_t));
     TIDE_CHECK(tide_queue_hash(1, &copy, sizeof(int32_t)) == tide_queue_hash(1, &q, sizeof(int32_t)));
     tide_queue_clear(&q, sizeof(int32_t));
-    TIDE_CHECK(q.count == 0 && *first == 0);
+    TIDE_CHECK(q.count == 0);
+    int32_t *again = tide_queue_push(&q, sizeof(int32_t));
+    TIDE_CHECK(again == first && *again == 0); // Its page kept, the item zeroed as it's pushed again
     tide_queue_free(&q);
     tide_queue_free(&copy);
+}
+
+TIDE_TEST(table_queue_appends_in_order)
+{
+    // From starts on and off their pages' edges, through several pages
+    for (int32_t had = 0; had < 140; had += 23) {
+        for (int32_t more = 0; more < 200; more += 37) {
+            tide_queue to = {0}, from = {0};
+            for (int32_t i = 0; i < had; i++) *(int32_t *)tide_queue_push(&to, sizeof(int32_t)) = i;
+            for (int32_t i = 0; i < more; i++) *(int32_t *)tide_queue_push(&from, sizeof(int32_t)) = 1000 + i;
+            tide_queue_append(&to, &from, sizeof(int32_t));
+            TIDE_CHECK(to.count == (uint32_t)(had + more));
+            bool same = true;
+            for (int32_t i = 0; i < had + more; i++) {
+                same &= *(int32_t *)tide_queue_at(&to, (uint32_t)i, sizeof(int32_t)) == (i < had ? i : 1000 + i - had);
+            }
+            TIDE_CHECK(same);
+            tide_queue_free(&to);
+            tide_queue_free(&from);
+        }
+    }
 }
