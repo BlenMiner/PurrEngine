@@ -29,6 +29,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <textmate.bundleProvider implementation="io.github.blenminer.tide.TideTextMateBundle"/>
+        <fileIconProvider implementation="io.github.blenminer.tide.TideFileIcon"/>
         <applicationConfigurable parentId="language" instance="io.github.blenminer.tide.TideConfigurable"
                                  id="io.github.blenminer.tide" displayName="Tide"/>
         <editorNotificationProvider implementation="io.github.blenminer.tide.TidelsBanner"/>
