@@ -4,7 +4,7 @@
 # for www to tide-website.fly.dev; certificates come from Fly (fly certs).
 #
 # .github/workflows/docs.yml deploys it from dev. By hand, from this folder,
-# with the demos copied into static/ (see AGENTS.md):
+# with sand copied into static/ (see AGENTS.md):
 #
 #   npm run build
 #   fly deploy

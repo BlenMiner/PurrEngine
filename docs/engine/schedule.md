@@ -6,7 +6,7 @@ The tick follows it on every core: a system starts as soon as what it waits for 
 
 ## Reading it
 
-`tide schedule` prints it. This is the [demo's](../guide/demo.md):
+`tide schedule` prints it. This is the one of the [demo](https://github.com/BlenMiner/tide-engine/blob/dev/demo/demo.tide) in the engine's repo, where balls bounce around an arena:
 
 ```
 demo: 5 systems each tick, 4 stages deep; 5 can run alongside others.

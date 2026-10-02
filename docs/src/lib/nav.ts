@@ -19,7 +19,7 @@ export const nav: (Link & { match: string })[] = [
     { text: 'Language', link: '/language/basics', match: '/language/' },
     { text: 'Engine', link: '/engine/determinism', match: '/engine/' },
     { text: 'Spec', link: '/spec', match: '/spec' },
-    { text: 'Demo', link: '/guide/demo', match: '/guide/demo' },
+    { text: 'Demo', link: '/guide/sand', match: '/guide/sand' },
 ];
 
 export const sidebar: Group[] = [
@@ -31,7 +31,6 @@ export const sidebar: Group[] = [
             { text: 'Your first game', link: '/guide/first-game' },
             { text: 'The tide command', link: '/guide/cli' },
             { text: 'Editors', link: '/guide/editors' },
-            { text: 'Try the demo', link: '/guide/demo' },
             { text: 'Falling sand', link: '/guide/sand' },
         ],
     },

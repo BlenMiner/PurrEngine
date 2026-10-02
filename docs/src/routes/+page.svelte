@@ -28,7 +28,6 @@
             </div>
         </div>
         <div class="image" aria-hidden="true">
-            <div class="glow"></div>
             <img src="/favicon.svg" alt="" width="320" height="320" />
         </div>
     </section>
@@ -79,11 +78,7 @@
     }
 
     .name {
-        width: fit-content;
-        background: linear-gradient(120deg, #f59e0b 30%, #e0457b);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+        color: var(--brand-2);
     }
 
     .tagline {
@@ -133,7 +128,6 @@
     }
 
     .image {
-        position: relative;
         flex: none;
         display: grid;
         place-items: center;
@@ -142,18 +136,8 @@
     }
 
     .image img {
-        position: relative;
         width: 280px;
         height: 280px;
-    }
-
-    .glow {
-        position: absolute;
-        inset: 15%;
-        border-radius: 50%;
-        background: linear-gradient(-45deg, #f59e0b 50%, #e0457b 50%);
-        filter: blur(72px);
-        opacity: 0.35;
     }
 
     .features {
