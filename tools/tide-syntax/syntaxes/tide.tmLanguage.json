@@ -11,6 +11,7 @@
     { "include": "#keywords" },
     { "include": "#interpolated" },
     { "include": "#literals" },
+    { "include": "#generics" },
     { "include": "#builtins" },
     { "include": "#calls" },
     { "include": "#members" },
@@ -35,7 +36,7 @@
       "patterns": [
         {
           "comment": "namespace Game.Combat; using Physics;",
-          "begin": "^\\s*(namespace|using)\\b",
+          "begin": "^\\s*(namespace|using)\\b(?=\\s+[A-Za-z_])",
           "end": ";|$",
           "beginCaptures": {
             "1": { "name": "keyword.other.namespace.tide" }
@@ -60,98 +61,104 @@
     "attributes": {
       "patterns": [
         {
-          "comment": "[Before(Physics.Gravity)], at the start of a line before a declaration",
-          "begin": "^\\s*(\\[)",
-          "end": "(\\])|$",
-          "beginCaptures": {
-            "1": { "name": "punctuation.definition.attribute.begin.tide" }
-          },
-          "endCaptures": {
-            "1": { "name": "punctuation.definition.attribute.end.tide" }
-          },
+          "comment": "[Before(Physics.Gravity)] [Snap]: attributes, which start a line, before a declaration or a field",
+          "begin": "^\\s*(?=\\[)",
+          "end": "(?=\\s*[^\\s\\[])|$",
           "patterns": [
             { "include": "#comments" },
-            {
-              "begin": "([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
-              "end": "\\)|$",
-              "beginCaptures": {
-                "1": { "name": "entity.name.function.attribute.tide" },
-                "2": { "name": "punctuation.parenthesis.begin.tide" }
-              },
-              "endCaptures": {
-                "0": { "name": "punctuation.parenthesis.end.tide" }
-              },
-              "patterns": [
-                { "include": "#comments" },
-                { "include": "#literals" },
-                {
-                  "name": "entity.name.function.tide",
-                  "match": "[A-Za-z_][A-Za-z0-9_]*"
-                },
-                {
-                  "name": "punctuation.accessor.tide",
-                  "match": "\\."
-                },
-                {
-                  "name": "punctuation.separator.comma.tide",
-                  "match": ","
-                }
-              ]
-            },
-            {
-              "name": "entity.name.function.attribute.tide",
-              "match": "[A-Za-z_][A-Za-z0-9_]*"
-            },
-            {
-              "name": "punctuation.separator.comma.tide",
-              "match": ","
-            }
+            { "include": "#attribute" }
           ]
         }
       ]
     },
+    "attribute": {
+      "begin": "\\[",
+      "end": "\\]|$",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.attribute.begin.tide" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.attribute.end.tide" }
+      },
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "begin": "([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+          "end": "\\)|$",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.attribute.tide" },
+            "2": { "name": "punctuation.parenthesis.begin.tide" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.parenthesis.end.tide" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#parens" },
+            { "include": "#literals" },
+            { "include": "#builtins" },
+            {
+              "name": "entity.name.function.tide",
+              "match": "[A-Za-z_][A-Za-z0-9_]*"
+            },
+            {
+              "name": "punctuation.accessor.tide",
+              "match": "\\."
+            },
+            {
+              "name": "punctuation.separator.comma.tide",
+              "match": ","
+            },
+            { "include": "#operators" }
+          ]
+        },
+        {
+          "name": "entity.name.function.attribute.tide",
+          "match": "[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "name": "punctuation.separator.comma.tide",
+          "match": ","
+        }
+      ]
+    },
     "declarations": {
+      "comment": "Declaration words are keywords only where a declaration starts: at the start of a line, after 'local' or 'async' (in either order), or after attributes on the same line",
       "patterns": [
         {
-          "comment": "local before a declaration: it belongs to this machine, not the match",
-          "match": "^\\s*(local)(?=\\s+(?:component|singleton|event|scene|struct|input|system|view|async)\\b)",
+          "comment": "component Transform, singleton Time, struct Stats, input PlayerInput, event Hit, scene Arena, enum Voxel : byte",
+          "match": "(?:^|(?<=\\]))\\s*(?:(local|async)\\s+)?(?:(local|async)\\s+)?(component|singleton|struct|input|event|enum|scene)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*))?",
           "captures": {
-            "1": { "name": "storage.modifier.tide" }
-          }
-        },
-        {
-          "comment": "async before an event handler: it runs as a task, which can wait",
-          "match": "\\b(async)(?=\\s+event\\b)",
-          "captures": {
-            "1": { "name": "storage.modifier.tide" }
-          }
-        },
-        {
-          "comment": "component Transform, singleton Time, struct Stats, input PlayerInput, event Hit, enum Page, scene Arena",
-          "match": "\\b(component|singleton|struct|input|event|enum|scene)\\s+([A-Za-z_][A-Za-z0-9_]*)",
-          "captures": {
-            "1": { "name": "storage.type.tide" },
-            "2": { "name": "entity.name.type.tide" }
+            "1": { "name": "storage.modifier.tide" },
+            "2": { "name": "storage.modifier.tide" },
+            "3": { "name": "storage.type.tide" },
+            "4": { "name": "entity.name.type.tide" },
+            "5": { "name": "punctuation.separator.colon.tide" },
+            "6": { "patterns": [{ "include": "#type-name" }] }
           }
         },
         {
           "comment": "event(Hit hit) TakeHit: an event handler, with the event it handles",
-          "match": "\\b(event)\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\))\\s*([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "(?:^|(?<=\\]))\\s*(?:(local|async)\\s+)?(?:(local|async)\\s+)?(event)\\s*(\\()\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\))\\s*([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "storage.type.tide" },
-            "2": { "name": "punctuation.parenthesis.open.tide" },
-            "3": { "patterns": [{ "include": "#types" }] },
-            "4": { "name": "variable.parameter.tide" },
-            "5": { "name": "punctuation.parenthesis.close.tide" },
-            "6": { "name": "entity.name.function.tide" }
+            "1": { "name": "storage.modifier.tide" },
+            "2": { "name": "storage.modifier.tide" },
+            "3": { "name": "storage.type.tide" },
+            "4": { "name": "punctuation.parenthesis.open.tide" },
+            "5": { "patterns": [{ "include": "#type-name" }] },
+            "6": { "name": "variable.parameter.tide" },
+            "7": { "name": "punctuation.parenthesis.close.tide" },
+            "8": { "name": "entity.name.function.tide" }
           }
         },
         {
           "comment": "system MovePlayer, view DrawBalls",
-          "match": "\\b(system|view)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "(?:^|(?<=\\]))\\s*(?:(local|async)\\s+)?(?:(local|async)\\s+)?(system|view)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
-            "1": { "name": "storage.type.tide" },
-            "2": { "name": "entity.name.function.tide" }
+            "1": { "name": "storage.modifier.tide" },
+            "2": { "name": "storage.modifier.tide" },
+            "3": { "name": "storage.type.tide" },
+            "4": { "name": "entity.name.function.tide" }
           }
         },
         {
@@ -163,11 +170,11 @@
           }
         },
         {
-          "comment": "extern float Noise(: a function written in C",
-          "match": "^\\s*(extern)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "comment": "extern float Noise(, extern List<int> Primes(: a function written in C",
+          "match": "(?:^|(?<=\\]))\\s*(extern)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\s*>)?\\s*>)?\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.modifier.tide" },
-            "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
+            "2": { "patterns": [{ "include": "#type-name" }] },
             "3": { "name": "entity.name.function.tide" }
           }
         },
@@ -180,23 +187,51 @@
         },
         {
           "comment": "const int MAX_HEALTH = ...: a constant",
-          "match": "^\\s*(const)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*=)",
+          "match": "^\\s*(const)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\s*>)?\\s*>)?\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*=)",
           "captures": {
             "1": { "name": "storage.modifier.tide" },
-            "2": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
+            "2": { "patterns": [{ "include": "#type-name" }] },
             "3": { "name": "variable.other.constant.tide" }
           }
         },
         {
-          "comment": "Methods and functions: [async] [mut] Type Name(, or Type? Name(, at the start of a line",
-          "match": "^\\s*(?:(async)\\s+)?(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|switch|case|default|break|while|for|foreach|parallel|in|continue|namespace|using|extern|const|fail|try|is|null|async|await)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "comment": "Methods and functions: [async] [mut] Type Name(, where Type can be List<T> or T?, at the start of a line",
+          "match": "(?:^|(?<=\\]))\\s*(?:(local|async)\\s+)?(?:(local|async)\\s+)?(?:(mut)\\s+)?(?!(?:return|if|else|var|mut|with|without|system|view|component|singleton|struct|input|event|enum|scene|local|async|switch|case|default|break|while|for|foreach|parallel|continue|namespace|using|extern|const|settings|fail|try|is|null|true|false|this|await|operator)\\b)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\s*>)?\\s*>)?\\??)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "captures": {
             "1": { "name": "storage.modifier.tide" },
             "2": { "name": "storage.modifier.tide" },
-            "3": { "patterns": [{ "include": "#builtins" }, { "include": "#types" }] },
-            "4": { "name": "entity.name.function.tide" }
+            "3": { "name": "storage.modifier.tide" },
+            "4": { "patterns": [{ "include": "#type-name" }] },
+            "5": { "name": "entity.name.function.tide" }
           }
         }
+      ]
+    },
+    "type-name": {
+      "comment": "A type where only a type can be: a declaration's return type, an extern's or a constant's",
+      "patterns": [
+        { "include": "#generics" },
+        { "include": "#builtins" },
+        {
+          "name": "entity.name.type.tide",
+          "match": "[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "name": "punctuation.accessor.tide",
+          "match": "\\."
+        },
+        {
+          "name": "keyword.operator.optional.tide",
+          "match": "\\?"
+        }
+      ]
+    },
+    "parens": {
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        { "include": "#parens" },
+        { "include": "$self" }
       ]
     },
     "keywords": {
@@ -209,20 +244,58 @@
           },
           "end": "\\)",
           "patterns": [
+            { "name": "keyword.control.loop.in.tide", "match": "\\bin\\b" },
             { "name": "keyword.control.tide", "match": "\\b(by|offset)\\b" },
-            { "begin": "\\(", "end": "\\)", "patterns": [{ "include": "$self" }] },
+            { "include": "#parens" },
             { "include": "$self" }
           ]
         },
         {
-          "name": "keyword.control.tide",
-          "match": "\\b(if|else|return|switch|case|default|break|while|for|foreach|parallel|in|continue|fail|try|await)\\b"
+          "comment": "foreach (var item in items)",
+          "begin": "\\b(foreach)\\s*(\\()",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.tide" }
+          },
+          "end": "\\)",
+          "patterns": [
+            { "name": "keyword.control.loop.in.tide", "match": "\\bin\\b" },
+            { "include": "#parens" },
+            { "include": "$self" }
+          ]
         },
         {
-          "comment": "int Parse(string text) fails ParseError: what a function can fail with",
-          "match": "(\\))\\s*(fails)\\b",
+          "comment": "case 2: a switch's label, whose ':' isn't the conditional's",
+          "begin": "\\b(case)\\b",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.tide" }
+          },
+          "end": "(:)|$",
+          "endCaptures": {
+            "1": { "name": "punctuation.separator.colon.tide" }
+          },
+          "patterns": [{ "include": "$self" }]
+        },
+        {
+          "match": "\\b(default)\\s*(:)",
           "captures": {
-            "2": { "name": "storage.modifier.fails.tide" }
+            "1": { "name": "keyword.control.tide" },
+            "2": { "name": "punctuation.separator.colon.tide" }
+          }
+        },
+        {
+          "name": "keyword.control.tide",
+          "match": "\\b(if|else|return|switch|case|default|break|while|for|foreach|parallel|continue|fail|try|await)\\b"
+        },
+        {
+          "comment": "Keywords that only start declarations, where the declaration rules didn't see one",
+          "name": "storage.type.tide",
+          "match": "\\b(component|singleton|system)\\b"
+        },
+        {
+          "comment": "int Parse(string text) fails ParseError: what a function can fail with, after its parameters or on a line of its own",
+          "match": "(?:(?<=\\))|^)\\s*(fails)\\b(?=\\s+[A-Za-z_]|\\s*$)",
+          "captures": {
+            "1": { "name": "storage.modifier.fails.tide" }
           }
         },
         {
@@ -235,6 +308,13 @@
           "match": "^\\s*(Sample|Sanitize)(?=\\s*\\()",
           "captures": {
             "1": { "name": "keyword.other.tide" }
+          }
+        },
+        {
+          "comment": "extern void Fill(in Stats stats): a parameter C reads where it is",
+          "match": "(?:(?<=[(,])|^)\\s*(in)(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<[^<>]*>)?\\??\\s+[A-Za-z_])",
+          "captures": {
+            "1": { "name": "storage.modifier.tide" }
           }
         },
         {
@@ -264,14 +344,12 @@
           "match": "\\bnull\\b"
         },
         {
+          "comment": "\"text\": one line, with the escapes \\\" \\\\ and \\n",
           "name": "string.quoted.double.tide",
           "begin": "\"",
           "end": "\"|$",
           "patterns": [
-            {
-              "name": "constant.character.escape.tide",
-              "match": "\\\\[\"\\\\n]"
-            }
+            { "include": "#escapes" }
           ]
         },
         {
@@ -292,20 +370,39 @@
         }
       ]
     },
-    "interpolated": {
-      "comment": "$\"score {score:D3}\": text with values in it",
-      "name": "string.quoted.double.interpolated.tide",
-      "begin": "\\$\"",
-      "end": "\"",
+    "escapes": {
       "patterns": [
         {
           "name": "constant.character.escape.tide",
-          "match": "\\\\[\"\\\\n]|\\{\\{|\\}\\}"
+          "match": "\\\\[\"\\\\n]"
+        },
+        {
+          "comment": "Text has no other escapes",
+          "name": "invalid.illegal.unknown-escape.tide",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "interpolated": {
+      "comment": "$\"score {score:D3}\": text with values in it, on one line",
+      "name": "string.quoted.double.interpolated.tide",
+      "begin": "\\$\"",
+      "end": "\"|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.tide",
+          "match": "\\{\\{|\\}\\}"
+        },
+        { "include": "#escapes" },
+        {
+          "comment": "A '}' in text is written '}}'",
+          "name": "invalid.illegal.brace.tide",
+          "match": "\\}"
         },
         {
           "name": "meta.interpolation.tide",
           "begin": "\\{",
-          "end": "\\}",
+          "end": "\\}|$",
           "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.tide" } },
           "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.tide" } },
           "contentName": "source.tide",
@@ -320,22 +417,36 @@
         }
       ]
     },
+    "generics": {
+      "patterns": [
+        {
+          "comment": "List<int>, Grid2<Cell>: the built-in types that hold another",
+          "match": "(?<!\\.)\\b(List|Grid2|Grid3)\\s*(<)\\s*([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*(?:\\s*<\\s*[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\s*>)?\\??)\\s*(>)",
+          "captures": {
+            "1": { "name": "support.class.tide" },
+            "2": { "name": "punctuation.definition.typeparameters.begin.tide" },
+            "3": { "patterns": [{ "include": "#type-name" }] },
+            "4": { "name": "punctuation.definition.typeparameters.end.tide" }
+          }
+        }
+      ]
+    },
     "builtins": {
       "patterns": [
         {
-          "comment": "Built-in value types, void for what a method or function returns, text and Actions, and what an enum is stored as (enum Voxel : byte)",
+          "comment": "Built-in value types, void for what a method or function returns, text and Actions, and what an enum is stored as (enum Voxel : byte). Not after a '.': Draw.Rect is a function",
           "name": "storage.type.primitive.tide",
-          "match": "\\b(void|bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|LocalEntity|PlayerID|Color|Rect|string|Action|byte|ushort)\\b"
+          "match": "(?<!\\.)\\b(void|bool|int[234]?|float(?:2x2|3x3|4x4|[234])?|quaternion|Entity|LocalEntity|PlayerID|Color|Rect|string|Action|byte|ushort)\\b"
         },
         {
-          "comment": "Built-in singletons, components, records and function groups",
+          "comment": "Built-in singletons, components, events, enums, records, generic types and function groups. Not after a '.': GUI.Button is a function",
           "name": "support.class.tide",
-          "match": "\\b(Time|Math|Draw|GUI|GUILayout|Screen|Anchor|Owner|Devices|Spawned|Destroyed|PlayerJoined|PlayerLeft|Scene|SceneVisibility|Session|SessionState|DisconnectReason|Connected|Disconnected)\\b"
+          "match": "(?<!\\.)\\b(Time|Math|Draw|GUI|GUILayout|Screen|Anchor|Owner|Devices|Keyboard|Mouse|Gamepad|Button|Dpad|Spawned|Destroyed|PlayerJoined|PlayerLeft|Scene|SceneVisibility|Session|SessionState|DisconnectReason|Connected|Disconnected|Wait|Clipboard|List|Grid2|Grid3)\\b"
         },
         {
           "comment": "Spawn(...), Send(...)",
           "name": "support.function.tide",
-          "match": "\\b(Spawn|Send)(?=\\s*\\()"
+          "match": "(?<!\\.)\\b(Spawn|Send)(?=\\s*\\()"
         },
         {
           "comment": "e.Add(...), e.Remove(...), e.Destroy(), e.Send(...)",
@@ -383,6 +494,11 @@
         {
           "name": "keyword.operator.assignment.compound.tide",
           "match": "<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^="
+        },
+        {
+          "comment": "Parse(text)!: its value, or the default when it fails",
+          "name": "keyword.operator.or-default.tide",
+          "match": "(?<=[A-Za-z0-9_)\\]])!(?!=)"
         },
         {
           "name": "keyword.operator.logical.tide",
