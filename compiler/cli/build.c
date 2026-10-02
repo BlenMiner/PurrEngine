@@ -1468,6 +1468,18 @@ static bool app_id(const build *b, char *out, const size_t size)
     return true;
 }
 
+// The app's version code, which Android and Google Play only take updates
+// with higher ones of: the minutes since 2020 began, so each build is newer
+// than the last with no number to keep. SOURCE_DATE_EPOCH stands in for now
+// where it's set, for builds that come out the same each time.
+static int android_version_code(void)
+{
+    const char *epoch = getenv("SOURCE_DATE_EPOCH");
+    const int64_t now = epoch && *epoch ? strtoll(epoch, NULL, 10) : sys_now();
+    const int64_t minutes = (now - 1577836800) / 60; // 2020-01-01
+    return minutes > 1 ? (int)minutes : 1;
+}
+
 // Links the game for one CPU: a library with the platform layer, built for
 // Android in the package (lib/android/<abi>), and Android's own libraries.
 static bool link_android(const build *b, const file_list *objects, const c_side *c, const int abi, const char *output)
@@ -1533,10 +1545,11 @@ static char *build_android(const char *root, const build_options *opts, char *pa
     write_main(main_c, opts, b.name);
     char *game_c = path_join(gen, "game.c");
 
-    // Each CPU: objects of its own, in <cache>/<abi>
+    // Each CPU: objects of its own, in <cache>/<abi>. The app is made for
+    // Android 16, as Google Play wants.
     char *cache = b.cache;
-    apk_desc desc = {.package = id, .lib_name = "game", .version_code = 1, .version_name = "1.0",
-                     .min_sdk = atoi(ANDROID_API), .target_sdk = 35, .debuggable = !opts->release};
+    apk_desc desc = {.package = id, .lib_name = "game", .version_code = android_version_code(), .version_name = "1.0",
+                     .min_sdk = atoi(ANDROID_API), .target_sdk = 36, .debuggable = !opts->release};
     for (int abi = 0; abi < ANDROID_ABIS; abi++) {
         char target_flag[64];
         snprintf(target_flag, sizeof target_flag, "--target=%s-linux-android" ANDROID_API, android_arches[abi]);
@@ -1584,10 +1597,32 @@ static char *build_android(const char *root, const build_options *opts, char *pa
     desc.icon = sys_exists(icon) ? icon : NULL;
     char error[512];
     apk_key key;
+    bool made;
     char *key_path = android_key_path();
-    if (!apk_key_load(key_path, &key, error, sizeof error) || !apk_write(output, &desc, &key, error, sizeof error)) {
+    if (!apk_key_load(key_path, &key, &made, error, sizeof error)) {
         fprintf(stderr, "tide: %s\n", error);
         return NULL;
+    }
+    if (made) {
+        printf("Made the key that signs your Android apps: %s\n"
+               "  Keep a copy somewhere safe. An app's updates have to be signed with the key the app was, and on\n"
+               "  Google Play it's your upload key.\n",
+               key_path);
+    }
+    if (!apk_write(output, &desc, &key, error, sizeof error)) {
+        fprintf(stderr, "tide: %s\n", error);
+        return NULL;
+    }
+    // Made to ship: an App Bundle too, which Google Play takes
+    if (opts->release) {
+        const size_t n = strlen(output);
+        char *bundle = format("%s%s", output, ".aab");
+        if (n > 4 && strcmp(output + n - 4, ".apk") == 0) strcpy(bundle + n - 4, ".aab");
+        if (!apk_bundle_write(bundle, &desc, &key, error, sizeof error)) {
+            fprintf(stderr, "tide: %s\n", error);
+            return NULL;
+        }
+        printf("Built %s for Google Play\n", bundle);
     }
     if (package) snprintf(package, package_size, "%s", id);
     return output;

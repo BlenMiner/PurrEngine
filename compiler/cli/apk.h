@@ -2,14 +2,18 @@
 
 // Android apps as tide makes them, with no tool of Google's (no aapt2, no
 // apksigner, no Java): an APK, which is a zip of the app's binary manifest and
-// its library for each CPU, signed with APK Signature Scheme v2. The library
-// is the program, which Android's NativeActivity loads (see
-// platform/android/raylib/rcore_android_tide.c), so the app has no code or
-// resources of its own.
+// its library for each CPU, signed with APK Signature Scheme v2; and an App
+// Bundle, which Google Play takes and makes APKs of for each phone: the same
+// files with the manifest and resources as protocol buffers, signed as a JAR.
+// The library is the program, which Android's NativeActivity loads (see
+// platform/android/raylib/rcore_android_tide.c), so the app has no code of its
+// own, and its only resource is its icon. The key is sign.h's.
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "sign.h"
 
 #define APK_MAX_LIBS 4
 
@@ -28,17 +32,6 @@ typedef struct apk_desc {
     const char *icon;               // Its icon, a PNG on disk, or NULL for the system's
 } apk_desc;
 
-// The key an app is signed with: Android only takes an update signed with the
-// same one.
-typedef struct apk_key {
-    uint8_t private_key[32]; // P-256
-    uint8_t cert[512];       // Self-signed, DER
-    size_t cert_size;
-} apk_key;
-
-// Reads the key at `path`, or makes one and writes it there.
-bool apk_key_load(const char *path, apk_key *key, char *error, size_t error_size);
-
 // The app's manifest, as Android reads it: binary XML. Returns its size, and
 // sets *out to it (to free()), or 0.
 size_t apk_manifest(const apk_desc *desc, uint8_t **out);
@@ -47,5 +40,15 @@ size_t apk_manifest(const apk_desc *desc, uint8_t **out);
 // size, and *out (to free()).
 size_t apk_resources(const char *package, uint8_t **out);
 
+// The same two as an App Bundle has them: aapt2's protocol buffers
+// (frameworks/base/tools/aapt2/Resources.proto), an XmlNode and a
+// ResourceTable.
+size_t apk_bundle_manifest(const apk_desc *desc, uint8_t **out);
+size_t apk_bundle_resources(const char *package, uint8_t **out);
+
 // Writes the app to `path`, signed with `key`.
 bool apk_write(const char *path, const apk_desc *desc, const apk_key *key, char *error, size_t error_size);
+
+// Writes the app as an App Bundle (.aab) to `path`, signed with `key`, for
+// Google Play.
+bool apk_bundle_write(const char *path, const apk_desc *desc, const apk_key *key, char *error, size_t error_size);

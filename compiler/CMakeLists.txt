@@ -17,10 +17,11 @@ if(NOT TIDE_WEB AND NOT TIDE_ANDROID)
     target_link_libraries(tidec PRIVATE tidec_core)
 
     # Android apps (cli/apk.c), which tide makes itself, for this repo's
-    # Android builds (tide_android_app). Its crypto is the platform layer's.
-    set(TIDE_APK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/cli/apk.c"
-        "${PROJECT_SOURCE_DIR}/platform/src/rtc/p256.c" "${PROJECT_SOURCE_DIR}/platform/src/rtc/cert.c"
-        "${PROJECT_SOURCE_DIR}/platform/src/rtc/crypto.c" "${PROJECT_SOURCE_DIR}/engine/src/sha256.c")
+    # Android builds (tide_android_app), and their keys and signatures
+    # (cli/sign.c, cli/rsa.c). Hashes and random bytes are the platform layer's.
+    set(TIDE_APK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/cli/apk.c" "${CMAKE_CURRENT_SOURCE_DIR}/cli/sign.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cli/rsa.c" "${PROJECT_SOURCE_DIR}/platform/src/rtc/crypto.c"
+        "${PROJECT_SOURCE_DIR}/engine/src/sha256.c")
     set(TIDE_APK_SOURCES ${TIDE_APK_SOURCES} PARENT_SCOPE)
     add_executable(tide_apk cli/apk_main.c ${TIDE_APK_SOURCES})
     target_include_directories(tide_apk PRIVATE cli "${PROJECT_SOURCE_DIR}/platform/src/rtc" "${PROJECT_SOURCE_DIR}/engine/include")

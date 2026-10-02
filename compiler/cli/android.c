@@ -388,10 +388,12 @@ char *android_find_adb(const char *root)
 
 char *android_key_path(void)
 {
+    const char *given = getenv("TIDE_ANDROID_KEY");
+    if (given && *given) return path_absolute(given);
     char *h = home();
     char *dir = path_join(h, ".android");
     sys_mkdirs(dir);
-    char *key = path_join(dir, "tide.key");
+    char *key = path_join(dir, "tide.pem");
     free(dir);
     free(h);
     return key;

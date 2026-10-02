@@ -1,8 +1,9 @@
 // tide_apk: makes an Android app (apk.c), for Android builds of this repo
 // (tide_android_app in platform/CMakeLists.txt). tide makes them itself.
 //
-//   tide_apk <app.apk> --package <id> --label <name> --lib <name> --key <file>
+//   tide_apk <app.apk|app.aab> --package <id> --label <name> --lib <name> --key <file>
 //            [--min <api>] [--target <api>] [--debuggable] [--icon <png>] <abi>=<lib.so>...
+//                           makes an app, or an App Bundle for Google Play (.aab)
 //   tide_apk --key <file>   makes the key, unless it's there
 
 #include <stdio.h>
@@ -13,8 +14,8 @@
 
 static int usage(void)
 {
-    fprintf(stderr, "usage: tide_apk <app.apk> --package <id> --label <name> --lib <name> --key <file>\n"
-                    "                [--min <api>] [--target <api>] [--debuggable] <abi>=<lib.so>...\n"
+    fprintf(stderr, "usage: tide_apk <app.apk|app.aab> --package <id> --label <name> --lib <name> --key <file>\n"
+                    "                [--min <api>] [--target <api>] [--debuggable] [--icon <png>] <abi>=<lib.so>...\n"
                     "       tide_apk --key <file>\n");
     return 2;
 }
@@ -24,12 +25,12 @@ int main(int argc, char **argv)
     char error[512];
     apk_key key;
     if (argc == 3 && strcmp(argv[1], "--key") == 0) {
-        if (apk_key_load(argv[2], &key, error, sizeof error)) return 0;
+        if (apk_key_load(argv[2], &key, NULL, error, sizeof error)) return 0;
         fprintf(stderr, "tide_apk: %s\n", error);
         return 1;
     }
     if (argc < 2) return usage();
-    apk_desc desc = {.version_code = 1, .version_name = "1.0", .min_sdk = 29, .target_sdk = 35};
+    apk_desc desc = {.version_code = 1, .version_name = "1.0", .min_sdk = 29, .target_sdk = 36};
     const char *key_path = NULL;
     for (int i = 2; i < argc; i++) {
         const char *a = argv[i];
@@ -56,7 +57,10 @@ int main(int argc, char **argv)
     }
     if (!desc.package || !desc.label || !desc.lib_name || !key_path || desc.lib_count == 0) return usage();
 
-    if (!apk_key_load(key_path, &key, error, sizeof error) || !apk_write(argv[1], &desc, &key, error, sizeof error)) {
+    const size_t length = strlen(argv[1]);
+    const bool bundle = length > 4 && strcmp(argv[1] + length - 4, ".aab") == 0;
+    if (!apk_key_load(key_path, &key, NULL, error, sizeof error)
+        || !(bundle ? apk_bundle_write : apk_write)(argv[1], &desc, &key, error, sizeof error)) {
         fprintf(stderr, "tide_apk: %s\n", error);
         return 1;
     }

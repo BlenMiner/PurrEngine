@@ -68,10 +68,10 @@ endfunction()
 # to it, which runs the program's main() in Android's NativeActivity
 # (platform/android/raylib/rcore_android_tide.c). Its ID is dev.tide.<target>,
 # and it's signed with a key every build of this repo shares
-# (build/android-debug.key, made the first time), so a new build installs
+# (build/android-debug.pem, made the first time), so a new build installs
 # over the last. Does nothing in other builds, so it can be called
 # unconditionally.
-set(TIDE_ANDROID_KEY "${PROJECT_SOURCE_DIR}/build/android-debug.key" CACHE FILEPATH "The key Android builds sign their apps with")
+set(TIDE_ANDROID_KEY "${PROJECT_SOURCE_DIR}/build/android-debug.pem")
 if(TIDE_ANDROID)
     # Made once, before any app, so apps built at once share it.
     add_custom_target(tide_android_key COMMAND "${TIDE_APK_PATH}" --key "${TIDE_ANDROID_KEY}" VERBATIM)
