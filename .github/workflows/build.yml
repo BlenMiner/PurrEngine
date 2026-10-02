@@ -149,12 +149,36 @@ jobs:
           cmake --build --preset mingw-release
           ctest --preset mingw-release -LE gpu
 
+      # Android's tests run on its emulator, which Linux's runners accelerate
+      # (KVM). Its SDK is on the runners; the emulator and its image come
+      # through the SDK's manager, under Google's license.
+      - name: Test (Android)
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          yes | "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" > /dev/null
+          echo no | "$tools/avdmanager" create avd -n tide -k "system-images;android-36;default;x86_64" --force
+          "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect             -no-snapshot > emulator.log 2>&1 &
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" wait-for-device
+          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '')" = 1 ]; do sleep 2; done
+          cmake --workflow --preset android-debug
+
+      # The package's Android half is the platform layer for each CPU, built
+      # with the runner's NDK (ANDROID_NDK_HOME).
       - name: Package
         run: |
           cmake --preset package -DTIDE_VERSION="$TIDE_VERSION" -DTIDE_CHANNEL="$TIDE_CHANNEL"
           cmake --build --preset package
           cmake --preset web-package -DTIDE_VERSION="$TIDE_VERSION" -DTIDE_CHANNEL="$TIDE_CHANNEL"
           cmake --build --preset web-package
+          for abi in arm64 x86_64; do
+            cmake --preset android-package-$abi
+            cmake --build --preset android-package-$abi --target tide_platform raylib
+          done
           cmake -DNAME=tide-${{ matrix.platform }} -P cmake/package.cmake
       # Build a game with the package, as a user would.
       - name: Try the package
@@ -164,6 +188,7 @@ jobs:
           build/dist/tide/bin/tide version
           build/dist/tide/bin/tide build build/try
           build/dist/tide/bin/tide build build/try --release --web
+          build/dist/tide/bin/tide build build/try --android
 
       - uses: actions/upload-artifact@v4
         with:

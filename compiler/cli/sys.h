@@ -43,6 +43,12 @@ sys_process *sys_start(const char *const *argv, const char *cwd);
 // Waits up to `ms` milliseconds for it to end. True once it has, with its exit
 // code in `code`; the process is freed then.
 bool sys_wait(sys_process *p, int ms, int *code);
+// Ends it, and frees it.
+void sys_kill(sys_process *p);
+
+// Runs a program like sys_run, and puts what it prints (not its errors) in
+// `out`, `size` bytes with the zero that ends it, cut there if it's longer.
+int sys_capture(const char *const *argv, char *out, size_t size);
 
 uint32_t sys_pid(void);                // This process's
 bool sys_process_alive(uint32_t pid); // Whether a process with that ID is running

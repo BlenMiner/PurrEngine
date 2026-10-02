@@ -39,7 +39,8 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
-// The targets tide builds for: the machine's own, and the web.
+// The targets tide builds for: x86-64 and arm64, which are the machine's own
+// and Android's, and the web.
 extern "C" {
 #define TIDE_TARGET(name)                                                                                              \
     void LLVMInitialize##name##TargetInfo();                                                                           \
@@ -47,13 +48,8 @@ extern "C" {
     void LLVMInitialize##name##TargetMC();                                                                             \
     void LLVMInitialize##name##AsmPrinter();                                                                           \
     void LLVMInitialize##name##AsmParser();
-#if defined(__x86_64__) || defined(_M_X64)
 TIDE_TARGET(X86)
-#define TIDE_NATIVE_TARGET X86
-#elif defined(__aarch64__) || defined(_M_ARM64)
 TIDE_TARGET(AArch64)
-#define TIDE_NATIVE_TARGET AArch64
-#endif
 TIDE_TARGET(WebAssembly)
 }
 
@@ -70,22 +66,25 @@ static void init_targets()
     static bool done;
     if (done) return;
     done = true;
-    TIDE_INIT_TARGET(TIDE_NATIVE_TARGET)
+    TIDE_INIT_TARGET(X86)
+    TIDE_INIT_TARGET(AArch64)
     TIDE_INIT_TARGET(WebAssembly)
 }
 
-// The linkers games need: the web's, and the machine's own.
+// The linkers games need: the web's, Android's (ELF, as Linux's), and the
+// machine's own.
 LLD_HAS_DRIVER(wasm)
+LLD_HAS_DRIVER(elf)
 #if defined(_WIN32)
 LLD_HAS_DRIVER(coff)
 LLD_HAS_DRIVER(mingw)
-static const lld::DriverDef linkers[] = {{lld::Wasm, &lld::wasm::link}, {lld::WinLink, &lld::coff::link},
-                                         {lld::MinGW, &lld::mingw::link}};
+static const lld::DriverDef linkers[] = {{lld::Wasm, &lld::wasm::link}, {lld::Gnu, &lld::elf::link},
+                                         {lld::WinLink, &lld::coff::link}, {lld::MinGW, &lld::mingw::link}};
 #elif defined(__APPLE__)
 LLD_HAS_DRIVER(macho)
-static const lld::DriverDef linkers[] = {{lld::Wasm, &lld::wasm::link}, {lld::Darwin, &lld::macho::link}};
+static const lld::DriverDef linkers[] = {{lld::Wasm, &lld::wasm::link}, {lld::Gnu, &lld::elf::link},
+                                         {lld::Darwin, &lld::macho::link}};
 #else
-LLD_HAS_DRIVER(elf)
 static const lld::DriverDef linkers[] = {{lld::Wasm, &lld::wasm::link}, {lld::Gnu, &lld::elf::link}};
 #endif
 

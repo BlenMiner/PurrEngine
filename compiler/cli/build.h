@@ -6,6 +6,7 @@ typedef struct build_options {
     const char *folder; // The game: every .tide file in it and its subfolders
     bool release;       // Optimized, no console window on Windows
     bool web;           // One self-contained .html, with clang's WebAssembly target
+    bool android;       // An Android app (.apk), for arm64 phones and the x86-64 emulator
     const char *output; // Where the program goes; NULL for <folder>/build/<name>
     const char *title;  // The window's title, over the game's title setting; NULL for that, or else the folder's name
     bool stats;         // Show the frame rate, ping, bandwidth, tick, entity count and threads
@@ -28,6 +29,11 @@ int tide_run_reloading(const char *root, const build_options *opts, const char *
 // place (see platform/web/tide.js). `args` go to the game, as for
 // tide_run_reloading. Runs until it's stopped.
 int tide_run_web(const char *root, const build_options *opts, bool open_page, const char *const *args);
+
+// Runs a game on an Android phone or emulator (`tide run --android`): builds
+// its app, installs it with adb, starts it with `args` and shows what it
+// prints until it ends. Returns 0 if it ran.
+int tide_run_android(const char *root, const build_options *opts, const char *const *args);
 
 // Prints the schedule of the game in `folder` (see tidec --schedule).
 bool tide_schedule(const char *folder);

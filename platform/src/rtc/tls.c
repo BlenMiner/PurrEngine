@@ -207,6 +207,330 @@ int rtc_tls_receive(rtc_tls *t, const rtc_socket s, void *out, const size_t capa
     return (int)n;
 }
 
+#elif defined(__ANDROID__)
+
+// Android lets apps load none of the system's libraries but those of its NDK,
+// and OpenSSL isn't one: TLS is Java's, through JNI. SSLEngine seals and
+// opens bytes in buffers, without a socket of its own, so it runs on ours, as
+// SChannel does. It checks the relay's certificate against Android's trusted
+// ones, and its name.
+#include <jni.h>
+
+void *tide_android_vm(void); // The app's Java VM (platform/android/raylib/rcore_android_tide.c)
+
+#define BUFFER 65536 // Bigger than a TLS record, sealed or not
+
+struct rtc_tls {
+    jobject engine;
+    jobject net_in, net_out, app_in; // Direct buffers over the arrays below
+    uint8_t net_in_bytes[BUFFER];    // Sealed bytes come in, not opened yet
+    size_t net_in_size;
+    uint8_t net_out_bytes[BUFFER]; // Sealed, not sent yet
+    size_t net_out_size;
+    uint8_t app_in_bytes[BUFFER]; // Opened, not read yet
+    size_t app_in_size;
+    bool done; // The handshake
+};
+
+// SSLEngineResult's enums, by their order in javax.net.ssl
+enum { STATUS_UNDERFLOW, STATUS_OVERFLOW, STATUS_OK, STATUS_CLOSED };
+enum { HANDSHAKE_NONE, HANDSHAKE_FINISHED, HANDSHAKE_TASK, HANDSHAKE_WRAP, HANDSHAKE_UNWRAP, HANDSHAKE_UNWRAP_AGAIN };
+
+static struct {
+    bool tried, ok;
+    jmethodID position, set_position, set_limit;          // java.nio.Buffer
+    jmethodID wrap, unwrap, handshake_status, task, begin; // SSLEngine
+    jmethodID result_status, result_handshake, consumed, produced;
+    jmethodID ordinal, run;
+} java;
+
+// Java on this thread, in a frame of local references of its own: the
+// thread stays attached, so references a call makes go when it ends (done).
+static JNIEnv *jni(void)
+{
+    JavaVM *vm = tide_android_vm();
+    JNIEnv *env = NULL;
+    if (!vm || (*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return NULL;
+    if ((*env)->PushLocalFrame(env, 64) != 0) {
+        (*env)->ExceptionClear(env);
+        return NULL;
+    }
+    return env;
+}
+
+static void done(JNIEnv *env)
+{
+    (*env)->PopLocalFrame(env, NULL);
+}
+
+// Clears an exception Java threw: false if it threw one.
+static bool no_exception(JNIEnv *env, const char *what)
+{
+    if (!(*env)->ExceptionCheck(env)) return true;
+    (*env)->ExceptionDescribe(env); // To the log
+    (*env)->ExceptionClear(env);
+    rtc_debug("tls: %s threw", what);
+    return false;
+}
+
+static bool load(JNIEnv *env)
+{
+    if (java.tried) return java.ok;
+    java.tried = true;
+    jclass buffer = (*env)->FindClass(env, "java/nio/Buffer");
+    jclass engine = (*env)->FindClass(env, "javax/net/ssl/SSLEngine");
+    jclass result = (*env)->FindClass(env, "javax/net/ssl/SSLEngineResult");
+    jclass enumeration = (*env)->FindClass(env, "java/lang/Enum");
+    jclass runnable = (*env)->FindClass(env, "java/lang/Runnable");
+    if (!no_exception(env, "finding Java's TLS") || !buffer || !engine || !result || !enumeration || !runnable) return false;
+    java.position = (*env)->GetMethodID(env, buffer, "position", "()I");
+    java.set_position = (*env)->GetMethodID(env, buffer, "position", "(I)Ljava/nio/Buffer;");
+    java.set_limit = (*env)->GetMethodID(env, buffer, "limit", "(I)Ljava/nio/Buffer;");
+    java.wrap = (*env)->GetMethodID(env, engine, "wrap",
+                                    "(Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;)Ljavax/net/ssl/SSLEngineResult;");
+    java.unwrap = (*env)->GetMethodID(env, engine, "unwrap",
+                                      "(Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;)Ljavax/net/ssl/SSLEngineResult;");
+    java.handshake_status =
+        (*env)->GetMethodID(env, engine, "getHandshakeStatus", "()Ljavax/net/ssl/SSLEngineResult$HandshakeStatus;");
+    java.task = (*env)->GetMethodID(env, engine, "getDelegatedTask", "()Ljava/lang/Runnable;");
+    java.begin = (*env)->GetMethodID(env, engine, "beginHandshake", "()V");
+    java.result_status = (*env)->GetMethodID(env, result, "getStatus", "()Ljavax/net/ssl/SSLEngineResult$Status;");
+    java.result_handshake =
+        (*env)->GetMethodID(env, result, "getHandshakeStatus", "()Ljavax/net/ssl/SSLEngineResult$HandshakeStatus;");
+    java.consumed = (*env)->GetMethodID(env, result, "bytesConsumed", "()I");
+    java.produced = (*env)->GetMethodID(env, result, "bytesProduced", "()I");
+    java.ordinal = (*env)->GetMethodID(env, enumeration, "ordinal", "()I");
+    java.run = (*env)->GetMethodID(env, runnable, "run", "()V");
+    java.ok = no_exception(env, "finding Java's TLS") && java.position && java.set_position && java.set_limit
+           && java.wrap && java.unwrap && java.handshake_status && java.task && java.begin && java.result_status
+           && java.result_handshake && java.consumed && java.produced && java.ordinal && java.run;
+    return java.ok;
+}
+
+static int ordinal(JNIEnv *env, jobject value)
+{
+    const int n = value ? (*env)->CallIntMethod(env, value, java.ordinal) : -1;
+    if (value) (*env)->DeleteLocalRef(env, value);
+    return n;
+}
+
+static jobject global_buffer(JNIEnv *env, void *bytes)
+{
+    jobject local = (*env)->NewDirectByteBuffer(env, bytes, BUFFER);
+    jobject global = local ? (*env)->NewGlobalRef(env, local) : NULL;
+    if (local) (*env)->DeleteLocalRef(env, local);
+    return global;
+}
+
+static void span(JNIEnv *env, jobject buffer, const size_t start, const size_t end)
+{
+    (*env)->DeleteLocalRef(env, (*env)->CallObjectMethod(env, buffer, java.set_limit, (jint)end));
+    (*env)->DeleteLocalRef(env, (*env)->CallObjectMethod(env, buffer, java.set_position, (jint)start));
+}
+
+rtc_tls *rtc_tls_new(const char *host)
+{
+    JNIEnv *env = jni();
+    if (!env || !load(env)) {
+        if (env) done(env);
+        fprintf(stderr, "tide: rooms need Java's TLS to reach the relay securely, and it isn't here\n");
+        return NULL;
+    }
+    rtc_tls *t = calloc(1, sizeof *t);
+    if (!t) {
+        done(env);
+        return NULL;
+    }
+    // SSLContext.getDefault().createSSLEngine(host, 443): a client, which checks the host's name as HTTPS does
+    jclass context_class = (*env)->FindClass(env, "javax/net/ssl/SSLContext");
+    jmethodID get_default = context_class ? (*env)->GetStaticMethodID(env, context_class, "getDefault",
+                                                                      "()Ljavax/net/ssl/SSLContext;") : NULL;
+    jobject context = get_default ? (*env)->CallStaticObjectMethod(env, context_class, get_default) : NULL;
+    jmethodID create = context_class ? (*env)->GetMethodID(env, context_class, "createSSLEngine",
+                                                           "(Ljava/lang/String;I)Ljavax/net/ssl/SSLEngine;") : NULL;
+    jstring name = (*env)->NewStringUTF(env, host);
+    jobject engine = context && create ? (*env)->CallObjectMethod(env, context, create, name, 443) : NULL;
+    bool ok = no_exception(env, "making a TLS engine") && engine;
+    if (ok) {
+        jclass engine_class = (*env)->GetObjectClass(env, engine);
+        jmethodID client = (*env)->GetMethodID(env, engine_class, "setUseClientMode", "(Z)V");
+        jmethodID get_params = (*env)->GetMethodID(env, engine_class, "getSSLParameters", "()Ljavax/net/ssl/SSLParameters;");
+        jmethodID set_params = (*env)->GetMethodID(env, engine_class, "setSSLParameters", "(Ljavax/net/ssl/SSLParameters;)V");
+        (*env)->CallVoidMethod(env, engine, client, JNI_TRUE);
+        jobject params = (*env)->CallObjectMethod(env, engine, get_params);
+        jclass params_class = params ? (*env)->GetObjectClass(env, params) : NULL;
+        jmethodID identify = params_class ? (*env)->GetMethodID(env, params_class, "setEndpointIdentificationAlgorithm",
+                                                                "(Ljava/lang/String;)V") : NULL;
+        jstring https = (*env)->NewStringUTF(env, "HTTPS");
+        if (identify) (*env)->CallVoidMethod(env, params, identify, https);
+        if (params) (*env)->CallVoidMethod(env, engine, set_params, params);
+        (*env)->CallVoidMethod(env, engine, java.begin);
+        ok = no_exception(env, "starting TLS") && identify;
+        t->engine = (*env)->NewGlobalRef(env, engine);
+        t->net_in = global_buffer(env, t->net_in_bytes);
+        t->net_out = global_buffer(env, t->net_out_bytes);
+        t->app_in = global_buffer(env, t->app_in_bytes);
+        ok = ok && t->engine && t->net_in && t->net_out && t->app_in;
+    }
+    done(env);
+    if (!ok) {
+        rtc_tls_free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void rtc_tls_free(rtc_tls *t)
+{
+    if (!t) return;
+    JNIEnv *env = jni();
+    if (env) {
+        if (t->engine) (*env)->DeleteGlobalRef(env, t->engine);
+        if (t->net_in) (*env)->DeleteGlobalRef(env, t->net_in);
+        if (t->net_out) (*env)->DeleteGlobalRef(env, t->net_out);
+        if (t->app_in) (*env)->DeleteGlobalRef(env, t->app_in);
+        done(env);
+    }
+    free(t);
+}
+
+// Sends what's sealed; false once the connection is gone.
+static bool flush(rtc_tls *t, const rtc_socket s)
+{
+    while (t->net_out_size) {
+        const int n = rtc_tcp_send(s, t->net_out_bytes, t->net_out_size);
+        if (n < 0) return false;
+        if (n == 0) return true;
+        memmove(t->net_out_bytes, t->net_out_bytes + n, t->net_out_size - (size_t)n);
+        t->net_out_size -= (size_t)n;
+    }
+    return true;
+}
+
+// Seals `size` bytes of `data` (none, for the handshake's own) into what's to
+// send. Returns the bytes it took, or -1.
+static int seal(JNIEnv *env, rtc_tls *t, const void *data, const size_t size)
+{
+    static uint8_t nothing[1]; // Java takes no buffer at no address
+    jobject from = (*env)->NewDirectByteBuffer(env, data ? (void *)data : nothing, (jlong)(size ? size : 1));
+    span(env, from, 0, size);
+    span(env, t->net_out, t->net_out_size, BUFFER);
+    jobject result = (*env)->CallObjectMethod(env, t->engine, java.wrap, from, t->net_out);
+    (*env)->DeleteLocalRef(env, from);
+    if (!no_exception(env, "sealing") || !result) return -1;
+    const int status = ordinal(env, (*env)->CallObjectMethod(env, result, java.result_status));
+    const int consumed = (*env)->CallIntMethod(env, result, java.consumed);
+    (*env)->DeleteLocalRef(env, result);
+    t->net_out_size = (size_t)(*env)->CallIntMethod(env, t->net_out, java.position);
+    return status == STATUS_CLOSED ? -1 : consumed;
+}
+
+// Opens what came, as far as it goes; returns whether it opened anything, or
+// -1 if the connection is broken or closed.
+static int open_some(JNIEnv *env, rtc_tls *t)
+{
+    span(env, t->net_in, 0, t->net_in_size);
+    span(env, t->app_in, t->app_in_size, BUFFER);
+    jobject result = (*env)->CallObjectMethod(env, t->engine, java.unwrap, t->net_in, t->app_in);
+    if (!no_exception(env, "opening") || !result) return -1;
+    const int status = ordinal(env, (*env)->CallObjectMethod(env, result, java.result_status));
+    const int consumed = (*env)->CallIntMethod(env, result, java.consumed);
+    const int produced = (*env)->CallIntMethod(env, result, java.produced);
+    (*env)->DeleteLocalRef(env, result);
+    memmove(t->net_in_bytes, t->net_in_bytes + consumed, t->net_in_size - (size_t)consumed);
+    t->net_in_size -= (size_t)consumed;
+    t->app_in_size = (size_t)(*env)->CallIntMethod(env, t->app_in, java.position);
+    if (status == STATUS_CLOSED) return -1;
+    return consumed > 0 || produced > 0;
+}
+
+// Takes what came from the socket, as room allows: false once it's gone.
+static bool fill(rtc_tls *t, const rtc_socket s)
+{
+    if (t->net_in_size == BUFFER) return true;
+    const int n = rtc_tcp_receive(s, t->net_in_bytes + t->net_in_size, BUFFER - t->net_in_size);
+    if (n < 0) return false;
+    t->net_in_size += (size_t)n;
+    return true;
+}
+
+// Does what the handshake (or a message after it) asks of us, until it waits
+// for the other side. False if it failed.
+static bool step(JNIEnv *env, rtc_tls *t, const rtc_socket s)
+{
+    for (int round = 0; round < 256; round++) {
+        if (!flush(t, s)) return false;
+        const int status = ordinal(env, (*env)->CallObjectMethod(env, t->engine, java.handshake_status));
+        if (!no_exception(env, "the handshake")) return false;
+        if (status == HANDSHAKE_NONE || status == HANDSHAKE_FINISHED) {
+            t->done = true;
+            return true;
+        }
+        if (status == HANDSHAKE_TASK) {
+            for (jobject task; (task = (*env)->CallObjectMethod(env, t->engine, java.task));) {
+                (*env)->CallVoidMethod(env, task, java.run);
+                (*env)->DeleteLocalRef(env, task);
+                if (!no_exception(env, "a TLS task")) return false;
+            }
+        } else if (status == HANDSHAKE_WRAP) {
+            if (seal(env, t, NULL, 0) < 0) return false;
+        } else {
+            if (!fill(t, s)) return false;
+            const int opened = open_some(env, t);
+            if (opened < 0) return false;
+            if (!opened) return true; // More has to come
+        }
+    }
+    return true;
+}
+
+int rtc_tls_handshake(rtc_tls *t, const rtc_socket s)
+{
+    if (t->done) return 1;
+    JNIEnv *env = jni();
+    const bool ok = env && step(env, t, s);
+    if (env) done(env);
+    if (!ok) {
+        rtc_debug("tls: the handshake failed");
+        return -1;
+    }
+    return t->done && !t->net_out_size ? 1 : 0;
+}
+
+int rtc_tls_send(rtc_tls *t, const rtc_socket s, const void *data, const size_t size)
+{
+    if (!t->done) return 0;
+    JNIEnv *env = jni();
+    if (!env) return -1;
+    int taken = 0; // What's sealed goes first
+    if (!flush(t, s)) taken = -1;
+    else if (!t->net_out_size) taken = seal(env, t, data, size < 16384 ? size : 16384); // A record's worth
+    if (taken > 0 && !flush(t, s)) taken = -1;
+    done(env);
+    return taken;
+}
+
+int rtc_tls_receive(rtc_tls *t, const rtc_socket s, void *out, const size_t capacity)
+{
+    if (!t->done) return 0;
+    JNIEnv *env = jni();
+    if (!env) return -1;
+    bool gone = !flush(t, s) || !fill(t, s);
+    while (!gone && t->net_in_size && t->app_in_size < BUFFER) {
+        const int opened = open_some(env, t);
+        if (opened < 0) gone = true;
+        if (opened <= 0) break;
+    }
+    if (!gone && !step(env, t, s)) gone = true; // A message after the handshake, like TLS 1.3's tickets
+    done(env);
+    if (!t->app_in_size) return gone ? -1 : 0;
+    const size_t n = t->app_in_size < capacity ? t->app_in_size : capacity;
+    memcpy(out, t->app_in_bytes, n);
+    memmove(t->app_in_bytes, t->app_in_bytes + n, t->app_in_size - n);
+    t->app_in_size -= n;
+    return (int)n;
+}
+
 #elif defined(__APPLE__)
 
 #include <Security/SecureTransport.h>

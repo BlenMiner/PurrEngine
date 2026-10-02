@@ -619,6 +619,7 @@ typedef struct program {
     VEC(decl *) settings;      // Each block written, though a game has one
     uint32_t tick_rate;        // tickRate, or 0 where it isn't set
     const expr *title;         // title, the text it's set to, or NULL
+    const expr *app_id;        // appId, likewise
     bool host_migration;       // hostMigration
 } program;
 

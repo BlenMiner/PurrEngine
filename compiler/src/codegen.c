@@ -8290,8 +8290,22 @@ static void gen_layout(gen *g)
               types.count, enums.count, enums.count ? "tide_layout_enums" : "NULL");
 }
 
+// A setting's text for tide, cut to fit.
+static void setting_text(char *out, const size_t size, const expr *setting)
+{
+    out[0] = '\0';
+    if (!setting) return;
+    const size_t n = (size_t)setting->text.len < size - 1 ? (size_t)setting->text.len : size - 1;
+    memcpy(out, setting->text.ptr, n);
+    out[n] = '\0';
+}
+
 bool codegen(program *prog, const codegen_options *opts)
 {
+    if (opts->info) {
+        setting_text(opts->info->title, sizeof opts->info->title, prog->title);
+        setting_text(opts->info->app_id, sizeof opts->info->app_id, prog->app_id);
+    }
     gen g = {0};
     g.prog = prog;
     g.opts = opts;

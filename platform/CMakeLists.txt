@@ -133,6 +133,10 @@ elseif(MINGW)
     list(TRANSFORM mingw_libs PREPEND "${mingw_target}/lib/")
     install(FILES ${mingw_libs} DESTINATION mingw/sysroot/x86_64-w64-mingw32/lib COMPONENT tide)
     install(FILES "${TIDE_MINGW_BUILTINS}" DESTINATION mingw COMPONENT tide)
+elseif(TIDE_ANDROID)
+    # tide builds Android games against the NDK the user has (see
+    # compiler/cli/android.c), so only the platform layer for each CPU.
+    set(TIDE_PACKAGE_LIBS lib/android/${TIDE_ANDROID_ABI})
 elseif(NOT WIN32)
     set(TIDE_PACKAGE_LIBS lib/native)
 endif()
@@ -196,6 +200,14 @@ if(NOT TIDE_WEB)
                 $<TARGET_FILE:tide_platform_rooms> "${CMAKE_CURRENT_BINARY_DIR}/tide_platform_rooms-browser"
                 "${TIDE_FIREFOX}")
         set_tests_properties(tide_platform_rooms PROPERTIES TIMEOUT 180)
+    endif()
+
+    # On Android, rooms need an app around them: the relay's TLS is Java's,
+    # which a program run from a shell has none of.
+    if(TIDE_ANDROID)
+        add_library(tide_platform_rooms_app SHARED tests/rooms_native.c)
+        target_link_libraries(tide_platform_rooms_app PRIVATE tide_platform)
+        tide_android_app(tide_platform_rooms_app LABEL "Tide rooms")
     endif()
 
     # Sessions over real UDP, on this machine.

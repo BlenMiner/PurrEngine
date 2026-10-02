@@ -1,10 +1,13 @@
 #include "build.h"
 
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "android.h"
+#include "apk.h"
 #include "common.h"
 #include "compile.h"
 #include "fetch.h"
@@ -318,6 +321,7 @@ static target build_target;
 static bool find_target(const char *root, const build_options *opts)
 {
     const char *runtime = NULL;
+    if (opts->android) return true; // Each of its CPUs, as it's built (build_android)
     if (opts->web) {
         build_target.flag = "--target=wasm32-wasip1-threads";
         runtime = "wasi";
@@ -358,6 +362,7 @@ typedef struct build {
     char *wasm_ld; // Web builds with an installed clang
     char *cache;   // <folder>/.tide/<configuration>
     bool engine_built;
+    game_info info; // Its settings, from its last generate
     file_list engine;       // The engine's objects
     game_packages packages; // Found again by each build of the game
 } build;
@@ -374,13 +379,15 @@ static void config_flags(args *a, const build *b)
     }
     arg_list(a, common_flags);
     arg_list(a, b->opts->release ? release_flags : debug_flags);
+    // A library's code works wherever it's loaded, and Android's games are libraries.
 #if !defined(_WIN32) && !defined(__APPLE__)
-    // A library's code works wherever it's loaded.
-    if (b->library) arg(a, "-fPIC");
+    if (b->library || b->opts->android) arg(a, "-fPIC");
+#else
+    if (b->opts->android) arg(a, "-fPIC");
 #endif
 #ifdef _WIN32
     // Debug info Visual Studio's debugger reads, in a .pdb next to the game.
-    if (!b->opts->web && !b->opts->release) arg(a, "-gcodeview");
+    if (!b->opts->web && !b->opts->android && !b->opts->release) arg(a, "-gcodeview");
 #endif
 }
 
@@ -495,7 +502,8 @@ static bool build_setup(build *b, const char *root, const build_options *opts, c
     if (!sys_exists(ignore)) sys_write_text(ignore, "# Made by tide; safe to delete.\n*\n");
     free(ignore);
     char config[32];
-    snprintf(config, sizeof config, "%s-%s", opts->web ? "web" : "native", opts->release ? "release" : "debug");
+    snprintf(config, sizeof config, "%s-%s", opts->web ? "web" : opts->android ? "android" : "native",
+             opts->release ? "release" : "debug");
     b->cache = path_join(tide_dir, config);
     free(tide_dir);
     sys_mkdirs(b->cache);
@@ -731,6 +739,7 @@ static void find_libraries_in(const build *b, const char *folder, c_side *out)
 // The game's libraries, and its packages'.
 static void find_libraries(const build *b, c_side *out)
 {
+    if (b->opts->android) return; // Not yet: which ELF library is Android's isn't in its headers
     find_libraries_in(b, b->folder, out);
     for (int p = 0; p < b->packages.count; p++) find_libraries_in(b, b->packages.items[p].folder, out);
 }
@@ -931,7 +940,7 @@ static bool generate(build *b, const char *gen, const bool layout, sb *externs)
     if (!inputs) return false;
     arena_reset(); // What an earlier build compiled, when a run rebuilds the game
     *externs = (sb){0};
-    const codegen_options codegen = {"game", gen, true, layout, externs};
+    const codegen_options codegen = {"game", gen, true, layout, externs, &b->info};
     const bool ok = compile_inputs(inputs, count, &codegen, NULL);
     free(inputs);
     free_files(&paths);
@@ -974,8 +983,11 @@ static bool check_web_externs(const char *program, const sb *externs)
     return w.missing == 0;
 }
 
+static char *build_android(const char *root, const build_options *opts, char *package, size_t package_size);
+
 char *tide_build(const char *root, const build_options *opts)
 {
+    if (opts->android) return build_android(root, opts, NULL, 0);
     build b = {0};
     if (!build_setup(&b, root, opts, false)) return NULL;
     char *gen = path_join(b.cache, "gen");
@@ -1427,6 +1439,248 @@ int tide_run_web(const char *root, const build_options *opts, const bool open_pa
     }
 }
 
+// ---------------------------------------------------------------------------
+// Android: the game as a library for each of Android's CPUs, which its
+// NativeActivity loads (see platform/android), in an app tide signs itself
+// (apk.h).
+
+// The app's ID: its appId setting, or dev.tide.<its name> to test with, since
+// an app store would take that one from whoever got there first.
+static bool app_id(const build *b, char *out, const size_t size)
+{
+    if (b->info.app_id[0]) {
+        snprintf(out, size, "%s", b->info.app_id);
+        return true;
+    }
+    char name[128];
+    size_t n = 0;
+    for (const char *c = b->name; *c && n < sizeof name - 1; c++) {
+        if (isalnum((unsigned char)*c)) name[n++] = (char)tolower((unsigned char)*c);
+    }
+    name[n] = '\0';
+    if (b->opts->release) {
+        fprintf(stderr, "tide: an app made to ship needs an ID of its own, which phones and app stores know it by\n");
+        fprintf(stderr, "  = note: give the game one in its settings, like 'settings { appId = \"com.studio.%s\"; }'\n",
+                n ? name : "game");
+        return false;
+    }
+    snprintf(out, size, "dev.tide.%s%s", n && isalpha((unsigned char)name[0]) ? "" : "game", name);
+    return true;
+}
+
+// Links the game for one CPU: a library with the platform layer, built for
+// Android in the package (lib/android/<abi>), and Android's own libraries.
+static bool link_android(const build *b, const file_list *objects, const c_side *c, const int abi, const char *output)
+{
+    char *lib_dir = path_join(b->root, "lib/android");
+    char *abi_dir = path_join(lib_dir, android_abis[abi]);
+    char *platform_lib = path_join(abi_dir, "libtide_platform.a");
+    char *raylib_lib = path_join(abi_dir, "libraylib.a");
+    free(lib_dir);
+    if (!sys_exists(platform_lib) || !sys_exists(raylib_lib)) {
+        fprintf(stderr, "tide: this installation can't build Android games: %s is missing\n", abi_dir);
+        fprintf(stderr, "  = note: reinstall tide, or for a build of this repo package the android-package presets too\n");
+        free(abi_dir);
+        free(platform_lib);
+        free(raylib_lib);
+        return false;
+    }
+    args a = {0};
+    arg_compiler(&a, b->compiler);
+    arg(&a, build_target.flag);
+    arg(&a, build_target.sysroot_flag);
+    arg(&a, "-shared");
+    for (int i = 0; i < objects->count; i++) arg(&a, objects->items[i]);
+    for (int i = 0; i < c->objects.count; i++) arg(&a, c->objects.items[i]);
+    for (int i = 0; i < b->engine.count; i++) arg(&a, b->engine.items[i]);
+    arg(&a, platform_lib);
+    arg(&a, raylib_lib);
+    arg(&a, "-o");
+    arg(&a, output);
+    arg_list(&a, b->opts->release ? release_flags : debug_flags);
+    // The activity's way in, which nothing in the game calls; a C function
+    // nothing defines fails here, not when the app starts; pages of 16 KiB,
+    // as Android 15's devices can have.
+    static const char *const flags[] = {"-fuse-ld=lld", "-Wl,-u,ANativeActivity_onCreate", "-Wl,--no-undefined",
+                                        "-Wl,-z,max-page-size=16384", "-nodefaultlibs", "-lc", "-lm", "-ldl",
+                                        "-landroid", "-llog", "-lEGL", "-lGLESv3", NULL};
+    arg_list(&a, flags);
+    arg(&a, build_target.builtins);
+    const int code = sys_run(a.items, NULL, false);
+    free(a.items);
+    free(abi_dir);
+    free(platform_lib);
+    free(raylib_lib);
+    if (code == -1) fprintf(stderr, "tide: couldn't start %s\n", b->compiler);
+    return code == 0;
+}
+
+// Builds the app, and gives its ID in `package` if it's there. Returns the
+// app's path, or NULL after saying what went wrong.
+static char *build_android(const char *root, const build_options *opts, char *package, const size_t package_size)
+{
+    build b = {0};
+    if (!build_setup(&b, root, opts, false)) return NULL;
+    android_ndk ndk;
+    if (!android_find_ndk(root, &ndk)) return NULL;
+    char *gen = path_join(b.cache, "gen");
+    sys_mkdirs(gen);
+    sb externs;
+    if (!generate(&b, gen, false, &externs)) return NULL;
+    char id[256];
+    if (!app_id(&b, id, sizeof id)) return NULL;
+    char *main_c = path_join(gen, "main.c");
+    write_main(main_c, opts, b.name);
+    char *game_c = path_join(gen, "game.c");
+
+    // Each CPU: objects of its own, in <cache>/<abi>
+    char *cache = b.cache;
+    apk_desc desc = {.package = id, .lib_name = "game", .version_code = 1, .version_name = "1.0",
+                     .min_sdk = atoi(ANDROID_API), .target_sdk = 35, .debuggable = !opts->release};
+    for (int abi = 0; abi < ANDROID_ABIS; abi++) {
+        char target_flag[64];
+        snprintf(target_flag, sizeof target_flag, "--target=%s-linux-android" ANDROID_API, android_arches[abi]);
+        build_target.flag = target_flag;
+        build_target.sysroot_flag = format("--sysroot=%s", ndk.sysroot, NULL);
+        build_target.builtins = ndk.builtins[abi];
+        b.cache = path_join(cache, android_abis[abi]);
+        sys_mkdirs(b.cache);
+        b.engine_built = false;
+        b.engine = (file_list){0};
+        if (!build_engine(&b)) return NULL;
+        file_list objects = {0};
+        add_file(&objects, path_join(b.cache, "game.o"));
+        add_file(&objects, path_join(b.cache, "main.o"));
+        if (!compile_c(&b, game_c, objects.items[0], gen) || !compile_c(&b, main_c, objects.items[1], gen)) return NULL;
+        c_side c = {0};
+        if (!compile_game_c(&b, &c)) return NULL;
+        char *lib = path_join(b.cache, "libgame.so");
+        if (!link_android(&b, &objects, &c, abi, lib)) return NULL;
+        desc.abis[desc.lib_count] = android_abis[abi];
+        desc.libs[desc.lib_count++] = lib;
+        free_game_c(&c);
+    }
+    build_target = (target){0};
+
+    char *output;
+    if (opts->output) {
+        output = path_absolute(opts->output);
+    } else {
+        char file[512];
+        snprintf(file, sizeof file, "%s.apk", b.name);
+        char *dir = path_join(b.folder, "build");
+        output = path_join(dir, file);
+        free(dir);
+    }
+    char *output_dir = path_dir(output);
+    sys_mkdirs(output_dir);
+    desc.label = opts->title ? opts->title : b.info.title[0] ? b.info.title : b.name;
+    char error[512];
+    apk_key key;
+    char *key_path = android_key_path();
+    if (!apk_key_load(key_path, &key, error, sizeof error) || !apk_write(output, &desc, &key, error, sizeof error)) {
+        fprintf(stderr, "tide: %s\n", error);
+        return NULL;
+    }
+    if (package) snprintf(package, package_size, "%s", id);
+    return output;
+}
+
+// adb's devices, as `adb devices` lists them: how many are ready.
+static int android_devices(const char *adb)
+{
+    char out[4096];
+    const char *const argv[] = {adb, "devices", NULL};
+    if (sys_capture(argv, out, sizeof out) != 0) return 0;
+    int count = 0;
+    for (const char *line = strchr(out, '\n'); line; line = strchr(line + 1, '\n')) {
+        const char *tab = strchr(line + 1, '\t');
+        const char *end = strchr(line + 1, '\n');
+        if (tab && (!end || tab < end) && strncmp(tab + 1, "device", 6) == 0) count++;
+    }
+    return count;
+}
+
+// The app's process on the device, or 0 when it isn't running.
+static long android_pid(const char *adb, const char *package)
+{
+    char out[256];
+    const char *const argv[] = {adb, "shell", "pidof", package, NULL};
+    if (sys_capture(argv, out, sizeof out) != 0) return 0;
+    return strtol(out, NULL, 10);
+}
+
+int tide_run_android(const char *root, const build_options *opts, const char *const *args)
+{
+    char *adb = android_find_adb(root);
+    if (!adb) return 1;
+    if (android_devices(adb) == 0) {
+        fprintf(stderr, "tide: no Android phone or emulator is connected\n");
+        fprintf(stderr, "  = note: on the phone, turn on USB debugging (Settings > About phone: tap Build number seven "
+                        "times; then System > Developer options > USB debugging), connect it, and allow this computer\n");
+        return 1;
+    }
+    char package[256];
+    char *apk = build_android(root, opts, package, sizeof package);
+    if (!apk) return 1;
+
+    // An app installed before with another key (another machine's) can't be
+    // updated: it goes, and this one comes in its place.
+    printf("Installing %s...\n", path_base(apk));
+    fflush(stdout);
+    const char *const install[] = {adb, "install", "-r", apk, NULL};
+    char out[4096];
+    if (sys_capture(install, out, sizeof out) != 0) {
+        if (strstr(out, "INSTALL_FAILED_UPDATE_INCOMPATIBLE") || strstr(out, "signatures do not match")) {
+            printf("The app on the device was signed with another key: replacing it.\n");
+            const char *const uninstall[] = {adb, "uninstall", package, NULL};
+            sys_run(uninstall, NULL, true);
+        }
+        if (sys_run(install, NULL, false) != 0) {
+            fprintf(stderr, "tide: the device didn't take the app\n");
+            return 1;
+        }
+    }
+
+    // What it's started with goes to its main (platform/android): the session's flags.
+    char start[1024];
+    int at = snprintf(start, sizeof start, "am start -S -n %s/android.app.NativeActivity", package);
+    if (args[0]) {
+        at += snprintf(start + at, sizeof start - (size_t)at, " --es tide.args '");
+        for (int i = 0; args[i]; i++) {
+            for (const char *c = args[i]; *c && at < (int)sizeof start - 8; c++) {
+                if (*c != '\'') start[at++] = *c; // Codes and addresses never have quotes
+            }
+            if (args[i + 1]) start[at++] = ' ';
+        }
+        at += snprintf(start + at, sizeof start - (size_t)at, "'");
+    }
+    const char *const clear[] = {adb, "logcat", "-c", NULL};
+    sys_run(clear, NULL, true);
+    const char *const launch[] = {adb, "shell", start, NULL};
+    if (sys_run(launch, NULL, true) != 0) {
+        fprintf(stderr, "tide: the app didn't start\n");
+        return 1;
+    }
+
+    // What it prints, until it ends: Ctrl+C stops showing it, and the app goes on.
+    printf("Running %s on the device; its output follows (Ctrl+C stops it).\n", package);
+    fflush(stdout);
+    const char *const logs[] = {adb, "logcat", "-v", "raw", "-s", "tide:V", NULL};
+    sys_process *log = sys_start(logs, NULL);
+    bool seen = false;
+    for (int tries = 0;; tries++) {
+        int code;
+        if (log && sys_wait(log, 500, &code)) log = NULL;
+        const long pid = android_pid(adb, package);
+        if (pid) seen = true;
+        if ((seen && !pid) || (!seen && tries > 40) || !log) break;
+    }
+    if (log) sys_kill(log);
+    printf(seen ? "The app ended.\n" : "The app didn't start.\n");
+    return seen ? 0 : 1;
+}
+
 bool tide_schedule(const char *folder_arg)
 {
     char *folder = path_absolute(folder_arg);
@@ -1435,7 +1689,7 @@ bool tide_schedule(const char *folder_arg)
     int count = 0;
     compile_input *inputs = find_packages(folder, &packages) ? game_inputs(folder, &packages, &paths, &count) : NULL;
     if (!inputs) return false;
-    const codegen_options codegen = {game_name(folder), NULL, true, false, NULL};
+    const codegen_options codegen = {game_name(folder), NULL, true, false, NULL, NULL};
     sb text = {0};
     if (!compile_inputs(inputs, count, &codegen, &text)) return false;
     fputs(text.data, stdout);

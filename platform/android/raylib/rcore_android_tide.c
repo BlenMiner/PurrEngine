@@ -30,6 +30,7 @@
 #include <android/native_window.h>
 #include <EGL/egl.h>
 #include <fcntl.h>
+#include <jni.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
@@ -130,15 +131,17 @@ static void wake(void)
     if (write(app.wake[1], &byte, 1) < 0) { } // Already awake
 }
 
-// Gives the program a window or input queue (or takes it away, with NULL),
-// and waits until it took the change, so nothing it lets go is still in use.
+// Gives the program a window or input queue, or takes it away, with NULL:
+// then waits until the program let go of the one it had, if it took it. A
+// program that opens no window never takes one.
 static void give(ANativeWindow *window, AInputQueue *queue, const bool is_window)
 {
     pthread_mutex_lock(&app.lock);
     if (is_window) app.window_given = window;
     else app.queue_given = queue;
     wake();
-    while (app.running && (is_window ? app.window_taken != window : app.queue_taken != queue)) {
+    const bool taking = is_window ? window == NULL : queue == NULL;
+    while (taking && app.running && (is_window ? app.window_taken != NULL : app.queue_taken != NULL)) {
         pthread_cond_wait(&app.taken, &app.lock);
     }
     pthread_mutex_unlock(&app.lock);
@@ -184,14 +187,59 @@ static void on_configuration_changed(ANativeActivity *activity)
     wake(); // The program looks at the window's size every poll anyway
 }
 
+static JavaVM *java_vm; // The app's, for code that calls Java (rooms' TLS: platform/src/rtc/tls.c)
+
+void *tide_android_vm(void)
+{
+    return java_vm;
+}
+
+// What the app was started with, for main: the intent's "tide.args", words
+// apart (as `tide run --android` gives --host, --join or --connect), into
+// `argv` after the program's name. Returns how many arguments that makes.
+static int intent_args(char *text, const size_t size, char **argv, const int max)
+{
+    static char name[] = "tide";
+    argv[0] = name;
+    int argc = 1;
+    JavaVM *vm = app.activity->vm;
+    JNIEnv *env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return argc;
+    jobject activity = app.activity->clazz;
+    jclass activity_class = (*env)->GetObjectClass(env, activity);
+    jmethodID get_intent = (*env)->GetMethodID(env, activity_class, "getIntent", "()Landroid/content/Intent;");
+    jobject intent = get_intent ? (*env)->CallObjectMethod(env, activity, get_intent) : NULL;
+    if (intent) {
+        jclass intent_class = (*env)->GetObjectClass(env, intent);
+        jmethodID get_extra =
+            (*env)->GetMethodID(env, intent_class, "getStringExtra", "(Ljava/lang/String;)Ljava/lang/String;");
+        jstring key = (*env)->NewStringUTF(env, "tide.args");
+        jstring value = get_extra ? (jstring)(*env)->CallObjectMethod(env, intent, get_extra, key) : NULL;
+        if (value) {
+            const char *chars = (*env)->GetStringUTFChars(env, value, NULL);
+            snprintf(text, size, "%s", chars ? chars : "");
+            if (chars) (*env)->ReleaseStringUTFChars(env, value, chars);
+            char *rest = NULL;
+            for (char *word = strtok_r(text, " ", &rest); word && argc < max - 1; word = strtok_r(NULL, " ", &rest)) {
+                argv[argc++] = word;
+            }
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*vm)->DetachCurrentThread(vm);
+    argv[argc] = NULL;
+    return argc;
+}
+
 static void *run_program(void *unused)
 {
     (void)unused;
     app.looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS); // Its descriptors are polled, not called back
     ALooper_addFd(app.looper, app.wake[0], LOOPER_WAKE, ALOOPER_EVENT_INPUT, NULL, NULL);
-    char name[] = "tide";
-    char *argv[] = {name, NULL};
-    const int code = main(1, argv);
+    static char text[1024];
+    char *argv[16];
+    const int argc = intent_args(text, sizeof text, argv, 16);
+    const int code = main(argc, argv);
     // main returned without CloseWindow (see ClosePlatform): the app ends
     pthread_mutex_lock(&app.lock);
     app.running = false;
@@ -213,6 +261,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 
     pthread_mutex_lock(&app.lock);
     app.activity = activity;
+    java_vm = activity->vm;
     const bool started = app.running;
     pthread_mutex_unlock(&app.lock);
     if (started) return; // The process outlived an activity: the program goes on in this one

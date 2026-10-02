@@ -166,22 +166,16 @@ endfunction()
 tide_add_llvm_dependencies()
 
 # clang's own headers, but not those for what tide never builds for: other
-# CPUs (it builds for this machine's and the web), GPUs, OpenCL and HLSL,
-# MSVC's compatibility outside Windows, and the runtimes the package doesn't
-# have (sanitizers, OpenMP, profiling, XRay).
+# CPUs (it builds for x86-64 and arm64, the machine's and Android's, and the
+# web), GPUs, OpenCL and HLSL, MSVC's compatibility outside Windows, and the
+# runtimes the package doesn't have (sanitizers, OpenMP, profiling, XRay).
 set(_tide_clang_unneeded cuda_wrappers fuzzer llvm_libc_wrappers llvm_offload_wrappers openmp_wrappers ppc_wrappers
     profile sanitizer xray zos_wrappers "__clang_cuda_*" "__clang_gpu_*" "__clang_hip_*" "__clang_spirv_*" altivec.h
     amo.h amdgpuintrin.h amdhsa_abi.h andes_vector.h gpuintrin.h "hexagon_*" hvx_hexagon_protos.h "hlsl*" htmintrin.h
     htmxlintrin.h larchintrin.h lasxintrin.h lsxintrin.h msa.h nvptxintrin.h omp.h ompx.h "opencl-c*" "riscv_*"
     s390intrin.h sifive_vector.h spirvintrin.h vecintrin.h "velintrin*" arm_cde.h arm_cmse.h arm_mve.h)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-    list(APPEND _tide_clang_unneeded "arm*")
-else()
-    list(APPEND _tide_clang_unneeded "*intrin.h" "__wmmintrin_*" cet.h cpuid.h mm3dnow.h mm_malloc.h armintr.h
-        arm64intr.h arm64_neon.h)
-endif()
 if(NOT WIN32)
-    list(APPEND _tide_clang_unneeded intrin.h intrin0.h vadefs.h yvals_core.h)
+    list(APPEND _tide_clang_unneeded intrin.h intrin0.h vadefs.h yvals_core.h armintr.h arm64intr.h)
 endif()
 if(NOT APPLE)
     list(APPEND _tide_clang_unneeded ptrauth.h)

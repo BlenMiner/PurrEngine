@@ -470,6 +470,64 @@ bool sys_wait(sys_process *p, const int ms, int *code)
     return true;
 }
 
+void sys_kill(sys_process *p)
+{
+    TerminateProcess(p->info.hProcess, 1);
+    WaitForSingleObject(p->info.hProcess, INFINITE);
+    CloseHandle(p->info.hProcess);
+    CloseHandle(p->info.hThread);
+    free(p);
+}
+
+int sys_capture(const char *const *argv, char *out, const size_t size)
+{
+    char *line = NULL;
+    size_t len = 0;
+    size_t cap = 0;
+    for (int i = 0; argv[i]; i++) append_arg(&line, &len, &cap, argv[i]);
+    SECURITY_ATTRIBUTES inherit = {sizeof inherit, NULL, TRUE};
+    HANDLE read_end, write_end;
+    if (!CreatePipe(&read_end, &write_end, &inherit, 0)) {
+        free(line);
+        return -1;
+    }
+    SetHandleInformation(read_end, HANDLE_FLAG_INHERIT, 0);
+    const HANDLE null_file = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, NULL);
+    STARTUPINFOA startup;
+    memset(&startup, 0, sizeof startup);
+    startup.cb = sizeof startup;
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = write_end;
+    startup.hStdError = null_file;
+    PROCESS_INFORMATION process;
+    const BOOL started = CreateProcessA(NULL, line, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &process);
+    free(line);
+    CloseHandle(write_end);
+    if (null_file != INVALID_HANDLE_VALUE) CloseHandle(null_file);
+    if (!started) {
+        CloseHandle(read_end);
+        return -1;
+    }
+    size_t used = 0;
+    for (;;) {
+        char chunk[4096];
+        DWORD got = 0;
+        if (!ReadFile(read_end, chunk, sizeof chunk, &got, NULL) || got == 0) break;
+        const size_t n = used + got < size - 1 ? got : size - 1 - used;
+        memcpy(out + used, chunk, n);
+        used += n;
+    }
+    out[used] = '\0';
+    CloseHandle(read_end);
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hProcess);
+    CloseHandle(process.hThread);
+    return (int)code;
+}
+
 uint32_t sys_pid(void)
 {
     return (uint32_t)GetCurrentProcessId();
@@ -542,6 +600,51 @@ bool sys_wait(sys_process *p, const int ms, int *code)
         const struct timespec nap = {0, 10 * 1000000};
         nanosleep(&nap, NULL);
     }
+}
+
+void sys_kill(sys_process *p)
+{
+    kill(p->pid, SIGTERM);
+    int status = 0;
+    waitpid(p->pid, &status, 0);
+    free(p);
+}
+
+int sys_capture(const char *const *argv, char *out, const size_t size)
+{
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        const int null_file = open("/dev/null", O_WRONLY);
+        if (null_file >= 0) dup2(null_file, 2);
+        close(fds[0]);
+        close(fds[1]);
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(fds[1]);
+    size_t used = 0;
+    for (;;) {
+        char chunk[4096];
+        const ssize_t got = read(fds[0], chunk, sizeof chunk);
+        if (got <= 0) break;
+        const size_t n = used + (size_t)got < size - 1 ? (size_t)got : size - 1 - used;
+        memcpy(out + used, chunk, n);
+        used += n;
+    }
+    out[used] = '\0';
+    close(fds[0]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
+    return 1;
 }
 
 uint32_t sys_pid(void)

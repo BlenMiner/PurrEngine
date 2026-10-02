@@ -47,6 +47,7 @@ static void usage(void)
            "run and build:\n"
            "  --release          optimized, the way players get it\n"
            "  --web              a web page (WebGL 2), with clang's WebAssembly target\n"
+           "  --android          an Android app (.apk); run installs it on the phone or emulator connected\n"
            "  --title <title>    the window's title (default: the game's title setting, or the folder's name)\n"
            "  --stats            show the frame rate, ping, bandwidth, tick, entity count and threads\n"
            "  -o <path>          build: where the program goes\n"
@@ -183,6 +184,7 @@ int main(const int argc, char **argv)
         } else if (run && strcmp(a, "--no-open") == 0) open_page = false;
         else if (strcmp(a, "--release") == 0) opts.release = true;
         else if (strcmp(a, "--web") == 0) opts.web = true;
+        else if (strcmp(a, "--android") == 0) opts.android = true;
         else if (strcmp(a, "--stats") == 0) opts.stats = true;
         else if (strcmp(a, "--title") == 0 && i + 1 < argc) opts.title = argv[++i];
         else if (strcmp(a, "-o") == 0 && i + 1 < argc && build) opts.output = argv[++i];
@@ -193,9 +195,15 @@ int main(const int argc, char **argv)
         }
     }
 
+    if (opts.web && opts.android) {
+        fprintf(stderr, "tide: a build is for the web or for Android, not both at once\n");
+        return 2;
+    }
     int code = 0;
     if (schedule) {
         code = tide_schedule(opts.folder) ? 0 : 1;
+    } else if (run && opts.android) {
+        code = tide_run_android(root, &opts, session);
     } else if (run && !opts.web) {
         code = tide_run_reloading(root, &opts, session);
     } else if (run) {

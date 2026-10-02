@@ -1,0 +1,6 @@
+// expect: 'com.studio.my-game' isn't an app ID that Android and iOS both take
+settings
+{
+    appId = "com.studio.my-game";
+}
+scene Main { }

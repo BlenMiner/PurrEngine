@@ -25,6 +25,7 @@ tide <command> [folder] [options]
 |---|---|
 | `--release` | Optimized, the way players get it |
 | `--web` | A web page (WebGL 2), built with clang's WebAssembly target |
+| `--android` | An Android app, for phones and the emulator (see [Android](#android)) |
 | `--title <title>` | The window's title, over the game's `title` setting (default: that, or the folder's name) |
 | `--stats` | Shows the frame rate, the ping, the bandwidth (what goes over the network each second, up and down), the tick, the entity count and the threads ticks run on |
 | `-o <path>` | `build` only: where the program goes |
@@ -42,6 +43,19 @@ Cross-Origin-Embedder-Policy: require-corp
 ```
 
 `tide run --web` serves the page with them. Where a page is put online, the host has to send them: on itch.io, it's the **SharedArrayBuffer support** option in the game's embed settings. A page without them, or opened from disk, runs the same game on one thread, with the same results, so web players on either kind of page play together. Workers only start once a tick has enough work for them.
+
+## Android
+
+`tide build --android` makes an Android app, `<folder>/build/<name>.apk`, for phones and tablets (arm64) and Android's emulator (x86-64), on Android 10 and up. `tide run --android` builds it, installs it on the phone or emulator that's connected, starts it, and shows what it prints until it ends. `--host`, `--join` and `--connect` go to it as they do on a computer, and Android players play in the same rooms as everyone else.
+
+To play on your phone, turn on USB debugging once: in **Settings > About phone**, tap **Build number** seven times, then turn on **USB debugging** in **System > Developer options**. Connect the phone, and allow your computer when it asks.
+
+Building for Android needs two things of Google's: the NDK, Android's C library and headers, and adb, which installs apps. `tide` uses the ones Android Studio installs. Without them, the first `tide build --android` asks to download them from Google, under Google's license (the [Android SDK License Agreement](https://developer.android.com/studio/terms)), and keeps what it needs of them next to itself: about 30 MB. Set `TIDE_ACCEPT_ANDROID_LICENSE=1` to accept it without being asked, as a build server would.
+
+- The app's ID is the game's `appId` setting (see [Settings](../language/basics.md#settings)). Without one, it's `dev.tide.<the game's name>`, which is fine for testing, but `--release` needs one.
+- Its name under its icon is the game's `title` setting, or `--title`, or else the game's name.
+- `tide` signs apps with a key it makes on your computer, `~/.android/tide.key`. A phone only takes an update to an app signed with the same key, so `tide run --android` replaces an app another computer installed.
+- `tide run --android` has no hot reload yet: run it again to see a change.
 
 ## Hot reload
 

@@ -5162,6 +5162,29 @@ static const expr *text_literal(const expr *e)
     return k && k->index == 2 && k->return_type.kind == TY_STRING ? text_literal(k->value) : NULL;
 }
 
+// An app ID both Android (a Java package) and iOS (a bundle ID) take: two
+// parts or more, of ASCII letters and digits, each starting with a letter.
+static bool valid_app_id(const str id)
+{
+    int parts = 0;
+    bool start = true;
+    for (int i = 0; i < id.len; i++) {
+        const char ch = id.ptr[i];
+        const bool letter = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+        if (ch == '.') {
+            if (start) return false;
+            start = true;
+        } else if (start) {
+            if (!letter) return false;
+            start = false;
+            parts++;
+        } else if (!letter && !(ch >= '0' && ch <= '9')) {
+            return false;
+        }
+    }
+    return !start && parts >= 2 && id.len <= 200;
+}
+
 // settings { tickRate = 30; }: the engine's settings for the game (builtins.h),
 // each set to a constant of its type. A game has one block.
 static void check_settings(checker *c)
@@ -5229,6 +5252,18 @@ static void check_settings(checker *c)
                 prog->title = text_literal(value);
                 if (!prog->title) {
                     diag_error(value->at, "the title is text written out, like 'title = \"Asteroids\";', or a constant that is");
+                }
+            } else if (str_eq_c(f->name, "appId")) {
+                prog->app_id = text_literal(value);
+                if (!prog->app_id) {
+                    diag_error(value->at, "the app ID is text written out, like 'appId = \"com.studio.game\";', or a "
+                                          "constant that is");
+                } else if (!valid_app_id(prog->app_id->text)) {
+                    diag_error(value->at, "'" STR_FMT "' isn't an app ID that Android and iOS both take",
+                               STR_ARG(prog->app_id->text));
+                    diag_note("it's parts of letters and digits, each starting with a letter, between dots, like "
+                              "'com.studio.game'");
+                    prog->app_id = NULL;
                 }
             }
         }
