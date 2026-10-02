@@ -163,11 +163,20 @@ jobs:
           "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" \
             > /dev/null < <(yes)
           echo no | "$tools/avdmanager" create avd -n tide -k "system-images;android-36;default;x86_64" --force
+          # The memory and disk Android 16 wants, which a new AVD's defaults don't give it
           "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
-            -no-snapshot > emulator.log 2>&1 &
+            -no-snapshot -memory 4096 -cores 4 -partition-size 6144 > emulator.log 2>&1 &
+          emulator=$!
           adb="$ANDROID_HOME/platform-tools/adb"
-          "$adb" wait-for-device
-          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
+          # Until Android says it booted. An emulator that ends first, or hasn't
+          # booted in 15 minutes, fails the step with what it said.
+          until [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do
+            if ! kill -0 $emulator 2>/dev/null || [ $SECONDS -gt 900 ]; then
+              cat emulator.log
+              exit 1
+            fi
+            sleep 2
+          done
           cmake --workflow --preset android-debug
 
       # The package's Android half is the platform layer for each CPU, built
