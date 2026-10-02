@@ -32,14 +32,15 @@ import org.jetbrains.annotations.Nullable;
 import javax.swing.JComponent;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 // `tide run` on a game's folder, in the Run tool window: tide's output and the
-// game's, and what's typed there goes to tide (r and Enter starts the game
-// over). On the web, tide serves the page without opening a browser, and the
-// Tide Game tool window shows it.
+// game's, where errors link to their place, and what's typed there goes to
+// tide (r and Enter starts the game over). On the web, tide serves the page
+// without opening a browser, and the Tide Game tool window shows it.
 public final class TideRunConfiguration extends LocatableConfigurationBase<TideRunConfiguration.Options> {
     // Where tide says it serves the page (see tide_run_web in compiler/cli/build.c).
     private static final Pattern PAGE = Pattern.compile("tide: the game is at (http://\\S+)");
@@ -48,6 +49,8 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         private final StoredProperty<String> folder = string("").provideDelegate(this, "folder");
         private final StoredProperty<Boolean> web = property(false).provideDelegate(this, "web");
         private final StoredProperty<String> tide = string("").provideDelegate(this, "tide"); // Empty: the installed one
+        // Why tide run can't play the file it was made for (see TideRunProducer). Empty: it can.
+        private final StoredProperty<String> problem = string("").provideDelegate(this, "problem");
 
         public String getFolder() {
             return folder.getValue(this);
@@ -72,6 +75,14 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         public void setTide(String value) {
             tide.setValue(this, value);
         }
+
+        public String getProblem() {
+            return problem.getValue(this);
+        }
+
+        public void setProblem(String value) {
+            problem.setValue(this, value);
+        }
     }
 
     TideRunConfiguration(@NotNull Project project, @NotNull ConfigurationFactory factory) {
@@ -93,6 +104,8 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
 
     @Override
     public void checkConfiguration() throws RuntimeConfigurationError {
+        final String problem = getOptions().getProblem();
+        if (problem != null && !problem.isEmpty()) throw new RuntimeConfigurationError(problem);
         final String folder = getOptions().getFolder();
         if (folder == null || folder.isEmpty()) throw new RuntimeConfigurationError("Choose the game's folder");
         if (!Files.isDirectory(Path.of(folder))) throw new RuntimeConfigurationError("There's no folder " + folder);
@@ -109,16 +122,26 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
 
     @Override
     public @NotNull RunProfileState getState(@NotNull Executor executor, @NotNull ExecutionEnvironment environment) {
-        return new CommandLineState(environment) {
+        final CommandLineState state = new CommandLineState(environment) {
             @Override
             protected @NotNull ProcessHandler startProcess() throws ExecutionException {
                 return start();
             }
         };
+        // Errors' places link to the file.
+        final String folder = getOptions().getFolder();
+        try {
+            if (folder != null && !folder.isEmpty()) state.addConsoleFilters(new TideErrorFilter(getProject(), Path.of(folder)));
+        } catch (InvalidPathException e) {
+            // checkConfiguration says so
+        }
+        return state;
     }
 
     private @NotNull ProcessHandler start() throws ExecutionException {
         final Options options = getOptions();
+        final String problem = options.getProblem();
+        if (problem != null && !problem.isEmpty()) throw new ExecutionException(problem);
         final String setting = options.getTide();
         final Path tide = setting != null && !setting.isEmpty() ? Path.of(setting) : Tide.installed("tide");
         if (tide == null) {
@@ -172,6 +195,8 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         @Override
         protected void applyEditorTo(@NotNull TideRunConfiguration configuration) {
             final Options options = configuration.getOptions();
+            // Another folder is another game, which tide run may play.
+            if (!folder.getText().trim().equals(options.getFolder())) options.setProblem("");
             options.setFolder(folder.getText().trim());
             options.setWeb(web.isSelected());
             options.setTide(tide.getText().trim());

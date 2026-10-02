@@ -18,7 +18,10 @@ Tide run configurations run `tide run` on a game's folder, in the Run tool
 window: natively, or on the web, whose page shows in the **Tide Game**
 tool window (JCEF; the system's browser in an IDE without it). A `.tide`
 file's context menu offers both, for the game it's in: the project's folder,
-or in Tide's repo, the game `build/tools/games.txt` lists it in.
+or in Tide's repo, the game `build/tools/games.txt` lists it in. For a file
+`tide run` can't play (one of a game CMake builds from a list of files),
+running says why. Errors and warnings in the Run console link to their
+place in the file.
 
 ## Colors
 
