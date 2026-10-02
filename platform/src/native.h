@@ -35,4 +35,6 @@ void tide_win32_touch_attach(void *window);
 // Waits up to `seconds` for something to change while the app has no window
 // (it's in the background): input, or the activity giving it one again.
 void tide_android_wait(double seconds);
+// Shows the system's keyboard, or hides it.
+void tide_android_typing(bool typing);
 #endif

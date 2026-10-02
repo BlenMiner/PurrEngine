@@ -188,6 +188,8 @@ static void on_configuration_changed(ANativeActivity *activity)
 }
 
 static JavaVM *java_vm; // The app's, for code that calls Java (rooms' TLS: platform/src/rtc/tls.c)
+static int ui_keyboard_pipe[2] = {-1, -1}; // The program's asks of the main thread (tide_android_typing)
+static int on_keyboard_asked(int fd, int events, void *data);
 
 void *tide_android_vm(void)
 {
@@ -269,6 +271,12 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     log_output();
     if (pipe(app.wake) != 0) abort();
     fcntl(app.wake[0], F_SETFL, O_NONBLOCK); // The program reads what's there, and goes on
+    // What the program asks of the main thread, which only it may do: the keyboard
+    if (pipe(ui_keyboard_pipe) == 0) {
+        fcntl(ui_keyboard_pipe[0], F_SETFL, O_NONBLOCK);
+        ALooper_addFd(ALooper_forThread(), ui_keyboard_pipe[0], ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT,
+                      on_keyboard_asked, NULL);
+    }
     // How dense the display is, for logical pixels: Android's medium density is 160 dpi.
     AConfiguration *config = AConfiguration_new();
     AConfiguration_fromAssetManager(config, activity->assetManager);
@@ -422,10 +430,53 @@ static const struct {
 };
 
 // True if it's a key of ours; others (volume, power) are the system's.
+// The character a key types, with what's held (Shift and the like) and the
+// keyboard's layout: Java's, as the NDK has no way to it. 0 for none.
+static int typed_char(const AInputEvent *event)
+{
+    static jclass key_class;
+    static jmethodID make, unicode;
+    JNIEnv *env = NULL;
+    if (!java_vm || (*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != JNI_OK) return 0;
+    if (!key_class) {
+        jclass local = (*env)->FindClass(env, "android/view/KeyEvent");
+        if (!local) {
+            (*env)->ExceptionClear(env);
+            return 0;
+        }
+        key_class = (*env)->NewGlobalRef(env, local);
+        (*env)->DeleteLocalRef(env, local);
+        make = (*env)->GetMethodID(env, key_class, "<init>", "(JJIIII)V");
+        unicode = (*env)->GetMethodID(env, key_class, "getUnicodeChar", "(I)I");
+    }
+    if (!make || !unicode) return 0;
+    const int32_t meta = AKeyEvent_getMetaState(event);
+    jobject key = (*env)->NewObject(env, key_class, make, (jlong)(AKeyEvent_getDownTime(event) / 1000000),
+                                    (jlong)(AKeyEvent_getEventTime(event) / 1000000), (jint)AKeyEvent_getAction(event),
+                                    (jint)AKeyEvent_getKeyCode(event), (jint)AKeyEvent_getRepeatCount(event), (jint)meta);
+    const int c = key ? (*env)->CallIntMethod(env, key, unicode, (jint)meta) : 0;
+    if (key) (*env)->DeleteLocalRef(env, key);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return 0;
+    }
+    return c;
+}
+
+// True if it's a key of ours, or types a character; others (volume, power)
+// are the system's.
 static bool handle_key(const AInputEvent *event)
 {
     const int32_t code = AKeyEvent_getKeyCode(event);
     const int32_t action = AKeyEvent_getAction(event);
+    bool ours = false;
+    if (action == AKEY_EVENT_ACTION_DOWN) {
+        const int c = typed_char(event);
+        if (c >= 32 && c != 127 && CORE.Input.Keyboard.charPressedQueueCount < MAX_CHAR_PRESSED_QUEUE) {
+            CORE.Input.Keyboard.charPressedQueue[CORE.Input.Keyboard.charPressedQueueCount++] = c;
+            ours = true;
+        }
+    }
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
         if (keys[i].android != code) continue;
         const int key = keys[i].raylib;
@@ -437,7 +488,73 @@ static bool handle_key(const AInputEvent *event)
         }
         return true;
     }
-    return false;
+    return ours;
+}
+
+// The system's keyboard, which Android shows for the view with the focus,
+// from its main thread: NativeActivity's own can't take it, so the window's
+// does, and its keys still come to the input queue, which has them all.
+
+static jobject call(JNIEnv *env, jobject on, const char *name, const char *signature, ...)
+{
+    jclass c = (*env)->GetObjectClass(env, on);
+    jmethodID m = (*env)->GetMethodID(env, c, name, signature);
+    (*env)->DeleteLocalRef(env, c);
+    if (!m) return NULL;
+    // Java checks a call is made as what the method returns: nothing, a bool, or an object
+    const char returns = signature[strlen(signature) - 1];
+    va_list args;
+    va_start(args, signature);
+    jobject result = NULL;
+    if (returns == 'V') (*env)->CallVoidMethodV(env, on, m, args);
+    else if (returns == 'Z') (*env)->CallBooleanMethodV(env, on, m, args);
+    else result = (*env)->CallObjectMethodV(env, on, m, args);
+    va_end(args);
+    return result;
+}
+
+static void keyboard_on_ui(const bool show)
+{
+    if (!app.activity) return;
+    JNIEnv *env = app.activity->env; // The main thread's
+    (*env)->PushLocalFrame(env, 16);
+    jobject activity = app.activity->clazz;
+    jobject window = call(env, activity, "getWindow", "()Landroid/view/Window;");
+    jobject view = window ? call(env, window, "getDecorView", "()Landroid/view/View;") : NULL;
+    jstring service = (*env)->NewStringUTF(env, "input_method");
+    jobject keyboards = call(env, activity, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", service);
+    if (view && keyboards) {
+        if (show) {
+            call(env, view, "setFocusable", "(Z)V", JNI_TRUE);
+            call(env, view, "setFocusableInTouchMode", "(Z)V", JNI_TRUE);
+            call(env, view, "requestFocus", "()Z");
+            call(env, keyboards, "showSoftInput", "(Landroid/view/View;I)Z", view, 0);
+        } else {
+            jobject token = call(env, view, "getWindowToken", "()Landroid/os/IBinder;");
+            call(env, keyboards, "hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z", token, 0);
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->PopLocalFrame(env, NULL);
+}
+
+// The main thread's looper calls it when the program asked: '1' shows, '0' hides.
+static int on_keyboard_asked(int fd, int events, void *data)
+{
+    (void)events, (void)data;
+    char asked[16];
+    const ssize_t n = read(fd, asked, sizeof asked);
+    if (n > 0) keyboard_on_ui(asked[n - 1] == '1'); // The last word goes
+    return 1;
+}
+
+void tide_android_typing(const bool typing)
+{
+    const char asked = typing ? '1' : '0';
+    if (ui_keyboard_pipe[1] >= 0 && write(ui_keyboard_pipe[1], &asked, 1) < 0) { } // The main thread is gone
 }
 
 static void report_touch(const AInputEvent *event, const size_t index, const tide_touch_phase phase)

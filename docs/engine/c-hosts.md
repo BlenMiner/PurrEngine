@@ -97,6 +97,7 @@ tide_gui_begin(&gui, &devices, tide_platform_screen_size(), tide_platform_measur
 tide_local_frame_time(&local, seconds);
 tide_frame(w, previous, alpha, &local, &draw, &gui);
 tide_gui_end(&gui, &draw);
+tide_platform_typing(tide_gui_typing(&gui)); // Phones show their keyboard while the player types
 tide_platform_draw(&draw);
 ```
 

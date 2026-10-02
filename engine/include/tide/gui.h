@@ -184,6 +184,10 @@ void tide_gui_begin(tide_gui *g, const tide_devices *devices, tide_float2 screen
 // end of `draw`, over everything else.
 void tide_gui_end(tide_gui *g, tide_draw_list *draw);
 
+// Whether the player is typing into a field: phones show their keyboard
+// meanwhile (tide_platform_typing).
+bool tide_gui_typing(const tide_gui *g);
+
 // Hides what the GUI is using from `devices`, a copy about to be sampled as
 // the game's input: the keyboard and gamepad while a widget has the focus,
 // the mouse's buttons and the primary touch while the pointer is over the GUI

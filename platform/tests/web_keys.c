@@ -68,10 +68,25 @@ static int frame(void *user, const float seconds)
         tide_web_eval("const data = new DataTransfer(); data.setData('text', 'K7\\n\\u00e9');"
                       "dispatchEvent(new ClipboardEvent('paste', {clipboardData: data}))");
         return TIDE_KEEP_RUNNING;
-    default:
+    case 6:
         check(devices.text.count == 3 && devices.text.chars[0] == 'K' && devices.text.chars[1] == '7'
                   && devices.text.chars[2] == 0xE9u,
               "pasting types what's on the clipboard, but for newlines");
+        // Typing into the GUI on a phone: its keyboard types into the page's
+        // field, saying no key, only what it typed, or that it deleted.
+        tide_platform_typing(true);
+        tide_web_eval("{ const f = document.activeElement;"
+                      " f.dispatchEvent(new InputEvent('input', {inputType: 'insertText', data: 'Q4'})); }");
+        return TIDE_KEEP_RUNNING;
+    case 7:
+        check(devices.text.count == 2 && devices.text.chars[0] == 'Q' && devices.text.chars[1] == '4',
+              "what a phone's keyboard types comes as characters");
+        tide_web_eval("{ const f = document.activeElement;"
+                      " f.dispatchEvent(new InputEvent('input', {inputType: 'deleteContentBackward'})); }");
+        return TIDE_KEEP_RUNNING;
+    default:
+        check(devices.keyboard.backspace.down && devices.text.count == 0, "and deleting, as Backspace");
+        tide_platform_typing(false);
         return failures == 0 ? 0 : 1;
     }
 }

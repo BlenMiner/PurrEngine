@@ -398,6 +398,18 @@ static void poll_text(tide_typed *text)
     }
 }
 
+void tide_platform_typing(const bool typing)
+{
+    static bool was;
+    if (typing == was) return;
+    was = typing;
+#ifdef __wasm__
+    tide_web_typing(typing);
+#elif defined(__ANDROID__)
+    tide_android_typing(typing);
+#endif
+}
+
 void tide_platform_copy(const char *text)
 {
 #ifdef __wasm__

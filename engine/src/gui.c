@@ -420,6 +420,11 @@ void tide_gui_end(tide_gui *g, tide_draw_list *draw)
     }
 }
 
+bool tide_gui_typing(const tide_gui *g)
+{
+    return g->editing != 0;
+}
+
 void tide_gui_hide(tide_gui *g, tide_devices *d)
 {
     g->game_input = true;

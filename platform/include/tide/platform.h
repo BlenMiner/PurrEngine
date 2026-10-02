@@ -76,6 +76,11 @@ void tide_platform_draw(const tide_draw_list *list);
 // tools and tests.
 tide_float2 tide_platform_world_to_screen(tide_float2 world);
 
+// Whether the player is typing into the GUI (tide_gui_typing), once a frame:
+// on phones, and in their browsers, the system's keyboard shows while they
+// are. Does nothing elsewhere.
+void tide_platform_typing(bool typing);
+
 // Puts `text` on the system's clipboard. A browser takes it only shortly
 // after the player clicked or pressed a key, as when a button is pressed.
 void tide_platform_copy(const char *text);

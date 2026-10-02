@@ -161,10 +161,11 @@ jobs:
           tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           yes | "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" > /dev/null
           echo no | "$tools/avdmanager" create avd -n tide -k "system-images;android-36;default;x86_64" --force
-          "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect             -no-snapshot > emulator.log 2>&1 &
+          "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
+            -no-snapshot > emulator.log 2>&1 &
           adb="$ANDROID_HOME/platform-tools/adb"
           "$adb" wait-for-device
-          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '')" = 1 ]; do sleep 2; done
+          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
           cmake --workflow --preset android-debug
 
       # The package's Android half is the platform layer for each CPU, built

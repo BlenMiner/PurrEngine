@@ -53,6 +53,11 @@ TIDE_WEB_IMPORT(key_held) bool tide_web_key_held(int index);
 // characters typed too.
 TIDE_WEB_IMPORT(take_char) int tide_web_take_char(void);
 
+// Whether the player is typing into the GUI: the page focuses a field of its
+// own, hidden, so phones show their keyboard, and what's typed there comes as
+// characters typed (see tide_platform_typing).
+TIDE_WEB_IMPORT(typing) void tide_web_typing(bool typing);
+
 // Puts text on the clipboard (see tide_platform_copy).
 TIDE_WEB_IMPORT(copy) void tide_web_copy(const char *text);
 

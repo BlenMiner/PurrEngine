@@ -123,7 +123,7 @@ It lays nothing out: its widgets stay where they'd be without it, in the contain
 
 Navigation is built in. Tab and Shift+Tab move the focus between widgets, in the order they were drawn, and so do the arrows, the d-pad and the left stick once a widget has the focus. Enter, Space and the south button press, and Escape and the east button go back. Left and right step a focused slider or number field.
 
-Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position. Clicking a number field, or pressing Enter on it, starts typing into it; Enter or leaving the field keeps a valid number, and Escape keeps the old one.
+Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position. Clicking a number field, or pressing Enter on it, starts typing into it; Enter or leaving the field keeps a valid number, and Escape keeps the old one. On a phone, and in a phone's browser, the system's keyboard shows while the player types into a field, and goes when they stop.
 
 ## Copy and paste
 

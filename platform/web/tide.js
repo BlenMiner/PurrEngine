@@ -176,20 +176,60 @@
     const keepFromBrowser = new Set(['Space', 'Tab', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
         'PageUp', 'PageDown', 'Home', 'End']);
     function onKey(event, held) {
-        const index = keyIndex.get(event.code);
+        // A phone's keyboard says no position for its keys: Enter is the one
+        // the GUI needs from it, as what it types comes through the field.
+        const index = keyIndex.get(event.code || (event.key === 'Enter' ? 'Enter' : ''));
         if (index === undefined) return;
         keysHeld[index] = held;
         if (held) keysTapped[index] = 1;
-        if (keepFromBrowser.has(event.code)) event.preventDefault();
+        // Typing into the page's field, a space has to reach it: what's typed there comes from it.
+        const intoField = field && event.target === field && event.code === 'Space';
+        if (keepFromBrowser.has(event.code) && !intoField) event.preventDefault();
+    }
+    function tapKey(code) {
+        const index = keyIndex.get(code);
+        if (index !== undefined) keysTapped[index] = 1;
     }
     // Characters typed, which follow the keyboard layout: `key` is one
     // character for keys that type one, and a name like "Shift" for the others.
     const typed = [];
     function onType(event) {
         if (event.ctrlKey || event.metaKey || event.isComposing) return;
+        if (field && event.target === field) return; // Its input says what's typed
         const c = event.key.codePointAt(0);
         if ([...event.key].length !== 1 || c < 32 || c === 127) return;
         if (typed.length < 64) typed.push(c);
+    }
+    // A field of the page's own, hidden, which has the focus while the player
+    // types into the GUI, so phones show their keyboard (tide_web_typing).
+    // What's typed there comes as characters typed, and deleting it as
+    // Backspace; it always holds a space, so there's something to delete.
+    let field = null;
+    function typingField() {
+        if (field) return field;
+        field = document.createElement('input');
+        field.type = 'text';
+        field.autocomplete = 'off';
+        field.setAttribute('autocapitalize', 'off');
+        field.setAttribute('autocorrect', 'off');
+        field.spellcheck = false;
+        // 16px, or iOS zooms into it; on the screen, or browsers won't focus it
+        Object.assign(field.style, { position: 'fixed', left: '0', bottom: '0', width: '1px', height: '1px',
+            opacity: '0', border: '0', padding: '0', fontSize: '16px' });
+        field.value = ' ';
+        field.addEventListener('input', event => {
+            if (event.inputType === 'deleteContentBackward') tapKey('Backspace');
+            else if (event.inputType === 'insertLineBreak') tapKey('Enter');
+            else if (event.data) {
+                for (const ch of event.data) {
+                    const c = ch.codePointAt(0);
+                    if (c >= 32 && c !== 127 && typed.length < 1024) typed.push(c);
+                }
+            }
+            field.value = ' ';
+        });
+        document.body.appendChild(field);
+        return field;
     }
     addEventListener('keydown', event => { onKey(event, 1); onType(event); });
     // Ctrl+V (Cmd+V) pastes as typing, but for newlines and tabs.
@@ -407,6 +447,10 @@
         },
         key_held(index) { const held = keysHeld[index] || keysTapped[index] || 0; keysTapped[index] = 0; return held; },
         take_char: () => typed.length ? typed.shift() : 0,
+        typing(on) {
+            if (on) typingField().focus({ preventScroll: true });
+            else if (field && document.activeElement === field) canvas.focus();
+        },
         copy(textPtr) {
             const text = string(textPtr);
             if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => copyText(text));
