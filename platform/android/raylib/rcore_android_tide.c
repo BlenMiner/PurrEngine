@@ -74,6 +74,9 @@ static struct {
     // Input: what's held, and what was pressed since the last poll.
     bool keys_held[MAX_KEYBOARD_KEYS], keys_tapped[MAX_KEYBOARD_KEYS];
     int mouse_held, mouse_tapped; // Bits in raylib's order: left, right, middle, back, forward
+    bool pad_held[MAX_GAMEPAD_BUTTONS], pad_tapped[MAX_GAMEPAD_BUTTONS]; // The first gamepad's buttons
+    float pad_axes[MAX_GAMEPAD_AXES]; // ...and axes, as raylib has them: triggers -1 released to 1
+    bool pad_seen;                    // A gamepad sent something
     Vector2 mouse_at, wheel;
     tide_touch_report touches[256];
     unsigned touch_start, touch_count;
@@ -463,12 +466,57 @@ static int typed_char(const AInputEvent *event)
     return c;
 }
 
+// A gamepad's buttons (Android's key codes) as raylib's: by position, as
+// Unity's, so A is south.
+static const struct {
+    int32_t android;
+    int raylib;
+} pad_buttons[] = {
+    {AKEYCODE_BUTTON_A, GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {AKEYCODE_BUTTON_B, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT},
+    {AKEYCODE_BUTTON_X, GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {AKEYCODE_BUTTON_Y, GAMEPAD_BUTTON_RIGHT_FACE_UP},
+    {AKEYCODE_BUTTON_L1, GAMEPAD_BUTTON_LEFT_TRIGGER_1}, {AKEYCODE_BUTTON_R1, GAMEPAD_BUTTON_RIGHT_TRIGGER_1},
+    {AKEYCODE_BUTTON_L2, GAMEPAD_BUTTON_LEFT_TRIGGER_2}, {AKEYCODE_BUTTON_R2, GAMEPAD_BUTTON_RIGHT_TRIGGER_2},
+    {AKEYCODE_BUTTON_THUMBL, GAMEPAD_BUTTON_LEFT_THUMB}, {AKEYCODE_BUTTON_THUMBR, GAMEPAD_BUTTON_RIGHT_THUMB},
+    {AKEYCODE_BUTTON_START, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {AKEYCODE_BUTTON_SELECT, GAMEPAD_BUTTON_MIDDLE_LEFT},
+    {AKEYCODE_BUTTON_MODE, GAMEPAD_BUTTON_MIDDLE}, {AKEYCODE_DPAD_UP, GAMEPAD_BUTTON_LEFT_FACE_UP},
+    {AKEYCODE_DPAD_DOWN, GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {AKEYCODE_DPAD_LEFT, GAMEPAD_BUTTON_LEFT_FACE_LEFT},
+    {AKEYCODE_DPAD_RIGHT, GAMEPAD_BUTTON_LEFT_FACE_RIGHT},
+};
+
+static bool from_gamepad(const AInputEvent *event)
+{
+    const int32_t source = AInputEvent_getSource(event);
+    return (source & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (source & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK;
+}
+
+// The first gamepad said something: its triggers start released.
+static void pad_seen(void)
+{
+    if (app.pad_seen) return;
+    app.pad_seen = true;
+    app.pad_axes[GAMEPAD_AXIS_LEFT_TRIGGER] = app.pad_axes[GAMEPAD_AXIS_RIGHT_TRIGGER] = -1.0f;
+}
+
+static void pad_button(const int button, const bool down)
+{
+    pad_seen();
+    app.pad_held[button] = down;
+    if (down) app.pad_tapped[button] = true;
+}
+
 // True if it's a key of ours, or types a character; others (volume, power)
 // are the system's.
 static bool handle_key(const AInputEvent *event)
 {
     const int32_t code = AKeyEvent_getKeyCode(event);
     const int32_t action = AKeyEvent_getAction(event);
+    if (from_gamepad(event) && action != AKEY_EVENT_ACTION_MULTIPLE) {
+        for (size_t i = 0; i < sizeof pad_buttons / sizeof pad_buttons[0]; i++) {
+            if (pad_buttons[i].android != code) continue;
+            pad_button(pad_buttons[i].raylib, action == AKEY_EVENT_ACTION_DOWN);
+            return true;
+        }
+    }
     bool ours = false;
     if (action == AKEY_EVENT_ACTION_DOWN) {
         const int c = typed_char(event);
@@ -615,6 +663,37 @@ static bool handle_motion(const AInputEvent *event)
     const size_t count = AMotionEvent_getPointerCount(event);
     if (count == 0) return false;
 
+    if (from_gamepad(event) && kind == AMOTION_EVENT_ACTION_MOVE) { // Its sticks, triggers and d-pad
+        static const struct {
+            int32_t android;
+            int raylib;
+            bool trigger;
+        } axes[] = {
+            {AMOTION_EVENT_AXIS_X, GAMEPAD_AXIS_LEFT_X, false},  {AMOTION_EVENT_AXIS_Y, GAMEPAD_AXIS_LEFT_Y, false},
+            {AMOTION_EVENT_AXIS_Z, GAMEPAD_AXIS_RIGHT_X, false}, {AMOTION_EVENT_AXIS_RZ, GAMEPAD_AXIS_RIGHT_Y, false},
+            {AMOTION_EVENT_AXIS_LTRIGGER, GAMEPAD_AXIS_LEFT_TRIGGER, true},
+            {AMOTION_EVENT_AXIS_RTRIGGER, GAMEPAD_AXIS_RIGHT_TRIGGER, true},
+        };
+        pad_seen();
+        for (size_t i = 0; i < sizeof axes / sizeof axes[0]; i++) {
+            const float v = AMotionEvent_getAxisValue(event, axes[i].android, 0);
+            app.pad_axes[axes[i].raylib] = axes[i].trigger ? v * 2.0f - 1.0f : v;
+        }
+        // Some pads give their triggers as the brake and the gas
+        const float brake = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_BRAKE, 0);
+        const float gas = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_GAS, 0);
+        if (brake > 0.0f) app.pad_axes[GAMEPAD_AXIS_LEFT_TRIGGER] = brake * 2.0f - 1.0f;
+        if (gas > 0.0f) app.pad_axes[GAMEPAD_AXIS_RIGHT_TRIGGER] = gas * 2.0f - 1.0f;
+        // A d-pad that's a hat: -1 to 1 on each axis
+        const float hat_x = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0);
+        const float hat_y = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0);
+        pad_button(GAMEPAD_BUTTON_LEFT_FACE_LEFT, hat_x < -0.5f);
+        pad_button(GAMEPAD_BUTTON_LEFT_FACE_RIGHT, hat_x > 0.5f);
+        pad_button(GAMEPAD_BUTTON_LEFT_FACE_UP, hat_y < -0.5f);
+        pad_button(GAMEPAD_BUTTON_LEFT_FACE_DOWN, hat_y > 0.5f);
+        return true;
+    }
+
     if (is_mouse(event, 0)) { // A mouse, on a Chromebook or a phone it's plugged into
         app.mouse_at = (Vector2){AMotionEvent_getX(event, 0) / app.scale, AMotionEvent_getY(event, 0) / app.scale};
         if (kind == AMOTION_EVENT_ACTION_SCROLL) {
@@ -692,12 +771,24 @@ void PollInputEvents(void)
     // Keys and buttons pressed since the last poll read as held for this one,
     // even if they're up again.
     memset(app.keys_tapped, 0, sizeof app.keys_tapped);
+    memset(app.pad_tapped, 0, sizeof app.pad_tapped);
     app.mouse_tapped = 0;
     app.wheel = (Vector2){0.0f, 0.0f};
 
     poll_looper(0);
 
     for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) CORE.Input.Keyboard.currentKeyState[i] = app.keys_held[i] || app.keys_tapped[i];
+    // The first gamepad, once it said something (Android tells programs of
+    // pads coming and going through Java only)
+    CORE.Input.Gamepad.ready[0] = app.pad_seen;
+    if (app.pad_seen) {
+        CORE.Input.Gamepad.axisCount[0] = GAMEPAD_AXIS_RIGHT_TRIGGER + 1;
+        for (int i = 0; i < MAX_GAMEPAD_BUTTONS; i++) {
+            CORE.Input.Gamepad.previousButtonState[0][i] = CORE.Input.Gamepad.currentButtonState[0][i];
+            CORE.Input.Gamepad.currentButtonState[0][i] = app.pad_held[i] || app.pad_tapped[i];
+        }
+        for (int i = 0; i < MAX_GAMEPAD_AXES; i++) CORE.Input.Gamepad.axisState[0][i] = app.pad_axes[i];
+    }
     const int buttons = app.mouse_held | app.mouse_tapped;
     for (int i = 0; i < MAX_MOUSE_BUTTONS && i < 5; i++) CORE.Input.Mouse.currentButtonState[i] = (buttons >> i) & 1;
     CORE.Input.Mouse.currentWheelMove = app.wheel;
