@@ -145,9 +145,13 @@ static bool done;
 // no animation frames, and timers a second apart at the soonest. The event
 // comes after the frame, as browsers send it. Its frames come at the match's
 // ticks meanwhile, not the 60 a second frames come at by default, and often
-// enough that its match skips none of them. A slow machine's frames can run
-// two ticks at once, so it may have fewer frames than ticks.
+// enough that its match skips next to none of them. A slow machine's frames can
+// run two ticks at once, so it may have fewer frames than ticks, and it can
+// stall for longer than the ticks a server runs in one update, whose time the
+// match skips (macOS CI: up to 0.16 seconds). A page without the worker's
+// frames skips 5 seconds of the 7.
 #define HIDDEN_SECONDS 7.0 // Past the session's 5 second timeout
+#define MOST_SKIPPED 1.0
 #define TICK_RATE 30
 
 static double met_at = -1.0;   // When the other's inputs first reached this one
@@ -351,7 +355,7 @@ static int frame(void *user, const float seconds)
         if (now - met_at > HIDDEN_SECONDS) {
             const double skipped = status.skipped - hidden_skipped;
             printf("shown again: %d frames while hidden, %.3f seconds skipped\n", hidden_frames, skipped);
-            if (skipped > 0.0) return fail("the match skipped ticks while the page was hidden");
+            if (skipped > MOST_SKIPPED) return fail("the match skipped ticks while the page was hidden");
             if (hidden_frames > (int)(HIDDEN_SECONDS * TICK_RATE * 1.15)) return fail("hidden frames didn't follow the tick rate");
             set_hidden(false);
             shown_again = true;
