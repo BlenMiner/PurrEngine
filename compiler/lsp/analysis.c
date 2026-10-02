@@ -2062,11 +2062,75 @@ static bool is_literal(const expr *e)
 static loc expr_start(const expr *e)
 {
     for (;;) {
-        if ((e->kind == E_MEMBER || e->kind == E_METHOD) && e->object) e = e->object;
-        else if (e->kind == E_BINARY || e->kind == E_CONDITIONAL) e = e->kind == E_BINARY ? e->lhs : e->cond;
+        if ((e->kind == E_MEMBER || e->kind == E_METHOD || e->kind == E_INDEX) && e->object) e = e->object;
+        else if (e->kind == E_BINARY || e->kind == E_COALESCE || e->kind == E_IS || e->kind == E_DEFAULTED) e = e->lhs;
+        else if (e->kind == E_CONDITIONAL) e = e->cond;
         else break;
     }
     return e->kind == E_LITERAL && e->qual_at.line ? e->qual_at : e->at;
+}
+
+// Where a statement starts: an assignment's and a call's `at` is past it.
+static loc stmt_start(const stmt *s)
+{
+    if (s->kind == S_EXPR) return expr_start(s->value);
+    if (s->kind == S_ASSIGN && s->target) {
+        const loc target = expr_start(s->target);
+        return loc_cmp(target, s->at) < 0 ? target : s->at; // i++, or ++i
+    }
+    return s->at;
+}
+
+// The token at or just after `at` in its file.
+static int token_from(const loc at)
+{
+    if (at.file < 0 || at.file >= A.file_count) return -1;
+    const afile *f = &A.files[at.file];
+    int lo = 0;
+    int hi = f->tok_count;
+    while (lo < hi) {
+        const int mid = (lo + hi) / 2;
+        if (loc_cmp(f->toks[mid].at, at) < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static loc token_end(const token *t);
+
+// Just past a statement's last token: its ';', or its block's '}'.
+static loc stmt_end(const stmt *s)
+{
+    switch (s->kind) {
+    case S_BLOCK:
+    case S_SWITCH:
+        return (loc){s->end.line, s->end.col + 1, s->end.file};
+    case S_IF:
+        return stmt_end(s->else_stmt ? s->else_stmt : s->then_stmt);
+    case S_WHILE:
+    case S_FOR:
+    case S_FOREACH:
+    case S_PARALLEL:
+        if (s->then_stmt) return stmt_end(s->then_stmt);
+        break;
+    case S_EXPR:
+        if (s->value->block) return stmt_end(s->value->block); // A call with a block after it
+        break;
+    default:
+        break;
+    }
+    // To its ';', or to the '}' around it where a syntax error cut it short.
+    const loc start = stmt_start(s);
+    const afile *f = &A.files[start.file];
+    int depth = 0;
+    int i = token_from(start);
+    for (; i < f->tok_count; i++) {
+        const tok_kind k = f->toks[i].kind;
+        if (k == T_LPAREN || k == T_LBRACKET || k == T_LBRACE) depth++;
+        else if ((k == T_RPAREN || k == T_RBRACKET || k == T_RBRACE) && --depth < 0) break;
+        else if (k == T_SEMI && depth == 0) return token_end(&f->toks[i]);
+    }
+    return i > 0 ? token_end(&f->toks[i - 1]) : start;
 }
 
 static void inlay_hint(jbuf *out, int *written, const loc at, const char *label, const int kind, const bool before)
@@ -2338,7 +2402,22 @@ static bool block_contains(const stmt *block, const loc at)
         && loc_cmp(at, block->end) <= 0;
 }
 
+// Whether the cursor is in a statement's body: a block, or a statement of its
+// own without braces, as in `foreach (var p in ps) Use(p);`.
+static bool body_contains(const stmt *body, const loc at)
+{
+    if (!body || body->kind == S_BLOCK) return block_contains(body, at);
+    return body->at.file == at.file && loc_cmp(stmt_start(body), at) <= 0 && loc_cmp(at, stmt_end(body)) <= 0;
+}
+
 static void collect_list(stmt *const *stmts, int count, loc at, scope *sc);
+
+// The locals of a body the cursor is in: a block's, or a braceless statement's.
+static void collect_body(stmt *const *body, const loc at, scope *sc)
+{
+    if ((*body)->kind == S_BLOCK) collect_list((*body)->stmts.items, (*body)->stmts.count, at, sc);
+    else collect_list(body, 1, at, sc);
+}
 
 // The names `is` gives in a condition, joined by &&: in scope where it's true.
 static void collect_bindings(const expr *cond, scope *sc)
@@ -2365,20 +2444,20 @@ static void collect_list(stmt *const *stmts, const int count, const loc at, scop
         if (s->kind == S_VAR && loc_cmp(s->name_at, at) < 0) vec_push(sc->locals, s);
         if (block_contains(s, at)) collect_locals(s, at, sc);
         if (s->kind == S_IF) {
-            if (block_contains(s->then_stmt, at)) {
+            if (body_contains(s->then_stmt, at)) {
                 collect_bindings(s->cond, sc); // if (Parse(t) is int score)
-                collect_locals(s->then_stmt, at, sc);
+                collect_body(&s->then_stmt, at, sc);
             }
-            if (block_contains(s->else_stmt, at)) collect_locals(s->else_stmt, at, sc);
+            if (body_contains(s->else_stmt, at)) collect_body(&s->else_stmt, at, sc); // else if (...) too
         }
-        if ((s->kind == S_FOREACH || s->kind == S_PARALLEL) && block_contains(s->then_stmt, at)) {
+        if ((s->kind == S_FOREACH || s->kind == S_PARALLEL) && body_contains(s->then_stmt, at)) {
             vec_push(sc->locals, s); // foreach (var item in ...)
-            collect_locals(s->then_stmt, at, sc);
+            collect_body(&s->then_stmt, at, sc);
         }
-        if ((s->kind == S_WHILE || s->kind == S_FOR) && block_contains(s->then_stmt, at)) {
+        if ((s->kind == S_WHILE || s->kind == S_FOR) && body_contains(s->then_stmt, at)) {
             if (s->init && s->init->kind == S_VAR) vec_push(sc->locals, s->init); // for (var i = 0; ...)
             collect_bindings(s->cond, sc);
-            collect_locals(s->then_stmt, at, sc);
+            collect_body(&s->then_stmt, at, sc);
         }
         if (s->kind == S_EXPR && block_contains(s->value->block, at)) collect_locals(s->value->block, at, sc);
         if (s->kind == S_SWITCH && loc_cmp(at, s->end) <= 0) {
@@ -2488,6 +2567,48 @@ static type member_type(const type t, const str member)
     const int n = matrix_dim(t);
     if (n > 0 && member.len == 2 && member.ptr[0] == 'c' && member.ptr[1] >= '0' && member.ptr[1] < '0' + n) {
         return vector_type(true, n);
+    }
+    return (type){TY_ERROR, NULL};
+}
+
+static bool loop_variable_named(int i);
+
+// The type of the variable of a loop the cursor is in, named at token `use`,
+// read from its header: for a body without braces that doesn't parse yet,
+// like `foreach (var p in parts) Use(p.`, which has no loop to look at.
+static type loop_variable_type(const scope *sc, const int use)
+{
+    const str name = DOC->toks[use].text;
+    for (int k = use - 1; k >= 2; k--) {
+        const token *t = &DOC->toks[k];
+        if (t->kind == T_LBRACE || t->kind == T_RBRACE || t->kind == T_SEMI) break; // Out of the statement
+        if (t->kind != T_IDENT || !str_eq(t->text, name) || !loop_variable_named(k)) continue;
+        if (DOC->toks[k + 1].kind != T_IDENT || !str_eq_c(DOC->toks[k + 1].text, "in")) continue;
+        int open = k - 1;
+        while (DOC->toks[open].kind != T_LPAREN) open--;
+        if (k - open == 2 && DOC->toks[open + 1].kind == T_IDENT) { // foreach (Stats s in
+            type written;
+            if (builtin_type_named(DOC->toks[open + 1].text, &written)) return written;
+            for (int i = 0; i < A.prog->decls.count; i++) {
+                const decl *d = A.prog->decls.items[i];
+                if ((d->kind != DECL_STRUCT && d->kind != DECL_ENUM) || !str_eq(d->name, DOC->toks[open + 1].text)) continue;
+                return (type){d->kind == DECL_STRUCT ? TY_STRUCT : TY_ENUM, (decl *)d};
+            }
+            return (type){TY_ERROR, NULL};
+        }
+        // var: an element of what it goes through, written as names: inv.items
+        type of = {TY_ERROR, NULL};
+        int i = k + 2;
+        if (DOC->toks[i].kind == T_IDENT) {
+            const param *ignored;
+            of = name_type(sc, DOC->toks[i].text, &ignored);
+            for (i++; DOC->toks[i].kind == T_DOT && DOC->toks[i + 1].kind == T_IDENT; i += 2) {
+                of = member_type(of, DOC->toks[i + 1].text);
+            }
+        }
+        if (of.kind == TY_LIST) return of.decl->fields.items[0].type;
+        if (of.kind == TY_GRID) return (type){of.decl->dims == 3 ? TY_INT3 : TY_INT2, NULL}; // A cell's position
+        return (type){TY_ERROR, NULL};
     }
     return (type){TY_ERROR, NULL};
 }
@@ -2647,6 +2768,7 @@ static void complete_members(completion *c, const int dot, const loc at, const b
     const str base = DOC->toks[ids[n - 1]].text;
     const param *p;
     type t = name_type(&sc, base, &p);
+    if (t.kind == TY_ERROR) t = loop_variable_type(&sc, ids[n - 1]);
     if (t.kind == TY_ERROR && str_eq_c(base, "Devices")) t = (type){TY_RECORD, A.prog->devices}; // This machine's
     if (t.kind == TY_ERROR) {
         // Session.: its calls, where local code runs
@@ -2806,12 +2928,12 @@ static void complete_structs(completion *c)
     }
 }
 
-// The game's constants, where a value goes.
-static void complete_constants(completion *c)
+// The game's constants, where a value goes: of type `only`, or of any with TY_ERROR.
+static void complete_constants(completion *c, const type_kind only)
 {
     for (int i = 0; i < A.prog->decls.count; i++) {
         const decl *d = A.prog->decls.items[i];
-        if (d->kind != DECL_CONST) continue;
+        if (d->kind != DECL_CONST || (only != TY_ERROR && d->return_type.kind != only)) continue;
         sb detail = {0};
         sb_printf(&detail, "const " STR_FMT, STR_ARG(d->return_type_name));
         item(c, name_for(d), CK_CONSTANT, detail.data, NULL, NULL);
@@ -2897,19 +3019,51 @@ static const char *const value_types[] = {
     "float2x2", "float3x3", "float4x4", "Entity", "LocalEntity", "PlayerID", "Color", "Rect",
 };
 
-static void complete_value_types(completion *c, const bool constructors_only)
+// Which built-in types to offer: each place takes its own.
+enum {
+    VT_VALUES = 1,       // Numbers, vectors, matrices, PlayerID, Color and Rect: those with constructors
+    VT_BOOL = 2,
+    VT_ENTITY = 4,
+    VT_LOCAL_ENTITY = 8,
+    VT_TEXT = 16,        // string
+    VT_LIST = 32,
+    VT_GRID = 64,        // Fields of components, singletons and scenes only
+    VT_LOCALS = VT_VALUES | VT_BOOL | VT_ENTITY | VT_TEXT | VT_LIST, // What a local can be, but a LocalEntity
+};
+
+static void complete_value_types(completion *c, const unsigned which)
 {
     for (size_t i = 0; i < sizeof value_types / sizeof value_types[0]; i++) {
         type t;
         builtin_type_named(str_from(value_types[i]), &t);
-        if (constructors_only && (t.kind == TY_BOOL || t.kind == TY_ENTITY || t.kind == TY_LOCAL_ENTITY)) continue;
-        item(c, value_types[i], CK_STRUCT, "built-in type", builtin_type_doc(t.kind), NULL);
+        const unsigned kind = t.kind == TY_BOOL           ? VT_BOOL
+                            : t.kind == TY_ENTITY         ? VT_ENTITY
+                            : t.kind == TY_LOCAL_ENTITY   ? VT_LOCAL_ENTITY
+                                                          : VT_VALUES;
+        if (which & kind) item(c, value_types[i], CK_STRUCT, "built-in type", builtin_type_doc(t.kind), NULL);
     }
-    if (!constructors_only) {
-        item(c, "string", CK_STRUCT, "built-in type", builtin_type_doc(TY_STRING), NULL);
-        item(c, "List", CK_STRUCT, "List<T>", builtin_type_doc(TY_LIST), "List<$1>");
+    if (which & VT_TEXT) item(c, "string", CK_STRUCT, "built-in type", builtin_type_doc(TY_STRING), NULL);
+    if (which & VT_LIST) item(c, "List", CK_STRUCT, "List<T>", builtin_type_doc(TY_LIST), "List<$1>");
+    if (which & VT_GRID) {
         item(c, "Grid2", CK_STRUCT, "Grid2<T>", builtin_type_doc(TY_GRID), "Grid2<$1>");
         item(c, "Grid3", CK_STRUCT, "Grid3<T>", builtin_type_doc(TY_GRID), "Grid3<$1>");
+    }
+}
+
+// What a function's or method's parameter can be, as the checker takes it:
+// built-in values, text and lists, structs, enums and components; after `mut`,
+// what can change. A function's last can be its Action, and an async
+// function takes singletons too.
+static void complete_routine_param_types(completion *c, const bool after_mut, const bool function, const bool async)
+{
+    complete_value_types(c, VT_LOCALS | VT_LOCAL_ENTITY);
+    complete_structs(c);
+    complete_types(c, true, async, false);
+    complete_namespaces(c, false);
+    if (after_mut) return;
+    if (function) item(c, "Action", CK_STRUCT, "Action", builtin_type_doc(TY_ACTION), NULL);
+    for (int i = 0; i < A.prog->records.count; i++) { // Devices, Keyboard, ..., Button: read-only
+        item(c, str_to_cstr(A.prog->records.items[i]->name), CK_CLASS, "built-in device record", NULL, NULL);
     }
 }
 
@@ -2981,7 +3135,7 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         const decl *d = A.prog->decls.items[i];
         if (d->kind == DECL_FUNCTION) complete_routine(c, d, name_for(d));
     }
-    complete_constants(c);
+    complete_constants(c, TY_ERROR);
 
     const bool routine = sc.decl && (sc.decl->kind == DECL_METHOD || sc.decl->kind == DECL_FUNCTION);
     if (sc.decl && !sc.in_input && !routine) {
@@ -3002,7 +3156,9 @@ static void complete_expression(completion *c, const loc at, const bool statemen
         item(c, "Session", CK_MODULE, "Starts, joins and leaves matches", NULL, NULL);
         item(c, "Clipboard", CK_MODULE, "This machine's clipboard", NULL, NULL);
     }
-    complete_value_types(c, true);
+    // Where a statement starts, what a local can be; elsewhere, what makes a value.
+    const bool local_code = view || (sc.decl && sc.decl->is_local);
+    complete_value_types(c, !statement ? VT_VALUES : local_code ? VT_LOCALS | VT_LOCAL_ENTITY : VT_LOCALS);
     complete_structs(c);
     item(c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
     complete_namespaces(c, false);
@@ -3086,10 +3242,49 @@ typedef enum context_kind {
     CTX_FIELD_ATTRIBUTE, CTX_FIELD_ATTRIBUTE_ARGS, // [Clamp(-1, 1)] before an input field
 } context_kind;
 
+// Whose parameters a header's parentheses hold.
+typedef enum header_kind {
+    HEADER_NONE,
+    HEADER_SYSTEM,  // A system's or view's, or a handler's after its trigger: system Move(mut Body body)
+    HEADER_TRIGGER, // A handler's trigger: event(Hit hit)
+    HEADER_ROUTINE, // A function's or method's: void Heal(mut Stats stats)
+    HEADER_SAMPLE,  // The input's Sample and Sanitize: local singletons
+} header_kind;
+
 typedef struct frame {
     context_kind kind;
     int open; // The token that opened it
+    header_kind header; // CTX_HEADER's
 } frame;
+
+static bool is_word(const token *t);
+
+// The header a '(' at the top level opens, at token `i`.
+static header_kind top_header(const int i)
+{
+    if (i < 1) return HEADER_NONE;
+    const token *name = &DOC->toks[i - 1];
+    if (name->kind == T_IDENT && str_eq_c(name->text, "event")) return HEADER_TRIGGER;
+    if (i < 2) return HEADER_ROUTINE;
+    const token *keyword = &DOC->toks[i - 2];
+    if (keyword->kind == T_RPAREN || keyword->kind == T_SYSTEM) return HEADER_SYSTEM; // event(Hit hit) TakeHit(
+    return keyword->kind == T_IDENT && str_eq_c(keyword->text, "view") ? HEADER_SYSTEM : HEADER_ROUTINE;
+}
+
+// The header a '(' in a type's body opens, at token `i`: the input's Sample or
+// Sanitize, or a method's (`bool IsDead(`, `Money operator +(`). None for a
+// value, like a field's default.
+static header_kind member_header(const int i)
+{
+    if (i < 2) return HEADER_NONE;
+    const token *name = &DOC->toks[i - 1];
+    const token *before = &DOC->toks[i - 2];
+    if (name->kind == T_IDENT && (str_eq_c(name->text, "Sample") || str_eq_c(name->text, "Sanitize"))) return HEADER_SAMPLE;
+    if (name->kind == T_IDENT && (before->kind == T_IDENT || before->kind == T_QUESTION || before->kind == T_GT)) {
+        return HEADER_ROUTINE;
+    }
+    return before->kind == T_IDENT && str_eq_c(before->text, "operator") && !is_word(name) ? HEADER_ROUTINE : HEADER_NONE;
+}
 
 // Type Name( at column 1, the type maybe qualified: a function, or in a
 // type's body, a method.
@@ -3147,6 +3342,35 @@ static bool is_word(const token *t)
     return t->text.len > 0 && (isalpha((unsigned char)t->text.ptr[0]) || t->text.ptr[0] == '_') && t->kind != T_STRING;
 }
 
+static bool ends_operand(tok_kind k);
+
+// Whether the name at token `i` is the variable a loop declares, before its
+// `in`: foreach (var item, foreach (Stats s, parallel (var at.
+static bool loop_variable_named(const int i)
+{
+    int k = i - 1;
+    while (k > 0 && (DOC->toks[k].kind == T_VAR || DOC->toks[k].kind == T_IDENT || DOC->toks[k].kind == T_DOT
+                     || DOC->toks[k].kind == T_LT || DOC->toks[k].kind == T_GT || DOC->toks[k].kind == T_QUESTION)) {
+        if (DOC->toks[k].kind == T_IDENT && str_eq_c(DOC->toks[k].text, "in")) return false; // Past the name already
+        k--;
+    }
+    return k < i - 1 && k >= 1 && DOC->toks[k].kind == T_LPAREN
+        && (DOC->toks[k - 1].kind == T_FOREACH || DOC->toks[k - 1].kind == T_PARALLEL);
+}
+
+// The '(' of the parallel loop whose header holds token `last`, or -1.
+static int parallel_header(const int last)
+{
+    int parens = 0;
+    for (int k = last; k > 0; k--) {
+        const tok_kind kind = DOC->toks[k].kind;
+        if (kind == T_RPAREN) parens++;
+        else if (kind == T_LPAREN && parens-- == 0) return DOC->toks[k - 1].kind == T_PARALLEL ? k : -1;
+        else if (kind == T_SEMI || kind == T_LBRACE || kind == T_RBRACE) return -1;
+    }
+    return -1;
+}
+
 void analysis_completion(const int line, const int character, jbuf *out)
 {
     const loc at = from_lsp(line, character);
@@ -3170,7 +3394,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
         if (inside && is_word(t)) last--;
     }
 
-    frame stack[64] = {{CTX_TOP, -1}};
+    frame stack[64] = {{CTX_TOP, -1, HEADER_NONE}};
     int depth = 0;
     for (int i = 0; i <= last; i++) {
         if (starts_declaration(i) && !(stack[depth].kind == CTX_DATA && starts_function(i))) {
@@ -3181,32 +3405,31 @@ void analysis_completion(const int line, const int character, jbuf *out)
         const tok_kind kind = DOC->toks[i].kind;
         const tok_kind before = i > 0 ? DOC->toks[i - 1].kind : T_EOF;
         if (kind == T_LBRACKET && top == CTX_TOP && depth < 63) {
-            stack[++depth] = (frame){CTX_ATTRIBUTE, i};
+            stack[++depth] = (frame){CTX_ATTRIBUTE, i, HEADER_NONE};
         } else if (kind == T_RBRACKET && top == CTX_ATTRIBUTE) {
             depth--;
         } else if (kind == T_LPAREN && top == CTX_ATTRIBUTE && depth < 63) {
-            stack[++depth] = (frame){CTX_ATTRIBUTE_ARGS, i};
+            stack[++depth] = (frame){CTX_ATTRIBUTE_ARGS, i, HEADER_NONE};
         } else if (kind == T_RPAREN && top == CTX_ATTRIBUTE_ARGS) {
             depth--;
         } else if (kind == T_LBRACKET && top == CTX_DATA && depth < 63) {
-            stack[++depth] = (frame){CTX_FIELD_ATTRIBUTE, i};
+            stack[++depth] = (frame){CTX_FIELD_ATTRIBUTE, i, HEADER_NONE};
         } else if (kind == T_RBRACKET && top == CTX_FIELD_ATTRIBUTE) {
             depth--;
         } else if (kind == T_LPAREN && (top == CTX_FIELD_ATTRIBUTE || top == CTX_FIELD_ATTRIBUTE_ARGS) && depth < 63) {
-            stack[++depth] = (frame){CTX_FIELD_ATTRIBUTE_ARGS, i}; // One frame per parenthesis: float2(0, 1)
+            stack[++depth] = (frame){CTX_FIELD_ATTRIBUTE_ARGS, i, HEADER_NONE}; // One frame per parenthesis: float2(0, 1)
         } else if (kind == T_RPAREN && top == CTX_FIELD_ATTRIBUTE_ARGS) {
             depth--;
         } else if (kind == T_LBRACE && depth < 63) {
             context_kind next = CTX_CODE;
             if (top == CTX_TOP && before == T_IDENT && !after_fails(i)) next = CTX_DATA;
             else if ((top == CTX_CODE || top == CTX_LITERAL) && before == T_IDENT) next = CTX_LITERAL;
-            stack[++depth] = (frame){next, i};
+            stack[++depth] = (frame){next, i, HEADER_NONE};
         } else if (kind == T_RBRACE && depth > 0) {
             depth--;
         } else if (kind == T_LPAREN && depth < 63) {
-            const bool header = top == CTX_TOP
-                             || (top == CTX_DATA && before == T_IDENT && str_eq_c(DOC->toks[i - 1].text, "Sample"));
-            if (header) stack[++depth] = (frame){CTX_HEADER, i};
+            const header_kind header = top == CTX_TOP ? top_header(i) : top == CTX_DATA ? member_header(i) : HEADER_NONE;
+            if (header != HEADER_NONE) stack[++depth] = (frame){CTX_HEADER, i, header};
         } else if (kind == T_RPAREN && top == CTX_HEADER) {
             depth--;
         }
@@ -3220,11 +3443,24 @@ void analysis_completion(const int line, const int character, jbuf *out)
         complete_members(&c, last, at, f.kind == CTX_ATTRIBUTE_ARGS);
         goto done;
     }
+    // int Parse(string text) fails ParseError: the error's type, one a function can return
+    if (pk == T_IDENT && str_eq_c(prev->text, "fails") && last >= 1 && DOC->toks[last - 1].kind == T_RPAREN
+        && (f.kind == CTX_TOP || f.kind == CTX_DATA)) {
+        complete_structs(&c);
+        complete_value_types(&c, VT_LOCALS);
+        complete_namespaces(&c, false);
+        goto done;
+    }
 
     switch (f.kind) {
     case CTX_TOP:
         if (pk == T_EOF || pk == T_RBRACE || pk == T_SEMI || pk == T_RBRACKET) complete_declarations(&c);
         else if (pk == T_IDENT && str_eq_c(prev->text, "using")) complete_namespaces(&c, true);
+        else if (pk == T_IDENT && str_eq_c(prev->text, "const")) { // What a constant can be
+            complete_value_types(&c, VT_VALUES | VT_BOOL | VT_TEXT);
+            complete_structs(&c);
+            complete_namespaces(&c, false);
+        }
         else if (pk == T_COLON && last >= 2 && DOC->toks[last - 1].kind == T_IDENT && DOC->toks[last - 2].kind == T_IDENT
                  && str_eq_c(DOC->toks[last - 2].text, "enum")) { // What the enum is stored as
             item(&c, "byte", CK_KEYWORD, "One byte: members from 0 to 255", NULL, NULL);
@@ -3232,7 +3468,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             item(&c, "int", CK_KEYWORD, "Four bytes, as an enum is without one", NULL, NULL);
         } else if (pk == T_IDENT && str_eq_c(prev->text, "extern")) { // Its return type
             item(&c, "void", CK_KEYWORD, "Returns nothing", NULL, NULL);
-            complete_value_types(&c, false);
+            complete_value_types(&c, VT_LOCALS | VT_LOCAL_ENTITY);
             complete_structs(&c);
             complete_namespaces(&c, false);
         }
@@ -3259,7 +3495,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
         break;
 
     case CTX_FIELD_ATTRIBUTE_ARGS: // Constant bounds, like a default value
-        complete_value_types(&c, true);
+        complete_value_types(&c, VT_VALUES);
         item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
         break;
 
@@ -3273,14 +3509,28 @@ void analysis_completion(const int line, const int character, jbuf *out)
 
     case CTX_HEADER: {
         // event(Hit hit): the trigger; event(Hit hit) TakeHit(...): a handler's parameters.
-        const bool trigger = f.open >= 1 && DOC->toks[f.open - 1].kind == T_IDENT && str_eq_c(DOC->toks[f.open - 1].text, "event");
-        const bool handler = f.open >= 2 && DOC->toks[f.open - 2].kind == T_RPAREN;
-        const bool sample = !trigger && !handler
-                         && (f.open < 2 || !(DOC->toks[f.open - 2].kind == T_SYSTEM || str_eq_c(DOC->toks[f.open - 2].text, "view")));
-        // extern float Noise(...): what C takes
+        const bool trigger = f.header == HEADER_TRIGGER;
+        const bool sample = f.header == HEADER_SAMPLE;
+        // extern float Noise(...): what C takes; async void Load(...): a task's
         bool is_extern = false;
-        for (int k = f.open - 1; k >= 0 && DOC->toks[k].at.line == DOC->toks[f.open].at.line && !is_extern; k--) {
-            is_extern = DOC->toks[k].kind == T_IDENT && DOC->toks[k].at.col == 1 && str_eq_c(DOC->toks[k].text, "extern");
+        bool is_async = false;
+        for (int k = f.open - 1; k >= 0 && DOC->toks[k].at.line == DOC->toks[f.open].at.line; k--) {
+            if (DOC->toks[k].kind != T_IDENT || DOC->toks[k].at.col != 1) continue;
+            is_extern = str_eq_c(DOC->toks[k].text, "extern");
+            is_async = str_eq_c(DOC->toks[k].text, "async");
+        }
+        if (f.header == HEADER_ROUTINE && !is_extern) {
+            // void Heal(mut Stats stats): values, and for a function its Action
+            const bool method = depth >= 1 && stack[depth - 1].kind == CTX_DATA;
+            const bool operator_ = f.open >= 2 && DOC->toks[f.open - 2].kind == T_IDENT
+                                && str_eq_c(DOC->toks[f.open - 2].text, "operator");
+            if (pk == T_LPAREN || pk == T_COMMA || pk == T_MUT) {
+                if (pk != T_MUT && !operator_) item(&c, "mut", CK_KEYWORD, "The caller's variable itself, which it can change", NULL, NULL);
+                complete_routine_param_types(&c, pk == T_MUT, !method, is_async);
+            } else if (pk == T_IDENT) {
+                complete_param_name(&c, prev->text);
+            }
+            break;
         }
         if (is_extern) {
             if (pk == T_LPAREN || pk == T_COMMA) {
@@ -3288,7 +3538,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 item(&c, "mut", CK_KEYWORD, "C gets a pointer to the caller's variable, which it can change", NULL, NULL);
             }
             if (pk == T_LPAREN || pk == T_COMMA || pk == T_MUT || (pk == T_IDENT && str_eq_c(prev->text, "in"))) {
-                complete_value_types(&c, false);
+                complete_value_types(&c, VT_LOCALS | VT_LOCAL_ENTITY);
                 complete_structs(&c);
                 complete_namespaces(&c, false);
             } else if (pk == T_IDENT) {
@@ -3296,6 +3546,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
             }
             break;
         }
+        if (sample && str_eq_c(DOC->toks[f.open - 1].text, "Sanitize")) break; // It takes nothing
         if (trigger) {
             if (pk == T_LPAREN) {
                 complete_events(&c, true);
@@ -3335,20 +3586,34 @@ void analysis_completion(const int line, const int character, jbuf *out)
             if (pk == T_LBRACE || pk == T_SEMI) {
                 complete_settings(&c, f.open, last);
             } else if (pk != T_IDENT || (last >= 1 && DOC->toks[last - 1].kind != T_LBRACE && DOC->toks[last - 1].kind != T_SEMI)) {
-                complete_value_types(&c, true);
-                complete_constants(&c);
+                complete_value_types(&c, VT_VALUES);
+                complete_constants(&c, TY_ERROR);
                 item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
             }
             break;
         }
-        // What the body belongs to: `struct Name {`, `component Name {`, ...
+        // What the body belongs to: `struct Name {`, `component Name {`, `enum Name : byte {`, ...
         const token *keyword = f.open >= 2 ? &DOC->toks[f.open - 2] : NULL;
+        const bool backed = keyword && keyword->kind == T_COLON && f.open >= 4;
+        if (backed) keyword = &DOC->toks[f.open - 4];
         const bool is_struct = keyword && keyword->kind == T_IDENT && str_eq_c(keyword->text, "struct");
         const bool has_methods = is_struct || (keyword && keyword->kind == T_COMPONENT);
+        if (keyword && keyword->kind == T_IDENT && str_eq_c(keyword->text, "enum")) {
+            // Members are names; after '=', an int, which a constant can give.
+            bool value = false;
+            for (int k = last; k > f.open && DOC->toks[k].kind != T_COMMA && !value; k--) value = DOC->toks[k].kind == T_ASSIGN;
+            if (value) complete_constants(&c, TY_INT);
+            break;
+        }
         const bool member_start = last >= 1 && (DOC->toks[last - 1].kind == T_LBRACE || DOC->toks[last - 1].kind == T_SEMI
                                                 || DOC->toks[last - 1].kind == T_RBRACE);
         if (pk == T_LBRACE || pk == T_SEMI || pk == T_RBRACE) {
-            complete_value_types(&c, false);
+            // A field's type: inputs send numbers, and only ECS data keeps grids.
+            const bool input = keyword && keyword->kind == T_IDENT && str_eq_c(keyword->text, "input");
+            const bool grids = keyword && (keyword->kind == T_COMPONENT || keyword->kind == T_SINGLETON
+                                           || (keyword->kind == T_IDENT && str_eq_c(keyword->text, "scene")));
+            complete_value_types(&c, (input ? VT_VALUES | VT_BOOL | VT_ENTITY | VT_LOCAL_ENTITY : VT_LOCALS | VT_LOCAL_ENTITY)
+                                         | (grids ? VT_GRID : 0));
             complete_structs(&c);
             complete_namespaces(&c, false);
             if (has_methods) {
@@ -3371,11 +3636,22 @@ void analysis_completion(const int line, const int character, jbuf *out)
             item(&c, "operator", CK_KEYWORD, "Type operator +(Type a, Type b)", NULL, NULL); // After the return type
         } else if (pk != T_IDENT || (last >= 1 && DOC->toks[last - 1].kind != T_LBRACE && DOC->toks[last - 1].kind != T_SEMI
                                    && DOC->toks[last - 1].kind != T_RBRACE)) {
-            // A default value: constants only.
-            complete_value_types(&c, true);
+            // A default value: constants only, and a grid field's size.
+            complete_value_types(&c, VT_VALUES);
             complete_structs(&c);
-            complete_constants(&c);
+            complete_constants(&c, TY_ERROR);
             item(&c, "Math", CK_MODULE, "Math functions and constants", NULL, NULL);
+            int first = last; // The field's first token: its type
+            while (first > f.open + 1 && DOC->toks[first - 1].kind != T_SEMI && DOC->toks[first - 1].kind != T_LBRACE
+                   && DOC->toks[first - 1].kind != T_RBRACE && DOC->toks[first - 1].kind != T_RBRACKET) {
+                first--;
+            }
+            const str type_text = DOC->toks[first].text;
+            if (DOC->toks[first].kind == T_IDENT && (str_eq_c(type_text, "Grid2") || str_eq_c(type_text, "Grid3"))) {
+                const bool flat = str_eq_c(type_text, "Grid2");
+                item(&c, flat ? "Grid2" : "Grid3", CK_FUNCTION, flat ? "Grid2(int width, int height)" : "Grid3(int width, int height, int depth)",
+                     "A grid of that size, in cells; 0 or nothing leaves an axis open.", flat ? "Grid2($1)" : "Grid3($1)");
+            }
         }
         break;
     }
@@ -3401,11 +3677,47 @@ void analysis_completion(const int line, const int character, jbuf *out)
 
     case CTX_CODE: {
         if (pk == T_VAR) break; // Naming a local
+        if (pk == T_MUT) { // mut var count = 0;, or mut int count = 0;
+            const scope sc = scope_at(at);
+            const bool local = sc.decl && (sc.decl->is_view || sc.decl->is_local);
+            item(&c, "var", CK_KEYWORD, NULL, NULL, NULL);
+            complete_value_types(&c, local ? VT_LOCALS | VT_LOCAL_ENTITY : VT_LOCALS);
+            complete_structs(&c);
+            complete_namespaces(&c, false);
+            break;
+        }
+        // foreach (var item in ...): `in` after the name
+        if (pk == T_IDENT && loop_variable_named(last)) {
+            item(&c, "in", CK_KEYWORD, NULL, NULL, NULL);
+            break;
+        }
+        // parallel (var at in cells by 2 offset 1): its blocks and where they start
+        const int header = parallel_header(last);
+        const bool keyword = pk == T_IDENT && (str_eq_c(prev->text, "in") || str_eq_c(prev->text, "by")
+                                               || str_eq_c(prev->text, "offset"));
+        bool after_in = false;
+        for (int k = header + 1; header >= 0 && k < last && !after_in; k++) {
+            after_in = DOC->toks[k].kind == T_IDENT && str_eq_c(DOC->toks[k].text, "in");
+        }
+        if (after_in && !keyword && ends_operand(pk)) {
+            bool by = false;
+            bool offset = false;
+            for (int k = header + 1; k <= last; k++) {
+                if (DOC->toks[k].kind != T_IDENT) continue;
+                by |= str_eq_c(DOC->toks[k].text, "by");
+                offset |= str_eq_c(DOC->toks[k].text, "offset");
+            }
+            if (!by && !offset) {
+                item(&c, "by", CK_KEYWORD, "by 2", "Each step gets a block of cells this size, rather than one cell.", NULL);
+            }
+            if (!offset) item(&c, "offset", CK_KEYWORD, "offset 1", "Where the blocks start, like 'time.tick % 2'.", NULL);
+            break;
+        }
         // `Type name` declares a local: no suggestions for the name.
         const tok_kind before = last >= 1 ? DOC->toks[last - 1].kind : T_EOF;
         type ignored;
         const bool statement_start = before == T_LBRACE || before == T_RBRACE || before == T_SEMI || before == T_MUT;
-        if (pk == T_IDENT && statement_start && builtin_type_named(prev->text, &ignored)) break;
+        if (pk == T_IDENT && statement_start && (builtin_type_named(prev->text, &ignored) || str_eq_c(prev->text, "string"))) break;
         const bool at_statement = pk == T_LBRACE || pk == T_RBRACE || pk == T_SEMI || pk == T_RPAREN || pk == T_ELSE;
         complete_expression(&c, at, at_statement);
         break;

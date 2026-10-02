@@ -447,6 +447,108 @@ TIDE_TEST(lsp_complete_literal_fields)
     TIDE_CHECK(offers(reply, "radius"));
 }
 
+// What a function's or method's parameter can be, not an input's Sample's.
+TIDE_TEST(lsp_complete_routine_params)
+{
+    start();
+#define TYPES "struct Stats { float health; }\nlocal singleton Menu { bool open; }\n" GAME_TYPES
+    const char *function = complete(TYPES "void Heal($)\n{\n}\n");
+    TIDE_CHECK(offers(function, "mut") && offers(function, "int") && offers(function, "bool") && offers(function, "string"));
+    TIDE_CHECK(offers(function, "List") && offers(function, "Entity") && offers(function, "Stats") && offers(function, "Body"));
+    TIDE_CHECK(offers(function, "Action") && offers(function, "Keyboard"));
+    TIDE_CHECK(!offers(function, "Menu") && !offers(function, "Session") && !offers(function, "Grid2"));
+    const char *after_mut = complete(TYPES "void Heal(mut $)\n{\n}\n");
+    TIDE_CHECK(offers(after_mut, "Stats") && offers(after_mut, "float2") && !offers(after_mut, "mut"));
+    TIDE_CHECK(!offers(after_mut, "Action"));
+    TIDE_CHECK(offers(complete(TYPES "async void Load(Stats s, $)\n{\n}\n"), "Arena")); // A task's singletons
+    TIDE_CHECK(offers(complete(TYPES "void Heal(Stats $)\n{\n}\n"), "stats"));
+#undef TYPES
+
+    // A method's, in its type's body: no default values there.
+    const char *method = complete("struct Stats\n{\n    float health;\n    bool Near($) { return true; }\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(method, "mut") && offers(method, "bool") && offers(method, "string") && offers(method, "Entity"));
+    TIDE_CHECK(!offers(method, "Math") && !offers(method, "Action"));
+    TIDE_CHECK(offers(complete("struct Stats\n{\n    float health;\n    mut void Set(mut $) { }\n}\nscene Main { }\n"), "float"));
+    // The input's Sample still takes local singletons, and Sanitize nothing.
+    TIDE_CHECK(offers(complete("local singleton Menu { bool open; }\ninput I\n{\n    bool fire;\n    Sample($) { }\n}\n"
+                               "scene Main { }\n"),
+                      "Menu"));
+    TIDE_CHECK(!offers(complete("local singleton Menu { bool open; }\ninput I\n{\n    bool fire;\n    Sanitize($) { }\n}\n"
+                                "scene Main { }\n"),
+                       "Menu"));
+}
+
+// Locals in bodies without braces: an else if's, a loop's, and its variable.
+TIDE_TEST(lsp_complete_locals_in_braceless_bodies)
+{
+    start();
+    TIDE_CHECK(offers(complete("scene Main { }\nsystem S()\n{\n    var a = 1;\n    if (a > 1) { }\n"
+                               "    else if (a > 0)\n    {\n        var inner = 2;\n        var x = $\n    }\n}\n"),
+                      "inner"));
+#define PARTS "struct Part { float size; }\ncomponent Kit { List<Part> parts; }\nscene Main { }\nvoid Use(float size) { }\n"
+    // A whole statement, and one being typed, which doesn't parse yet
+    TIDE_CHECK(offers(complete(PARTS "system S(Kit kit)\n{\n    foreach (var p in kit.parts) Use(p.$size);\n}\n"), "size"));
+    TIDE_CHECK(offers(complete(PARTS "system S(Kit kit)\n{\n    foreach (var p in kit.parts) Use(p.$)\n}\n"), "size"));
+    TIDE_CHECK(offers(complete(PARTS "system S(Kit kit)\n{\n    foreach (var p in kit.parts) Use($);\n}\n"), "p"));
+    TIDE_CHECK(offers(complete(PARTS "system S(Kit kit)\n{\n    for (var i = 0; i < 3; i++) Use($);\n}\n"), "i"));
+    TIDE_CHECK(offers(complete("singleton F { Grid2<int> cells; }\nscene Main { }\nvoid Use(int2 p) { }\n"
+                               "system S(mut F f)\n{\n    parallel (var at in f.cells) Use($);\n}\n"),
+                      "at"));
+    // Not after the body ends
+    TIDE_CHECK(!offers(complete(PARTS "system S(Kit kit)\n{\n    foreach (var p in kit.parts) Use(1);\n    var x = $\n}\n"), "p"));
+#undef PARTS
+}
+
+// The types a local can be, where a statement starts.
+TIDE_TEST(lsp_complete_statement_types)
+{
+    start();
+    const char *system = complete("scene Main { }\nsystem S()\n{\n    $\n}\n");
+    TIDE_CHECK(offers(system, "bool") && offers(system, "string") && offers(system, "Entity") && offers(system, "List"));
+    TIDE_CHECK(!offers(system, "Grid2") && !offers(system, "LocalEntity"));
+    TIDE_CHECK(offers(complete("scene Main { }\nview V()\n{\n    $\n}\n"), "LocalEntity"));
+    // In a value: what makes one
+    const char *value = complete("scene Main { }\nsystem S()\n{\n    var x = $\n}\n");
+    TIDE_CHECK(offers(value, "float3") && !offers(value, "bool") && !offers(value, "List"));
+    // After mut: var, or a type
+    const char *after_mut = complete("scene Main { }\nsystem S()\n{\n    mut $\n}\n");
+    TIDE_CHECK(offers(after_mut, "var") && offers(after_mut, "int") && offers(after_mut, "string"));
+}
+
+// Completion in the rest of the places that had none.
+TIDE_TEST(lsp_complete_more_places)
+{
+    start();
+    const char *constant = complete("struct Stats { int armor; }\nenum Page { Title }\nconst $\nscene Main { }\n");
+    TIDE_CHECK(offers(constant, "int") && offers(constant, "string") && offers(constant, "Stats") && offers(constant, "Page"));
+    TIDE_CHECK(!offers(constant, "Entity") && !offers(constant, "List"));
+    const char *error = complete("enum ParseError { Empty }\nint Parse(string t) fails $\nscene Main { }\n");
+    TIDE_CHECK(offers(error, "ParseError"));
+    TIDE_CHECK(offers(complete("enum E { A }\nstruct S\n{\n    int x;\n    int Get() fails $\n}\nscene Main { }\n"), "E"));
+
+    // An enum's body: names, and after '=', an int constant
+    const char *members = complete("const int FIRST = 3;\nconst float HALF = 0.5;\nenum Page\n{\n    Title,\n    $\n}\nscene Main { }\n");
+    TIDE_CHECK(!offers(members, "float3") && !offers(members, "Math") && !offers(members, "FIRST"));
+    const char *value = complete("const int FIRST = 3;\nconst float HALF = 0.5;\nenum Page : byte\n{\n    Title = $\n}\nscene Main { }\n");
+    TIDE_CHECK(offers(value, "FIRST") && !offers(value, "HALF") && !offers(value, "float3"));
+
+    // A loop's keywords
+    TIDE_CHECK(offers(complete("scene Main { }\nsystem S()\n{\n    foreach (var x $\n}\n"), "in"));
+    TIDE_CHECK(offers(complete("scene Main { }\nsystem S()\n{\n    foreach (var x i$\n}\n"), "in"));
+#define FIELD "singleton F { Grid2<int> cells; }\nscene Main { }\n"
+    const char *parallel = complete(FIELD "system S(mut F f)\n{\n    parallel (var at in f.cells $\n}\n");
+    TIDE_CHECK(offers(parallel, "by") && offers(parallel, "offset"));
+    const char *offset = complete(FIELD "system S(mut F f)\n{\n    parallel (var at in f.cells by 2 $\n}\n");
+    TIDE_CHECK(!offers(offset, "by") && offers(offset, "offset"));
+    TIDE_CHECK(!offers(complete(FIELD "system S(mut F f)\n{\n    parallel (var at in f.cells by $\n}\n"), "offset"));
+#undef FIELD
+
+    // A grid field's size
+    TIDE_CHECK(offers(complete("singleton F { Grid2<int> cells = $ }\nscene Main { }\n"), "Grid2"));
+    TIDE_CHECK(!offers(complete("singleton F { int cells = $ }\nscene Main { }\n"), "Grid2"));
+    TIDE_CHECK(!offers(complete("struct S\n{\n    $\n}\nscene Main { }\n"), "Grid2")); // Structs can't hold one
+}
+
 TIDE_TEST(lsp_hover)
 {
     start();
