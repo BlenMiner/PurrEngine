@@ -10,8 +10,9 @@
         <p>Run a game from its <code>.tide</code> files: in a window of its own, or on the web, in the IDE. Saving a
         file reloads it as it runs.</p>
         <p>It runs <code>tidels</code>, the language server that comes with tide: install tide first
-        (see the <a href="https://github.com/BlenMiner/tide-engine#install">install steps</a>). Then open your game's
-        folder, the one you'd run <code>tide run</code> in: every <code>.tide</code> file in it is one game.</p>
+        (see the <a href="https://github.com/BlenMiner/tide-engine#install">install steps</a>), or choose a
+        <code>tidels</code> under Settings | Languages &amp; Frameworks | Tide. Then open your game's folder, the one
+        you'd run <code>tide run</code> in: every <code>.tide</code> file in it is one game.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
@@ -28,7 +29,9 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <textmate.bundleProvider implementation="io.github.blenminer.tide.TideTextMateBundle"/>
-        <notificationGroup id="Tide" displayType="BALLOON"/>
+        <applicationConfigurable parentId="language" instance="io.github.blenminer.tide.TideConfigurable"
+                                 id="io.github.blenminer.tide" displayName="Tide"/>
+        <editorNotificationProvider implementation="io.github.blenminer.tide.TidelsBanner"/>
         <configurationType implementation="io.github.blenminer.tide.TideRunConfigurationType"/>
         <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Desktop"/>
         <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Web"/>

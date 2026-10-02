@@ -5,9 +5,12 @@ Highlighting from the TextMate grammar in `tools/tide-syntax`, and
 everything else from `tidels` through the LSP4IJ plugin, which JetBrains
 Marketplace installs with it. It runs in every JetBrains IDE from 2024.2 on.
 
-The plugin runs, in this order: the project's own `build/tools/tidels` (in
-Tide's repo, the server your build made), `tidels` on `PATH`, or the one
-where tide's installers put it.
+The plugin runs, in this order: the `tidels` chosen under Settings >
+Languages & Frameworks > **Tide**; the project's own `build/tools/tidels` (in
+Tide's repo, the server your build made), once you trust the project;
+`tidels` on `PATH`; or the one where tide's installers put it. When there's
+none, the server stays off and `.tide` files say why, above the code, with
+links to install tide, choose `tidels`, or try again, which starts it.
 
 ## Running the game
 

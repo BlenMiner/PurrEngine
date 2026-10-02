@@ -21,19 +21,28 @@ final class Tide {
     }
 
     // `name` on PATH; else where tide's installers put it, since an IDE started
-    // before tide was installed doesn't have it on its PATH yet.
+    // before tide was installed doesn't have it on its PATH yet. Only PATH's
+    // absolute folders: a relative one would be wherever the IDE runs.
     static @Nullable Path installed(@NotNull String name) {
         final String exe = exe(name);
         final String path = EnvironmentUtil.getValue("PATH");
         if (path != null) {
             for (final String dir : path.split(File.pathSeparator)) {
-                if (!dir.isEmpty() && isFile(dir, exe)) return Path.of(dir, exe);
+                if (!dir.isEmpty() && isAbsolute(dir) && isFile(dir, exe)) return Path.of(dir, exe);
             }
         }
         final String installed = SystemInfo.isWindows ? System.getenv("LOCALAPPDATA") : System.getProperty("user.home");
         final String folder = SystemInfo.isWindows ? "Tide" : ".tide";
         if (installed != null && isFile(installed, folder, "bin", exe)) return Path.of(installed, folder, "bin", exe);
         return null;
+    }
+
+    private static boolean isAbsolute(@NotNull String path) {
+        try {
+            return Path.of(path).isAbsolute();
+        } catch (InvalidPathException e) {
+            return false;
+        }
     }
 
     static boolean isFile(@NotNull String first, @NotNull String... more) {
