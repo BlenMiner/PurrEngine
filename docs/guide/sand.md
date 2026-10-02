@@ -1,12 +1,8 @@
-<script setup>
-import { withBase } from 'vitepress';
-</script>
-
 # Falling sand
 
 Sand, water and walls that everyone in a room paints into at once, built for the web from the code below. Click it to give it the mouse and keyboard.
 
-<iframe class="demo-frame square-ish" :src="withBase('/sand/')" title="Tide sand" allow="fullscreen"></iframe>
+<iframe class="demo-frame square-ish" src="/sand/" title="Tide sand" allow="fullscreen"></iframe>
 
 | | Mouse and keyboard |
 |---|---|
@@ -14,7 +10,7 @@ Sand, water and walls that everyone in a room paints into at once, built for the
 | Erase | Right mouse button |
 | Pick sand, water, wall or the eraser | `1` to `4`, or the buttons |
 
-<a :href="withBase('/sand/')" target="_self">Open it on a page of its own</a>.
+[Open it on a page of its own](/sand/).
 
 ## Paint together
 

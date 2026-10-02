@@ -123,4 +123,4 @@ An archetype is a set of components that entities share, and entities with the s
 
 ## Limits
 
-For now, a game has at most 64 components, 256 archetypes, 16384 entities, 1024 entities per archetype, and 4096 structural changes and events per tick. A CMake build of the engine can raise the last three with compile definitions (see [C hosts](../engine/c-hosts.md#limits)); `tide` has no option for them yet.
+For now, a game has at most 64 components and 256 archetypes. Everything else grows as it needs, with no limit but memory: entities, the rows of each archetype, and the structural changes and events in a tick (see [C hosts](../engine/c-hosts.md#memory)).

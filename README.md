@@ -4,7 +4,7 @@ A networking-first game engine. The simulation is deterministic, so players on
 different machines, the web included, can share one world. Games are written in
 the Tide language, which compiles to C and then to native code or WebAssembly.
 
-**Docs, and the demo running in your browser:** https://blenminer.github.io/tide-engine/
+**Docs, and the demo running in your browser:** https://tide-engine.dev
 
 ## Install
 
@@ -78,7 +78,7 @@ Then, in that folder:
 `tide help` lists every option. `tide` keeps its work in a hidden `.tide`
 folder next to your files, which you can delete any time; it's ignored by git.
 
-The [docs](https://blenminer.github.io/tide-engine/) go through the language a topic at a time, and
+The [docs](https://tide-engine.dev) go through the language a topic at a time, and
 [docs/spec.md](docs/spec.md) is its full spec.
 
 ## Stay up to date

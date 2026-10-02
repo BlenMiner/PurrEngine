@@ -1,6 +1,7 @@
-# Builds the docs site (docs/, VitePress), with the web demo in it, and
-# publishes it to GitHub Pages on pushes to dev. Pull requests only build it,
-# which also checks its links.
+# Builds the docs site (docs/, SvelteKit), with the web demos in it, and
+# deploys it to Fly.io (docs/fly.toml) on pushes to dev. Pull requests only
+# build it, which also checks its links. GitHub Pages, where the site used to
+# be, sends visitors on to it.
 name: Docs
 
 on:
@@ -42,23 +43,31 @@ jobs:
         run: |
           cmake --preset web-release
           cmake --build --preset web-release --target demo sand
-          mkdir -p docs/public/demo docs/public/sand
-          cp build/web-release/bin/demo.html docs/public/demo/index.html
-          cp build/web-release/bin/sand.html docs/public/sand/index.html
+          mkdir -p docs/static/demo docs/static/sand
+          cp build/web-release/bin/demo.html docs/static/demo/index.html
+          cp build/web-release/bin/sand.html docs/static/sand/index.html
       - name: Build the site
         working-directory: docs
         run: |
           npm ci
+          npm run check
           npm run build
 
-      - uses: actions/upload-pages-artifact@v5
-        if: github.event_name != 'pull_request'
-        with:
-          path: docs/.vitepress/dist
+      # The image takes what the build made (docs/Dockerfile). The token is
+      # a deploy token for the app: fly tokens create deploy -a tide-website
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+      - name: Deploy
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+        working-directory: docs
+        run: flyctl deploy --remote-only --ha=false
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
-  deploy:
-    name: Deploy
-    needs: build
+  # blenminer.github.io/tide-engine/... goes on to the same page at
+  # tide-engine.dev. Pages serves 404.html for every path it doesn't have.
+  redirect:
+    name: Redirect GitHub Pages
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:
@@ -68,5 +77,24 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Make the redirect
+        run: |
+          mkdir redirect
+          cat > redirect/index.html <<'EOF'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Tide's docs are at tide-engine.dev</title>
+          <link rel="canonical" href="https://tide-engine.dev/">
+          <script>
+              const path = location.pathname.replace(/^\/tide-engine/, '').replace(/\/$/, '') || '/';
+              location.replace('https://tide-engine.dev' + path + location.search + location.hash);
+          </script>
+          <noscript><meta http-equiv="refresh" content="0; url=https://tide-engine.dev/"></noscript>
+          <p>Tide's docs are at <a href="https://tide-engine.dev/">tide-engine.dev</a>.</p>
+          EOF
+          cp redirect/index.html redirect/404.html
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: redirect
       - id: deployment
         uses: actions/deploy-pages@v5

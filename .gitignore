@@ -7,7 +7,7 @@ cmake-build-*/
 .codex/
 CMakeUserPresets.json
 docs/node_modules/
-docs/.vitepress/cache/
-docs/.vitepress/dist/
-docs/public/demo/
-docs/public/sand/
+docs/.svelte-kit/
+docs/build/
+docs/static/demo/
+docs/static/sand/

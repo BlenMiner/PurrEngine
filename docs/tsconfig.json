@@ -1,0 +1,10 @@
+{
+    "extends": "$app/tsconfig",
+    "compilerOptions": {
+        "allowJs": true,
+        "checkJs": true,
+        "resolveJsonModule": true,
+        "strict": true
+    },
+    "include": ["src", "vite.config.ts", "headers.js"]
+}

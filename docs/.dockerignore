@@ -1,0 +1,5 @@
+*
+!package.json
+!headers.js
+!server.js
+!build/
