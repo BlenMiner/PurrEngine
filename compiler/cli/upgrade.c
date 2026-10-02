@@ -49,27 +49,10 @@ const char *tide_channel(const char *root)
     return strcmp(channel, "stable") == 0 || strcmp(channel, "nightly") == 0 ? channel : TIDE_CHANNEL;
 }
 
-// curl and tar ship with Windows 10+, macOS and Linux. On Windows, the ones
-// in System32: Git's GNU tar, if it comes first on PATH, can't unpack zips.
-static const char *system_tool(const char *name)
-{
-#ifdef _WIN32
-    const char *windows = sys_env("SystemRoot");
-    if (windows) {
-        char file[64];
-        snprintf(file, sizeof file, "System32/%s.exe", name);
-        char *path = path_join(windows, file);
-        if (sys_exists(path)) return path;
-        free(path);
-    }
-#endif
-    return name; // Found on PATH
-}
-
 // Downloads `url` to `path`.
 static bool download(const char *url, const char *path, const bool quiet)
 {
-    const char *curl = system_tool("curl");
+    const char *curl = sys_tool("curl");
     const char *const argv[] = {curl, "-fsSL", "--retry", "2", "-m", quiet ? "5" : "600",
                                 "-H", "Accept: application/vnd.github+json", "-o", path, url, NULL};
     return sys_run(argv, NULL, quiet) == 0;
@@ -118,7 +101,7 @@ static const json *newest(const char *work, const json *releases, const char *ch
 {
     const bool ask = strcmp(channel, "stable") == 0 && !sys_env("TIDE_RELEASES_URL");
     const json *latest = ask ? fetch_json(work, RELEASES_API "/latest", "latest.json") : NULL;
-    return tide_release_pick(releases, latest, channel);
+    return tide_release_pick(releases, latest, channel, PACKAGE);
 }
 
 // The release of `version`, in the list or, for an older one, asked by its tag.
@@ -132,25 +115,15 @@ static const json *exactly(const char *work, const json *releases, const char *v
     return tide_release_is(release, version) ? release : NULL;
 }
 
-static const json *find_asset(const json *release, const char *name)
-{
-    const json *assets = json_get(release, "assets");
-    for (int i = 0; assets && i < assets->count; i++) {
-        const char *asset = json_str(json_get(assets->items[i], "name"));
-        if (asset && strcmp(asset, name) == 0) return assets->items[i];
-    }
-    return NULL;
-}
-
 static const char *asset_url(const json *release, const char *name)
 {
-    return json_str(json_get(find_asset(release, name), "browser_download_url"));
+    return json_str(json_get(tide_release_asset(release, name), "browser_download_url"));
 }
 
 // The asset's size in bytes, as GitHub gives it; 0 if it doesn't.
 static int64_t asset_size(const json *release, const char *name)
 {
-    const json *size = json_get(find_asset(release, name), "size");
+    const json *size = json_get(tide_release_asset(release, name), "size");
     return size && size->kind == JSON_NUMBER && size->number > 0 ? (int64_t)size->number : 0;
 }
 
@@ -189,7 +162,7 @@ static bool download_package(const char *url, const char *path, const char *work
 {
     if (!sys_is_terminal()) return download(url, path, false);
     char *log = path_join(work, "curl.log");
-    const char *const argv[] = {system_tool("curl"), "-fsSL", "--retry", "2", "-m", "600",
+    const char *const argv[] = {sys_tool("curl"), "-fsSL", "--retry", "2", "-m", "600",
                                 "--stderr", log, "-o", path, url, NULL};
     sys_process *curl = sys_start(argv, NULL);
     if (!curl) {
@@ -331,7 +304,7 @@ int tide_upgrade(const char *root, const char *channel, const char *version)
     const json *release = version ? exactly(work, releases, version) : newest(work, releases, channel);
     if (!release) {
         if (version) fprintf(stderr, "tide: there's no release called %s\n", version);
-        else fprintf(stderr, "tide: there's no %s release yet\n", channel);
+        else fprintf(stderr, "tide: there's no %s release with a package for this platform (%s) yet\n", channel, PACKAGE);
         return 1;
     }
     const char *next = tide_release_version(release);
@@ -382,7 +355,7 @@ int tide_upgrade(const char *root, const char *channel, const char *version)
 
     char *fresh = path_join(work, "new");
     sys_mkdirs(fresh);
-    const char *const tar[] = {system_tool("tar"), "-xf", package, "-C", fresh, NULL};
+    const char *const tar[] = {sys_tool("tar"), "-xf", package, "-C", fresh, NULL};
     if (sys_run(tar, NULL, false) != 0) {
         fprintf(stderr, "tide: couldn't unpack the download\n");
         return 1;

@@ -58,6 +58,11 @@ bool sys_open_in_browser(const char *page);
 // Finds a program on PATH (with the usual extensions on Windows).
 char *sys_which(const char *name);
 
+// curl or tar, which ship with Windows 10+, macOS and Linux. On Windows, the
+// ones in System32: Git's GNU tar, if it comes first on PATH, can't unpack
+// zips.
+const char *sys_tool(const char *name);
+
 const char *sys_env(const char *name); // NULL if unset or empty
 int64_t sys_now(void);                 // Seconds since 1970
 int64_t sys_now_ms(void);              // Milliseconds from a fixed point, never going back

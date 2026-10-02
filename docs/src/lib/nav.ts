@@ -30,6 +30,7 @@ export const sidebar: Group[] = [
             { text: 'Install', link: '/guide/install' },
             { text: 'Your first game', link: '/guide/first-game' },
             { text: 'The tide command', link: '/guide/cli' },
+            { text: 'Packages', link: '/guide/packages' },
             { text: 'Editors', link: '/guide/editors' },
             { text: 'Falling sand', link: '/guide/sand' },
         ],

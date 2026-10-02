@@ -6,11 +6,17 @@ component Label
     string text = "line end"; // A comment after text
 }
 
+#if TIDE_0_1_OR_NEWER // Directives end where the line does too
+const int SCORE = 7;
+#else
+not code {{
+#endif
+
 scene Main { }
 
 event(Spawned) Setup(with Main)
 {
-    var score = 7;
+    var score = SCORE;
     Spawn(Label);
     Spawn(Label { text = $"score {score:D3}" + " " + "done" });
 }

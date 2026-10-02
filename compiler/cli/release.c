@@ -112,19 +112,30 @@ static bool is_true(const json *v)
     return v && v->kind == JSON_TRUE;
 }
 
-static bool allowed(const json *release, const char *channel)
+const json *tide_release_asset(const json *release, const char *name)
+{
+    const json *assets = json_get(release, "assets");
+    for (int i = 0; assets && assets->kind == JSON_ARRAY && i < assets->count; i++) {
+        const char *asset = json_str(json_get(assets->items[i], "name"));
+        if (asset && strcmp(asset, name) == 0) return assets->items[i];
+    }
+    return NULL;
+}
+
+static bool allowed(const json *release, const char *channel, const char *package)
 {
     version v;
     if (!parse(tide_release_version(release), &v) || is_true(json_get(release, "draft"))) return false;
+    if (!tide_release_asset(release, package)) return false;
     return strcmp(channel, "stable") != 0 || !is_true(json_get(release, "prerelease"));
 }
 
-const json *tide_release_pick(const json *releases, const json *latest, const char *channel)
+const json *tide_release_pick(const json *releases, const json *latest, const char *channel, const char *package)
 {
-    const json *best = latest && allowed(latest, channel) ? latest : NULL;
+    const json *best = latest && allowed(latest, channel, package) ? latest : NULL;
     for (int i = 0; releases && releases->kind == JSON_ARRAY && i < releases->count; i++) {
         const json *r = releases->items[i];
-        if (!allowed(r, channel)) continue;
+        if (!allowed(r, channel, package)) continue;
         if (!best || tide_version_compare(tide_release_version(r), tide_release_version(best)) > 0) best = r;
     }
     return best;

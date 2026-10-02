@@ -1,0 +1,4 @@
+// expect: a condition is missing here
+scene Main { }
+#if TIDE_0_1_OR_NEWER &&
+#endif

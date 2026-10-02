@@ -44,7 +44,17 @@ static char *join(const char *folder, const char *name, const char *suffix)
     return path;
 }
 
-void folder_find(const char *folder, const char *extension, const folder_file_fn found, void *user)
+// Whether `sub` (ending in '/') is a game or a package of its own.
+static bool has_packages_file(const char *sub)
+{
+    char *path = join(sub, "tide.packages", "");
+    FILE *f = fopen(path, "rb");
+    free(path);
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+static void find(const char *folder, const char *extension, const folder_file_fn found, void *user, const bool own)
 {
 #ifdef _WIN32
     char *pattern = join(folder, "*", "");
@@ -58,7 +68,7 @@ void folder_find(const char *folder, const char *extension, const folder_file_fn
         if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue; // A link
             char *sub = join(folder, name, "/");
-            folder_find(sub, extension, found, user);
+            if (!own || !has_packages_file(sub)) find(sub, extension, found, user, own);
             free(sub);
         } else if (ends_with(name, extension)) {
             char *path = join(folder, name, "");
@@ -78,7 +88,7 @@ void folder_find(const char *folder, const char *extension, const folder_file_fn
         if (lstat(path, &info) == 0) {
             if (S_ISDIR(info.st_mode)) {
                 char *sub = join(folder, name, "/");
-                folder_find(sub, extension, found, user);
+                if (!own || !has_packages_file(sub)) find(sub, extension, found, user, own);
                 free(sub);
             } else if (S_ISREG(info.st_mode) && ends_with(name, extension)) {
                 found(user, path);
@@ -88,6 +98,16 @@ void folder_find(const char *folder, const char *extension, const folder_file_fn
     }
     closedir(dir);
 #endif
+}
+
+void folder_find(const char *folder, const char *extension, const folder_file_fn found, void *user)
+{
+    find(folder, extension, found, user, false);
+}
+
+void folder_find_own(const char *folder, const char *extension, const folder_file_fn found, void *user)
+{
+    find(folder, extension, found, user, true);
 }
 
 char *folder_of_program(void)

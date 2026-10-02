@@ -303,6 +303,21 @@ const char *sys_env(const char *name)
     return value && value[0] ? value : NULL;
 }
 
+const char *sys_tool(const char *name)
+{
+#ifdef _WIN32
+    const char *windows = sys_env("SystemRoot");
+    if (windows) {
+        char file[64];
+        snprintf(file, sizeof file, "System32/%s.exe", name);
+        char *path = path_join(windows, file);
+        if (sys_exists(path)) return path;
+        free(path);
+    }
+#endif
+    return name; // Found on PATH
+}
+
 int64_t sys_now(void)
 {
     return (int64_t)time(NULL);

@@ -5,7 +5,9 @@
 # - Pushes to release: also publish a stable release, and commit the new VERSION.
 #
 # semantic-release picks the version from conventional commits (feat:, fix:,
-# see .releaserc.json). A push with neither publishes nothing.
+# see .releaserc.json). A push with neither publishes nothing. A build that
+# fails on any platform fails the run, and nothing is published: every release
+# has every platform's package.
 name: Build
 
 on:
@@ -47,7 +49,7 @@ jobs:
     name: Build (${{ matrix.platform }})
     needs: version
     strategy:
-      fail-fast: false
+      fail-fast: false # The other platforms finish, so a run shows every failure
       matrix:
         include:
           - platform: windows-x64
@@ -57,8 +59,6 @@ jobs:
           - platform: macos-arm64
             os: macos-latest
     runs-on: ${{ matrix.os }}
-    # macOS is new: until it's reliable, its failures don't hold back releases.
-    continue-on-error: ${{ matrix.platform == 'macos-arm64' }}
     env:
       TIDE_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
       TIDE_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}

@@ -1,0 +1,37 @@
+// #if, #elif, #else and #endif: code for other versions of tide is left out,
+// whatever it holds.
+
+#if TIDE_0_1_OR_NEWER
+const int A = 1;
+#else
+const int A = this isn't even code {{{
+#endif
+
+#if TIDE_9999_0_OR_NEWER
+Code only a far newer tide reads
+    #if TIDE_0_0_OR_NEWER
+    Inside what's left out, directives only end what they start.
+    #else
+    #endif
+#elif !TIDE_0_0_OR_NEWER || false
+const int B = 0;
+#else // The branch that's read
+const int B = 2;
+#endif
+
+singleton Picked
+{
+    int a = A;
+    int b = B;
+#if (TIDE_0_1_OR_NEWER && !TIDE_9999_1_2_OR_NEWER) == true
+    int c = 3;
+#elif TIDE_0_1_OR_NEWER
+    int c = 4;
+#endif
+    /* A directive in a comment is part of the comment:
+#if false
+    */
+    int d = 5;
+}
+
+scene Main { }

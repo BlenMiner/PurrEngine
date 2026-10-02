@@ -1,0 +1,6 @@
+// expect: '#elif' after #else: the #else comes last, before #endif
+scene Main { }
+#if false
+#else
+#elif true
+#endif

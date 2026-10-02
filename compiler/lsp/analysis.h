@@ -11,6 +11,7 @@ typedef struct analysis_file {
     const char *path; // For messages
     const char *text;
     size_t len;
+    const char *package; // The package it's in, by name; NULL for the game's own
 } analysis_file;
 
 // The compiler's front end run on a whole game, for the language server:

@@ -1,0 +1,4 @@
+// expect: this #if is missing its #endif
+scene Main { }
+#if TIDE_0_1_OR_NEWER
+const int A = 1;

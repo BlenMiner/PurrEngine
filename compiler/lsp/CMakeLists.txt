@@ -1,6 +1,6 @@
 # tidels: the Tide language server. Editors run it for completion,
 # diagnostics, hovers, go to definition and semantic highlighting.
-add_library(tidels_core STATIC analysis.c cdefs.c folders.c json.c server.c)
+add_library(tidels_core STATIC analysis.c cdefs.c folders.c json.c packages.c server.c)
 target_link_libraries(tidels_core PUBLIC tidec_core)
 target_include_directories(tidels_core PUBLIC .)
 # "Go to definition" on built-ins opens the engine headers they're defined in.

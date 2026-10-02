@@ -59,6 +59,7 @@ tide_e2e_test(net_join_big) # A world that takes longer to send than the ticks k
 tide_e2e_test(blend)
 tide_e2e_test(big_world)
 tide_e2e_test(crlf) # Windows line endings, kept by .gitattributes
+tide_e2e_test(directives) # #if and the rest: what other versions of tide read is left out
 tide_e2e_test(multi_file SOURCES e2e/multi_file/a_physics.tide e2e/multi_file/b_main.tide
     e2e/multi_file/c_combat.tide e2e/multi_file/d_items.tide)
 tide_e2e_test(extern SOURCES e2e/extern.tide e2e/extern_noise.tide e2e/extern_c.c) # C functions, from the game's C file

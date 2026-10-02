@@ -1,0 +1,3 @@
+// expect: '#endif' has no #if before it
+scene Main { }
+#endif

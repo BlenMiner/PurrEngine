@@ -1,0 +1,4 @@
+// expect: '#iff' isn't a directive
+scene Main { }
+#iff TIDE_0_1_OR_NEWER
+#endif

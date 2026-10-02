@@ -16,7 +16,7 @@ endif()
 ExternalProject_Add(tidec_host
     SOURCE_DIR "${PROJECT_SOURCE_DIR}"
     BINARY_DIR "${_tide_host_dir}"
-    CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DTIDE_TOOLS_ONLY=ON
+    CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DTIDE_TOOLS_ONLY=ON "-DTIDE_VERSION=${TIDE_VERSION}"
     BUILD_COMMAND "${CMAKE_COMMAND}" --build "${_tide_host_dir}" --target tidec tide_apk
     INSTALL_COMMAND ""
     BUILD_ALWAYS ON
