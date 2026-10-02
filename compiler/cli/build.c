@@ -1617,39 +1617,29 @@ static long android_pid(const char *adb, const char *package)
     return strtol(out, NULL, 10);
 }
 
-int tide_run_android(const char *root, const build_options *opts, const char *const *args)
+// Installs the app. One installed before with another key (another
+// machine's) can't be updated: it goes, and this one comes in its place.
+static bool install_app(const char *adb, const char *apk, const char *package)
 {
-    char *adb = android_find_adb(root);
-    if (!adb) return 1;
-    if (android_devices(adb) == 0) {
-        fprintf(stderr, "tide: no Android phone or emulator is connected\n");
-        fprintf(stderr, "  = note: on the phone, turn on USB debugging (Settings > About phone: tap Build number seven "
-                        "times; then System > Developer options > USB debugging), connect it, and allow this computer\n");
-        return 1;
-    }
-    char package[256];
-    char *apk = build_android(root, opts, package, sizeof package);
-    if (!apk) return 1;
-
-    // An app installed before with another key (another machine's) can't be
-    // updated: it goes, and this one comes in its place.
     printf("Installing %s...\n", path_base(apk));
     fflush(stdout);
     const char *const install[] = {adb, "install", "-r", apk, NULL};
     char out[4096];
-    if (sys_capture(install, out, sizeof out) != 0) {
-        if (strstr(out, "INSTALL_FAILED_UPDATE_INCOMPATIBLE") || strstr(out, "signatures do not match")) {
-            printf("The app on the device was signed with another key: replacing it.\n");
-            const char *const uninstall[] = {adb, "uninstall", package, NULL};
-            sys_run(uninstall, NULL, true);
-        }
-        if (sys_run(install, NULL, false) != 0) {
-            fprintf(stderr, "tide: the device didn't take the app\n");
-            return 1;
-        }
+    if (sys_capture(install, out, sizeof out) == 0) return true;
+    if (strstr(out, "INSTALL_FAILED_UPDATE_INCOMPATIBLE") || strstr(out, "signatures do not match")) {
+        printf("The app on the device was signed with another key: replacing it.\n");
+        const char *const uninstall[] = {adb, "uninstall", package, NULL};
+        sys_run(uninstall, NULL, true);
     }
+    if (sys_run(install, NULL, false) == 0) return true;
+    fprintf(stderr, "tide: the device didn't take the app\n");
+    return false;
+}
 
-    // What it's started with goes to its main (platform/android): the session's flags.
+// Starts the app, or starts it over, with what goes to its main
+// (platform/android): the session's flags.
+static bool start_app(const char *adb, const char *package, const char *const *args)
+{
     char start[1024];
     int at = snprintf(start, sizeof start, "am start -S -n %s/android.app.NativeActivity", package);
     if (args[0]) {
@@ -1662,26 +1652,68 @@ int tide_run_android(const char *root, const build_options *opts, const char *co
         }
         at += snprintf(start + at, sizeof start - (size_t)at, "'");
     }
-    const char *const clear[] = {adb, "logcat", "-c", NULL};
-    sys_run(clear, NULL, true);
     const char *const launch[] = {adb, "shell", start, NULL};
-    if (sys_run(launch, NULL, true) != 0) {
-        fprintf(stderr, "tide: the app didn't start\n");
+    if (sys_run(launch, NULL, true) == 0) return true;
+    fprintf(stderr, "tide: the app didn't start\n");
+    return false;
+}
+
+int tide_run_android(const char *root, const build_options *opts, const char *const *args)
+{
+    char *adb = android_find_adb(root);
+    if (!adb) return 1;
+    if (android_devices(adb) == 0) {
+        fprintf(stderr, "tide: no Android phone or emulator is connected\n");
+        fprintf(stderr, "  = note: on the phone, turn on USB debugging (Settings > About phone: tap Build number seven "
+                        "times; then System > Developer options > USB debugging), connect it, and allow this computer\n");
         return 1;
     }
+    char package[256];
+    char *apk = build_android(root, opts, package, sizeof package);
+    if (!apk || !install_app(adb, apk, package)) return 1;
+    const char *const clear[] = {adb, "logcat", "-c", NULL};
+    sys_run(clear, NULL, true);
+    if (!start_app(adb, package, args)) return 1;
 
-    // What it prints, until it ends: Ctrl+C stops showing it, and the app goes on.
-    printf("Running %s on the device; its output follows (Ctrl+C stops it).\n", package);
+    // What it prints, until it ends; saving a file makes the app again and
+    // starts it over, as the device can't swap code into a running app.
+    printf("Running %s on the device; its output follows. Saving a .tide or C file builds it again and starts it "
+           "over; type r and press Enter to start it over, or close it to stop.\n", package);
     fflush(stdout);
+    sys_read_lines();
     const char *const logs[] = {adb, "logcat", "-v", "raw", "-s", "tide:V", NULL};
     sys_process *log = sys_start(logs, NULL);
+    build watch = {0}; // The game's files and its packages', for their stamp
+    watch.folder = path_absolute(opts->folder);
+    find_packages(watch.folder, &watch.packages);
+    uint64_t stamp = game_stamp(&watch);
+    int64_t changed_at = -1;
     bool seen = false;
-    for (int tries = 0;; tries++) {
+    int waits = 0; // Half seconds without the app, since it was started
+    for (;;) {
         int code;
         if (log && sys_wait(log, 500, &code)) log = NULL;
+        bool restart = typed_restart();
+        const uint64_t now = game_stamp(&watch);
+        if (now != stamp) {
+            stamp = now;
+            changed_at = sys_now_ms();
+        } else if (changed_at >= 0 && sys_now_ms() - changed_at >= SETTLE_MS) {
+            changed_at = -1;
+            char *rebuilt = build_android(root, opts, package, sizeof package);
+            if (rebuilt && install_app(adb, rebuilt, package)) restart = true;
+            else fprintf(stderr, "tide: the device keeps running the last build\n");
+        }
+        if (restart) {
+            if (!start_app(adb, package, args)) break;
+            seen = false;
+            waits = 0;
+            continue;
+        }
         const long pid = android_pid(adb, package);
         if (pid) seen = true;
-        if ((seen && !pid) || (!seen && tries > 40) || !log) break;
+        else waits++;
+        if ((seen && !pid) || (!seen && waits > 40) || !log) break;
     }
     if (log) sys_kill(log);
     printf(seen ? "The app ended.\n" : "The app didn't start.\n");
