@@ -14,10 +14,13 @@
 #include "tide_web.h" // The page's JavaScript, which web builds use instead of raylib for input and frames
 #else
 // GLFW, which raylib's desktop windows run on, built into raylib: waiting on
-// the window's events, rather than sleeping past them.
+// the window's events, rather than sleeping past them. raylib's window is the
+// one whose context is current (GetWindowHandle is the system's, an HWND on
+// Windows).
 typedef struct GLFWwindow GLFWwindow;
 void glfwWaitEventsTimeout(double timeout);
 int glfwWindowShouldClose(GLFWwindow *window);
+GLFWwindow *glfwGetCurrentContext(void);
 #endif
 
 #define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
@@ -191,7 +194,7 @@ static int step(void)
     // the frame function asked, and draws nothing (see tide_platform_draw).
     // It waits on the window's events, so a window restored or closed meanwhile
     // goes on at once.
-    while (IsWindowMinimized() && !glfwWindowShouldClose(GetWindowHandle())) {
+    while (IsWindowMinimized() && !glfwWindowShouldClose(glfwGetCurrentContext())) {
         const double left = frame_due - GetTime();
         if (left <= 0.0) break;
         if (left < 0.001) WaitTime(left); // Less than the system's timers wait (Windows' take milliseconds)
