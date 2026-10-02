@@ -5,13 +5,13 @@ A game needs no C: `tide` runs it in a window. This page is for working inside T
 ## tide_add_game
 
 ```cmake
-tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [WARNINGS <text>...])
+tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])
 ```
 
 - The game is every `.tide` file in the current source folder and its subfolders. `SOURCES` lists the files instead.
 - The game's C, which defines its `extern` functions (see [Calling C](../language/c-functions.md)), is every `.c` file there but the `HOST` ones, or the `.c` files listed in `SOURCES`. Unlike `tide`, CMake doesn't pick up prebuilt libraries: link them to the target yourself.
-- Without `HOST`, the game is the whole program: a generated `main` runs it in a window, titled `TITLE`, or the game's `title` setting, or `<target>`. On the web, it's `<target>.html`.
-- With `HOST`, those C files are the program. They include `<name>.h`, the generated header, where `NAME` defaults to `<target>`.
+- Without `HOST`, the game is the whole program: a generated `main` runs it in a window, titled `TITLE`, or the game's `title` setting, or `<target>`. `STATS` shows the frame rate, ping, bandwidth, tick, entity count and threads in a corner, as `tide run --stats` does. On the web, it's `<target>.html`.
+- With `HOST`, those C files are the program. They include `<name>.h`, the generated header, where `NAME` defaults to `<target>`. `LAYOUT` also describes the game's data layout, as `tide run` does for hot reloading (`tide_game_layout`, in `tide/layout.h`).
 - Warnings are errors in the repo's build: a warning from tidec fails it, unless part of its text is listed after `WARNINGS`, and each of those has to be there. Tests use it for programs tidec warns about on purpose.
 - `<target>_schedule` is a build target that prints the game's [schedule](./schedule.md).
 
@@ -50,25 +50,32 @@ The generated header is the API between the game and its host. Namespaced declar
 - `tide_world_pack(w, out, capacity)` and `tide_world_unpack(w, data, size)`: the world as bytes, as hot reloading carries it over.
 - `tide_world_pack_delta(w, base, need, need_size, &size)` and `tide_world_unpack_delta(w, base, data, size)`: the world as a delta, as sessions send it: page by page, what differs from `base`, a world the receiver has too, or from the receiver's own world, which lacks the pages `need` says (`tide_world_hash_pages` lists the pages' hashes, and `tide_world_need_pages` says which of them a world lacks), or the whole world, with neither. The bytes are to `free()`. Unpacking checks the world's hash, and is false for bytes or a base that don't make it.
 - `tide_world_entity_count(w)` and `tide_world_print(w)`, for debugging.
-- Text fields are offsets into the world's heap: read one with `tide_text_read(&w->heap, field)`.
+- Text fields are offsets into the world's heap: read one with `tide_text_read(&w->heap, field)`. A grid's cells are too: `tide_grid_read(&w->heap, w->Field.cells, x, y, 0, &tide_shape_Grid2_int)` gives a cell, or NULL outside the grid or where nothing in its chunk was ever set, which is zero, and the generated header names each grid type's shape.
 
 **Local state**
 
-- `tide_local` is this machine's local state, outside every world. `tide_local_init(local)` clears it and sets its defaults, and `tide_local_free(local)` lets it go. `TIDE_MAIN_IS_LOCAL` is defined when `Main` is local.
+- `tide_local` is this machine's local state, outside every world. `tide_local_init(local)` clears it and sets its defaults, and `tide_local_free(local)` lets it go. `tide_local_pack(local, out, capacity)` and `tide_local_unpack(local, data, size)` are it as bytes, as hot reloading carries it over. `TIDE_MAIN_IS_LOCAL` is defined when `Main` is local.
 - `tide_frame(w, previous, alpha, local, draw, gui)` runs every view once, blending the match between `previous` and `w` by `alpha`, then applies the local changes they made, and local tasks whose time has come go on. Pass `NULL` and 1 to draw `w` as it is, and `NULL` for `w` outside a match.
 - `tide_local_frame_time(local, seconds)` says how long this frame is, before `tide_frame`: local tasks' `Wait.Seconds` counts it down. Without it, they wait forever.
 
 **Input**
 
 - `TIDE_HAS_INPUT` is defined when the game has an input, and `tide_input` names its type.
-- `tide_input_sample(devices, local)` runs the input's `Sample` with this machine's devices.
+- `tide_input_sample(devices, local)` runs the input's `Sample` with this machine's devices. Give it a copy of the devices that the GUI's own use is taken out of, so a click on a button isn't the game's too, then mark the real ones read, so a press counts once:
+
+  ```c
+  tide_devices sampled = devices;
+  tide_gui_hide(&gui, &sampled);
+  tide_input input = tide_input_sample(&sampled, &local);
+  tide_devices_consume(&devices);
+  ```
 - `tide_world_set_input(w, player, input)` sets a player's input for the next tick, and `tide_world_set_server_input(w, input)` the server's. Both repair the input first: NaN, bounds, then `Sanitize`.
 
 **Sessions**
 
 - `tide_game_api` is the game as a session runs it (`tide_game` in `tide/session.h`), with its settings: `tick_rate` and `title`, 0 and `NULL` where it sets none. A session whose desc leaves `tick_rate` at 0 starts its matches at the game's rate, or 60. The settings are in the generated `.c`, not the header, so they don't change the game's hash.
 - With host migration (`tide_game_api.host_migration`), the host that runs a match tells its session the room's code and key every frame (`tide_session_set_room`, with `tide_platform_room_code` and `tide_platform_room_key`). A session whose match lost its server says so (`tide_session_migrating`): the host goes to the room again (`tide_platform_room_migrate`), and once `tide_platform_room_migrated` says whether this machine hosts it now, calls `tide_session_take_over` or `tide_session_join`, or fails the session with `TIDE_DISCONNECT_ENDED` if the match ended there. A match that ends tells its transports (`tide_transport.end`, before they close), which a room passes on to the relay. `tide/host.h` does all of it.
-- `tide_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Start`, in order: call it until it's false. `tide_local_set_session`, `tide_local_connected` and `tide_local_disconnected` tell local code where it stands; `tide_local_set_session` takes whether the match is open too (`tide_session_status`'s `open`), and the code of the room the match is in (`tide_platform_room_code`), or `""` while it's closed; `tide_local_disconnected` takes a kick's message (`tide_session_event`'s `message`), or NULL.
+- `tide_local_take_request(local, &request, &start)` takes local code's session calls, like `Session.Start`, in order: call it until it's false. `Clipboard.Copy` comes this way too, as `TIDE_REQUEST_COPY`: put its text on the clipboard with `tide_platform_copy`. `tide_local_set_session`, `tide_local_connected` and `tide_local_disconnected` tell local code where it stands; `tide_local_set_session` takes whether the match is open too (`tide_session_status`'s `open`), and the code of the room the match is in (`tide_platform_room_code`), or `""` while it's closed; `tide_local_disconnected` takes a kick's message (`tide_session_event`'s `message`), or NULL.
 
 ## A frame
 

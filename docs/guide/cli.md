@@ -9,12 +9,13 @@ tide <command> [folder] [options]
 | Command | What it does |
 |---|---|
 | `tide run [folder]` | Builds the game and plays it |
-| `tide build [folder]` | Builds the game into `<folder>/build` |
+| `tide build [folder]` | Builds the game into `<folder>/build`, named after the folder |
 | `tide schedule [folder]` | Shows which systems can run at the same time, and why the others wait |
 | `tide editors` | Adds Tide to VS Code, Cursor, VSCodium and Windsurf |
 | `tide upgrade` | Updates tide to the newest version |
-| `tide version` | Shows tide's version, and which compilers it found |
+| `tide version` | Shows tide's version and channel, where it's installed, and which compilers it found |
 | `tide help` | Lists every option |
+| `tide cc <options>` | clang, built into tide, for C you build yourself (see [Calling C](../language/c-functions.md#where-the-c-goes)) |
 
 ## run and build
 
@@ -42,7 +43,7 @@ Cross-Origin-Embedder-Policy: require-corp
 
 ## Hot reload
 
-While `tide run` plays a game, saving a `.tide` file rebuilds it, and so does saving one of its C files or libraries. The game carries on with the new code in the same window:
+While `tide run` plays a game, saving a `.tide` file rebuilds it, and so does saving one of its C files, headers or libraries. The game carries on with the new code in the same window:
 
 - If you changed only code (systems, views, event handlers, methods), the match and everything local, like menus, carry on where they are.
 - If you changed data (components, fields, singletons, the input), the game is carried over to it by name, and goes on from where it was.
@@ -60,7 +61,7 @@ Carrying the game over works like this:
 
 `tide` says what happened after each reload, like `reloaded, and carried the game over to its new data layout; 1 field reset; 2 entities dropped`.
 
-When the game gets into a state you don't want, type `r` and press Enter in `tide`'s terminal to start it over. With a match on several windows (`--host` in one, `--connect localhost` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again whenever that one starts over. On the web, a reload goes on with the match closed for now: the room closes, and the other players drop out.
+When the game gets into a state you don't want, type `r` and press Enter in `tide`'s terminal to start it over. With a match on several windows (`--host` in one, `--connect localhost` in another), each window reloads when you save, and players stay in the match. A window that joined another's match joins it again a second after that match ends without it: when the other window starts it over, or is still on a build with another data layout. On the web, a reload goes on with the match closed for now: the room closes, and the other players drop out.
 
 `tide run --web` reloads too. `tide` serves the game's page at an address on your machine, like `http://127.0.0.1:52407/`, opens it in your browser, and keeps running until you press Ctrl+C. What each reload did shows in the browser's console. VS Code and JetBrains IDEs can play it beside your code instead (see [Editors](editors.md)).
 
@@ -68,13 +69,13 @@ Hot reload is only for `tide run`: `tide build` makes a plain program, or a page
 
 ## Multiplayer
 
-`tide run` can start a match others join. The game's `Main` scene must be the match's for this (see [Scenes](../language/scenes.md)); a game that starts in a menu does the same from code (see [Multiplayer](../language/multiplayer.md)).
+`tide run` can start a match others join, or join one. For `--host`, the game's `Main` scene must be the match's (see [Scenes](../language/scenes.md)); a game that starts in a menu does the same from code (see [Multiplayer](../language/multiplayer.md)).
 
 | Option | What it does |
 |---|---|
 | `--host [port]` | Opens the match for others to join: in a room, whose code the game can show, and on UDP port 7777 by default (not on the web) |
 | `--join <code>` | The match in the room with this code, like `K7QF2M` |
-| `--connect <address>` | The match at an address, like `192.168.1.5` or `localhost:7777` |
+| `--connect <address>` | The match at an address, like `192.168.1.5` or `localhost:7777` (not on the web) |
 
 ## upgrade
 
@@ -83,6 +84,8 @@ Hot reload is only for `tide run`: `tide build` makes a plain program, or a page
 | `--nightly` | Follow nightly versions from now on |
 | `--stable` | Follow stable versions from now on |
 | `--version <v>` | Install exactly this version |
+
+`tide` says, at most once a day, when a newer version is out. Set the `TIDE_NO_UPDATE_CHECK` environment variable to stop it looking, as on a build server.
 
 ## Files
 

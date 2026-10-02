@@ -44,7 +44,7 @@ Views draw the predicted world, blended between its last two ticks (see [Views](
 
 ## Joining
 
-A player who joins gets the whole world and a cookie. Joining the same server again with the cookie gets them their `PlayerID` back, and with it everything the game kept for them.
+A player who joins gets the world (see [Sending worlds](#sending-worlds)) and a cookie. Joining the same server again with the cookie gets them their `PlayerID` back, and with it everything the game kept for them.
 
 ## Host migration
 
@@ -56,9 +56,9 @@ Everything is sent again until it's acknowledged. Nothing waits on a reliable st
 
 ## Transports
 
-On desktop, matches run over Tide's own thin layer on UDP. On the web, they run over WebRTC data channels that neither order nor resend, like UDP, so a browser can host matches as well as join them. The protocol above the transport is the same.
+Matches run over WebRTC data channels, which neither order nor resend, like UDP, on the web and on desktop alike: desktop games speak WebRTC with an implementation of Tide's own. That's what lets a browser host matches as well as join them, and web and desktop players meet in the same rooms. A desktop host also takes players on a UDP port, Tide's own thin layer, which `--connect` and `Session.Connect` reach by address; the web has no UDP, so a browser can't join by address. The protocol above the transport is the same.
 
-Players find each other in rooms, by a code (see [Multiplayer](../language/multiplayer.md#rooms)), whether they're in a browser or a desktop game: desktop games speak WebRTC too, with an implementation of Tide's own. A relay of ours introduces them, passing along what WebRTC needs to connect them, and their packets then go straight between them. Players whose networks can't connect directly go through a TURN server, which carries their packets. Everything to and from the relay is encrypted (`wss://`), on desktop with the system's own TLS, and so are the matches, as WebRTC requires.
+Players find each other in rooms, by a code (see [Multiplayer](../language/multiplayer.md#rooms)), whether they're in a browser or a desktop game. A relay of ours introduces them, passing along what WebRTC needs to connect them, and their packets then go straight between them. Players whose networks can't connect directly go through a TURN server, which carries their packets. Everything to and from the relay is encrypted (`wss://`), and so are the matches, as WebRTC requires. On desktop, the relay's encryption is the system's own TLS: Windows' and macOS's, and on Linux OpenSSL's `libssl`, which nearly every distribution has. A Linux game without it can't reach the relay, so it can't use rooms; it can still `--connect` by address.
 
 ## Who sees what
 
@@ -67,5 +67,4 @@ The server can keep state from players: a [private scene](../language/scenes.md#
 ## Coming later
 
 - Telling predicted state from verified state in game code, for example to wait until a player's death is verified before showing it.
-- Browsers joining matches.
 - Servers with no window and no player of their own, lobbies, and finding matches.

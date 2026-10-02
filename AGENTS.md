@@ -107,7 +107,7 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 
 ### Tide programs
 
-`tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [WARNINGS <text>...])` builds a game as the program `<target>` (see `cmake/Tide.cmake`):
+`tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])` builds a game as the program `<target>` (see `cmake/Tide.cmake`):
 
 - The game is every `.tide` file in the current source folder and its subfolders; the next build picks up new files. `SOURCES` lists the files instead, for tests and folders that hold several games.
 - The game's C (its `extern` functions') is every `.c` file there but the `HOST` ones and those in hidden folders or `build/`, or the `.c` files in `SOURCES`. Unlike `tide`, it doesn't pick up prebuilt libraries.

@@ -51,7 +51,7 @@ MyGame/
 
 Windows games build for MinGW, so a static library built with Microsoft's compiler may need Microsoft's C runtime and fail to link: rebuild it with clang or MinGW.
 
-On the web, only C files and WebAssembly libraries define functions. When an extern function has no definition there, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`. Web games build for `wasm32-wasip1-threads`, which shares memory between threads, so a WebAssembly library needs building for that target too (clang's `--target=wasm32-wasip1-threads`), or at least with `-matomics -mbulk-memory`.
+On the web, only C files and WebAssembly libraries define functions. When an extern function has no definition there, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`. Web games build for `wasm32-wasip1-threads`, which shares memory between threads, so a WebAssembly library needs building for that target too (clang's `--target=wasm32-wasip1-threads`), or at least with `-matomics -mbulk-memory`. tide's own clang can build it, as `tide cc`, with the C library tide brings: `tide cc --target=wasm32-wasip1-threads --sysroot=<tide>/wasi/sysroot`, where `<tide>` is the folder `tide version` says it's installed in.
 
 `tide run` builds again when a C file, header or library changes. The C is part of the game's library, which each build replaces, so whatever C keeps in its own variables starts over at each reload.
 
