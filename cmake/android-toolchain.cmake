@@ -25,8 +25,21 @@ endif()
 
 set(CMAKE_SYSTEM_NAME Linux) # CMake's own Android support would take the NDK's clang
 set(CMAKE_SYSTEM_PROCESSOR ${_tide_android_arch})
+# Apple's clang and its ar make archives of ELF objects whose index ld.lld
+# can't read; Homebrew's LLVM, as web builds use (wasi-toolchain.cmake), can.
+if(CMAKE_HOST_APPLE AND NOT DEFINED ENV{LLVM_ROOT})
+    find_program(TIDE_CLANG NAMES clang PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin NO_DEFAULT_PATH)
+endif()
 include("${CMAKE_CURRENT_LIST_DIR}/clang-toolchain.cmake")
 set(CMAKE_C_COMPILER_TARGET ${_tide_android_arch}-linux-android${TIDE_ANDROID_API})
+# The archiver for ELF: LLVM's, next to clang
+get_filename_component(_tide_android_bin "${TIDE_CLANG}" DIRECTORY)
+find_program(TIDE_LLVM_AR NAMES llvm-ar HINTS "${_tide_android_bin}" NO_DEFAULT_PATH)
+find_program(TIDE_LLVM_RANLIB NAMES llvm-ranlib HINTS "${_tide_android_bin}" NO_DEFAULT_PATH)
+if(TIDE_LLVM_AR AND TIDE_LLVM_RANLIB)
+    set(CMAKE_AR "${TIDE_LLVM_AR}" CACHE FILEPATH "" FORCE)
+    set(CMAKE_RANLIB "${TIDE_LLVM_RANLIB}" CACHE FILEPATH "" FORCE)
+endif()
 
 # The NDK: the newest under a folder of them, by version.
 function(_tide_newest_ndk folder out)
