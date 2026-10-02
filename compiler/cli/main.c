@@ -18,6 +18,12 @@
 #define TIDE_VERSION "0.0.0-dev"
 #endif
 
+#ifdef TIDE_EMBEDDED_CLANG
+#define CC_USAGE "  cc <options>       clang, built into tide, for C to build yourself (like libraries)\n"
+#else
+#define CC_USAGE ""
+#endif
+
 static void usage(void)
 {
     printf("tide %s: builds and runs Tide games.\n"
@@ -29,7 +35,8 @@ static void usage(void)
            "  schedule [folder]  show which systems can run at the same time, and why the others wait\n"
            "  editors            add Tide to VS Code, Cursor, VSCodium and Windsurf\n"
            "  upgrade            update tide to the newest version\n"
-           "  version            show tide's version, and which compilers it found\n"
+           "  version            show tide's version and channel, where it's installed, and which compilers it found\n"
+           CC_USAGE
            "\n"
            "A game is every .tide file in its folder and its subfolders.\n"
            "\n"
@@ -44,12 +51,13 @@ static void usage(void)
            "run, in a match with others (the game's Main must be the match's for --host):\n"
            "  --host [port]        a match others can join: in a room, and on a port (7777 by default; not on the web)\n"
            "  --join <code>        the match in the room with this code, like K7QF2M\n"
-           "  --connect <address>  the match at an address, like 192.168.1.5 or localhost:7777\n"
+           "  --connect <address>  the match at an address, like 192.168.1.5 or localhost:7777 (not on the web)\n"
            "\n"
            "upgrade:\n"
            "  --nightly          follow nightly versions from now on\n"
            "  --stable           follow stable versions from now on\n"
-           "  --version <v>      install exactly this version\n",
+           "  --version <v>      install exactly this version\n"
+           "tide says once a day when a newer version is out, unless TIDE_NO_UPDATE_CHECK is set.\n",
            TIDE_VERSION);
 }
 
