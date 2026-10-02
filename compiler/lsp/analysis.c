@@ -23,8 +23,8 @@ typedef struct related_note {
 typedef struct diagnostic {
     diag_severity severity;
     loc at;
-    sb message; // Notes are appended on their own lines, but those about another place where the editor shows them there
-    VEC(related_note) related;
+    sb message; // Notes are appended on their own lines, but not those about another place that the editor shows there
+    VEC(related_note) related; // Notes about another place
     loc fix_at; // A "did you mean": the name written, `fix_len` bytes, which `fix` replaces
     int fix_len;
     str fix;
@@ -197,9 +197,7 @@ static void collect(void *user, const diag_severity severity, const loc at, cons
         if (A.diags.count == 0) return;
         diagnostic *d = &A.diags.items[A.diags.count - 1];
         if (at.line > 0) {
-            char *copy = arena_alloc(strlen(message) + 1);
-            memcpy(copy, message, strlen(message));
-            const related_note note = {at, copy};
+            const related_note note = {at, str_to_cstr(str_from(message))};
             vec_push(d->related, note);
             if (related_information) return;
         }
@@ -517,9 +515,9 @@ static void walk_expr(const expr *e)
         occurrence o = {.at = e->at, .len = e->name.len, .name = e->name, .type = e->type, .call = e->call};
         // cells[x, y] is cells[int2(x, y)] to the checker: that int2 isn't in the source.
         const int name = token_at(e->at);
-        const bool written = name >= 0 && str_eq(A.files[e->at.file].toks[name].text, e->name);
-        if (e->call != CALL_NONE && written) vec_push(A.calls, e);
-        if ((e->call == CALL_CONSTRUCT || e->call == CALL_NEW_GRID) && written) { // float3(...), Grid2(64, 64)
+        const bool in_source = name >= 0 && str_eq(A.files[e->at.file].toks[name].text, e->name);
+        if (e->call != CALL_NONE && in_source) vec_push(A.calls, e);
+        if ((e->call == CALL_CONSTRUCT || e->call == CALL_NEW_GRID) && in_source) { // float3(...), Grid2(64, 64)
             o.kind = OCC_TYPE;
             add_occ(o);
         } else if (e->call == CALL_SPAWN || e->call == CALL_SEND) {
@@ -1177,7 +1175,9 @@ typedef struct method_form {
 // "Start, Open and Close": the names of the calls in `forms`.
 static void put_names(sb *out, const method_form *forms, const size_t count)
 {
-    for (size_t i = 0; i < count; i++) sb_printf(out, "%s%s", i == 0 ? "" : i + 1 == count ? " and " : ", ", forms[i].name);
+    for (size_t i = 0; i < count; i++) {
+        sb_printf(out, "%s%s", i == 0 ? "" : i + 1 == count ? " and " : ", ", forms[i].name);
+    }
 }
 
 // Scene's functions.
@@ -1357,9 +1357,10 @@ static void describe(const occurrence *o, sb *out)
     case OCC_TYPE:
         if (o->backing) {
             code_block(out, str_to_cstr(o->name));
-            sb_put(out, str_eq_c(o->name, "byte")     ? "\n\nWhat the enum is stored as: one byte, so its members go from 0 to 255."
-                      : str_eq_c(o->name, "ushort") ? "\n\nWhat the enum is stored as: two bytes, so its members go from 0 to 65535."
-                                                    : "\n\nWhat the enum is stored as: four bytes, as it is without one.");
+            sb_put(out, "\n\nWhat the enum is stored as: ");
+            sb_put(out, str_eq_c(o->name, "byte")     ? "one byte, so its members go from 0 to 255."
+                      : str_eq_c(o->name, "ushort") ? "two bytes, so its members go from 0 to 65535."
+                                                    : "four bytes, as it is without one.");
         } else if (o->decl) {
             format_data_decl(o->decl, &code);
             code_block(out, code.data);
@@ -1456,7 +1457,7 @@ static void describe(const occurrence *o, sb *out)
     }
     case OCC_OWNER:
         code_block(out, str_to_cstr(o->name));
-        // The calls of the owners whose calls the checker takes by name, from the tables above
+        // Their calls from the tables completion offers, so the two can't disagree
         if (str_eq_c(o->name, "Scene")) {
             sb_put(out, "\n\nLoads and unloads scenes, groups of entities that come and go together: ");
             put_names(out, scene_calls, sizeof scene_calls / sizeof scene_calls[0]);
@@ -1984,7 +1985,8 @@ static void namespace_actions(const int start_line, const int end_line, jbuf *ou
     const unit *u = doc_unit();
     for (int i = 0; i < A.diags.count; i++) {
         const diagnostic *d = &A.diags.items[i];
-        if (d->severity != DIAG_ERROR || d->at.file != A.doc || d->at.line - 1 < start_line || d->at.line - 1 > end_line) continue;
+        if (d->severity != DIAG_ERROR || d->at.file != A.doc) continue;
+        if (d->at.line - 1 < start_line || d->at.line - 1 > end_line) continue;
         const int t = token_at(d->at);
         if (t < 0 || DOC->toks[t].kind != T_IDENT || (t > 0 && DOC->toks[t - 1].kind == T_DOT)) continue;
         bool known = false; // The name means something there already: the error's about something else
@@ -2394,7 +2396,7 @@ void analysis_type_definition(const int line, const int character, jbuf *out)
     type t = {TY_ERROR, NULL};
     if (o) {
         switch (o->kind) {
-        case OCC_TYPE: t = o->decl ? (type){TY_COMPONENT, (decl *)o->decl} : o->type; break; // Its own declaration
+        case OCC_TYPE: t = o->type; break;
         case OCC_PARAM: t = o->param->type; break;
         case OCC_LOCAL: t = o->local->type; break;
         case OCC_FIELD: t = o->field->type; break;
@@ -2411,6 +2413,7 @@ void analysis_type_definition(const int line, const int character, jbuf *out)
                          || t.kind == TY_EVENT || t.kind == TY_ENUM || t.kind == TY_RECORD
                      ? t.decl
                      : NULL;
+    if (o && o->kind == OCC_TYPE && o->decl) d = o->decl; // A type: its own declaration
     if (d && !d->builtin) write_location(out, d->at, d->name.len);
     else if (!(d && d->kind == DECL_RECORD && cdefs_find(d->c_name, out))) jb_put(out, "null"); // Devices, in C
 }
@@ -2420,8 +2423,9 @@ void analysis_type_definition(const int line, const int character, jbuf *out)
 void analysis_implementation(const int line, const int character, jbuf *out)
 {
     const occurrence *o = occurrence_at(from_lsp(line, character));
-    const decl *d = o && (o->kind == OCC_TYPE || o->kind == OCC_PARAM) ? o->kind == OCC_TYPE ? o->decl : o->param->type.decl
-                                                                       : NULL;
+    const decl *d = NULL;
+    if (o && o->kind == OCC_TYPE) d = o->decl;
+    else if (o && o->kind == OCC_PARAM) d = o->param->type.decl; // A handler's event
     if (!d || (d->kind != DECL_EVENT && d->kind != DECL_INPUT)) {
         jb_put(out, "null");
         return;
@@ -2509,8 +2513,8 @@ static caller hierarchy_target(const int line, const int character)
     if (o && (o->kind == OCC_FUNCTION || o->kind == OCC_METHOD) && is_routine(o->decl) && !o->decl->is_extern) {
         return (caller){o->decl, o->decl->body, o->decl->name, o->decl->at};
     }
-    if (o && o->kind == OCC_METHOD && o->declaration && o->decl && o->decl->kind == DECL_INPUT) { // Sample, Sanitize
-        return caller_at(o->decl->body && str_eq_c(o->name, "Sample") ? o->decl->body->end : o->decl->sanitize->end);
+    if (o && o->kind == OCC_METHOD && o->decl && o->decl->kind == DECL_INPUT) { // Sample, Sanitize
+        return (caller){o->decl, str_eq_c(o->name, "Sample") ? o->decl->body : o->decl->sanitize, o->name, o->at};
     }
     if (o && o->kind == OCC_SYSTEM && o->decl) return (caller){o->decl, o->decl->body, o->decl->name, o->decl->at};
     if (o && (o->kind == OCC_FUNCTION || o->kind == OCC_METHOD) && is_routine(o->decl)) { // An extern function: no body
@@ -2691,10 +2695,13 @@ static void selection_spans(const loc at, span_list *spans)
             select_in_stmt(d->methods.items[k]->body, at, spans);
         }
         if (d->kind == DECL_INPUT) { // Sample and Sanitize, from their names
-            if (d->body) add_span(spans, at, d->body_at, (loc){d->body->end.line, d->body->end.col + 1, d->at.file});
-            select_in_stmt(d->body, at, spans);
-            if (d->sanitize) add_span(spans, at, d->sanitize_at, (loc){d->sanitize->end.line, d->sanitize->end.col + 1, d->at.file});
-            select_in_stmt(d->sanitize, at, spans);
+            for (int k = 0; k < 2; k++) {
+                const stmt *body = k == 0 ? d->body : d->sanitize;
+                if (!body) continue;
+                const loc end = {body->end.line, body->end.col + 1, d->at.file};
+                add_span(spans, at, k == 0 ? d->body_at : d->sanitize_at, end);
+                select_in_stmt(body, at, spans);
+            }
         } else {
             select_in_stmt(d->body, at, spans);
         }
@@ -2794,8 +2801,8 @@ void analysis_folding_ranges(jbuf *out)
                 while (p < next && *p != '\n') p++;
             } else if (p[0] == '/' && p[1] == '*') {
                 const char *start = p;
-                for (p += 2; p + 1 < next && !(p[0] == '*' && p[1] == '/'); p++) {
-                }
+                p += 2;
+                while (p + 1 < next && !(p[0] == '*' && p[1] == '/')) p++;
                 folding_range(out, &written, line_of(start), line_of(p), "comment");
             }
         }
@@ -2804,9 +2811,10 @@ void analysis_folding_ranges(jbuf *out)
     // using lines one after another
     const unit *u = doc_unit();
     for (int k = 0; u && k < u->using_at.count;) {
+        const loc *at = u->using_at.items;
         int last = k;
-        while (last + 1 < u->using_at.count && u->using_at.items[last + 1].line == u->using_at.items[last].line + 1) last++;
-        folding_range(out, &written, u->using_at.items[k].line, u->using_at.items[last].line, "imports");
+        while (last + 1 < u->using_at.count && at[last + 1].line == at[last].line + 1) last++;
+        folding_range(out, &written, at[k].line, at[last].line, "imports");
         k = last + 1;
     }
     jb_put(out, "]");
@@ -2887,9 +2895,11 @@ static loc expr_end(const expr *e)
     case E_MEMBER: return (loc){e->at.line, e->at.col + e->member.len, e->at.file};
     case E_BINARY: case E_COALESCE: case E_CONDITIONAL: return expr_end(e->rhs);
     case E_UNARY: case E_TRY: case E_AWAIT: return expr_end(e->lhs);
-    case E_IS:
-        if (e->binding) return (loc){e->binding->name_at.line, e->binding->name_at.col + e->binding->name.len, e->at.file};
+    case E_IS: { // x is int score: to the name, or to the type
+        const stmt *b = e->binding;
+        if (b) return (loc){b->name_at.line, b->name_at.col + b->name.len, e->at.file};
         return (loc){e->pattern_at.line, e->pattern_at.col + last_part(e->pattern).len, e->at.file};
+    }
     case E_CALL: case E_METHOD:
         if (e->block) return stmt_end(e->block); // Its block, after the call
         if (t < 0 || t + 1 >= f->tok_count || f->toks[t + 1].kind != T_LPAREN) {
@@ -2897,7 +2907,9 @@ static loc expr_end(const expr *e)
         }
         return token_end(&f->toks[closing(e->at, t + 1)]);
     case E_LITERAL: // Body { ... }: the '{' after its name
-        if (t >= 0 && t + 1 < f->tok_count && f->toks[t + 1].kind == T_LBRACE) return token_end(&f->toks[closing(e->at, t + 1)]);
+        if (t >= 0 && t + 1 < f->tok_count && f->toks[t + 1].kind == T_LBRACE) {
+            return token_end(&f->toks[closing(e->at, t + 1)]);
+        }
         break;
     case E_INDEX: case E_LIST: // `at` is the '['
         if (t >= 0) return token_end(&f->toks[closing(e->at, t)]);
@@ -4261,15 +4273,16 @@ void analysis_completion(const int line, const int character, jbuf *out)
 
     switch (f.kind) {
     case CTX_TOP:
-        if (pk == T_EOF || pk == T_RBRACE || pk == T_SEMI || pk == T_RBRACKET) complete_declarations(&c);
-        else if (pk == T_IDENT && str_eq_c(prev->text, "using")) complete_namespaces(&c, true);
-        else if (pk == T_IDENT && str_eq_c(prev->text, "const")) { // What a constant can be
+        if (pk == T_EOF || pk == T_RBRACE || pk == T_SEMI || pk == T_RBRACKET) {
+            complete_declarations(&c);
+        } else if (pk == T_IDENT && str_eq_c(prev->text, "using")) {
+            complete_namespaces(&c, true);
+        } else if (pk == T_IDENT && str_eq_c(prev->text, "const")) { // What a constant can be
             complete_value_types(&c, VT_VALUES | VT_BOOL | VT_TEXT);
             complete_structs(&c);
             complete_namespaces(&c, false);
-        }
-        else if (pk == T_COLON && last >= 2 && DOC->toks[last - 1].kind == T_IDENT && DOC->toks[last - 2].kind == T_IDENT
-                 && str_eq_c(DOC->toks[last - 2].text, "enum")) { // What the enum is stored as
+        } else if (pk == T_COLON && last >= 2 && DOC->toks[last - 1].kind == T_IDENT && DOC->toks[last - 2].kind == T_IDENT
+                   && str_eq_c(DOC->toks[last - 2].text, "enum")) { // What the enum is stored as
             item(&c, "byte", CK_KEYWORD, "One byte: members from 0 to 255", NULL, NULL);
             item(&c, "ushort", CK_KEYWORD, "Two bytes: members from 0 to 65535", NULL, NULL);
             item(&c, "int", CK_KEYWORD, "Four bytes, as an enum is without one", NULL, NULL);
@@ -4332,7 +4345,9 @@ void analysis_completion(const int line, const int character, jbuf *out)
             const bool operator_ = f.open >= 2 && DOC->toks[f.open - 2].kind == T_IDENT
                                 && str_eq_c(DOC->toks[f.open - 2].text, "operator");
             if (pk == T_LPAREN || pk == T_COMMA || pk == T_MUT) {
-                if (pk != T_MUT && !operator_) item(&c, "mut", CK_KEYWORD, "The caller's variable itself, which it can change", NULL, NULL);
+                if (pk != T_MUT && !operator_) {
+                    item(&c, "mut", CK_KEYWORD, "The caller's variable itself, which it can change", NULL, NULL);
+                }
                 complete_routine_param_types(&c, pk == T_MUT, !method, is_async);
             } else if (pk == T_IDENT) {
                 complete_param_name(&c, prev->text);
@@ -4408,7 +4423,9 @@ void analysis_completion(const int line, const int character, jbuf *out)
         if (keyword && keyword->kind == T_IDENT && str_eq_c(keyword->text, "enum")) {
             // Members are names; after '=', an int, which a constant can give.
             bool value = false;
-            for (int k = last; k > f.open && DOC->toks[k].kind != T_COMMA && !value; k--) value = DOC->toks[k].kind == T_ASSIGN;
+            for (int k = last; k > f.open && DOC->toks[k].kind != T_COMMA && !value; k--) {
+                value = DOC->toks[k].kind == T_ASSIGN;
+            }
             if (value) complete_constants(&c, TY_INT);
             break;
         }
@@ -4456,8 +4473,9 @@ void analysis_completion(const int line, const int character, jbuf *out)
             const str type_text = DOC->toks[first].text;
             if (DOC->toks[first].kind == T_IDENT && (str_eq_c(type_text, "Grid2") || str_eq_c(type_text, "Grid3"))) {
                 const bool flat = str_eq_c(type_text, "Grid2");
-                item(&c, flat ? "Grid2" : "Grid3", CK_FUNCTION, flat ? "Grid2(int width, int height)" : "Grid3(int width, int height, int depth)",
-                     GRID_SIZE_DOC, flat ? "Grid2($1)" : "Grid3($1)");
+                item(&c, flat ? "Grid2" : "Grid3", CK_FUNCTION,
+                     flat ? "Grid2(int width, int height)" : "Grid3(int width, int height, int depth)", GRID_SIZE_DOC,
+                     flat ? "Grid2($1)" : "Grid3($1)");
             }
         }
         break;
@@ -4524,7 +4542,8 @@ void analysis_completion(const int line, const int character, jbuf *out)
         const tok_kind before = last >= 1 ? DOC->toks[last - 1].kind : T_EOF;
         type ignored;
         const bool statement_start = before == T_LBRACE || before == T_RBRACE || before == T_SEMI || before == T_MUT;
-        if (pk == T_IDENT && statement_start && (builtin_type_named(prev->text, &ignored) || str_eq_c(prev->text, "string"))) break;
+        const bool type_written = pk == T_IDENT && (builtin_type_named(prev->text, &ignored) || str_eq_c(prev->text, "string"));
+        if (statement_start && type_written) break;
         const bool at_statement = pk == T_LBRACE || pk == T_RBRACE || pk == T_SEMI || pk == T_RPAREN || pk == T_ELSE;
         complete_expression(&c, at, at_statement);
         break;
@@ -5036,7 +5055,8 @@ static int call_param_names(const expr *call, str *names, const int max)
 {
     int count = 0;
     if (call->call == CALL_METHOD || call->call == CALL_FUNCTION) {
-        for (; count < call->method->params.count && count < max; count++) names[count] = call->method->params.items[count].name;
+        const decl *m = call->method;
+        for (; count < m->params.count && count < max; count++) names[count] = m->params.items[count].name;
         return count;
     }
     label_list list = {0};

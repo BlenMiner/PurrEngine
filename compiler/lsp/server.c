@@ -698,6 +698,11 @@ typedef struct symbol_search {
     path_list seen; // Files searched already, with their games
 } symbol_search;
 
+static bool same_game(const manifest_line *a, const manifest_line *b)
+{
+    return a->manifest == b->manifest && strcmp(a->game, b->game) == 0;
+}
+
 // Searches a game's files (`paths`, or `alone`, as run_game takes them),
 // unless they were all searched already.
 static void search_game(lsp_server *s, symbol_search *search, char **paths, const int count, char *alone)
@@ -739,20 +744,19 @@ static void workspace_symbols(lsp_server *s, const json *id, const char *query)
     }
     if (s->manifest) read_manifest(&m, s->manifest);
     for (int i = 0; i < m.line_count; i++) {
-        const manifest_line *game = &m.lines[i];
         bool first = true; // Each game at its first line
-        for (int k = 0; k < i && first; k++) first = m.lines[k].manifest != game->manifest || strcmp(m.lines[k].game, game->game) != 0;
+        for (int k = 0; k < i && first; k++) first = !same_game(&m.lines[k], &m.lines[i]);
         bool open = false;
         for (int k = i; k < m.line_count && first && !open; k++) {
-            const manifest_line *line = &m.lines[k];
-            if (line->manifest != game->manifest || strcmp(line->game, game->game) != 0) continue;
-            for (int r = 0; r < s->root_count && !open; r++) open = under(line->path, s->roots[r]);
+            for (int r = 0; r < s->root_count && same_game(&m.lines[k], &m.lines[i]) && !open; r++) {
+                open = under(m.lines[k].path, s->roots[r]);
+            }
         }
         if (!open) continue;
         path_list list = {0};
         for (int k = i; k < m.line_count; k++) {
             const manifest_line *line = &m.lines[k];
-            if (line->manifest != game->manifest || strcmp(line->game, game->game) != 0) continue;
+            if (!same_game(line, &m.lines[i])) continue;
             if (is_folder(line->path)) add_folder(s, &list, line->path);
             else add_path(&list, line->path);
         }

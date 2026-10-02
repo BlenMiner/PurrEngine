@@ -664,6 +664,17 @@ TIDE_TEST(lsp_call_hierarchy)
            "{\"line\":12,\"character\":12}}}}}");
     TIDE_CHECK(has(last_sent(), "{\"to\":{\"name\":\"Heal\"") && has(last_sent(), "{\"to\":{\"name\":\"Hurt\",\"kind\":6"));
     TIDE_CHECK(count(last_sent(), "\"to\":") == 2);
+
+    // The input's Sample calls too
+    open_document("float Twice(float x) { return x * 2; }\ninput Keys\n{\n    float aim;\n    Sample() { aim = Twice(1); }\n}\n"
+                  "scene Main { }\n");
+    TIDE_CHECK(has(request_at("file:///test.tide", "textDocument/prepareCallHierarchy", 4, 5, ""), "{\"name\":\"Sample\",\"kind\":6"));
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"callHierarchy/incomingCalls\",\"params\":{\"item\":{\"name\":\"Twice\","
+           "\"kind\":12,\"uri\":\"file:///test.tide\",\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":"
+           "{\"line\":0,\"character\":38}},\"selectionRange\":{\"start\":{\"line\":0,\"character\":6},\"end\":"
+           "{\"line\":0,\"character\":11}}}}}");
+    TIDE_CHECK(has(last_sent(), "{\"from\":{\"name\":\"Sample\",\"kind\":6,\"detail\":\"input Keys\""));
 }
 
 // Built-ins lead to their C definitions in the engine headers.
