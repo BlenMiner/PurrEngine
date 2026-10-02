@@ -587,6 +587,9 @@ static void initialize(lsp_server *s, const json *id, const json *params)
                "\"completionProvider\":{\"triggerCharacters\":[\".\"]},"
                "\"hoverProvider\":true,"
                "\"definitionProvider\":true,"
+               "\"typeDefinitionProvider\":true,"
+               "\"implementationProvider\":true,"
+               "\"callHierarchyProvider\":true,"
                "\"referencesProvider\":true,"
                "\"documentHighlightProvider\":true,"
                "\"renameProvider\":{\"prepareProvider\":true},"
@@ -628,6 +631,12 @@ static void document_request(lsp_server *s, const char *method, const json *id, 
         analysis_hover(line, character, &b);
     } else if (strcmp(method, "textDocument/definition") == 0) {
         analysis_definition(uri, line, character, &b);
+    } else if (strcmp(method, "textDocument/typeDefinition") == 0) {
+        analysis_type_definition(line, character, &b);
+    } else if (strcmp(method, "textDocument/implementation") == 0) {
+        analysis_implementation(line, character, &b);
+    } else if (strcmp(method, "textDocument/prepareCallHierarchy") == 0) {
+        analysis_prepare_call_hierarchy(line, character, &b);
     } else if (strcmp(method, "textDocument/references") == 0) {
         const json *declaration = json_path(params, "context", "includeDeclaration", NULL);
         analysis_references(uri, line, character, !declaration || declaration->kind == JSON_TRUE, &b);
@@ -771,7 +780,8 @@ static bool is_document_request(const char *method)
         "textDocument/documentHighlight", "textDocument/signatureHelp", "textDocument/prepareRename",
         "textDocument/rename", "textDocument/formatting", "textDocument/documentSymbol",
         "textDocument/codeLens", "textDocument/codeAction", "textDocument/inlayHint", "textDocument/foldingRange",
-        "textDocument/semanticTokens/full",
+        "textDocument/semanticTokens/full", "textDocument/typeDefinition", "textDocument/implementation",
+        "textDocument/prepareCallHierarchy",
     };
     for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
         if (strcmp(method, methods[i]) == 0) return true;
@@ -868,6 +878,20 @@ void lsp_handle(lsp_server *s, const char *message, const size_t len)
     } else if (strcmp(method, "workspace/symbol") == 0) {
         const char *query = json_str(json_get(params, "query"));
         workspace_symbols(s, id, query ? query : "");
+    } else if (strcmp(method, "callHierarchy/incomingCalls") == 0 || strcmp(method, "callHierarchy/outgoingCalls") == 0) {
+        // About an item, at its name, in a file the editor may not have open
+        const char *uri = json_str(json_path(params, "item", "uri", NULL));
+        const int line = json_int(json_path(params, "item", "selectionRange", "start", "line", NULL), 0);
+        const int character = json_int(json_path(params, "item", "selectionRange", "start", "character", NULL), 0);
+        jbuf b = {0};
+        reply_start(&b, id);
+        if (!uri) jb_put(&b, "[]");
+        else analyze(s, uri);
+        if (uri && strcmp(method, "callHierarchy/incomingCalls") == 0) analysis_incoming_calls(line, character, &b);
+        else if (uri) analysis_outgoing_calls(line, character, &b);
+        jb_put(&b, "}");
+        send_buf(s, &b);
+        jb_free(&b);
     } else if (id) {
         reply_error(s, id, METHOD_NOT_FOUND, method);
     }

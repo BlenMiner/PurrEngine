@@ -2377,6 +2377,228 @@ void analysis_symbols(jbuf *out)
 }
 
 // ---------------------------------------------------------------------------
+// Type definitions and implementations
+
+static void write_location(jbuf *out, const loc at, const int len)
+{
+    jb_put(out, "{\"uri\":");
+    jb_string(out, A.files[at.file].uri);
+    jb_put(out, ",\"range\":");
+    write_range(out, at, len);
+    jb_put(out, "}");
+}
+
+void analysis_type_definition(const int line, const int character, jbuf *out)
+{
+    const occurrence *o = occurrence_at(from_lsp(line, character));
+    type t = {TY_ERROR, NULL};
+    if (o) {
+        switch (o->kind) {
+        case OCC_TYPE: t = o->decl ? (type){TY_COMPONENT, (decl *)o->decl} : o->type; break; // Its own declaration
+        case OCC_PARAM: t = o->param->type; break;
+        case OCC_LOCAL: t = o->local->type; break;
+        case OCC_FIELD: t = o->field->type; break;
+        case OCC_FUNCTION: case OCC_METHOD: t = is_routine(o->decl) ? o->decl->return_type : o->type; break;
+        case OCC_CONST: t = o->decl->return_type; break;
+        default: t = o->type; break;
+        }
+    }
+    // What a list, grid or T? holds, and a failable call's value
+    while ((t.kind == TY_LIST || t.kind == TY_GRID || t.kind == TY_OPTIONAL || t.kind == TY_FAILABLE) && t.decl) {
+        t = t.decl->fields.items[0].type;
+    }
+    const decl *d = t.kind == TY_COMPONENT || t.kind == TY_SINGLETON || t.kind == TY_INPUT || t.kind == TY_STRUCT
+                         || t.kind == TY_EVENT || t.kind == TY_ENUM || t.kind == TY_RECORD
+                     ? t.decl
+                     : NULL;
+    if (d && !d->builtin) write_location(out, d->at, d->name.len);
+    else if (!(d && d->kind == DECL_RECORD && cdefs_find(d->c_name, out))) jb_put(out, "null"); // Devices, in C
+}
+
+// An event's handlers, and the input's Sample and Sanitize: the code that
+// gives it its behavior.
+void analysis_implementation(const int line, const int character, jbuf *out)
+{
+    const occurrence *o = occurrence_at(from_lsp(line, character));
+    const decl *d = o && (o->kind == OCC_TYPE || o->kind == OCC_PARAM) ? o->kind == OCC_TYPE ? o->decl : o->param->type.decl
+                                                                       : NULL;
+    if (!d || (d->kind != DECL_EVENT && d->kind != DECL_INPUT)) {
+        jb_put(out, "null");
+        return;
+    }
+    jb_put(out, "[");
+    int written = 0;
+    for (int i = 0; d->kind == DECL_EVENT && i < d->handlers.count; i++) {
+        if (written++) jb_put(out, ",");
+        write_location(out, d->handlers.items[i]->at, d->handlers.items[i]->name.len);
+    }
+    if (d->kind == DECL_INPUT && d->body) {
+        if (written++) jb_put(out, ",");
+        write_location(out, d->body_at, 6);
+    }
+    if (d->kind == DECL_INPUT && d->sanitize) {
+        if (written++) jb_put(out, ",");
+        write_location(out, d->sanitize_at, 8);
+    }
+    jb_put(out, "]");
+}
+
+// ---------------------------------------------------------------------------
+// Call hierarchy: who calls the game's functions and methods, and what they call
+
+static bool block_contains(const stmt *block, loc at);
+
+// Code that calls: a system, view or handler, a function or method, or the
+// input's Sample or Sanitize, whose `body` holds the calls.
+typedef struct caller {
+    const decl *decl;
+    const stmt *body;
+    str name;
+    loc name_at;
+} caller;
+
+// The code whose body holds `at`; its decl is NULL where there's none.
+static caller caller_at(const loc at)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->builtin) continue;
+        for (int k = 0; k < d->methods.count; k++) {
+            const decl *m = d->methods.items[k];
+            if (block_contains(m->body, at)) return (caller){m, m->body, m->name, m->at};
+        }
+        if (d->kind == DECL_INPUT && block_contains(d->body, at)) return (caller){d, d->body, str_from("Sample"), d->body_at};
+        if (d->kind == DECL_INPUT && block_contains(d->sanitize, at)) {
+            return (caller){d, d->sanitize, str_from("Sanitize"), d->sanitize_at};
+        }
+        if ((d->kind == DECL_SYSTEM || d->kind == DECL_FUNCTION) && block_contains(d->body, at)) {
+            return (caller){d, d->body, d->name, d->at};
+        }
+    }
+    return (caller){NULL, NULL, {"", 0}, {0, 0, 0}};
+}
+
+// A CallHierarchyItem: its whole code, and its name, which says which it is.
+static void write_call_item(jbuf *out, const caller *c)
+{
+    const decl *d = c->decl;
+    sb detail = {0};
+    if (is_routine(d)) format_routine(d, &detail);
+    else if (d->kind == DECL_SYSTEM) format_header(d, &detail);
+    else sb_printf(&detail, "input " STR_FMT, STR_ARG(d->name));
+    const int kind = d->kind == DECL_METHOD || d->kind == DECL_INPUT ? SYMBOL_METHOD : SYMBOL_FUNCTION;
+    const loc end = c->body ? c->body->end : d->end;
+    jb_put(out, "{\"name\":");
+    jb_string_n(out, c->name.ptr, (size_t)c->name.len);
+    jb_printf(out, ",\"kind\":%d,\"detail\":", kind);
+    jb_string(out, detail.data);
+    jb_put(out, ",\"uri\":");
+    jb_string(out, A.files[c->name_at.file].uri);
+    jb_put(out, ",\"range\":");
+    write_edit_range(out, (loc){c->name_at.line, 1, c->name_at.file}, (loc){end.line, end.col + 1, end.file});
+    jb_put(out, ",\"selectionRange\":");
+    write_range(out, c->name_at, c->name.len);
+    jb_put(out, "}");
+}
+
+// The code named at the cursor, which the call hierarchy is about: a function
+// or method where it's declared or called, or a system where it's declared.
+static caller hierarchy_target(const int line, const int character)
+{
+    const occurrence *o = occurrence_at(from_lsp(line, character));
+    if (o && (o->kind == OCC_FUNCTION || o->kind == OCC_METHOD) && is_routine(o->decl) && !o->decl->is_extern) {
+        return (caller){o->decl, o->decl->body, o->decl->name, o->decl->at};
+    }
+    if (o && o->kind == OCC_METHOD && o->declaration && o->decl && o->decl->kind == DECL_INPUT) { // Sample, Sanitize
+        return caller_at(o->decl->body && str_eq_c(o->name, "Sample") ? o->decl->body->end : o->decl->sanitize->end);
+    }
+    if (o && o->kind == OCC_SYSTEM && o->decl) return (caller){o->decl, o->decl->body, o->decl->name, o->decl->at};
+    if (o && (o->kind == OCC_FUNCTION || o->kind == OCC_METHOD) && is_routine(o->decl)) { // An extern function: no body
+        return (caller){o->decl, NULL, o->decl->name, o->decl->at};
+    }
+    return (caller){NULL, NULL, {"", 0}, {0, 0, 0}};
+}
+
+void analysis_prepare_call_hierarchy(const int line, const int character, jbuf *out)
+{
+    const caller target = hierarchy_target(line, character);
+    if (!target.decl) {
+        jb_put(out, "null");
+        return;
+    }
+    jb_put(out, "[");
+    write_call_item(out, &target);
+    jb_put(out, "]");
+}
+
+// A call of a game's function or method, by name or by operator.
+static bool is_call(const occurrence *o)
+{
+    return (o->kind == OCC_FUNCTION || o->kind == OCC_METHOD) && !o->declaration && is_routine(o->decl);
+}
+
+// Who calls the item at the cursor: each caller once, with where it does.
+void analysis_incoming_calls(const int line, const int character, jbuf *out)
+{
+    const caller target = hierarchy_target(line, character);
+    jb_put(out, "[");
+    int written = 0;
+    VEC(const stmt *) done = {0};
+    for (int i = 0; target.decl && i < A.occs.count; i++) {
+        const occurrence *o = &A.occs.items[i];
+        if (!is_call(o) || o->decl != target.decl) continue;
+        const caller from = caller_at(o->at);
+        bool seen = !from.decl;
+        for (int k = 0; k < done.count && !seen; k++) seen = done.items[k] == from.body;
+        if (seen) continue;
+        vec_push(done, from.body);
+        if (written++) jb_put(out, ",");
+        jb_put(out, "{\"from\":");
+        write_call_item(out, &from);
+        jb_put(out, ",\"fromRanges\":[");
+        for (int k = i, ranges = 0; k < A.occs.count; k++) {
+            const occurrence *call = &A.occs.items[k];
+            if (!is_call(call) || call->decl != target.decl || caller_at(call->at).body != from.body) continue;
+            if (ranges++) jb_put(out, ",");
+            write_range(out, call->at, call->len);
+        }
+        jb_put(out, "]}");
+    }
+    jb_put(out, "]");
+}
+
+// What the item at the cursor calls: each function or method once, with
+// where it does.
+void analysis_outgoing_calls(const int line, const int character, jbuf *out)
+{
+    const caller source = hierarchy_target(line, character);
+    jb_put(out, "[");
+    int written = 0;
+    VEC(const decl *) done = {0};
+    for (int i = 0; source.body && i < A.occs.count; i++) {
+        const occurrence *o = &A.occs.items[i];
+        if (!is_call(o) || caller_at(o->at).body != source.body) continue;
+        bool seen = false;
+        for (int k = 0; k < done.count && !seen; k++) seen = done.items[k] == o->decl;
+        if (seen) continue;
+        vec_push(done, o->decl);
+        const caller to = {o->decl, o->decl->body, o->decl->name, o->decl->at};
+        if (written++) jb_put(out, ",");
+        jb_put(out, "{\"to\":");
+        write_call_item(out, &to);
+        jb_put(out, ",\"fromRanges\":[");
+        for (int k = i, ranges = 0; k < A.occs.count; k++) {
+            const occurrence *call = &A.occs.items[k];
+            if (!is_call(call) || call->decl != o->decl || caller_at(call->at).body != source.body) continue;
+            if (ranges++) jb_put(out, ",");
+            write_range(out, call->at, call->len);
+        }
+        jb_put(out, "]}");
+    }
+    jb_put(out, "]");
+}
+
+// ---------------------------------------------------------------------------
 // Folding: blocks and literals over several lines, and runs of comment lines
 
 static void folding_range(jbuf *out, int *written, const int first, const int last, const char *kind)

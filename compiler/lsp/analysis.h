@@ -35,6 +35,12 @@ void analysis_diagnostics(int file, jbuf *out);                              // 
 void analysis_completion(int line, int character, jbuf *out);                // CompletionList
 void analysis_hover(int line, int character, jbuf *out);                     // Hover or null
 void analysis_definition(const char *uri, int line, int character, jbuf *out); // Location or null
+void analysis_type_definition(int line, int character, jbuf *out);           // Location or null
+void analysis_implementation(int line, int character, jbuf *out);            // Location[] or null
+// The call hierarchy. Its calls are an item's: the position of its name, its selectionRange.
+void analysis_prepare_call_hierarchy(int line, int character, jbuf *out);    // CallHierarchyItem[] or null
+void analysis_incoming_calls(int line, int character, jbuf *out);            // CallHierarchyIncomingCall[]
+void analysis_outgoing_calls(int line, int character, jbuf *out);            // CallHierarchyOutgoingCall[]
 void analysis_symbols(jbuf *out);                                            // DocumentSymbol[]
 // SymbolInformation items of the whole game, comma-separated after `written` others.
 void analysis_workspace_symbols(const char *query, jbuf *out, int *written);

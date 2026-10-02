@@ -606,6 +606,66 @@ static const char *c_definition(const char *marked)
     return definition_line();
 }
 
+// The type of what's at the cursor, and an event's or the input's code.
+TIDE_TEST(lsp_type_definition_and_implementation)
+{
+    start();
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    bo$dy.radius = 1;\n}\n");
+    TIDE_CHECK(has(request("textDocument/typeDefinition"), "\"range\":{\"start\":{\"line\":0,\"character\":10}"));
+    open_document("struct Part { float size; }\ncomponent Kit { List<Part> parts; }\nscene Main { }\n"
+                  "system S(Kit kit)\n{\n    var n = kit.pa$rts.Count;\n}\n");
+    TIDE_CHECK(has(request("textDocument/typeDefinition"), "\"range\":{\"start\":{\"line\":0,\"character\":7}")); // Part
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.rad$ius = 1;\n}\n");
+    TIDE_CHECK(has(request("textDocument/typeDefinition"), "\"result\":null")); // A float
+
+    open_document(GAME_TYPES "event Hit\n{\n    int damage = 1;\n}\n\nsystem Strike(with Body)\n{\n"
+                  "    this.Send(Hit { damage = 2 });\n}\n\nevent(Hit hit) TakeHit(mut Body body)\n{\n"
+                  "    body.radius -= hit.damage;\n}\n\nevent(Spawned) Grow(mut Body body)\n{\n    body.radius += 1;\n}\n");
+    const char *handlers = request_at("file:///test.tide", "textDocument/implementation", 22, 7, ""); // event Hit
+    TIDE_CHECK(has(handlers, "\"range\":{\"start\":{\"line\":32,\"character\":15}")); // TakeHit
+    const char *spawned = request_at("file:///test.tide", "textDocument/implementation", 37, 8, ""); // event(Spawned)
+    TIDE_CHECK(has(spawned, "{\"line\":18,\"character\":15}") && has(spawned, "{\"line\":37,\"character\":15}")); // Setup, Grow
+    open_document("input Ke$ys\n{\n    bool fire;\n    Sample() { }\n    Sanitize() { }\n}\nscene Main { }\n");
+    const char *input = request("textDocument/implementation");
+    TIDE_CHECK(has(input, "{\"start\":{\"line\":3,\"character\":4},\"end\":{\"line\":3,\"character\":10}}"));
+    TIDE_CHECK(has(input, "{\"start\":{\"line\":4,\"character\":4},\"end\":{\"line\":4,\"character\":12}}"));
+}
+
+#define CALLS                                                                                                     \
+    "struct Stats\n{\n    float health = 100;\n    mut void Hurt(float amount) { health -= amount; }\n}\n"    \
+    "component Unit { Stats stats; }\n"                                                                           \
+    "float Heal(mut Stats stats, float amount)\n{\n    stats.Hurt(-amount);\n    return stats.health;\n}\n"        \
+    "scene Main { }\n"                                                                                            \
+    "system Fight(mut Unit unit)\n{\n    Heal(unit.stats, 1);\n    Heal(unit.stats, 2);\n    unit.stats.Hurt(1);\n}\n"
+
+// Who calls a function, and what a system calls.
+TIDE_TEST(lsp_call_hierarchy)
+{
+    start();
+    open_document(CALLS);
+    TIDE_CHECK(!has(last_sent(), "\"severity\":1"));
+    TIDE_CHECK(has(request_at("file:///test.tide", "textDocument/hover", 0, 0, ""), "\"result\":null")); // Analysed
+    const char *item = request_at("file:///test.tide", "textDocument/prepareCallHierarchy", 15, 5, ""); // A call of Heal
+    TIDE_CHECK(has(item, "{\"name\":\"Heal\",\"kind\":12,\"detail\":\"float Heal(mut Stats stats, float amount)\""));
+    TIDE_CHECK(has(item, "\"selectionRange\":{\"start\":{\"line\":6,\"character\":6},\"end\":{\"line\":6,\"character\":10}}"));
+
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"callHierarchy/incomingCalls\",\"params\":{\"item\":{\"name\":\"Heal\","
+           "\"kind\":12,\"uri\":\"file:///test.tide\",\"range\":{\"start\":{\"line\":6,\"character\":0},\"end\":"
+           "{\"line\":10,\"character\":1}},\"selectionRange\":{\"start\":{\"line\":6,\"character\":6},\"end\":"
+           "{\"line\":6,\"character\":10}}}}}");
+    TIDE_CHECK(has(last_sent(), "{\"from\":{\"name\":\"Fight\",\"kind\":12"));
+    TIDE_CHECK(count(last_sent(), "\"from\":") == 1 && count(last_sent(), "\"character\":4},\"end\":{\"line\":") == 2);
+
+    clear_sent();
+    handle("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"callHierarchy/outgoingCalls\",\"params\":{\"item\":{\"name\":\"Fight\","
+           "\"kind\":12,\"uri\":\"file:///test.tide\",\"range\":{\"start\":{\"line\":12,\"character\":0},\"end\":"
+           "{\"line\":17,\"character\":1}},\"selectionRange\":{\"start\":{\"line\":12,\"character\":7},\"end\":"
+           "{\"line\":12,\"character\":12}}}}}");
+    TIDE_CHECK(has(last_sent(), "{\"to\":{\"name\":\"Heal\"") && has(last_sent(), "{\"to\":{\"name\":\"Hurt\",\"kind\":6"));
+    TIDE_CHECK(count(last_sent(), "\"to\":") == 2);
+}
+
 // Built-ins lead to their C definitions in the engine headers.
 TIDE_TEST(lsp_definition_in_c)
 {
