@@ -1,0 +1,4 @@
+// expect: an Action can only be run: 'content();'
+scene Main { }
+component Counter { int n; }
+void Keep(Action content) { var copy = content; }

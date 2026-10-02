@@ -1,0 +1,8 @@
+// expect: can't work out how far this cell is from the chunk on y
+singleton Field { Grid2<int> cells; }
+singleton Spot { int row; }
+system Step(Spot spot, chunk mut Field.cells cells)
+{
+    for (var x = cells.min.x; x < cells.max.x; x++) cells[x, spot.row] = 1;
+}
+scene Main { }

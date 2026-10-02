@@ -144,7 +144,7 @@ const char *type_name(const type t)
     case TY_ERROR: return "<error>";
     case TY_VOID: return "nothing";
     case TY_STRING: return "string";
-    case TY_BLOCK: return "Block";
+    case TY_ACTION: return "Action";
     case TY_COMPONENT:
     case TY_SINGLETON:
     case TY_INPUT:
@@ -153,6 +153,7 @@ const char *type_name(const type t)
     case TY_EVENT:
     case TY_ENUM:
     case TY_LIST:
+    case TY_GRID:
     case TY_OPTIONAL:
     case TY_FAILABLE: {
         char *b = buf[next++ % 4];
@@ -172,6 +173,7 @@ const char *type_c_name(const type t)
 {
     if (t.kind == TY_STRING) return "tide_str";
     if (t.kind == TY_LIST) return "tide_list";
+    if (t.kind == TY_GRID) return "tide_grid";
     for (size_t i = 0; i < BUILTIN_COUNT; i++) {
         if (builtins[i].kind == t.kind) return builtins[i].c_name;
     }

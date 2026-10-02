@@ -1,0 +1,3 @@
+// expect: 'Nest' takes an Action, so it's copied into each call, and it can't call itself
+scene Main { }
+void Nest(Action content) { Nest() { } }

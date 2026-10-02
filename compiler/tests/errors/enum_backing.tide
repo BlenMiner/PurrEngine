@@ -1,0 +1,3 @@
+// expect: an enum is stored as a byte, a ushort or an int, not 'long'
+enum Voxel : long { Air, Stone }
+scene Main { }

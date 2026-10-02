@@ -85,13 +85,13 @@ Functions see their parameters and `Math`, and methods their fields too, but not
 
 A function can also be written in C, declared with `extern` and no body: see [Calling C](c-functions.md).
 
-## Blocks
+## Actions
 
-A function's last parameter can be a `Block`: code the caller writes in braces after the call. The function runs it by calling it, as many times as it likes, including none.
+A function's last parameter can be an `Action`: code the caller writes in braces after the call. The function runs it by calling it, as many times as it likes, including none.
 
 ```csharp
 // A container of your own: shows its content only while open.
-void Foldout(string title, mut bool open, Block content)
+void Foldout(string title, mut bool open, Action content)
 {
     GUILayout.Toggle(title, open);
     if (open) content();

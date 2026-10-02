@@ -441,6 +441,15 @@ static void note_text_write(const checker *c, const bool text)
     if (text && c->system && c->system->kind == DECL_SYSTEM && !c->method) c->system->writes_text = true;
 }
 
+// A chunk system's tasks run on threads, a chunk each, and change nothing but
+// cells: no spawning, sending or changing entities, for now.
+static void refuse_in_chunks(const checker *c, const expr *e, const char *what)
+{
+    if (!c->system || c->method || !c->system->chunk_param) return;
+    diag_error(e->at, "a chunk system can't %s yet", what);
+    diag_note("its chunks run on threads at once and change only cells; do it in a system of its own");
+}
+
 // The system being checked spawns: it hands out entity IDs, which go in order,
 // so a later system that hands them out as it runs waits for it. One that
 // splits its entities across threads gives temporary handles instead.
@@ -551,7 +560,7 @@ static bool optional_name(const str name, str *inner)
 // function returns or takes, but the devices.
 static bool result_value_ok(const type t, const loc at, const char *what)
 {
-    if (t.kind == TY_RECORD || t.kind == TY_BLOCK) {
+    if (t.kind == TY_RECORD || t.kind == TY_ACTION) {
         diag_error(at, "%s can't be %s", what, type_name(t));
         return false;
     }
@@ -632,7 +641,7 @@ static void unwrap_error(const expr *e, const type t)
               type_name(error));
 }
 
-// What a list can hold: values, never ECS data, Blocks or other lists.
+// What a list can hold: values, never ECS data, Actions or other lists.
 static bool list_element_ok(const type t, const loc at)
 {
     switch (t.kind) {
@@ -680,12 +689,102 @@ static bool resolve_list_type(const checker *c, const str text, const loc at, ty
     return true;
 }
 
-// Whether `e`, or what it's a member of, is a list's element: a copy, which
-// can't be changed where it is.
+// ---------------------------------------------------------------------------
+// Grids
+
+// Grid2<T>'s or Grid3<T>'s cell type.
+static type grid_cell(const type t)
+{
+    return t.decl->fields.items[0].type;
+}
+
+// Grid2<T> or Grid3<T> for cell type `cell`: one declaration for each cell
+// type and dimensions, so two grids of ints are the same type.
+static type grid_of(program *prog, const type cell, const int dims)
+{
+    for (int i = 0; i < prog->grids.count; i++) {
+        const decl *g = prog->grids.items[i];
+        const type t = g->fields.items[0].type;
+        if (g->dims == dims && t.kind == cell.kind && t.decl == cell.decl) return (type){TY_GRID, prog->grids.items[i]};
+    }
+    decl *d = NEW(decl);
+    d->kind = DECL_GRID;
+    d->builtin = true;
+    d->dims = dims;
+    sb name = {0};
+    sb_printf(&name, "Grid%d<%s>", dims, type_name(cell));
+    d->name = (str){name.data, (int)name.len};
+    const field item = {str_from("cell"), str_from(""), {0, 0, 0}, cell, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0};
+    vec_push(d->fields, item);
+    d->index = prog->grids.count;
+    vec_push(prog->grids, d);
+    return (type){TY_GRID, d};
+}
+
+static bool holds_grid(type t);
+
+// What a grid's cells can be: plain values, which a chunk keeps side by side.
+static bool grid_cell_ok(const type t, const loc at)
+{
+    switch (t.kind) {
+    case TY_ERROR: return false;
+    case TY_BOOL: case TY_INT: case TY_INT2: case TY_INT3: case TY_INT4: case TY_FLOAT: case TY_FLOAT2: case TY_FLOAT3:
+    case TY_FLOAT4: case TY_QUATERNION: case TY_FLOAT2X2: case TY_FLOAT3X3: case TY_FLOAT4X4: case TY_ENTITY:
+    case TY_LOCAL_ENTITY: case TY_PLAYER: case TY_COLOR: case TY_RECT: case TY_ENUM:
+        return true;
+    case TY_STRUCT:
+        if (!holds_heap(t) && !holds_grid(t)) return true;
+        diag_error(at, "a grid's cells can't be '" STR_FMT "': it holds text or lists", STR_ARG(t.decl->name));
+        diag_note("cells are plain values, side by side in their chunk: keep the text or list elsewhere, and a number for it in the cell");
+        return false;
+    case TY_STRING:
+        diag_error(at, "a grid's cells can't be text");
+        diag_note("cells are plain values, side by side in their chunk: keep the text elsewhere, and a number for it in the cell");
+        return false;
+    case TY_LIST:
+    case TY_GRID:
+        diag_error(at, "a grid's cells can't be %s", t.kind == TY_LIST ? "lists" : "grids");
+        return false;
+    default:
+        diag_error(at, "a grid's cells are values, like numbers, enums and structs, not %s", type_name(t));
+        if (t.kind == TY_COMPONENT) diag_note("to keep entities in a grid, keep their Entity");
+        return false;
+    }
+}
+
+// "Grid2<X>" or "Grid3<X>": the grid type, in `*out`; false for text that isn't one.
+static bool resolve_grid_type(const checker *c, const str text, const loc at, type *out)
+{
+    if (text.len < 8 || memcmp(text.ptr, "Grid", 4) != 0 || (text.ptr[4] != '2' && text.ptr[4] != '3') || text.ptr[5] != '<'
+        || text.ptr[text.len - 1] != '>') {
+        return false;
+    }
+    const str inner = {text.ptr + 6, text.len - 7};
+    type cell = T_ERR;
+    if (str_eq_c(inner, "string")) {
+        cell = (type){TY_STRING, NULL};
+    } else if (!builtin_type_named(inner, &cell)) {
+        decl *d = find_type(c, inner, at);
+        if (d) {
+            cell = decl_type(d);
+        } else {
+            diag_error(at, "unknown type '" STR_FMT "'", STR_ARG(inner));
+            suggestion sg = suggest_start(inner);
+            suggest_builtin_types(&sg);
+            suggest_structs(&sg, c->prog);
+            suggest_note(&sg);
+        }
+    }
+    *out = grid_cell_ok(cell, at) ? grid_of(c->prog, cell, text.ptr[4] - '0') : T_ERR;
+    return true;
+}
+
+// Whether `e`, or what it's a member of, is a list's element or a grid's
+// cell: a copy, which can't be changed where it is.
 static bool through_element(const expr *e)
 {
     for (; e && (e->kind == E_MEMBER || e->kind == E_INDEX); e = e->object) {
-        if (e->kind == E_INDEX && e->object->type.kind == TY_LIST) return true;
+        if (e->kind == E_INDEX && (e->object->type.kind == TY_LIST || e->object->type.kind == TY_GRID)) return true;
     }
     return false;
 }
@@ -704,6 +803,9 @@ static bool equatable(const type t)
 
 static type check_list_literal(checker *c, expr *e, type want);
 static type check_list_method(checker *c, expr *e, type list);
+static type check_grid_method(checker *c, expr *e, type grid);
+static type check_new_grid(checker *c, expr *e, type want);
+static bool is_new_grid(const expr *e);
 
 // `default` where a value of `want` goes: that type's default value, the one
 // a field of it starts at. Types with fields take their declared defaults, as
@@ -712,7 +814,7 @@ static type check_default_value(checker *c, expr *e, const type want)
 {
     e->type = T_ERR;
     if (want.kind == TY_ERROR || want.kind == TY_VOID) return T_ERR; // Reported where it goes
-    if (want.kind == TY_RECORD || want.kind == TY_BLOCK) {
+    if (want.kind == TY_RECORD || want.kind == TY_ACTION) {
         diag_error(e->at, "'default' can't be %s", type_name(want));
         if (want.kind == TY_RECORD) diag_note("only this machine's devices make one");
         return T_ERR;
@@ -745,6 +847,7 @@ static type check_expr_want_any(checker *c, expr *e, const type want)
     }
     const type inner = want.kind == TY_OPTIONAL ? wrapped_value(want) : want;
     if (e->kind == E_LIST && (inner.kind == TY_LIST || inner.kind == TY_ERROR)) return check_list_literal(c, e, inner);
+    if (is_new_grid(e)) return check_new_grid(c, e, inner);
     if (e->kind == E_DEFAULT) return check_default_value(c, e, inner);
     if (e->kind == E_NULL) {
         null_error(e, want);
@@ -1223,6 +1326,7 @@ static type check_send(checker *c, expr *e)
         return T_ERR;
     }
     e->call = CALL_SEND;
+    refuse_in_chunks(c, e, "send events");
     e->local_world = local_code(c);
     if (e->kind == E_METHOD && !check_entity_side(c, e)) {
         for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
@@ -1281,16 +1385,16 @@ static void check_method_args(checker *c, expr *e, decl *m)
         check_expr_want(c, e->args.items[i], i < m->params.count ? m->params.items[i].type : T_ERR);
     }
     for (int i = 0; i < m->params.count; i++) vec_push(e->arg_want, m->params.items[i].type);
-    // A Block isn't an argument: it's written after the call, in braces.
-    const int count = m->params.count - (m->takes_block ? 1 : 0);
-    if (m->takes_block && !e->block) {
+    // An Action isn't an argument: it's written after the call, in braces.
+    const int count = m->params.count - (m->takes_action ? 1 : 0);
+    if (m->takes_action && !e->block) {
         diag_error(e->at, "'" STR_FMT "' takes a block, written after the call: '" STR_FMT "(...) { ... }'",
                    STR_ARG(m->name), STR_ARG(m->name));
     }
     if (e->args.count != count) {
         diag_error(e->at, "'" STR_FMT "' takes %d argument%s, not %d", STR_ARG(m->name), count, count == 1 ? "" : "s",
                    e->args.count);
-        if (m->takes_block) diag_note("its Block isn't one: it's the code in braces after the call");
+        if (m->takes_action) diag_note("its Action isn't one: it's the code in braces after the call");
         return;
     }
     for (int i = 0; i < e->args.count; i++) {
@@ -1384,16 +1488,16 @@ static type check_function_call(checker *c, expr *e, decl *fn)
     return fn->result;
 }
 
-// content(): runs the Block the function was given, where it was written.
+// content(): runs the Action the function was given, where it was written.
 static type check_block_call(const checker *c, expr *e, param *p)
 {
     (void)c;
-    e->call = CALL_BLOCK;
+    e->call = CALL_ACTION;
     e->bind = BIND_PARAM;
     e->param = p;
     p->read = true;
     if (e->args.count > 0) {
-        diag_error(e->at, "a Block takes no arguments: '" STR_FMT "();'", STR_ARG(e->name));
+        diag_error(e->at, "an Action takes no arguments: '" STR_FMT "();'", STR_ARG(e->name));
         diag_note("it's code the caller wrote, and sees the caller's variables itself");
     }
     return T_VOID_;
@@ -1421,13 +1525,14 @@ static type check_self_call(checker *c, expr *e, decl *m)
 static type check_call(checker *c, expr *e)
 {
     param *const block = find_local(c, e->name) ? NULL : find_param(c, e->name);
-    if (block && block->type.kind == TY_BLOCK) return check_block_call(c, e, block);
+    if (block && block->type.kind == TY_ACTION) return check_block_call(c, e, block);
 
     decl *const own = c->method && !c->method->is_operator && !c->method->is_interpolate ? find_method(c->method->owner, e->name) : NULL;
     if (own) return check_self_call(c, e, own);
 
     type builtin;
     if (builtin_type_named(e->name, &builtin)) return check_construct(c, e, builtin);
+    if (is_new_grid(e)) return check_new_grid(c, e, T_VOID_); // Where nothing says its type: an error
 
     if (str_eq_c(e->name, "Send")) return check_send(c, e);
 
@@ -1454,6 +1559,7 @@ static type check_call(checker *c, expr *e)
             diag_note("that side only runs sometimes; spawn into a local before the condition");
         }
         e->call = CALL_SPAWN;
+        refuse_in_chunks(c, e, "spawn");
         e->local_world = local_code(c);
         e->spawn_mask = check_component_list(c, e, "Spawn");
         if (in_async_function(c)) e->local_world = c->method->task_side == TASK_LOCAL;
@@ -1778,6 +1884,7 @@ static type check_scene_call(checker *c, expr *e)
             return T_ERR;
         }
         e->call = CALL_LOAD;
+        refuse_in_chunks(c, e, "load scenes");
         e->type_decl = scene;
         note_text_write(c, decl_holds_text(scene));
         e->spawn_mask = bit(scene);
@@ -1828,9 +1935,11 @@ static type check_scene_call(checker *c, expr *e)
             return T_ERR;
         }
         e->call = CALL_SCENE_PLAYER;
+        refuse_in_chunks(c, e, "change who sees a scene");
         return T_VOID_;
     }
     e->call = CALL_UNLOAD;
+    refuse_in_chunks(c, e, "unload scenes");
     return T_VOID_;
 }
 
@@ -1976,6 +2085,7 @@ static type check_method(checker *c, expr *e)
         return T_ERR;
     }
     if (obj.kind == TY_LIST) return check_list_method(c, e, obj);
+    if (obj.kind == TY_GRID) return check_grid_method(c, e, obj);
     // name.Contains("cat"), name.Substring(0, 3): text's methods
     if (obj.kind == TY_STRING) {
         for (int i = 0; i < e->args.count; i++) {
@@ -2041,6 +2151,7 @@ static type check_method(checker *c, expr *e)
 
     if (str_eq_c(e->name, "Add")) {
         e->call = CALL_ADD;
+        refuse_in_chunks(c, e, "add components");
         if (e->args.count == 0) diag_error(e->at, "Add needs at least one component");
         const uint64_t added = check_component_list(c, e, "Add");
         c->prog->added_mask |= added;
@@ -2052,6 +2163,7 @@ static type check_method(checker *c, expr *e)
 
     if (str_eq_c(e->name, "Remove")) {
         e->call = CALL_REMOVE;
+        refuse_in_chunks(c, e, "remove components");
         if (e->args.count == 0) diag_error(e->at, "Remove needs at least one component");
         uint64_t mask = 0;
         for (int i = 0; i < e->args.count; i++) {
@@ -2071,6 +2183,7 @@ static type check_method(checker *c, expr *e)
 
     if (str_eq_c(e->name, "Destroy")) {
         e->call = CALL_DESTROY;
+        refuse_in_chunks(c, e, "destroy entities");
         if (e->args.count != 0) diag_error(e->at, "Destroy takes no arguments");
         c->prog->uses_destroy = true;
         return T_VOID_;
@@ -2119,6 +2232,7 @@ static type check_snap(checker *c, expr *e, decl *singleton)
         singleton->snapped = true;
     }
     e->call = CALL_SNAP;
+    refuse_in_chunks(c, e, "snap");
     e->type_decl = singleton;
     return T_VOID_;
 }
@@ -2544,6 +2658,25 @@ static type check_member(checker *c, expr *e)
         suggest_note(&sg);
         return T_ERR;
     }
+    if (obj.kind == TY_GRID) {
+        // A chunk system's grid also has its chunk's cells, from min up to max
+        const bool chunk = e->object->kind == E_NAME && e->object->bind == BIND_PARAM && e->object->param->chunk;
+        const type position = obj.decl->dims == 2 ? (type){TY_INT2, NULL} : (type){TY_INT3, NULL};
+        if (str_eq_c(e->member, "size")) return position;
+        if (chunk && (str_eq_c(e->member, "min") || str_eq_c(e->member, "max"))) return position;
+        if (!chunk && (str_eq_c(e->member, "min") || str_eq_c(e->member, "max"))) {
+            diag_error(e->at, "only a chunk system's grid has '" STR_FMT "': its chunk's cells", STR_ARG(e->member));
+            diag_note("a grid's own bounds are from 0 to 'size' on the axes it has one");
+            return T_ERR;
+        }
+        diag_error(e->at, "a grid has 'size'%s and Clear(), not '" STR_FMT "'", chunk ? ", 'min', 'max'" : "", STR_ARG(e->member));
+        suggestion sg = suggest_start(e->member);
+        suggest_consider_c(&sg, "size");
+        if (chunk) suggest_consider_c(&sg, "min");
+        if (chunk) suggest_consider_c(&sg, "max");
+        suggest_note(&sg);
+        return T_ERR;
+    }
     if (obj.kind == TY_STRING) {
         if (str_eq_c(e->member, "Length")) return T_INT_;
         diag_error(e->at, "text has 'Length' and methods like Contains(...), not '" STR_FMT "'", STR_ARG(e->member));
@@ -2668,8 +2801,8 @@ static type check_name(checker *c, expr *e)
         e->bind = BIND_PARAM;
         e->param = p;
         p->read = true;
-        if (p->type.kind == TY_BLOCK) {
-            diag_error(e->at, "a Block can only be run: '" STR_FMT "();'", STR_ARG(e->name));
+        if (p->type.kind == TY_ACTION) {
+            diag_error(e->at, "an Action can only be run: '" STR_FMT "();'", STR_ARG(e->name));
             diag_note("it's the code the caller wrote after the call, and it runs where it's run");
             return T_ERR;
         }
@@ -2821,6 +2954,16 @@ static type check_conditional(checker *c, expr *e)
 static type check_index(checker *c, expr *e)
 {
     const type obj = check_expr(c, e->object);
+    if (obj.kind == TY_GRID) { // cells[int2(x, y)], or cells[x, y], which the parser makes the same
+        const bool flat = obj.decl->dims == 2;
+        const type position = check_expr(c, e->lhs);
+        if (position.kind != TY_ERROR && position.kind != (flat ? TY_INT2 : TY_INT3)) {
+            diag_error(e->lhs->at, "a Grid%d's cells are at %s positions, not %s", obj.decl->dims, flat ? "int2" : "int3",
+                       type_name(position));
+            diag_note(flat ? "like 'cells[x, y]', or 'cells[p]' for an int2 'p'" : "like 'cells[x, y, z]', or 'cells[p]' for an int3 'p'");
+        }
+        return grid_cell(obj);
+    }
     const type index = check_expr(c, e->lhs);
     if (index.kind != TY_ERROR && index.kind != TY_INT) diag_error(e->lhs->at, "a list's index is an int, not %s", type_name(index));
     if (obj.kind == TY_ERROR) return T_ERR;
@@ -2920,6 +3063,71 @@ static type check_list_method(checker *c, expr *e, const type list)
     return (type){methods[m].result, NULL};
 }
 
+static bool is_new_grid(const expr *e)
+{
+    return e->kind == E_CALL && (str_eq_c(e->name, "Grid2") || str_eq_c(e->name, "Grid3"));
+}
+
+// Grid2(1024, 1024), Grid3(0, 384, 0) or Grid2(): a grid of that size, open
+// on the axes given 0 or left out. Its cell type comes from where it goes.
+static type check_new_grid(checker *c, expr *e, const type want)
+{
+    const int dims = e->name.ptr[4] - '0';
+    for (int i = 0; i < e->args.count; i++) {
+        const type t = check_expr_want(c, e->args.items[i], T_INT_);
+        if (t.kind != TY_ERROR && t.kind != TY_INT) {
+            diag_error(e->args.items[i]->at, "a grid's size is in cells, an int, not %s", type_name(t));
+        }
+    }
+    if (e->args.count > dims) {
+        diag_error(e->at, "Grid%d takes up to %d sizes, one per axis: 'Grid%d(%s)'", dims, dims, dims,
+                   dims == 2 ? "width, height" : "width, height, depth");
+        return e->type = T_ERR;
+    }
+    if (want.kind == TY_ERROR) return e->type = T_ERR;
+    if (want.kind != TY_GRID) {
+        diag_error(e->at, "a grid's cell type comes from where it goes");
+        diag_note("make it in a field, like 'Grid%d<Color> pixels = Grid%d(%s);'", dims, dims, dims == 2 ? "256, 256" : "16, 16, 16");
+        return e->type = T_ERR;
+    }
+    if (want.decl->dims != dims) {
+        diag_error(e->at, "this is a %s, made with Grid%d(...)", type_name(want), want.decl->dims);
+        return e->type = T_ERR;
+    }
+    e->call = CALL_NEW_GRID;
+    e->type_decl = want.decl;
+    c->prog->uses_text = true; // It's made in the scratch area, which code clears after it runs
+    return e->type = want;
+}
+
+// cells.Clear(): a grid's one method, every cell back to zero.
+static type check_grid_method(checker *c, expr *e, const type grid)
+{
+    for (int i = 0; i < e->args.count; i++) check_expr(c, e->args.items[i]);
+    if (!str_eq_c(e->name, "Clear")) {
+        diag_error(e->at, "a grid has no method '" STR_FMT "'", STR_ARG(e->name));
+        suggestion sg = suggest_start(e->name);
+        suggest_consider_c(&sg, "Clear");
+        suggest_note(&sg);
+        return T_ERR;
+    }
+    if (e->args.count) {
+        diag_error(e->at, "Clear takes no arguments: 'cells.Clear()'");
+        return T_ERR;
+    }
+    if (e->object->kind == E_NAME && e->object->bind == BIND_PARAM && e->object->param->chunk) {
+        diag_error(e->at, "a chunk system changes the cells within its reach, so it can't clear the whole grid");
+        diag_note("clear it in a system that takes its component or singleton as 'mut'");
+        return T_ERR;
+    }
+    e->call = CALL_GRID;
+    e->type_decl = grid.decl;
+    decl *changer = NEW(decl);
+    changer->name = str_from("Grid.Clear");
+    check_writable(c, e->object, changer, NULL);
+    return T_VOID_;
+}
+
 // The code being checked, for messages about where errors go: "a system".
 // NULL in a method or function.
 static const char *code_what(const checker *c)
@@ -2957,8 +3165,8 @@ static type check_try(checker *c, expr *e)
     if (m->fails.kind == TY_VOID && m->fails_name.len > 0) return T_ERR; // Its `fails` is wrong, and said so
     if (m->fails.kind == TY_VOID) {
         diag_error(e->at, "'" STR_FMT "' doesn't fail, so 'try' can't pass the error on", STR_ARG(m->name));
-        if (m->takes_block) {
-            diag_note("a function that takes a Block can't fail yet; handle it here with '?\?', 'is' or '!'");
+        if (m->takes_action) {
+            diag_note("a function that takes an Action can't fail yet; handle it here with '?\?', 'is' or '!'");
         } else {
             diag_note("say it fails after its parameters, '" STR_FMT " " STR_FMT "(...) fails %s', or handle it here "
                       "with '?\?', 'is' or '!'", STR_ARG(m->return_type_name), STR_ARG(m->name), type_name(error));
@@ -3038,6 +3246,10 @@ static type is_pattern_type(checker *c, const expr *e, const enum_member **membe
     if (builtin_type_named(e->pattern, &t)) return t;
     if (str_eq_c(e->pattern, "string")) return (type){TY_STRING, NULL};
     if (resolve_list_type(c, e->pattern, at, &t)) return t;
+    if (resolve_grid_type(c, e->pattern, at, &t)) {
+        if (t.kind != TY_ERROR) diag_error(at, "'is' can't look for a grid");
+        return T_ERR;
+    }
     decl *d = find_type(c, e->pattern, at);
     if (d) return decl_type(d);
     str ns;
@@ -3336,7 +3548,7 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
                           && (root->param->type.kind == TY_COMPONENT || root->param->type.kind == TY_SINGLETON);
     bool in_list = false;
     for (const expr *e = target; e->kind == E_MEMBER || e->kind == E_INDEX; e = e->object) in_list |= e->kind == E_INDEX;
-    note_text_write(c, world_place && (holds_heap(target->type) || in_list));
+    note_text_write(c, world_place && (holds_heap(target->type) || target->type.kind == TY_GRID || in_list));
     if (!root || root->bind == BIND_NONE || root->bind == BIND_TYPE || root->bind == BIND_NAMESPACE) {
         if (arg_of) {
             diag_error(target->at, "'" STR_FMT "' changes its '" STR_FMT "', so pass it a variable or field",
@@ -3437,8 +3649,25 @@ static void check_assign(checker *c, const stmt *s)
     const type value = check_expr_want(c, s->value, target);
     if (target.kind == TY_ERROR) return;
     if (s->target->kind != E_INDEX && through_element(s->target)) {
-        diag_error(s->target->at, "a list's element is a copy, so it can't be changed where it is");
-        diag_note("take it out, change it, and put it back: 'var e = items[i]; e.x = 5; items[i] = e;'");
+        const expr *at = s->target;
+        while (at->kind != E_INDEX) at = at->object;
+        if (at->object->type.kind == TY_GRID) {
+            diag_error(s->target->at, "a grid's cell is a copy, so it can't be changed where it is");
+            diag_note("take it out, change it, and put it back: 'var c = cells[p]; c.x = 5; cells[p] = c;'");
+        } else {
+            diag_error(s->target->at, "a list's element is a copy, so it can't be changed where it is");
+            diag_note("take it out, change it, and put it back: 'var e = items[i]; e.x = 5; items[i] = e;'");
+        }
+        return;
+    }
+    if (target.kind == TY_GRID && value.kind != TY_ERROR && !is_new_grid(s->value)) {
+        diag_error(s->value->at, "a grid can't be copied: every chunk would be");
+        diag_note("make a new, empty one with 'Grid%d(...)', or change cells one by one", target.decl->dims);
+        return;
+    }
+    if (holds_grid(target) && target.kind != TY_GRID && value.kind != TY_ERROR && s->value->kind != E_LITERAL) {
+        diag_error(s->value->at, "'" STR_FMT "' has a grid in it, which can't be copied", STR_ARG(target.decl->name));
+        diag_note("set its other fields one by one, or give it a new value like '" STR_FMT " { ... }'", STR_ARG(target.decl->name));
         return;
     }
     if (!check_writable(c, s->target, NULL, NULL)) return;
@@ -3692,7 +3921,7 @@ static void check_fail(checker *c, const stmt *s)
     if (m->fails.kind == TY_VOID && m->fails_name.len > 0) return; // Its `fails` is wrong, and said so
     if (m->fails.kind == TY_VOID) {
         diag_error(s->at, "'" STR_FMT "' doesn't say it can fail", STR_ARG(m->name));
-        if (m->takes_block) diag_note("a function that takes a Block can't fail yet");
+        if (m->takes_action) diag_note("a function that takes an Action can't fail yet");
         else if (value.kind != TY_ERROR && value.kind != TY_VOID) {
             diag_note("say what it fails with after its parameters: '" STR_FMT " " STR_FMT "(...) fails %s'",
                       STR_ARG(m->return_type_name), STR_ARG(m->name), type_name(value));
@@ -3760,13 +3989,17 @@ static void check_var(checker *c, stmt *s)
         str inner_name;
         const bool optional = optional_name(s->type_name, &inner_name);
         const str type_name_ = optional ? inner_name : s->type_name;
-        decl *d = str_starts_with_c(type_name_, "List<") ? NULL : find_type(c, type_name_, s->type_at);
+        decl *d = str_starts_with_c(type_name_, "List<") || str_starts_with_c(type_name_, "Grid2<")
+                       || str_starts_with_c(type_name_, "Grid3<")
+                    ? NULL
+                    : find_type(c, type_name_, s->type_at);
         if (builtin_type_named(type_name_, &s->type)) {
         } else if (resolve_list_type(c, type_name_, s->type_qual_at.line ? s->type_qual_at : s->at, &s->type)) {
+        } else if (resolve_grid_type(c, type_name_, s->type_qual_at.line ? s->type_qual_at : s->at, &s->type)) {
         } else if (str_eq_c(type_name_, "string")) {
             s->type = (type){TY_STRING, NULL};
-        } else if (str_eq_c(type_name_, "Block")) {
-            diag_error(s->type_at, "a Block is only ever a function's last parameter, run with 'content();'");
+        } else if (str_eq_c(type_name_, "Action")) {
+            diag_error(s->type_at, "an Action is only ever a function's last parameter, run with 'content();'");
             s->type = T_ERR;
         } else if (d) {
             s->type = decl_type(d);
@@ -3803,6 +4036,15 @@ static void check_var(checker *c, stmt *s)
         }
     }
 
+    // A grid stays where it's made: a local would be a copy of every chunk
+    if (holds_grid(s->type)) {
+        const loc at = s->type_at.line ? s->type_at : s->value->at;
+        if (s->type.kind == TY_GRID) diag_error(at, "a local can't hold a grid");
+        else diag_error(at, "a local can't hold '" STR_FMT "': it has a grid in it", STR_ARG(s->type.decl->name));
+        diag_note("grids stay in their component, singleton or scene: read and change cells through it, like 'canvas.pixels[p]'");
+        s->type = T_ERR;
+    }
+
     check_reserved(s->name, s->at);
     if (find_local(c, s->name) || find_param(c, s->name)) {
         diag_error(s->at, "'" STR_FMT "' is already declared", STR_ARG(s->name));
@@ -3831,6 +4073,11 @@ static type local_type(checker *c, stmt *s)
     if (resolve_list_type(c, s->type_name, at, &t)) {
         if (diag_error_count() > errors) s->type_name = str_from(""); // Reported: it takes the element's type, like var
         return t;
+    }
+    if (resolve_grid_type(c, s->type_name, at, &t)) {
+        if (t.kind != TY_ERROR) diag_error(at, "a local can't hold a grid");
+        s->type_name = str_from("");
+        return T_ERR;
     }
     decl *d = find_type(c, s->type_name, s->type_at);
     return d ? decl_type(d) : T_ERR;
@@ -3973,8 +4220,9 @@ static void check_stmt(checker *c, stmt *s)
                              && (call == CALL_ADD || call == CALL_REMOVE || call == CALL_DESTROY || call == CALL_DRAW))
                          || (called->kind == E_CALL && call == CALL_SPAWN) || call == CALL_METHOD || call == CALL_FUNCTION
                          || call == CALL_SEND || call == CALL_LOAD || call == CALL_UNLOAD || call == CALL_SCENE_PLAYER
-                         || call == CALL_GUI || call == CALL_BLOCK || call == CALL_SESSION || call == CALL_SNAP
+                         || call == CALL_GUI || call == CALL_ACTION || call == CALL_SESSION || call == CALL_SNAP
                          || (call == CALL_LIST && !str_eq_c(called->name, "Contains") && !str_eq_c(called->name, "IndexOf"))
+                         || call == CALL_GRID
                          || e->kind == E_TRY // Passes an error on, even from a variable
                          || called->kind == E_AWAIT;
         if (!effect && e->type.kind != TY_ERROR) diag_error(e->at, "this expression does nothing on its own");
@@ -3988,7 +4236,7 @@ static void check_stmt(checker *c, stmt *s)
         }
         if (e->block) {
             // The block after a call: the caller's own code, run where the function runs it.
-            const bool takes = (call == CALL_GUI && (e->gui & GUI_CONTAINER)) || (call == CALL_FUNCTION && e->method->takes_block);
+            const bool takes = (call == CALL_GUI && (e->gui & GUI_CONTAINER)) || (call == CALL_FUNCTION && e->method->takes_action);
             if (!takes && e->type.kind != TY_ERROR) {
                 if (e->kind == E_METHOD && e->object->kind == E_NAME) {
                     diag_error(e->block->at, "'" STR_FMT "." STR_FMT "' doesn't take a block", STR_ARG(e->object->name),
@@ -4042,8 +4290,8 @@ static bool is_constant(const checker *c, const expr *e)
         return is_constant(c, e->lhs) && is_constant(c, e->rhs);
     case E_CONDITIONAL:
         return is_constant(c, e->cond) && is_constant(c, e->lhs) && is_constant(c, e->rhs);
-    case E_CALL:
-        return builtin_type_named(e->name, &ignored) && all_constant(c, e);
+    case E_CALL: // A built-in type's constructor, and a grid's size
+        return (builtin_type_named(e->name, &ignored) || is_new_grid(e)) && all_constant(c, e);
     case E_METHOD:
         return e->object->kind == E_NAME && builtin_owner(e->object->name) && all_constant(c, e);
     case E_MEMBER: // Checking tells a member of an enum or a constant from anything else
@@ -4414,12 +4662,13 @@ static void resolve_field_types(const checker *c, const decl *d)
             continue;
         }
         if (resolve_list_type(c, f->type_name, at, &f->type)) continue;
+        if (resolve_grid_type(c, f->type_name, at, &f->type)) continue;
         if (str_eq_c(f->type_name, "string")) {
             f->type = (type){TY_STRING, NULL};
             continue;
         }
-        if (str_eq_c(f->type_name, "Block")) {
-            diag_error(at, "fields can't hold a Block; it's only ever a function's last parameter");
+        if (str_eq_c(f->type_name, "Action")) {
+            diag_error(at, "fields can't hold an Action; it's only ever a function's last parameter");
             continue;
         }
         decl *const t = find_type(c, f->type_name, at);
@@ -4450,6 +4699,21 @@ static void resolve_field_types(const checker *c, const decl *d)
 static void check_enum(checker *c, decl *d)
 {
     if (d->members.count == 0) diag_error(d->at, "enum '" STR_FMT "' needs at least one member", STR_ARG(d->name));
+    // What it's stored as: an int, or as C# writes it, `enum Voxel : byte`
+    d->width = 4;
+    int64_t most = INT32_MAX;
+    if (d->backing.len) {
+        if (str_eq_c(d->backing, "byte")) {
+            d->width = 1;
+            most = 255;
+        } else if (str_eq_c(d->backing, "ushort")) {
+            d->width = 2;
+            most = 65535;
+        } else if (!str_eq_c(d->backing, "int")) {
+            diag_error(d->backing_at, "an enum is stored as a byte, a ushort or an int, not '" STR_FMT "'", STR_ARG(d->backing));
+            diag_note("like 'enum Voxel : byte', for members from 0 to 255; 'ushort' goes to 65535");
+        }
+    }
     int64_t next = 0;
     for (int i = 0; i < d->members.count; i++) {
         enum_member *m = &d->members.items[i];
@@ -4470,6 +4734,12 @@ static void check_enum(checker *c, decl *d)
             } else {
                 next = number;
             }
+        }
+        if (d->width < 4 && (next < 0 || next > most)) {
+            diag_error(m->value ? m->value->at : m->at, "'" STR_FMT "' is %lld, and a %s holds 0 to %lld", STR_ARG(m->name),
+                       (long long)next, d->width == 1 ? "byte" : "ushort", (long long)most);
+            diag_note("store the enum as a wider type, like 'enum " STR_FMT " : %s'", STR_ARG(d->name),
+                      d->width == 1 ? "ushort" : "int");
         }
         m->number = next++;
         // Other declarations' names in C, like Page_Title for a struct Page.Title
@@ -4528,6 +4798,18 @@ static bool holds_list(const type t)
     return false;
 }
 
+// Whether a value of type `t` has a grid in it, or is one: a component's or a
+// singleton's, as only those hold grids.
+static bool holds_grid(const type t)
+{
+    if (t.kind == TY_GRID) return true;
+    if (t.kind != TY_COMPONENT && t.kind != TY_SINGLETON) return false;
+    for (int i = 0; i < t.decl->fields.count; i++) {
+        if (t.decl->fields.items[i].type.kind == TY_GRID) return true;
+    }
+    return false;
+}
+
 // Whether a value of type `t` has text in it, in its own fields or its structs'.
 static bool holds_text(const type t)
 {
@@ -4551,6 +4833,17 @@ static void check_fields(checker *c, const decl *d)
                 diag_note("players send what they do each tick, as numbers, bools and enums");
             } else {
                 c->prog->uses_heap = true; // Worlds keep their text and lists in a heap
+            }
+        }
+        if (f->type.kind == TY_GRID) {
+            c->prog->uses_heap = true; // Grids keep their chunks in the heap
+            if (d->kind != DECL_COMPONENT && d->kind != DECL_SINGLETON) {
+                const loc at = f->type_qual_at.line ? f->type_qual_at : f->at;
+                diag_error(at, "%s can't hold a grid", d->kind == DECL_STRUCT  ? "a struct"
+                                                       : d->kind == DECL_EVENT ? "an event"
+                                                       : d->kind == DECL_INPUT ? "an input"
+                                                                               : "this");
+                diag_note("grids stay where they're made: in components, singletons and scenes");
             }
         }
         if (f->type.kind == TY_LIST && holds_list(list_element(f->type))) {
@@ -4589,10 +4882,16 @@ static type method_type(const checker *c, const str name, const loc at, const bo
     if (is_return && str_eq_c(name, "void")) return T_VOID_;
     if (builtin_type_named(name, &t)) return t;
     if (resolve_list_type(c, name, at, &t)) return t;
+    if (resolve_grid_type(c, name, at, &t)) {
+        if (t.kind == TY_ERROR) return t;
+        diag_error(at, "functions can't %s grids yet", is_return ? "return" : "take");
+        diag_note("change a grid's cells in the system that has its component or singleton");
+        return T_ERR;
+    }
     if (str_eq_c(name, "string")) return (type){TY_STRING, NULL};
-    if (str_eq_c(name, "Block")) {
-        if (!is_return) return (type){TY_BLOCK, NULL};
-        diag_error(at, "a function can't return a Block; it takes one, as its last parameter");
+    if (str_eq_c(name, "Action")) {
+        if (!is_return) return (type){TY_ACTION, NULL};
+        diag_error(at, "a function can't return an Action; it takes one, as its last parameter");
         return T_ERR;
     }
     for (int i = 0; i < c->prog->records.count; i++) { // Devices, Keyboard, ..., Button
@@ -4634,8 +4933,8 @@ static void check_fails(const checker *c, decl *m)
     } else if (m->is_extern) {
         diag_error(m->fails_at, "C functions can't fail: they return what C returns");
         diag_note("check what C returns in a Tide function that fails, and call that");
-    } else if (m->takes_block) {
-        diag_error(m->fails_at, "a function that takes a Block can't fail yet");
+    } else if (m->takes_action) {
+        diag_error(m->fails_at, "a function that takes an Action can't fail yet");
     } else if (error.kind == TY_OPTIONAL) {
         diag_error(at, "an error is a type of its own, not a T?");
         diag_note("an enum names each way it can fail: 'enum ParseError { Empty, NotANumber }'");
@@ -4675,22 +4974,22 @@ static void check_signature(const checker *c, decl *m)
         if (p->type.kind == TY_RECORD && p->mode == PARAM_MUT) {
             diag_error(p->at, "devices can only be read, so '" STR_FMT "' can't be 'mut'", STR_ARG(p->name));
         }
-        if (p->type.kind != TY_BLOCK) continue;
+        if (p->type.kind != TY_ACTION) continue;
         if (m->kind != DECL_FUNCTION) {
-            diag_error(p->type_at, "only functions take a Block, not methods");
+            diag_error(p->type_at, "only functions take an Action, not methods");
         } else if (k != m->params.count - 1) {
-            diag_error(p->type_at, "a Block is always the last parameter");
+            diag_error(p->type_at, "an Action is always the last parameter");
             diag_note("its code is written after the call, in braces: 'Section(\"Audio\") { ... }'");
         } else if (p->mode == PARAM_MUT) {
-            diag_error(p->at, "a Block can't be 'mut'; it's code, run with '" STR_FMT "();'", STR_ARG(p->name));
+            diag_error(p->at, "an Action can't be 'mut'; it's code, run with '" STR_FMT "();'", STR_ARG(p->name));
         } else {
-            m->takes_block = true;
+            m->takes_action = true;
         }
     }
-    if (m->takes_block && m->return_type.kind != TY_VOID && m->return_type.kind != TY_ERROR) {
-        diag_error(m->return_type_qual_at, "a function that takes a Block returns nothing");
+    if (m->takes_action && m->return_type.kind != TY_VOID && m->return_type.kind != TY_ERROR) {
+        diag_error(m->return_type_qual_at, "a function that takes an Action returns nothing");
         diag_note("its call is a statement, with the block after it; change what the caller passes as 'mut' instead");
-        m->takes_block = false;
+        m->takes_action = false;
     }
     check_fails(c, m);
 }
@@ -4850,7 +5149,7 @@ static const char *c_refuses(const type t)
     switch (t.kind) {
     case TY_STRING: return "text";
     case TY_LIST: return "lists";
-    case TY_BLOCK: return "a Block";
+    case TY_ACTION: return "an Action";
     case TY_RECORD: return "the devices";
     case TY_OPTIONAL: return "T? values";
     case TY_STRUCT:
@@ -4930,9 +5229,9 @@ static void check_extern_param(const checker *c, decl *fn, const param *p)
     const char *refused = c_refuses(p->type);
     if (!refused) return;
     diag_error(p->type_at, "C functions can't take %s yet", refused);
-    if (p->type.kind == TY_BLOCK) diag_note("a Block is Tide code, which only Tide functions run");
+    if (p->type.kind == TY_ACTION) diag_note("an Action is Tide code, which only Tide functions run");
     else diag_note("pass numbers, vectors, enums, text, lists, and structs of them");
-    fn->takes_block = false; // It's no longer inlined
+    fn->takes_action = false; // It's no longer inlined
 }
 
 // `extern float Noise(float x);`: a function whose code is in C. It takes and
@@ -4986,7 +5285,7 @@ static void check_async_decl(decl *fn)
         fn->is_async = false;
         return;
     }
-    if (fn->takes_block) diag_error(fn->async_at, "a function that takes a Block can't be async yet");
+    if (fn->takes_action) diag_error(fn->async_at, "a function that takes an Action can't be async yet");
     for (int i = 0; i < fn->params.count; i++) {
         param *p = &fn->params.items[i];
         if (p->type.kind == TY_COMPONENT || p->type.kind == TY_SINGLETON) {
@@ -5095,6 +5394,94 @@ static bool check_param_side(const decl *sys, const param *p, const decl *d)
     return true;
 }
 
+// `chunk mut Field.cells cells`: the grid field a chunk system runs for, a
+// chunk at a time. Its owner is a component (each entity's grid) or a singleton.
+static void check_chunk_param(const checker *c, decl *sys, param *p, const int index)
+{
+    const loc at = p->type_qual_at.line ? p->type_qual_at : p->at;
+    p->type = T_ERR;
+    if (sys->is_view || sys->is_handler) {
+        diag_error(p->chunk_at, "only systems run per chunk; %s runs once %s", sys->is_view ? "a view" : "an event handler",
+                   sys->is_view ? "per frame" : "per event");
+        return;
+    }
+    if (sys->chunk_param) {
+        diag_error(p->chunk_at, "a chunk system runs for one grid's chunks, and this is a second");
+        return;
+    }
+    str owner_name, field_name;
+    if (!split_qualified(p->type_name, &owner_name, &field_name)) {
+        diag_error(at, "'chunk' names a grid field, like 'chunk mut Field.cells cells'");
+        return;
+    }
+    decl *owner = find_type(c, owner_name, at);
+    if (!owner) {
+        diag_error(at, "unknown component or singleton '" STR_FMT "'", STR_ARG(owner_name));
+        return;
+    }
+    if (owner->kind != DECL_COMPONENT && owner->kind != DECL_SINGLETON) {
+        diag_error(at, "'" STR_FMT "' is %s; grids are in components, singletons and scenes", STR_ARG(owner->name), decl_what(owner));
+        return;
+    }
+    int found = -1;
+    for (int i = 0; i < owner->fields.count; i++) {
+        if (str_eq(owner->fields.items[i].name, field_name)) found = i;
+    }
+    if (found < 0 || owner->fields.items[found].type.kind != TY_GRID) {
+        if (found < 0) {
+            diag_error(p->type_at, "'" STR_FMT "' has no field '" STR_FMT "'", STR_ARG(owner->name), STR_ARG(field_name));
+        } else {
+            diag_error(p->type_at, "'" STR_FMT "." STR_FMT "' is %s, not a grid", STR_ARG(owner->name), STR_ARG(field_name),
+                       type_name(owner->fields.items[found].type));
+        }
+        suggestion sg = suggest_start(field_name);
+        for (int i = 0; i < owner->fields.count; i++) {
+            if (owner->fields.items[i].type.kind == TY_GRID) suggest_consider(&sg, owner->fields.items[i].name);
+        }
+        suggest_note(&sg);
+        return;
+    }
+    if (owner->is_local || (owner->kind == DECL_SINGLETON && owner->builtin)) {
+        diag_error(at, "a chunk system changes the match, and '" STR_FMT "' is %s", STR_ARG(owner->name),
+                   owner->is_local ? "local" : "managed by the engine");
+        return;
+    }
+    p->type = owner->fields.items[found].type;
+    p->chunk_of = owner;
+    p->chunk_field = found;
+    sys->chunk_param = index + 1;
+    if (owner->kind == DECL_COMPONENT) sys->need_mask |= (uint64_t)1 << owner->index;
+}
+
+// A chunk system's other parameters: what it reads alongside its grid. Its
+// tasks run on threads, a chunk each, so they change nothing but cells: the
+// rest is read, and a component is the grid's own entity's.
+static void check_chunk_system(decl *sys)
+{
+    const param *chunk = &sys->params.items[sys->chunk_param - 1];
+    sys->writes_text = true; // Its chunks are in the match's heap, which one system changes at a time
+    for (int i = 0; i < sys->params.count; i++) {
+        const param *p = &sys->params.items[i];
+        if (p == chunk || p->type.kind == TY_ERROR) continue;
+        if (p->mode == PARAM_MUT) {
+            diag_error(p->at, "a chunk system changes the cells within its reach, and nothing else");
+            diag_note("its chunks run on threads at once; change '" STR_FMT "' in a system of its own", STR_ARG(p->type_name));
+        } else if (p->type.decl && p->type.decl == chunk->chunk_of) {
+            diag_error(p->at, "'" STR_FMT "' holds the grid this chunk system changes, so it can't read it as well",
+                       STR_ARG(p->type_name));
+            diag_note("its other chunks change at the same time; read the grid through '" STR_FMT "', within its reach",
+                      STR_ARG(chunk->name));
+        } else if (p->type.kind == TY_INPUT || p->type.kind == TY_RECORD) {
+            diag_error(p->at, "a chunk system runs for its chunks, which no player owns, so it can't read %s",
+                       p->type.kind == TY_INPUT ? "input" : "devices");
+        } else if (p->type.kind == TY_COMPONENT && chunk->chunk_of && chunk->chunk_of->kind == DECL_SINGLETON) {
+            diag_error(p->at, "'" STR_FMT "' is a singleton's grid, so its chunks belong to no entity with components",
+                       STR_ARG(chunk->type_name));
+            diag_note("read components in a system that runs for their entities");
+        }
+    }
+}
+
 static void check_params(const checker *c, decl *sys)
 {
     const program *prog = c->prog;
@@ -5121,6 +5508,15 @@ static void check_params(const checker *c, decl *sys)
 
         if (p->mode == PARAM_EVENT) {
             check_trigger(c, sys, p, d);
+            continue;
+        }
+
+        if (p->chunk) {
+            check_chunk_param(c, sys, p, i);
+            if (p->chunk_of && p->chunk_of->kind == DECL_COMPONENT) {
+                seen |= bit(p->chunk_of);
+                if (!side_of) side_of = p->chunk_of;
+            }
             continue;
         }
 
@@ -5270,6 +5666,7 @@ static void check_params(const checker *c, decl *sys)
         diag_error(sys->at, "system '" STR_FMT "' both requires and excludes the same component", STR_ARG(sys->name));
     }
     sys->per_entity = entity || seen != 0;
+    if (sys->chunk_param) check_chunk_system(sys);
     sys->entity_local = side_of ? side_of->is_local : entity && entity->type.kind == TY_LOCAL_ENTITY;
 
     // A handler that takes components reads the entity its event is sent to,
@@ -5554,7 +5951,7 @@ static bool is_builtin_name(const str name)
     type dummy;
     return builtin_type_named(name, &dummy) || str_eq_c(name, "Math") || str_eq_c(name, "Draw")
         || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn") || str_eq_c(name, "Send") || str_eq_c(name, "Scene")
-        || str_eq_c(name, "GUI") || str_eq_c(name, "GUILayout") || str_eq_c(name, "Screen") || str_eq_c(name, "Block")
+        || str_eq_c(name, "GUI") || str_eq_c(name, "GUILayout") || str_eq_c(name, "Screen") || str_eq_c(name, "Action")
         || str_eq_c(name, "string");
 }
 
@@ -5685,6 +6082,7 @@ static void collect_decls(program *prog)
         case DECL_STRUCT: // Ordered once their fields are known; see order_struct
         case DECL_METHOD: // Not in prog->decls
         case DECL_LIST:
+        case DECL_GRID:
         case DECL_RESULT:
         case DECL_FUNCTION:
         case DECL_CONST:
@@ -5937,6 +6335,60 @@ static void check_units(const program *prog)
     }
 }
 
+// A cell written as constants, int2(0, -1) or a constant that's one, into `out`.
+static bool fold_cell(const expr *e, const int dims, int64_t out[3])
+{
+    if ((e->kind == E_NAME || e->kind == E_MEMBER) && e->bind == BIND_CONST) {
+        return e->constant->value && fold_cell(e->constant->value, dims, out);
+    }
+    if (e->kind != E_CALL || e->call != CALL_CONSTRUCT) return false;
+    if (e->ctor == CTOR_SPLAT && e->args.count == 1) {
+        int64_t v;
+        if (!fold_int(e->args.items[0], &v)) return false;
+        for (int i = 0; i < dims; i++) out[i] = v;
+        return true;
+    }
+    if (e->ctor != CTOR_COMPONENTS || e->args.count != dims) return false;
+    for (int i = 0; i < dims; i++) {
+        if (!fold_int(e->args.items[i], &out[i])) return false;
+    }
+    return true;
+}
+
+// [Reach(1)]: how many cells past its chunk a chunk system touches, every way;
+// or [Reach(int2(0, -1), int2(1, -1))]: the cells around each cell it touches.
+// False when it's neither.
+static bool check_reach(checker *c, decl *d, const attribute *attr)
+{
+    if (attr->args.count || attr->values.count == 0) return false;
+    const int dims = d->params.items[d->chunk_param - 1].type.decl->dims;
+    c->unit = d->unit;
+    d->reach_at = attr->at;
+    const type first = check_constant_expr(c, attr->values.items[0], false, (type){TY_ERROR, NULL});
+    if (first.kind == TY_ERROR) return true; // Reported
+    if (first.kind == TY_INT) {
+        int64_t n;
+        if (attr->values.count != 1 || !fold_int(attr->values.items[0], &n) || n < 0 || n > 64) return false;
+        d->has_reach = true;
+        d->reach = (int)n;
+        return true;
+    }
+    d->reach = -1;
+    for (int k = 0; k < attr->values.count; k++) {
+        expr *v = attr->values.items[k];
+        const type t = k == 0 ? first : check_constant_expr(c, v, false, (type){TY_ERROR, NULL});
+        if (t.kind == TY_ERROR) return true;
+        int64_t cell[3] = {0, 0, 0};
+        if (t.kind != (dims == 3 ? TY_INT3 : TY_INT2) || !fold_cell(v, dims, cell)) return false;
+        for (int i = 0; i < 3; i++) {
+            if (cell[i] < -64 || cell[i] > 64) return false;
+            vec_push(d->reach_cells, (int)cell[i]);
+        }
+    }
+    d->has_reach = true;
+    return true;
+}
+
 // [Before(X)] and [After(X)] order systems, and views among views.
 static void check_attributes(checker *c)
 {
@@ -5952,6 +6404,29 @@ static void check_attributes(checker *c)
                 }
                 continue;
             }
+            // [Reach(1)] and [Sleeps]: how a chunk system runs
+            if (str_eq_c(attr->name, "Reach") || str_eq_c(attr->name, "Sleeps")) {
+                const bool reach = str_eq_c(attr->name, "Reach");
+                if (d->kind != DECL_SYSTEM || !d->chunk_param) {
+                    diag_error(attr->at, "'" STR_FMT "' is for chunk systems, which run once per chunk of a grid",
+                               STR_ARG(attr->name));
+                    diag_note("like '[" STR_FMT "] system Fall(chunk mut Field.cells cells) { ... }'",
+                              reach ? "Reach(1)" : "Sleeps");
+                    continue;
+                }
+                if (!reach) {
+                    if (attr->values.count || attr->args.count) diag_error(attr->at, "Sleeps takes no arguments: [Sleeps]");
+                    d->sleeps = true;
+                    continue;
+                }
+                if (!check_reach(c, d, attr)) {
+                    const bool three = d->params.items[d->chunk_param - 1].type.decl->dims == 3;
+                    diag_error(attr->at, "Reach takes how many cells past its chunk a chunk system touches, 0 to 64: [Reach(1)]");
+                    diag_note("or the cells around each cell that it touches, each 64 or fewer away: [Reach(%s)]",
+                              three ? "int3(0, -1, 0), int3(1, -1, 0)" : "int2(0, -1), int2(1, -1)");
+                }
+                continue;
+            }
             const bool before = str_eq_c(attr->name, "Before");
             if (!before && !str_eq_c(attr->name, "After")) {
                 diag_error(attr->at, "unknown attribute '" STR_FMT "'", STR_ARG(attr->name));
@@ -5959,9 +6434,11 @@ static void check_attributes(checker *c)
                 suggest_consider_c(&s, "Before");
                 suggest_consider_c(&s, "After");
                 suggest_consider_c(&s, "NativeName");
+                suggest_consider_c(&s, "Reach");
+                suggest_consider_c(&s, "Sleeps");
                 suggest_note(&s);
-                diag_note("the attributes are Before and After, which order systems: [After(Physics.Integrate)], and "
-                          "NativeName, which names an extern function's C function");
+                diag_note("the attributes are Before and After, which order systems: [After(Physics.Integrate)], "
+                          "NativeName, which names an extern function's C function, and Reach and Sleeps, for chunk systems");
                 continue;
             }
             if (attr->values.count > 0) {
@@ -6155,7 +6632,7 @@ static void mark_c_callers(const checker *c)
 }
 
 // A function that calls one that draws draws too. Only views and functions
-// can call them: they need the frame. A function that takes a Block is copied
+// can call them: they need the frame. A function that takes an Action is copied
 // into each call, so it can't call itself.
 static void check_drawing_calls(checker *c)
 {
@@ -6201,11 +6678,11 @@ static void check_drawing_calls(checker *c)
     const decl **seen = arena_alloc(sizeof(decl *) * (size_t)(prog->decls.count + 1));
     for (int i = 0; i < prog->decls.count; i++) {
         const decl *fn = prog->decls.items[i];
-        if (fn->kind != DECL_FUNCTION || !fn->takes_block) continue;
+        if (fn->kind != DECL_FUNCTION || !fn->takes_action) continue;
         int seen_count = 0;
         const decl *through = NULL;
         if (!calls(fn, fn, seen, &seen_count, &through)) continue;
-        diag_error(fn->at, "'" STR_FMT "' takes a Block, so it's copied into each call, and it can't call itself",
+        diag_error(fn->at, "'" STR_FMT "' takes an Action, so it's copied into each call, and it can't call itself",
                    STR_ARG(fn->name));
         if (through) diag_note("it calls itself through '" STR_FMT "'", STR_ARG(through->name));
     }
@@ -6449,6 +6926,7 @@ bool check(program *prog)
     }
 
     check_attributes(&c);
+    if (diag_error_count() == 0) infer_reaches(prog);
     if (diag_error_count() == 0) {
         schedule(prog->systems.items, prog->systems.count);
         schedule(prog->views.items, prog->views.count);

@@ -149,13 +149,13 @@ system Burn(mut Unit unit)
 - Functions follow the rules of methods: they see their parameters and `Math`, can't spawn or change entities, and return a value on every path unless they return `void`.
 - A function can draw and use the GUI. Then only views, and other functions like it, can call it, as with `Draw`.
 - Namespaces apply: another namespace calls it `Combat.Heal(...)`. A function shares its name with nothing else in its namespace.
-- A function's last parameter can be a `Block`: code the caller writes in braces after the call, `Section("Audio") { ... }`. A function takes at most one, always last, and it's always written after the call, never inside the parentheses.
+- A function's last parameter can be an `Action`: code the caller writes in braces after the call, `Section("Audio") { ... }`. A function takes at most one, always last, and it's always written after the call, never inside the parentheses.
 - The function runs the block by calling it, `content();`, as many times as it chooses, including none. The block runs as if it were written at the call: it sees the caller's locals and parameters, and what it reads and writes counts toward the caller's signature.
-- A function that takes a `Block` is inlined where it's called, so blocks cost nothing and need no closures. It can't call itself, directly or through other functions, and a block can only be run, not stored.
+- A function that takes an `Action` is inlined where it's called, so blocks cost nothing and need no closures. It can't call itself, directly or through other functions, and a block can only be run, not stored.
 
 ```csharp
 // A container of your own: runs its content only while open.
-void Foldout(string title, mut bool open, Block content)
+void Foldout(string title, mut bool open, Action content)
 {
     GUILayout.Toggle(title, open);
     if (open) content();
@@ -321,10 +321,10 @@ tidec v0 needed answers to these to work end to end. They're implemented, but th
 
 ### Functions and blocks
 
-- A call with a block after it is a statement, and the block's braces go on lines of their own, like any other's. A function that takes a Block returns nothing, since its call is a statement: it changes what its caller passes as `mut` instead.
-- Only functions take a Block, not methods, and a Block is never `mut`. A Block can't be stored in a field or a local.
+- A call with a block after it is a statement, and the block's braces go on lines of their own, like any other's. A function that takes an Action returns nothing, since its call is a statement: it changes what its caller passes as `mut` instead.
+- Only functions take an Action, not methods, and an Action is never `mut`. An Action can't be stored in a field or a local.
 - In the block, `return` ends the caller, as if the block were written there, and `break` ends the caller's switch, even if the function runs the block inside a switch of its own. `return` in the function's own code ends the function.
-- A function that takes a Block is copied into each call in generated C, with its locals renamed, so its names never hide the caller's in the block.
+- A function that takes an Action is copied into each call in generated C, with its locals renamed, so its names never hide the caller's in the block.
 - A `mut string` parameter is the caller's text, a local's or a field's, which the function changes.
 - Operators and their precedence follow C#. Comments are `//` and `/* */`.
 
@@ -563,7 +563,8 @@ system Advance(mut Match match)
 ### Provisional
 
 - `enum Name { A, B = 5, C }` declares an enum. A member without a value is one more than the one before it, and the first is 0. A value is an int known while compiling: a literal, an int constant, or operators on them, worked out as they would be at run time. A comma after the last member is fine. `enum` is only a keyword at the start of a declaration.
-- Members are always written with their enum: `Phase.Playing`, or `Game.Phase.Playing` from another namespace. In generated C, `Phase.Playing` is `Phase_Playing`, a constant of the type `Phase`, an `int32_t`.
+- An enum is stored as an int, or as what it says after its name, as in C#: `enum Voxel : byte { ... }` takes one byte (0 to 255) and `: ushort` two (0 to 65535), for grids' cells and other data there's a lot of. A member out of that range is an error that gives the range. Anything else after the colon is an error that lists the three. Only the size changes: values still go through `int(...)`.
+- Members are always written with their enum: `Phase.Playing`, or `Game.Phase.Playing` from another namespace. In generated C, `Phase.Playing` is `Phase_Playing`, a constant of the type `Phase`: an `int32_t`, or a `uint8_t` or `uint16_t` for `: byte` and `: ushort`.
 - Enums are values, like structs: fields, locals, inputs, and functions' parameters and return values can hold them. A field without a default starts at 0, even if no member has that value, as in C#.
 - `==` and `!=` compare two values of the same enum. `int(phase)` gives a member's value; there's no way from an int to an enum yet.
 - An enum in an input that isn't one of its members, which only a bad client could send, becomes the field's default before `Sanitize`, like a NaN float.
@@ -649,6 +650,62 @@ system Advance(mut Match match)
 - Sorting, and searching with a condition.
 - Fixed-size arrays inside components, which need no heap.
 
+## Grids
+
+### Decided
+
+- `Grid2<T>` and `Grid3<T>` hold cells at `int2` or `int3` positions. They're fields of components, singletons and scenes, so a world can have many: a dimension per scene, a canvas per player, a grid per ship.
+- A grid keeps its cells in chunks, and a chunk only exists once a cell in it is set to something other than zero: everywhere else reads as zero, so an open grid costs what's in it, not the space it spans. A world and its snapshots share chunks until one of them changes one, and hashes cover each chunk on its own.
+- A grid's size is given when it's made, `Grid2(1024, 1024)`. An axis given 0, or left out, is open: any int, negative ones too. Past its size, reads give zero and writes do nothing.
+- A chunk system runs once per chunk of a grid, on threads: `system Fall(chunk mut Field.cells cells)`. tidec works out how far past its own chunk it touches cells, from the cells it indexes, and its chunks run in phases far enough apart that no two touch the same chunk, so the result is the same on any number of threads. Where tidec can't work it out, `[Reach(n)]` says it. Any other system reads any cell, and one that changes cells waits for others that do.
+
+```csharp
+singleton Field
+{
+    Grid2<int> cells = Grid2(512, 512);
+}
+
+// Ones fall a cell a tick, a chunk at a time, into the chunk below too
+system Fall(chunk mut Field.cells cells)
+{
+    for (var y = Math.Max(cells.min.y, 1); y < cells.max.y; y++)
+    {
+        for (var x = cells.min.x; x < cells.max.x; x++)
+        {
+            if (cells[x, y] != 1 || cells[x, y - 1] != 0) continue;
+            cells[x, y] = 0;
+            cells[x, y - 1] = 1;
+        }
+    }
+}
+```
+
+### Provisional
+
+Implemented on the owner's go-ahead, to be revisited once games use them:
+
+- Cells are plain values: numbers, bools, enums, vectors, quaternions, matrices, `Color`, `Rect`, `Entity`, `PlayerID`, and structs of those. Not text, lists or grids, which say to keep them elsewhere and a number for them in the cell.
+- `cells[x, y]` is `cells[int2(x, y)]`, and `cells[x, y, z]` is `cells[int3(x, y, z)]`. `cells.size` is the grid's size, 0 on open axes. `cells.Clear()` sets every cell back to zero and keeps the size; `cells = Grid2(...)` gives the field a new, empty grid.
+- A cell is a copy, like a list's element: `cells[p].heat = 1` is an error that says to take it out, change it and put it back. `cells[p] += 1` works on numbers. Setting a cell to zero where there's no chunk makes none.
+- A grid is never copied, since every chunk would be: a local can't hold one, nor a component or singleton that has one, and a grid field is only assigned a new grid. Functions can't take or return grids yet. `Grid2(...)` takes its cell type from the field it goes in; anywhere else it's an error that says so.
+- A chunk is the engine's: 4096 cells (64 by 64, or 16 by 16 by 16 in 3D), or for cells bigger than four bytes, as many as fit in a page (16 KiB), a power of two along each axis, the first axes the most. Chunks of small cells share pages; a chunk system's tasks change chunks of one page at once, and the first to change a page a snapshot shares copies it for all of them.
+- A chunk system has one `chunk` parameter: a grid field of a component, `chunk mut Canvas.pixels pixels`, which runs for every entity's grid, or of a singleton. It runs for each chunk that existed when the tick began; chunks made during a tick run from the next one, so the tick is the same on threads as on one. Its grid has `min` and `max` too, its own chunk's cells (`max` not included).
+- A chunk system reads singletons, and the components of its grid's entity (which is `this`), but changes only cells within its reach. It can't spawn, send, add, remove or destroy yet, clear its grid, or take the component or singleton its grid is in, whose other chunks change meanwhile. It counts as changing the match's text, lists and grids, as its chunks are in the match's heap: other systems that change them wait for it.
+- How far a chunk system reaches is worked out on each axis, before its chunk and after it, from every cell it indexes: each index as an interval from the chunk's first cell. `cells.min` and `cells.max` are where the chunk starts and ends, constants are themselves, a loop variable that only its step changes goes from where it starts to the bound its condition sets, and any other local holds every value it's given; `+`, `-`, `*`, `/`, `%`, `&`, `?:`, `Math.Min`, `Max`, `Clamp` and `Abs` carry intervals through. It doesn't follow `if`s, so it can come out further than the code ever goes, never less.
+- A chunk system reaches at most one chunk past its own, which tidec checks. Each cell it indexes gets into the chunks around its own that its interval spans, and its chunks run in as few phases as keep two that run together from touching the same chunk: sand that reads the cells below and beside it touches 6 chunks and runs in 6 phases, heat that spreads to the cells beside each one, never across corners, touches 5 and runs in 5 (a 3 by 3 block of chunks would take 9), one that only reads below runs in 2, and one that stays in its chunk runs every chunk at once. A chunk's phase is its position times a weight for each axis, added up, modulo the phases: tidec picks the fewest phases, and the weights, that keep apart every two chunks a task could both touch. The schedule shows it: `(per chunk, 5 phases, reaches x -1..+1, y -1..+1, 5 of those 9 chunks)`. Within a chunk, cells change in the order the code goes through them; a grain that moves into a chunk of a later phase can move again in the same tick.
+- A cell tidec can't place from the chunk is an error that says how to index it, or to say the reach above the system: `[Reach(n)]` for `n` cells (0 to 64) past its chunk, every way on every axis, or `[Reach(int2(-1, 0), int2(1, 0), int2(0, -1))]` for the cells around each cell it touches (`int3` in 3D), each 64 or fewer away, which get into only the chunks they reach. Constants work in both. `[Reach]` on a system whose reach tidec works out is a warning, with a quick fix that removes it, and so is a cell tidec can tell is past a written reach, or in a chunk it doesn't get into: there, reads give 0 and writes do nothing.
+- `[Sleeps]`: the system only runs on chunks where something within its reach changed, in the tick before or this one. The game says when that's right: when a chunk whose surroundings didn't change can't change either, whatever else it reads. It skips the work of everything that's settled.
+- Chunks a chunk system's task makes, setting a cell where there was no chunk, join the grid once its phase is done, in task order.
+- Hosts read a world's cells with `tide_grid_read(&w->heap, w->Field.cells, x, y, 0, &tide_shape_Grid2_int)`: the generated header names each grid type's shape.
+- Text can't show a grid.
+
+### Open
+
+- Generating chunks as they're first needed, keeping the regions around players loaded, and sending each player only theirs: an endless voxel world.
+- Functions that take grids; chunk systems that spawn and send.
+- Following `if`s, and reversed sweeps (`cells.max.x - 1 - i`), which come out as reaching a whole chunk back now.
+- Resizing a grid; drawing one.
+
 ## Errors
 
 ### Decided
@@ -709,7 +766,7 @@ system Score(mut Board board)
 ### Provisional
 
 - `fail`, `try`, `is` and `null` are keywords everywhere; `fails` is one only right after a function's parameters.
-- Methods can fail too. Operators, `Interpolate`, extern functions and functions that take a Block can't. Systems, views, handlers and the input's `Sample` and `Sanitize` can't fail, and can't `try`.
+- Methods can fail too. Operators, `Interpolate`, extern functions and functions that take an Action can't. Systems, views, handlers and the input's `Sample` and `Sanitize` can't fail, and can't `try`.
 - An error's type is one a function can return. It can't be the type the function returns, which `is` couldn't tell apart, nor a `T?`, and a function that fails can't return a `T?` too.
 - `try` binds like a unary operator, as C#'s `await` does: `try Parse(a) + 1` adds 1 to the value. It works on a variable that holds a result too, and as a statement: `try Open();`. It keeps its place in the evaluation order: what's before it in its statement runs first, and when it passes an error on, nothing after it runs. In a block written after a call, `try` and `fail` leave the function the block is written in, as `return` does. Leaving a function this way closes the GUI containers it opened.
 - `??` binds and groups as in C#: looser than `||`, tighter than `?:`, to the right. Its right side only runs when the left fails or is nothing, so, like the right side of `&&` and `||`, it can't spawn, load scenes or draw widgets. The right side takes the value's type (`?? []`, `?? default`), an int widens to a float (`ParseScore(t) ?? 0.5` is a float), and it can be another failable call or `T?`, which is then what the whole gives: `a ?? b ?? 0`.
@@ -727,7 +784,7 @@ system Score(mut Board board)
 - Built-in calls that fail, like `Session.Open()` when it can't take players: today Session calls are requests the host acts on after the frame, so their failures come later, as events.
 - `is not`, as in C#'s `if (ParseScore(t) is not int score) return;`, which keeps the name in scope after the `if`.
 - `T?` in fields, lists and inputs, and `??=`.
-- `switch` on an error, and functions that take a Block failing.
+- `switch` on an error, and functions that take an Action failing.
 
 ## Tasks
 
@@ -772,7 +829,7 @@ system Start(mut Round round)
 
 Implemented, awaiting approval:
 
-- `async` goes before a function or an event handler, after `local` if it has one (`local async event(...)`); before anything else it's an error that says where it goes. Methods can't be async yet, nor extern functions or functions that take a Block. `await` is a keyword, and binds like `try`: `await Doubled(3) + 1` adds 1 to the value. A `!` after an awaited call is the awaited value's: `await Fetch(name)!`.
+- `async` goes before a function or an event handler, after `local` if it has one (`local async event(...)`); before anything else it's an error that says where it goes. Methods can't be async yet, nor extern functions or functions that take an Action. `await` is a keyword, and binds like `try`: `await Doubled(3) + 1` adds 1 to the value. A `!` after an awaited call is the awaited value's: `await Fetch(name)!`.
 - An async call is awaited, from async code (async functions and handlers), or a statement of its own, which starts a task; using its value without `await` is an error that says which to write. A started task's value is dropped; one that can fail is warned about as a call that can fail is, and `Load(name)!;` starts it without the warning. Only systems, views, handlers and async code start tasks: a plain function or method can't, as a task belongs to a world.
 - `await` waits for an async call, or for `Wait.Ticks(n)` (the match's ticks; match code only), `Wait.Frames(n)` (this machine's frames; local code only) or `Wait.Seconds(s)`: in the match, the nearest whole number of ticks, at least one; in local code, this machine's time, which hosts give each frame (`tide_local_frame_time`) and a task counts down frame by frame, within a tenth of a millisecond. A wait of 0 or less doesn't wait. `Wait` only goes after `await`. `await` isn't allowed in a block written after a call.
 - Async code is a state machine, as in C#: a call of an async function runs until it first waits, inside the code that calls it. An awaited call's frame is part of the caller's, so a task is one frame however deep it awaits, and an async function can't await itself (it can start itself again, as a task of its own).
@@ -790,7 +847,7 @@ Implemented, awaiting approval:
 - Async C functions, which C finishes later (a service's answer), for local code.
 - Holding a running call to await later, like C#'s `Task.WhenAll`: `var` could hold it without its type being written, as with errors.
 - Cancelling a task from code, through a handle.
-- Methods and functions that take a Block being async, and `await` inside a block written after a call.
+- Methods and functions that take an Action being async, and `await` inside a block written after a call.
 - Local handlers of match events (see Events), which a local task awaiting a match event would need too.
 
 ## Input
@@ -982,10 +1039,10 @@ view DrawHud(Arena arena)
 
 - The GUI is immediate mode, called from views, and drawn over the world. It follows Unity's IMGUI.
 - `GUILayout` lays widgets out automatically: they stack top to bottom, and `GUILayout.Horizontal()` puts them side by side. `GUI` has the same widgets, each at an explicit `Rect`, which comes first, as in Unity: `GUI.Button(rect, "Quit")`.
-- Containers take a block, and they're ordinary functions with a `Block` parameter (see Functions): `GUILayout.Horizontal() { ... }`, `GUILayout.Vertical() { ... }` and `GUILayout.Area(...) { ... }`. Calls always have parentheses.
+- Containers take a block, and they're ordinary functions with an `Action` parameter (see Functions): `GUILayout.Horizontal() { ... }`, `GUILayout.Vertical() { ... }` and `GUILayout.Area(...) { ... }`. Calls always have parentheses.
 - Widgets edit values through `mut` parameters, and return whether the value changed: `GUILayout.Toggle("Fullscreen", settings.fullscreen)`. A button returns whether it was pressed.
 - Widgets have no IDs to write. They're told apart by where they're called from and the entity the view runs for.
-- The engine builds nothing a game couldn't build itself: containers are functions with a `Block`, and widgets are made of pieces games can use too.
+- The engine builds nothing a game couldn't build itself: containers are functions with an `Action`, and widgets are made of pieces games can use too.
 - Gamepad and keyboard navigation are built in: focus moves between widgets, the south button presses, the east button goes back.
 - Whatever the GUI is using, such as a click on a button or typing in a field, is hidden from the input's `Sample`.
 - Typing into a field uses the characters the player types, which follow their keyboard layout, not keys by position.
@@ -1240,7 +1297,7 @@ Implemented, awaiting approval:
 - The server's player joins before the match's first tick, as `PlayerJoined` handled at the end of it; the server only starts ticking then.
 - When `Main` is the match's, `tide/run.h` starts it at once, and opens it with `--host [port]`, or joins another with `--join code` and `--connect address` on the command line (and `tide run --host`, `--join` and `--connect`).
 - Up to 16 players.
-- A client predicts at most a second ahead of the last tick the server confirmed, however many ticks that is at the match's tick rate; beyond it, it waits for the server. The server keeps four seconds of ticks to send again; a player further behind gets the whole world again.
+- A client predicts at most a second ahead of the last tick the server confirmed, however many ticks that is at the match's tick rate; beyond it, it waits for the server. The server keeps four seconds of ticks to send again; a player further behind gets the whole world again. A player that was sent the world has every tick since kept for it until it catches up, however long the world took to arrive.
 - **Coming back:** joining a server gives this machine a cookie, and joining the same server again (the same room, or the same address) presents it, so the player gets their `PlayerID` back, and with it whatever the game kept for them. If the server still has them connected (their old connection went quiet), the new one takes over with no events at all; if they'd left, `PlayerJoined` comes again with the same `PlayerID`. A server keeps a slot for a player who left until it has no slot that was never used; then it gives away the one away longest, and that player's cookie stops working.
 - The cookie lives as long as the program: it doesn't survive a restart yet, and it's not safe against someone on the network guessing it.
 - **Host migration:** the first player's machine to reach the room takes the match over: the relay pings the room's host for 3 seconds, and if it doesn't answer, or it left, gives the room to the first player there and introduces the others to it. A host that answered keeps the room, and the players who came join it again.
@@ -1326,12 +1383,12 @@ system Shape(mut Ground ground)
 
 Implemented, awaiting approval:
 
-- Extern functions take and return numbers, `bool`, vectors, matrices, quaternions, `Color`, `Rect`, `Entity`, `PlayerID`, enums (`int32_t` in C), and structs and components of those, by value. A struct is a C struct with the same fields in the same order: Tide's types have no padding the compiler adds, so the layouts match. The vector types are `tide/math.h`'s (`tide_float3` and the like), which C files can include.
+- Extern functions take and return numbers, `bool`, vectors, matrices, quaternions, `Color`, `Rect`, `Entity`, `PlayerID`, enums (`int32_t` in C, or `uint8_t` and `uint16_t` for `: byte` and `: ushort`), and structs and components of those, by value. A struct is a C struct with the same fields in the same order: Tide's types have no padding the compiler adds, so the layouts match. The vector types are `tide/math.h`'s (`tide_float3` and the like), which C files can include.
 - A `mut` parameter is a pointer to the caller's variable (`float *`, `Stats *`), which C can change, as `mut` works for Tide functions.
 - An `in` parameter points at the caller's variable or field when it's one of the parameter's type, and otherwise at a copy made for the call, like a computed value or one that converts (`int3` to `in float3`). `in` is only for extern functions: Tide functions' parameters are read-only already. It doesn't go on text or lists, which go by address anyway.
 - A list's elements are plain data (no text or lists in them). C gets NULL for an empty list. With `mut`, C can change the elements, but not how many there are. C can't return a list.
 - C gets text as it is when a zero follows it, and a copy in the scratch area otherwise. Text C returns is copied into the scratch area, as C may reuse its memory; NULL is empty text. A `mut string` can't go to C.
-- A `Block` and the devices can't be passed to C, nor structs that hold text or lists.
+- An `Action` and the devices can't be passed to C, nor structs that hold text or lists.
 - Calls are put in order the way spawns and GUI calls are: what has to go first runs before its statement, and before a loop's condition each round. An `&&` or `||` whose right side calls C, or a `?:` whose sides do, runs as `if` statements then, so each part still only runs when it would, with its own calls in order. So do struct operators that call C.
 - `extern` declarations go at the top level of a file, not in structs. `local` doesn't apply to them.
 - The C name must be a C identifier, not a C keyword. `[NativeName]` can't name the engine's functions (`tide_...`), and two externs can't name the same C function.

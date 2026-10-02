@@ -1,0 +1,7 @@
+// expect: a grid can't be copied: every chunk would be
+singleton Field { Grid2<int> cells; Grid2<int> other; }
+system Copy(mut Field field)
+{
+    field.cells = field.other;
+}
+scene Main { }

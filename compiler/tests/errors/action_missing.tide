@@ -1,5 +1,5 @@
 // expect: 'Twice' takes a block, written after the call: 'Twice(...) { ... }'
 scene Main { }
 component Counter { int n; }
-void Twice(Block content) { content(); content(); }
+void Twice(Action content) { content(); content(); }
 system Count(mut Counter counter) { Twice(); }

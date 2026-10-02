@@ -42,6 +42,9 @@ typedef struct tide_heap {
     uint32_t pending;                 // Blocks released while code runs, freed when it's done
     uint32_t pages;                   // Pages as far as `used` goes
     uint32_t room;                    // Pages `page` has room for
+    // The tick its world is running, which grids mark the chunks they change
+    // with (see tide/grid.h). Set as each tick starts; it's no state of its own.
+    uint32_t tick;
     // The page each page-sized piece of the heap is in. A page bigger than
     // that is at each of its places, with a reference for each. Before the
     // first, page[-1] holds the table this one replaced, until it's settled.
@@ -96,5 +99,28 @@ static inline tide_block *tide_heap_block(const tide_heap *h, const uint32_t blo
     return (tide_block *)(uintptr_t)((const uint8_t *)tide_page_data(p) + (block - (p->first << TIDE_HEAP_PAGE_SHIFT)));
 }
 
-// A block, to change: its page made this heap's own.
-tide_block *tide_heap_write(tide_heap *h, uint32_t block);
+// A block, to change: its page made this heap's own. Pages this heap owns
+// already are changed in place, and the rest are copied first
+// (tide_heap_write_shared).
+tide_block *tide_heap_write_shared(tide_heap *h, uint32_t block);
+
+static inline tide_block *tide_heap_write(tide_heap *h, const uint32_t block)
+{
+    tide_page *p = h->page[block >> TIDE_HEAP_PAGE_SHIFT];
+    // A page bigger than one place has a reference for each (see tide_heap)
+    const uint32_t places = p->size > (1u << TIDE_HEAP_PAGE_SHIFT) ? p->size >> TIDE_HEAP_PAGE_SHIFT : 1u;
+    if (p->refs != places) return tide_heap_write_shared(h, block);
+    // What it hashed to is out of date. Atomic, as a grid's chunk tasks can
+    // change one page's blocks on several threads (see tide/grid.h).
+    __atomic_store_n(&p->hashed, UINT32_MAX, __ATOMIC_RELAXED);
+    return (tide_block *)(uintptr_t)((uint8_t *)tide_page_data(p) + (block - (p->first << TIDE_HEAP_PAGE_SHIFT)));
+}
+
+// A block of a page or less to change, on one of the threads that change the
+// heap's blocks at once, each its own (a grid's chunk tasks), but whose blocks
+// can share a page. The first to change a shared page puts its copy in the
+// page's place, and the others change that one. The page it copied keeps this
+// heap's reference, as other threads may still be reading it or about to
+// change it: it's returned in `*copied` (NULL for none), for
+// tide_page_release(copied, 1) once they're all done.
+tide_block *tide_heap_write_parallel(tide_heap *h, uint32_t block, tide_page **copied);

@@ -1,0 +1,59 @@
+// Chunk systems: a grid's chunks on threads, in phases. Reading the grid
+// alongside waits, as for any component or singleton it writes.
+singleton Field
+{
+    Grid2<int> cells = Grid2(256, 256);
+    int painted;
+}
+
+singleton Stats
+{
+    int seen;
+}
+
+system Paint(mut Field field)
+{
+    field.cells[10, 10] = 1;
+    field.painted += 1;
+}
+
+// Reaches a cell down into the chunk below: chunks two apart on y run together
+[Sleeps]
+system Fall(chunk mut Field.cells cells)
+{
+    if (cells[cells.min.x, cells.min.y] == 1) cells[cells.min.x, cells.min.y - 1] = 1;
+}
+
+system Spread(chunk mut Field.cells cells)
+{
+    cells[cells.min.x, cells.min.y] = 2;
+}
+
+// Reaches the cells beside each one, never across corners: 5 phases, not 9
+system Blur(chunk mut Field.cells cells)
+{
+    for (var x = cells.min.x; x < cells.max.x; x++)
+    {
+        var y = cells.min.y;
+        cells[x, y] = cells[x - 1, y] + cells[x + 1, y] + cells[x, y - 1] + cells[x, cells.max.y];
+    }
+}
+
+singleton Wind
+{
+    int dx;
+}
+
+// Where tidec can't tell, [Reach] says: the cells around each cell it touches
+[Reach(int2(-1, 0), int2(1, 0))]
+system Gust(Wind wind, chunk mut Field.cells cells)
+{
+    cells[cells.min.x + wind.dx, cells.min.y] = 1;
+}
+
+system Count(Field field, mut Stats stats)
+{
+    stats.seen = field.cells[0, 0];
+}
+
+scene Main { }

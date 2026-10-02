@@ -1,3 +1,0 @@
-// expect: a Block takes no arguments: 'content();'
-scene Main { }
-void Twice(Block content) { content(1); }

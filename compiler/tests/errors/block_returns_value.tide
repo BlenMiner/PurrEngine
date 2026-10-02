@@ -1,3 +1,0 @@
-// expect: a function that takes a Block returns nothing
-scene Main { }
-bool Section(Block content) { content(); return true; }

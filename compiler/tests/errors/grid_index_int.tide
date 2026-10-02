@@ -1,0 +1,7 @@
+// expect: a Grid2's cells are at int2 positions, not int
+singleton Field { Grid2<int> cells; }
+system Paint(mut Field field)
+{
+    field.cells[3] = 1;
+}
+scene Main { }

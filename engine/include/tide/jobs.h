@@ -69,6 +69,10 @@ typedef struct tide_system_tasks {
     // A task's own data, with the real handles for the temporary ones it
     // stored: its mut components' entity fields. NULL when it has none.
     void (*settle)(void *world, uint32_t task, const tide_new_entities *settled);
+    // Once all its tasks are done, on one thread, before anything waiting for
+    // it starts: what each task left in tide_task_data, in task order (NULL
+    // for a task that left nothing). NULL when it has nothing to finish.
+    void (*finish)(void *world, void **data, uint32_t tasks);
 } tide_system_tasks;
 
 // What the tick runs its systems with.
@@ -95,3 +99,7 @@ tide_queue *tide_recording(tide_queue *world);
 // The entity a Spawn makes: a temporary handle in a task of a system that
 // settles its spawns, or else a new entity in `t`.
 tide_entity tide_new_entity(tide_entities *t);
+
+// What the running task leaves its system to finish (tide_system_tasks.finish).
+// NULL when no task is running.
+void **tide_task_data(void);

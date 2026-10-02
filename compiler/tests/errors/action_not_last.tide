@@ -1,0 +1,3 @@
+// expect: an Action is always the last parameter
+scene Main { }
+void Section(Action content, int size) { }

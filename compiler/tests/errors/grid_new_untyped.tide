@@ -1,0 +1,6 @@
+// expect: a grid's cell type comes from where it goes
+system Make()
+{
+    var x = Grid2(4, 4);
+}
+scene Main { }

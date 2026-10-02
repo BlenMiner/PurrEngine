@@ -1,3 +1,0 @@
-// expect: a Block is always the last parameter
-scene Main { }
-void Section(Block content, int size) { }

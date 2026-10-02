@@ -6,16 +6,10 @@
 
 // See tide/text.h.
 
-#if defined(__wasm__) && !defined(__wasm_atomics__)
-#define TIDE_THREAD_LOCAL // Web builds are single-threaded
-#else
-#define TIDE_THREAD_LOCAL _Thread_local
-#endif
-
 // ---------------------------------------------------------------------------
 // The scratch area: a stack of bytes, one per thread, allocated on first use.
 
-static TIDE_THREAD_LOCAL char *scratch;
+TIDE_THREAD_LOCAL char *tide_scratch_area;
 static TIDE_THREAD_LOCAL uint32_t scratch_used;
 
 uint32_t tide_scratch_mark(void)
@@ -30,20 +24,21 @@ void tide_scratch_reset(const uint32_t mark)
 
 void tide_scratch_free(void)
 {
-    free(scratch);
-    scratch = NULL;
+    free(tide_scratch_area);
+    tide_scratch_area = NULL;
     scratch_used = 0;
 }
 
 // Room for `bytes` bytes and a NUL, or NULL when the area is full.
 static char *scratch_alloc(const uint32_t bytes)
 {
-    if (!scratch) {
-        scratch = malloc(TIDE_SCRATCH_BYTES);
-        if (!scratch) return NULL;
+    if (!tide_scratch_area) {
+        tide_scratch_area = malloc(TIDE_SCRATCH_BYTES);
+        if (!tide_scratch_area) return NULL;
+        tide_memory_sync(); // Before anything touches it (see tide/page.h)
     }
     if (bytes >= TIDE_SCRATCH_BYTES - scratch_used) return NULL;
-    char *p = scratch + scratch_used;
+    char *p = tide_scratch_area + scratch_used;
     scratch_used += bytes + 1;
     p[bytes] = '\0';
     return p;
@@ -52,8 +47,8 @@ static char *scratch_alloc(const uint32_t bytes)
 // Whether `a` is the newest text in the scratch area, so it can grow in place.
 static bool at_top(const tide_str a)
 {
-    if (!scratch) return false;
-    const uintptr_t start = (uintptr_t)scratch;
+    if (!tide_scratch_area) return false;
+    const uintptr_t start = (uintptr_t)tide_scratch_area;
     const uintptr_t p = (uintptr_t)a.ptr;
     return p >= start && p + (uintptr_t)a.bytes + 1u == start + scratch_used;
 }
@@ -766,17 +761,12 @@ tide_str tide_str_replace(const tide_str a, const tide_str from, const tide_str 
 #define TEXT_WHERE(at) ((at) >> 30)
 #define TEXT_OFFSET(at) ((at) & 0x3FFFFFFFu)
 
-static TIDE_THREAD_LOCAL tide_heap *text_heaps[2]; // The match's and the local world's
+TIDE_THREAD_LOCAL tide_heap *tide_world_heaps[2];
 
 void tide_text_use(tide_heap *match_heap, tide_heap *local_heap)
 {
-    text_heaps[TIDE_IN_MATCH] = match_heap;
-    text_heaps[TIDE_IN_LOCAL] = local_heap;
-}
-
-tide_heap *tide_heap_of(const uint32_t where)
-{
-    return where == TIDE_IN_MATCH || where == TIDE_IN_LOCAL ? text_heaps[where] : NULL;
+    tide_world_heaps[TIDE_IN_MATCH] = match_heap;
+    tide_world_heaps[TIDE_IN_LOCAL] = local_heap;
 }
 
 static tide_str view_block(const tide_heap *heap, const uint32_t offset)
@@ -796,7 +786,7 @@ tide_str tide_text_view(const tide_text t)
     const uint32_t where = TEXT_WHERE(t.at);
     const uint32_t offset = TEXT_OFFSET(t.at);
     if (where == TIDE_IN_SCRATCH) {
-        const tide_block *b = (const tide_block *)(uintptr_t)(scratch + offset);
+        const tide_block *b = (const tide_block *)(uintptr_t)(tide_scratch_area + offset);
         return (tide_str){(const char *)(b + 1), (int32_t)b->a, (int32_t)b->b};
     }
     const tide_heap *heap = tide_heap_of(where);
@@ -814,7 +804,7 @@ tide_text tide_text_temp(const tide_str value)
     tide_block *b = (tide_block *)(uintptr_t)(p + pad);
     *b = (tide_block){0, 0, (uint32_t)value.bytes, (uint32_t)value.chars};
     memcpy(b + 1, value.ptr, (size_t)value.bytes);
-    return (tide_text){TIDE_IN_SCRATCH << 30 | (uint32_t)((char *)b - scratch)};
+    return (tide_text){TIDE_IN_SCRATCH << 30 | (uint32_t)((char *)b - tide_scratch_area)};
 }
 
 // A block in `heap` holding `value`, tagged as `where`'s.
@@ -868,26 +858,6 @@ tide_block *tide_scratch_block(const uint32_t bytes, uint32_t *at)
     if (!p) return NULL;
     tide_block *b = (tide_block *)(uintptr_t)(p + pad);
     *b = (tide_block){0, 0, 0, 0};
-    *at = TIDE_IN_SCRATCH << 30 | (uint32_t)((char *)b - scratch);
+    *at = TIDE_IN_SCRATCH << 30 | (uint32_t)((char *)b - tide_scratch_area);
     return b;
-}
-
-tide_block *tide_block_at(const uint32_t at)
-{
-    if (!at) return NULL;
-    const uint32_t where = TEXT_WHERE(at);
-    const uint32_t offset = TEXT_OFFSET(at);
-    if (where == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(scratch + offset);
-    tide_heap *heap = tide_heap_of(where);
-    return heap ? tide_heap_block(heap, offset) : NULL;
-}
-
-tide_block *tide_block_write(const uint32_t at)
-{
-    if (!at) return NULL;
-    const uint32_t where = TEXT_WHERE(at);
-    const uint32_t offset = TEXT_OFFSET(at);
-    if (where == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(scratch + offset);
-    tide_heap *heap = tide_heap_of(where);
-    return heap ? tide_heap_write(heap, offset) : NULL;
 }

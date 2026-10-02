@@ -1,0 +1,131 @@
+// Sand: falling sand and water that every player paints into at once, the
+// cellular automaton benchmark (see AGENTS.md, Benchmarks).
+//
+// The cells are a grid, which a chunk system steps a chunk at a time, on
+// threads, in phases (see docs/spec.md, Grids).
+
+enum Material : byte
+{
+    Empty,
+    Sand,
+    Water,
+    Wall
+}
+
+const int BRUSH = 4; // The brush's radius, in cells
+
+scene Main { }
+
+// The benchmark sets its size once the world is made, and the first tick
+// makes the grid and fills it (Setup).
+singleton Field
+{
+    Grid2<Material> cells;
+    int size = 256;
+    bool ready;
+}
+
+input Brush
+{
+    int x;
+    int y;
+    Material material;
+    bool down;
+}
+
+// Someone painting: their brush is their input.
+component Painter { }
+
+int Hash(int x, int y, int t)
+{
+    mut var h = x * 374761393 + y * 668265263 + t * 1274126177;
+    h = (h ^ (h >> 13)) * 1103515245;
+    return h ^ (h >> 16);
+}
+
+// Ledges of wall, with sand scattered above them, so it starts out falling.
+system Setup(mut Field field)
+{
+    if (field.ready) return;
+    field.ready = true;
+    var size = field.size;
+    field.cells = Grid2(size, size);
+    var ledges = Math.Max(size / 4, 1);
+    var span = Math.Max(size / 8, 1);
+    for (var y = 0; y < size; y++)
+    {
+        for (var x = 0; x < size; x++)
+        {
+            if (y % ledges == ledges / 2 && (x / span) % 2 == 1) field.cells[x, y] = Material.Wall;
+            else if (y > size / 2 && (Hash(x, y, 0) & 3) == 0) field.cells[x, y] = Material.Sand;
+        }
+    }
+}
+
+event(PlayerJoined joined) Join()
+{
+    Spawn(Painter, Owner { player = joined.player });
+}
+
+// Painting past the grid's edge does nothing.
+system Paint(Brush brush, mut Field field, with Painter)
+{
+    if (!brush.down) return;
+    for (var dy = -BRUSH; dy <= BRUSH; dy++)
+    {
+        for (var dx = -BRUSH; dx <= BRUSH; dx++)
+        {
+            if (dx * dx + dy * dy <= BRUSH * BRUSH) field.cells[brush.x + dx, brush.y + dy] = brush.material;
+        }
+    }
+}
+
+// Whether a grain of `mover` can go where `there` is: anything into empty
+// space, and sand sinks through water.
+bool Takes(Material there, Material mover)
+{
+    return there == Material.Empty || (there == Material.Water && mover == Material.Sand);
+}
+
+// Each chunk's rows go from the bottom up, so a grain that falls within it
+// lands in a row that's done. Rows go left to right on even ticks and right
+// to left on odd ones, and water flows back the way its row came. A grain
+// can move into the chunks around, which its reach of one cell takes in.
+system Step(Time time, chunk mut Field.cells cells)
+{
+    var width = cells.size.x;
+    var forward = time.tick % 2 == 0;
+    var back = forward ? -1 : 1;
+    for (var y = Math.Max(cells.min.y, 1); y < cells.max.y; y++)
+    {
+        for (var k = cells.min.x; k < cells.max.x; k++)
+        {
+            var x = forward ? k : cells.max.x - 1 - (k - cells.min.x);
+            var cell = cells[x, y];
+            if (cell != Material.Sand && cell != Material.Water) continue;
+
+            // Down, else down to one side or the other, as the hash says
+            var side = (Hash(x, y, time.tick) & 1) == 0 ? -1 : 1;
+            mut var to = int2(x, y - 1);
+            mut var moves = Takes(cells[to], cell);
+            if (!moves && x + side >= 0 && x + side < width && Takes(cells[x + side, y - 1], cell))
+            {
+                to = int2(x + side, y - 1);
+                moves = true;
+            }
+            else if (!moves && x - side >= 0 && x - side < width && Takes(cells[x - side, y - 1], cell))
+            {
+                to = int2(x - side, y - 1);
+                moves = true;
+            }
+            if (!moves && cell == Material.Water && x + back >= 0 && x + back < width && cells[x + back, y] == Material.Empty)
+            {
+                to = int2(x + back, y);
+                moves = true;
+            }
+            if (!moves) continue;
+            cells[x, y] = cells[to];
+            cells[to] = cell;
+        }
+    }
+}

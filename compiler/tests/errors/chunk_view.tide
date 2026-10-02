@@ -1,0 +1,4 @@
+// expect: only systems run per chunk; a view runs once per frame
+singleton Field { Grid2<int> cells; }
+view Draw(chunk Field.cells cells) { }
+scene Main { }

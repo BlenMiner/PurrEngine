@@ -1,0 +1,38 @@
+grids: 6 systems each tick, 6 stages deep; none can run at the same time.
+A system starts once everything it runs after is done.
+
+stage 1  Paint  (once)
+         writes Field
+         alongside nothing
+stage 2  Fall  (per chunk, 2 phases, reaches y -1, sleeps)
+         writes Field.cells
+         after Paint: both change text, lists or grids, which the match keeps in one heap; both write Field
+         alongside nothing
+stage 3  Spread  (per chunk, 1 phase)
+         writes Field.cells
+         after Paint: both change text, lists or grids, which the match keeps in one heap; both write Field (and through Fall)
+         after Fall: both change text, lists or grids, which the match keeps in one heap; both write Field
+         alongside nothing
+stage 4  Blur  (per chunk, 5 phases, reaches x -1..+1, y -1..+1, 5 of those 9 chunks)
+         writes Field.cells
+         after Paint: both change text, lists or grids, which the match keeps in one heap; both write Field (and through Fall)
+         after Fall: both change text, lists or grids, which the match keeps in one heap; both write Field (and through Spread)
+         after Spread: both change text, lists or grids, which the match keeps in one heap; both write Field
+         alongside nothing
+stage 5  Gust  (per chunk, 3 phases, reaches x -1..+1)
+         reads Wind
+         writes Field.cells
+         after Paint: both change text, lists or grids, which the match keeps in one heap; both write Field (and through Fall)
+         after Fall: both change text, lists or grids, which the match keeps in one heap; both write Field (and through Spread)
+         after Spread: both change text, lists or grids, which the match keeps in one heap; both write Field (and through Blur)
+         after Blur: both change text, lists or grids, which the match keeps in one heap; both write Field
+         alongside nothing
+stage 6  Count  (once)
+         reads Field
+         writes Stats
+         after Paint: it writes Field, which this reads (and through Fall)
+         after Fall: it writes Field, which this reads (and through Spread)
+         after Spread: it writes Field, which this reads (and through Blur)
+         after Blur: it writes Field, which this reads (and through Gust)
+         after Gust: it writes Field, which this reads
+         alongside nothing

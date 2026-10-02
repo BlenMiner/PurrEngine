@@ -1,0 +1,116 @@
+// Lists bigger than a page: a world keeps their elements in chunks (see
+// tide/list.h), which read and change as any list's do, across chunks, and
+// reach C side by side.
+
+struct Cell
+{
+    int id;
+    float weight;
+    bool alive;
+}
+
+component Big
+{
+    List<int> numbers;
+    List<Cell> cells; // 12 bytes each: chunks hold a number of them that's no power of two
+    List<string> names;
+    List<float> weights;
+}
+
+component Results
+{
+    int checks;
+    int passed;
+    int firstFailure;
+}
+
+const int N = 10000; // Ints: three chunks
+
+extern float c_big_sum(List<float> values, int count);
+extern void c_big_double(mut List<float> values, int count);
+extern bool c_big_is_null(List<float> values);
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Big, Results);
+}
+
+void Expect(mut Results t, bool ok)
+{
+    t.checks += 1;
+    if (ok) t.passed += 1;
+    else if (t.firstFailure == 0) t.firstFailure = t.checks;
+}
+
+system Use(mut Big big, mut Results t)
+{
+    if (t.checks > 0) return; // Once
+
+    for (var i = 0; i < N; i++) big.numbers.Add(i);
+    Expect(t, big.numbers.Count == N && big.numbers[0] == 0 && big.numbers[4091] == 4091 && big.numbers[4092] == 4092);
+    Expect(t, big.numbers[N - 1] == N - 1 && big.numbers[N] == 0);
+    mut var sum = 0;
+    foreach (var n in big.numbers) sum += n;
+    Expect(t, sum == N * (N - 1) / 2);
+
+    // Inserting at the front moves every one along, across chunks, and back
+    big.numbers.Insert(0, -1);
+    Expect(t, big.numbers.Count == N + 1 && big.numbers[0] == -1 && big.numbers[4092] == 4091 && big.numbers[N] == N - 1);
+    big.numbers.RemoveAt(0);
+    Expect(t, big.numbers[0] == 0 && big.numbers[4092] == 4092 && big.numbers.Count == N);
+
+    // Changing one in place, and finding them
+    big.numbers[5000] += 7;
+    Expect(t, big.numbers[5000] == 5007);
+    Expect(t, big.numbers.IndexOf(9999) == 9999 && big.numbers.Contains(5007) && !big.numbers.Contains(5000));
+    Expect(t, big.numbers.Remove(5007) && big.numbers.Count == N - 1 && big.numbers[5000] == 5001);
+
+    // A copy taken out is side by side, and the program's own
+    mut var copy = big.numbers;
+    copy[0] = 42;
+    Expect(t, big.numbers[0] == 0 && copy[0] == 42 && copy.Count == N - 1 && copy[N - 2] == N - 1);
+
+    // Structs, across a chunk's end
+    for (var i = 0; i < 3000; i++) big.cells.Add(Cell { id = i, weight = i * 0.5, alive = i % 3 == 0 });
+    var first = big.cells[1364];
+    Expect(t, big.cells.Count == 3000 && first.id == 1364 && first.weight == 682 && !first.alive);
+    Expect(t, big.cells[1363].id == 1363 && big.cells[1365].alive && big.cells[2999].id == 2999);
+
+    // Text
+    for (var i = 0; i < 5000; i++) big.names.Add($"n{i}");
+    Expect(t, big.names.Count == 5000 && big.names[4500] == "n4500");
+    big.names.RemoveAt(10);
+    Expect(t, big.names[10] == "n11" && big.names[4998] == "n4999" && big.names.Count == 4999);
+
+    // Whole lists assigned: a big one from the program's, then a small one
+    mut List<int> evens = [];
+    for (var i = 0; i < 6000; i++) evens.Add(i * 2);
+    big.numbers = evens;
+    Expect(t, big.numbers.Count == 6000 && big.numbers[4500] == 9000 && big.numbers[5999] == 11998);
+    List<int> small = [1, 2, 3];
+    big.numbers = small;
+    Expect(t, big.numbers.Count == 3 && big.numbers[2] == 3 && big.numbers[3] == 0);
+
+    // Cleared, it keeps its chunks and fills again
+    big.cells.Clear();
+    Expect(t, big.cells.Count == 0 && big.cells[5].id == 0);
+    for (var i = 0; i < 2000; i++) big.cells.Add(Cell { id = i });
+    Expect(t, big.cells[1999].id == 1999 && big.cells[1364].id == 1364);
+
+    // C gets the elements side by side, and what it changes comes back
+    for (var i = 0; i < 5000; i++) big.weights.Add(1);
+    Expect(t, c_big_sum(big.weights, big.weights.Count) == 5000);
+    c_big_double(big.weights, big.weights.Count);
+    Expect(t, big.weights[0] == 2 && big.weights[4100] == 2 && big.weights[4999] == 2);
+    Expect(t, c_big_sum(big.weights, big.weights.Count) == 10000 && !c_big_is_null(big.weights));
+}
+
+// Every tick after: one element changes, so a snapshot shares the rest.
+system Change(mut Big big, Results t)
+{
+    if (t.checks == 0) return;
+    var cell = big.cells[1500];
+    big.cells[1500] = Cell { id = cell.id + 1 };
+}

@@ -5,14 +5,9 @@
 #include <string.h>
 
 #include "tide/page.h"
+#include "tide/time.h"
 
 // See tide/jobs.h.
-
-#if defined(__wasm__) && !defined(__wasm_atomics__)
-#define TIDE_THREAD_LOCAL // Web builds are single-threaded
-#else
-#define TIDE_THREAD_LOCAL _Thread_local
-#endif
 
 // Below this much work in all (see tide_system_tasks.count), a tick runs on
 // one thread: waking the others would cost more than they'd save. It's about a
@@ -32,6 +27,7 @@ typedef struct task_context {
     uint32_t task;     // Among the tick's
     uint32_t spawned;  // Temporary handles it gave
     bool settles;      // Its system's spawns give temporary handles
+    void *data;        // What it leaves its system to finish
 } task_context;
 
 static TIDE_THREAD_LOCAL task_context *running;
@@ -47,6 +43,11 @@ tide_entity tide_new_entity(tide_entities *t)
     return (tide_entity){running->spawned++, TIDE_ENTITY_TEMPORARY | running->task};
 }
 
+void **tide_task_data(void)
+{
+    return running ? &running->data : NULL;
+}
+
 tide_entity tide_settled(const tide_new_entities *settled, const tide_entity e)
 {
     if (!tide_entity_is_temporary(e)) return e;
@@ -57,9 +58,7 @@ tide_entity tide_settled(const tide_new_entities *settled, const tide_entity e)
 
 static void *zeroed(const size_t count, const size_t size)
 {
-    void *p = calloc(count ? count : 1u, size);
-    if (!p) tide_out_of_memory();
-    return p;
+    return tide_alloc_zeroed(count ? count : 1u, size);
 }
 
 static void run_task(void *world, const tide_system_tasks *system, task_context *context, const uint32_t task)
@@ -121,6 +120,7 @@ typedef struct tick_run {
     uint32_t *first_dependent;
     tide_queue *queues;        // Each task's
     uint32_t *spawned;         // Each task's temporary handles
+    void **data;               // What each task left its system to finish
     atomic_uint finished;      // Systems done
 } tick_run;
 
@@ -138,6 +138,9 @@ static void relax(void)
 // the next to settle its spawns one closer to it.
 static void finish_system(tick_run *r, const uint32_t s)
 {
+    tide_memory_sync(); // What its tasks made on other threads (see tide/page.h)
+    const tide_system_tasks *system = &r->tick->systems[s];
+    if (system->finish) system->finish(r->world, &r->data[r->state[s].first], r->state[s].tasks);
     for (uint32_t i = r->first_dependent[s]; i < r->first_dependent[s + 1u]; i++) {
         atomic_fetch_sub(&r->state[r->dependents[i]].waiting, 1u);
     }
@@ -162,6 +165,7 @@ static bool work_once(tick_run *r)
         system_state *st = &r->state[s];
         const tide_system_tasks *system = &tick->systems[s];
         if (system->settles && atomic_load(&st->settle_waiting) == 0 && !atomic_exchange(&st->settle_claimed, 1u)) {
+            tide_memory_sync(); // What its tasks made on other threads (see tide/page.h)
             settle_system(r->world, tick, system, st->first, st->tasks, &r->spawned[st->first], &r->queues[st->first], 0);
             finish_system(r, s);
             return true;
@@ -169,9 +173,11 @@ static bool work_once(tick_run *r)
         if (atomic_load(&st->waiting) || atomic_load(&st->next) >= st->tasks) continue;
         const uint32_t task = atomic_fetch_add(&st->next, 1u);
         if (task >= st->tasks) continue;
-        task_context context = {&r->queues[st->first + task], st->first + task, 0, system->settles};
+        tide_memory_sync(); // What the systems before it made on other threads
+        task_context context = {&r->queues[st->first + task], st->first + task, 0, system->settles, NULL};
         run_task(r->world, system, &context, task);
         r->spawned[st->first + task] = context.spawned;
+        r->data[st->first + task] = context.data;
         finish_task(r, s);
         return true;
     }
@@ -183,15 +189,27 @@ static void work(void *context, const uint32_t thread)
     (void)thread;
     tick_run *r = context;
     if (r->tick->prepare) r->tick->prepare(r->world);
+    // A thread with nothing to do spins a little, then lets the system run
+    // something else on its core: with a thread on every core, one the
+    // system pushes aside for a moment would otherwise hold the tick up for
+    // a whole time slice, while the rest spin.
+    uint32_t idle = 0;
     while (atomic_load(&r->finished) < r->tick->count) {
-        if (!work_once(r)) relax();
+        if (work_once(r)) {
+            idle = 0;
+        } else if (++idle < 256u) {
+            relax();
+        } else {
+            tide_yield();
+            idle = 0;
+        }
     }
 }
 
 static void run_on_threads(void *world, const tide_tick_systems *tick, const tide_jobs *jobs)
 {
     const uint32_t count = tick->count;
-    tick_run r = {world, tick, zeroed(count, sizeof(system_state)), NULL, zeroed(count + 1u, sizeof(uint32_t)), NULL, NULL, 0};
+    tick_run r = {world, tick, zeroed(count, sizeof(system_state)), NULL, zeroed(count + 1u, sizeof(uint32_t)), NULL, NULL, NULL, 0};
     uint32_t tasks = 0;
     uint32_t edges = 0;
     uint32_t last_spawner = NONE;
@@ -230,9 +248,11 @@ static void run_on_threads(void *world, const tide_tick_systems *tick, const tid
     free(filled);
     r.queues = zeroed(tasks, sizeof(tide_queue));
     r.spawned = zeroed(tasks, sizeof(uint32_t));
+    r.data = zeroed(tasks, sizeof(void *));
     atomic_init(&r.finished, 0u);
 
     jobs->run(jobs->self, work, &r);
+    tide_memory_sync(); // What the other threads made (see tide/page.h)
 
     // What they recorded, in the order one thread would have
     for (uint32_t t = 0; t < tasks; t++) {
@@ -243,6 +263,7 @@ static void run_on_threads(void *world, const tide_tick_systems *tick, const tid
         tide_queue_free(&r.queues[t]);
     }
     free(r.spawned);
+    free(r.data);
     free(r.queues);
     free(r.dependents);
     free(r.first_dependent);
@@ -274,14 +295,18 @@ void tide_run_systems(void *world, const tide_tick_systems *tick, const tide_job
         uint64_t work;
         const uint32_t tasks = system->count(world, &work);
         uint32_t *spawned = system->settles ? zeroed(tasks, sizeof(uint32_t)) : NULL;
+        void **data = system->finish ? zeroed(tasks, sizeof(void *)) : NULL;
         const uint32_t from = tick->queue->count;
         for (uint32_t task = 0; task < tasks; task++) {
-            task_context context = {NULL, first + task, 0, system->settles};
+            task_context context = {NULL, first + task, 0, system->settles, NULL};
             run_task(world, system, &context, task);
             if (spawned) spawned[task] = context.spawned;
+            if (data) data[task] = context.data;
         }
         if (spawned) settle_system(world, tick, system, first, tasks, spawned, NULL, from);
+        if (data) system->finish(world, data, tasks);
         free(spawned);
+        free(data);
         first += tasks;
     }
     tide_entities_settle(tick->entities);

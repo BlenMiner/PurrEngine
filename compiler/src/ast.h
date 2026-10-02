@@ -32,8 +32,9 @@ typedef enum type_kind {
     TY_COLOR,
     TY_STRING,     // Text: literals, and function parameters and locals that hold them
     TY_RECT,       // Rect: a GUI rectangle, x and y from the top left, width and height
-    TY_BLOCK,      // Block: a function's last parameter, the code its caller writes in braces after the call
+    TY_ACTION,      // Action: a function's last parameter, the code its caller writes in braces after the call
     TY_LIST,       // List<T>: decl is the list type, whose one field is its element
+    TY_GRID,       // Grid2<T> and Grid3<T>: decl is the grid type, whose one field is its cell
     TY_COMPONENT,
     TY_SINGLETON,
     TY_INPUT,      // The game's input declaration
@@ -124,6 +125,13 @@ typedef struct param {
     bool written; // The body assigns through it
     bool function_param; // A method's or function's: a copy, or with mut, the caller's variable itself
     bool task_ref;       // An async function's component or singleton: its task gets it again each time it goes on
+    // A chunk system's grid, `chunk mut Field.cells cells`: its type is the
+    // grid's, and it's the grid field `chunk_field` of the component or
+    // singleton `chunk_of`
+    bool chunk;
+    loc chunk_at;
+    struct decl *chunk_of;
+    int chunk_field;
 } param;
 
 // Why a system waits for one that runs before it in the tick (see parallel.c).
@@ -167,6 +175,7 @@ typedef enum decl_kind {
     DECL_EVENT,    // event Hit { fields }: something that happened, sent with Send
     DECL_ENUM,     // enum Page { Title, Options }: a type with named values
     DECL_LIST,     // List<T>, one per element type: its one field is the element; in program.lists
+    DECL_GRID,     // Grid2<T> or Grid3<T>, one per cell type and dimensions: its one field is the cell; in program.grids
     DECL_RESULT,   // T? or `T fails E`, one per combination: field 0 is the value, field 1 the error; in program.results
     DECL_CONST,    // const int MAX_HEALTH = 100;: a value code reads by name, the same on every machine
     DECL_SETTINGS, // settings { tickRate = 30; }: the engine's settings, as fields; in program.settings
@@ -200,7 +209,8 @@ typedef struct decl {
 
     // Components, singletons, inputs, records, structs and events
     VEC(field) fields;
-    int index; // Component bit / singleton index / event index / system order. Constants: 1 while checking, 2 once checked.
+    int index; // Component bit / singleton index / event index / system order / list or grid number. Constants: 1 while checking, 2 once checked.
+    int dims;  // Grids: 2 or 3
 
     // Events
     bool world_event;        // Built-in events the engine sends to the world, never to an entity
@@ -212,6 +222,9 @@ typedef struct decl {
 
     // Enums
     VEC(enum_member) members;
+    str backing;    // `enum Voxel : byte`: the type it's stored as, or empty for int
+    loc backing_at;
+    int width;      // ...in bytes: 1 (byte), 2 (ushort) or 4 (int), once checked
 
     // Methods and functions
     struct decl *owner;       // A method's struct or component; NULL for a function
@@ -252,9 +265,24 @@ typedef struct decl {
     bool draws;          // A function that draws or uses the GUI, itself or through the functions it calls
     loc draws_at;        // ...where it first does
     bool frame_devices;  // ...and whether that's reading this frame's Devices, not drawing
-    bool takes_block;    // A function whose last parameter is a Block: inlined where it's called
+    bool takes_action;   // A function whose last parameter is an Action: inlined where it's called
     bool calls_c;        // Code that calls an extern function, itself or through others: its calls run in order
-    bool writes_text;    // A system that writes text into its world: its heap, which one system changes at a time
+    bool writes_text;    // A system that writes text, lists or grids into its world: its heap, which one system changes at a time
+    int chunk_param;     // A chunk system's grid parameter, 1 + its index; 0 for any other system
+    bool has_reach;      // A chunk system's [Reach], for where tidec can't work out how far it reaches:
+    int reach;           // ...[Reach(n)]'s n cells past its chunk every way, or -1 for
+    VEC(int) reach_cells; // ...[Reach(int2(0, -1), ...)]'s cells around each cell it touches: x, y and z of each
+    loc reach_at;
+    // How far it reaches: cells before and after its chunk on each axis, the
+    // chunks around its own it gets into (a bit each, by tide_grid_around), and
+    // its phases: a chunk's is reach_weight times its position, modulo
+    // reach_phases. What tidec works out, or [Reach]'s (reach.c).
+    int reach_before[3];
+    int reach_after[3];
+    unsigned reach_chunks;
+    int reach_weight[3];
+    int reach_phases;
+    bool sleeps;         // ...and [Sleeps]: it only runs where something within its reach changed
     bool spawns;         // A system that spawns or loads scenes: entity IDs are handed out in order
     bool starts_tasks;   // Code that starts tasks, calling an async function without await: they're the world's, in order
     loc starts_at;       // ...where it first does
@@ -336,10 +364,12 @@ typedef enum builtin_call {
     CALL_SESSION,   // Session.Start, Open, Close, Join, Connect and Leave: `name` says which; type_decl is Start's scene
     CALL_SNAP,      // entity.Snap() or singleton.Snap(): views draw it as it is this tick; type_decl is a singleton's
     CALL_GUI,       // GUI.Button(...), GUILayout.Horizontal() { ... }: calls c_callee with the GUI first
-    CALL_BLOCK,     // content(): runs the Block its function was given
+    CALL_ACTION,    // content(): runs the Action its function was given
     CALL_TEXT,      // name.Contains(...), text's methods: calls c_callee with the text first
     CALL_LIST,      // items.Add(...), a list's methods: `name` says which
     CALL_WAIT,      // Wait.Ticks(n), Wait.Seconds(s) and Wait.Frames(n), awaited: `name` says which
+    CALL_GRID,      // cells.Clear(), a grid's methods: `name` says which; type_decl is the grid
+    CALL_NEW_GRID,  // Grid2(1024, 1024) or Grid3(...): a grid with that size (0: open), whose type comes from where it goes
 } builtin_call;
 
 // What a GUI call needs besides its arguments (expr.gui).
@@ -558,6 +588,7 @@ typedef struct program {
     bool uses_text;      // Some code makes text, in the scratch area the run functions clear
     bool uses_heap;      // Some field holds text or a list: the worlds have a heap
     VEC(decl *) lists;   // Every List<T> type the program uses, one per element type
+    VEC(decl *) grids;   // Every Grid2<T> and Grid3<T> type, one per cell type and dimensions
     VEC(decl *) results; // Every T? and `T fails E` it uses, one per combination
     decl *owner;         // The built-in Owner component.
     decl *devices;       // The built-in Devices record.
@@ -595,6 +626,7 @@ typedef enum fix_kind {
     FIX_CREATE_STRUCT,    // An unknown type where a struct fits: declare one
     FIX_CREATE_COMPONENT, // An unknown type where a component fits: declare one
     FIX_USE_THIS,   // An Entity or LocalEntity parameter: remove it, and name the entity `this`
+    FIX_REMOVE_REACH, // [Reach(n)] on a chunk system whose reach tidec works out: `at` is the attribute
 } fix_kind;
 
 typedef struct fix {
@@ -624,6 +656,19 @@ void analyze_parallelism(program *prog);
 // C is trusted: what it does on several threads at once is the game's to get
 // right.
 bool system_splits(const decl *sys);
+
+// How many phases a chunk system's chunks run in (1 for any other system).
+int chunk_phases(const decl *sys);
+
+// A grid type's chunk: its cells' size in bytes, and 1 << shift[i] cells
+// along axis i (codegen.c).
+void grid_shape(const decl *grid, int *cell, int shift[3]);
+
+// Works out how far each chunk system reaches past its chunk, from the cells
+// its body indexes (reach.c): decl.reach_before and reach_after, or
+// [Reach(n)]'s where it can't. Reports what it can't work out, and Reach
+// where it isn't needed.
+void infer_reaches(program *prog);
 
 // Why `sys` waits for `w->on`, like "both write Transform". `quote` wraps names
 // ("`" for Markdown).

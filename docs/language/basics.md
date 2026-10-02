@@ -174,6 +174,7 @@ system Advance(mut Match match)
 - A member without a value is one more than the one before it, and the first is 0. A value is an int, which can come from constants: `Playing = FIRST_LEVEL + 1`.
 - Members are always written with their enum: `Phase.Playing`.
 - `==` and `!=` compare two values of the same enum, and `int(phase)` gives a member's value.
+- An enum takes four bytes, like an int. `enum Voxel : byte { ... }` takes one, for members from 0 to 255, and `: ushort` two, for 0 to 65535: worth it where there are a lot of them, like a grid's cells.
 - `switch` works on ints and enums. A case is an int, an enum's member, or a constant. Every section ends with `break` or `return`, so none runs into the next.
 
 ## Comments and attributes

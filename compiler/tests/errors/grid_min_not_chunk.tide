@@ -1,0 +1,7 @@
+// expect: only a chunk system's grid has 'min': its chunk's cells
+singleton Field { Grid2<int> cells; }
+system Look(Field field)
+{
+    var m = field.cells.min;
+}
+scene Main { }

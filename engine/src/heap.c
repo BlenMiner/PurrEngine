@@ -30,8 +30,7 @@ static void make_room(tide_heap *h, const uint32_t pages)
     if (pages <= h->room) return;
     uint32_t room = h->room ? h->room : 4u;
     while (room < pages) room *= 2u;
-    tide_page **base = malloc((room + 1u) * sizeof *base);
-    if (!base) tide_out_of_memory();
+    tide_page **base = tide_alloc((room + 1u) * sizeof *base);
     tide_page **grown = base + 1;
     if (h->pages) memcpy(grown, h->page, h->pages * sizeof *grown);
     base[0] = h->page ? (tide_page *)(void *)(h->page - 1) : NULL;
@@ -62,7 +61,7 @@ static void add_page(tide_heap *h, const uint32_t count)
     h->pages += count;
 }
 
-tide_block *tide_heap_write(tide_heap *h, const uint32_t block)
+tide_block *tide_heap_write_shared(tide_heap *h, const uint32_t block)
 {
     tide_page *p = h->page[block >> TIDE_HEAP_PAGE_SHIFT];
     tide_page *own = tide_page_own(p, places(p), in_use(h, p));
@@ -70,6 +69,26 @@ tide_block *tide_heap_write(tide_heap *h, const uint32_t block)
         for (uint32_t k = 0; k < places(own); k++) __atomic_store_n(&h->page[own->first + k], own, __ATOMIC_RELEASE);
     }
     return tide_heap_block(h, block);
+}
+
+tide_block *tide_heap_write_parallel(tide_heap *h, const uint32_t block, tide_page **copied)
+{
+    *copied = NULL;
+    tide_page **slot = &h->page[block >> TIDE_HEAP_PAGE_SHIFT];
+    tide_page *p = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+    // A page replaced meanwhile still has this heap's reference, so it reads as shared
+    if (__atomic_load_n(&p->refs, __ATOMIC_RELAXED) != 1u) {
+        tide_page *own = tide_page_copy(p, 1u, in_use(h, p));
+        if (__atomic_compare_exchange_n(slot, &p, own, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            *copied = p;
+            p = own;
+        } else {
+            free(own); // Another thread's copy got there first: p is that one now
+            tide_memory_sync(); // ...which this one may not see yet (see tide/page.h)
+        }
+    }
+    __atomic_store_n(&p->hashed, UINT32_MAX, __ATOMIC_RELAXED);
+    return (tide_block *)(uintptr_t)((uint8_t *)tide_page_data(p) + (block - (p->first << TIDE_HEAP_PAGE_SHIFT)));
 }
 
 uint32_t tide_heap_alloc(tide_heap *h, const uint32_t bytes)

@@ -1,0 +1,3 @@
+// expect: fields can't hold an Action
+scene Main { }
+component Menu { Action content; }

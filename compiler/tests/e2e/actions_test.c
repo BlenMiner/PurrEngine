@@ -14,7 +14,7 @@ static const Counter *counter(void)
     return tide_get_Counter(&world, (tide_entity){1, 1});
 }
 
-TIDE_TEST(blocks_run_as_the_callers_code)
+TIDE_TEST(actions_run_as_the_callers_code)
 {
     tide_world_init(&world, 1.0f); // Loads Main, which spawns the counter
     tide_world_tick(&world);
@@ -39,7 +39,7 @@ static const tide_draw_command *find(const char *text)
     return NULL;
 }
 
-TIDE_TEST(blocks_close_what_they_leave)
+TIDE_TEST(actions_close_what_they_leave)
 {
     tide_local_init(&local);
     tide_draw_reset(&draw);

@@ -230,6 +230,11 @@
           "match": "\\b(mut|with|without)\\b"
         },
         {
+          "comment": "A chunk system's grid parameter: chunk mut Field.cells cells",
+          "name": "storage.modifier.tide",
+          "match": "\\bchunk(?=\\s+(?:mut\\b|[A-Za-z_][A-Za-z0-9_]*\\.))"
+        },
+        {
           "comment": "The entity the code runs for",
           "name": "variable.language.this.tide",
           "match": "\\bthis\\b"
@@ -310,9 +315,9 @@
     "builtins": {
       "patterns": [
         {
-          "comment": "Built-in value types, void for what a method or function returns, text and Blocks",
+          "comment": "Built-in value types, void for what a method or function returns, text and Actions, and what an enum is stored as (enum Voxel : byte)",
           "name": "storage.type.primitive.tide",
-          "match": "\\b(void|bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|LocalEntity|PlayerID|Color|Rect|string|Block)\\b"
+          "match": "\\b(void|bool|int[234]?|float[234]?|float[234]x[234]|quaternion|Entity|LocalEntity|PlayerID|Color|Rect|string|Action|byte|ushort)\\b"
         },
         {
           "comment": "Built-in singletons, components, records and function groups",

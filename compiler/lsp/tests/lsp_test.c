@@ -834,14 +834,14 @@ TIDE_TEST(lsp_gui)
     start();
     static const char game[] =
         "local singleton Menu { bool open; float volume; }\nscene Main { }\n\n"
-        "void Section(string title, mut bool open, Block content)\n{\n    GUILayout.Toggle(title, open);\n"
+        "void Section(string title, mut bool open, Action content)\n{\n    GUILayout.Toggle(title, open);\n"
         "    if (open) content();\n}\n\n"
         "view Options(mut Menu menu)\n{\n    GUILayout.Area(Anchor.MiddleCenter)\n    {\n"
         "        Section(\"Audio\", menu.open)\n        {\n            GUILayout.Slider(\"Volume\", menu.volume, 0, 1);\n"
         "        }\n    }\n}\n";
     open_document(game);
     TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
-    TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Blocks after calls keep their braces on lines of their own
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Actions after calls keep their braces on lines of their own
 
     const char *widgets = complete("scene Main { }\nview V()\n{\n    GUILayout.$\n}\n");
     TIDE_CHECK(offers(widgets, "Button"));
@@ -856,14 +856,14 @@ TIDE_TEST(lsp_gui)
     TIDE_CHECK(has(toggle, "GUILayout.Toggle(string text, mut bool value) -> bool"));
     TIDE_CHECK(has(toggle, "Returns whether it changed it"));
 
-    open_document("scene Main { }\nvoid Twice(Block content) { con$tent(); content(); }\n");
-    TIDE_CHECK(has(request("textDocument/hover"), "Block content"));
+    open_document("scene Main { }\nvoid Twice(Action content) { con$tent(); content(); }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "Action content"));
 
     open_document("scene Main { }\nview V() { var w = Screen.wid$th; }\n");
     TIDE_CHECK(has(request("textDocument/hover"), "Screen.width: float"));
 
-    // What a Block's caller writes is the caller's code: its names are the caller's.
-    open_document("local singleton M { bool on; }\nscene Main { }\nvoid Twice(Block content) { content(); content(); }\n"
+    // What an Action's caller writes is the caller's code: its names are the caller's.
+    open_document("local singleton M { bool on; }\nscene Main { }\nvoid Twice(Action content) { content(); content(); }\n"
                   "view V(mut M m)\n{\n    Twice()\n    {\n        m.o$n = true;\n    }\n}\n");
     TIDE_CHECK(has(request("textDocument/hover"), "bool on"));
 }
@@ -1079,6 +1079,80 @@ TIDE_TEST(lsp_lists)
                       "score"));
     open_document("component Inventory { List<int> sco$res; }\nscene Main { }\n");
     TIDE_CHECK(has(request("textDocument/hover"), "List<int> scores"));
+}
+
+TIDE_TEST(lsp_grids)
+{
+    start();
+    static const char game[] = "singleton Field { Grid2<int> cells = Grid2(64, 64); }\nscene Main { }\n\n"
+                               "system Fall(chunk mut Field.cells cells)\n{\n"
+                               "    for (var y = cells.min.y; y < cells.max.y; y++) cells[cells.min.x, y] = 1;\n}\n";
+    open_document(game);
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(format_reply(game), "\"result\":[]")); // Grid2<int> keeps no spaces
+
+    const char *members = complete("singleton Field { Grid2<int> cells; }\nscene Main { }\nsystem S(Field field)\n{\n"
+                                   "    var n = field.cells.$\n}\n");
+    TIDE_CHECK(offers(members, "size"));
+    TIDE_CHECK(offers(members, "Clear"));
+    TIDE_CHECK(offers(complete("singleton Field\n{\n    $\n}\nscene Main { }\n"), "Grid2"));
+    TIDE_CHECK(offers(complete("singleton Field { Grid2<int> cells; }\nscene Main { }\nsystem S($) { }\n"), "chunk"));
+    TIDE_CHECK(offers(complete("singleton Field { Grid2<int> cells; }\nscene Main { }\n[$]\nsystem S() { }\n"), "Reach"));
+    open_document("singleton Field { Grid2<int> ce$lls; }\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "Grid2<int> cells"));
+
+    // Byte-sized cells: the enum keeps its backing as written, and hovers show it
+    static const char voxels[] = "enum Voxel : byte\n{\n    Air,\n    Stone,\n}\n\nsingleton World { Grid3<Voxel> cells; }\nscene Main { }\n";
+    open_document(voxels);
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(format_reply(voxels), "\"result\":[]"));
+    open_document("enum Vox$el : byte { Air, Stone }\nscene Main { }\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "enum Voxel : byte"));
+    const char *backings = complete("enum Voxel : $\nscene Main { }\n");
+    TIDE_CHECK(offers(backings, "byte"));
+    TIDE_CHECK(offers(backings, "ushort"));
+}
+
+// How far a chunk system reaches: worked out, so [Reach] only says it where it can't be.
+TIDE_TEST(lsp_reach)
+{
+    start();
+    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\n[Reach(1)]\n"
+                  "system Fall(chunk mut Field.cells cells)\n{\n"
+                  "    for (var x = cells.min.x; x < cells.max.x; x++) cells[x, cells.min.y - 1] = cells[x, cells.min.y];\n}\n");
+    const char *sent = last_sent();
+    TIDE_CHECK(has(sent, "tidec works out how far 'Fall' reaches, so [Reach] isn't needed"));
+    TIDE_CHECK(has(sent, "it reaches 1 cell before it on y"));
+    const char *fix = actions_at(2);
+    TIDE_CHECK(has(fix, "Remove [Reach]: tidec works it out"));
+    TIDE_CHECK(has(fix, "\"start\":{\"line\":2,\"character\":0},\"end\":{\"line\":3,\"character\":0}")); // Its line
+    // With another attribute: it and its comma
+    open_document("singleton Field { Grid2<int> cells; }\nscene Main { }\n[Reach(1), Sleeps]\n"
+                  "system Fall(chunk mut Field.cells cells) { cells[cells.min.x, cells.min.y] = 1; }\n");
+    TIDE_CHECK(has(actions_at(2), "\"start\":{\"line\":2,\"character\":1},\"end\":{\"line\":2,\"character\":11}"));
+
+    // Where it can't work it out, Reach says, and a cell it can tell is past it is a warning
+    open_document("singleton Field { Grid2<int> cells; }\nsingleton Spot { int at; }\nscene Main { }\n"
+                  "system Fall(Spot spot, chunk mut Field.cells cells) { cells[spot.at, cells.min.y] = 1; }\n");
+    TIDE_CHECK(has(last_sent(), "can't work out how far this cell is from the chunk on x"));
+    open_document("singleton Field { Grid2<int> cells; }\nsingleton Spot { int at; }\nscene Main { }\n[Reach(1)]\n"
+                  "system Fall(Spot spot, chunk mut Field.cells cells) { cells[spot.at, cells.min.y - 2] = 1; }\n");
+    sent = last_sent();
+    TIDE_CHECK(!has(sent, "can't work out"));
+    TIDE_CHECK(has(sent, "this cell can be 2 cells before the chunk on y, past its [Reach]"));
+
+    // [Reach] as the cells around each cell it touches: a cell tidec can tell is in a chunk it doesn't get into
+    static const char pattern[] =
+        "singleton Field { Grid2<int> cells; }\nsingleton Spot { int at; }\nscene Main { }\n"
+        "[Reach(int2(-1, 0), int2(0, -1))]\n"
+        "system Fall(Spot spot, chunk mut Field.cells cells) { cells[spot.at, cells.min.y] = cells[cells.min.x - 1, cells.min.y - 1]; }\n";
+    open_document(pattern);
+    sent = last_sent();
+    TIDE_CHECK(has(sent, "this cell can be in the chunk at x -1, y -1 from its own, which its [Reach] doesn't get into"));
+    TIDE_CHECK(has(format_reply(pattern), "\"result\":[]"));
+    open_document("singleton Field { Grid3<int> cells; }\nscene Main { }\n[Reach(int2(1, 0))]\n"
+                  "system Fall(chunk mut Field.cells cells) { }\n");
+    TIDE_CHECK(has(last_sent(), "[Reach(int3(0, -1, 0), int3(1, -1, 0))]")); // A 3D grid's cells are int3
 }
 
 TIDE_TEST(lsp_format_lists)
@@ -1728,7 +1802,7 @@ TIDE_TEST(lsp_format)
 }
 
 // C#-style braces: a block that spans lines has its braces on lines of their
-// own. Blocks on one line and literals stay as they are.
+// own. Actions on one line and literals stay as they are.
 TIDE_TEST(lsp_format_braces)
 {
     start();

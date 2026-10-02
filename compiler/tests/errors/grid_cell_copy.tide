@@ -1,0 +1,8 @@
+// expect: a grid's cell is a copy, so it can't be changed where it is
+struct Cell { int id; }
+singleton Field { Grid2<Cell> cells; }
+system Paint(mut Field field)
+{
+    field.cells[1, 2].id = 3;
+}
+scene Main { }

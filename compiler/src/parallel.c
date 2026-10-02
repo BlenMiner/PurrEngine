@@ -55,6 +55,15 @@ bool system_splits(const decl *sys)
 // which a system hands out as it runs unless it splits (its spawns get theirs
 // once it's done, in the tick's order, without waiting). C is trusted, so
 // calling it makes no system wait.
+// The component or singleton a parameter reads or writes, or NULL: a chunk
+// system's grid is its component's or singleton's field.
+static const decl *accessed(const param *p)
+{
+    if (p->mode != PARAM_READ && p->mode != PARAM_MUT) return NULL;
+    if (p->chunk) return p->chunk_of;
+    return p->type.kind == TY_COMPONENT || p->type.kind == TY_SINGLETON ? p->type.decl : NULL;
+}
+
 static void find_conflicts(const decl *earlier, const decl *later, const bool same_entities, system_wait *w)
 {
     // Starting a task runs its code until it first waits, which can spawn and
@@ -67,18 +76,18 @@ static void find_conflicts(const decl *earlier, const decl *later, const bool sa
     }
     for (int i = 0; i < earlier->params.count; i++) {
         const param *a = &earlier->params.items[i];
-        const bool component = a->type.kind == TY_COMPONENT;
-        if ((!component && a->type.kind != TY_SINGLETON) || (a->mode != PARAM_READ && a->mode != PARAM_MUT)) continue;
-        if (component && !same_entities) continue;
+        const decl *data = accessed(a);
+        if (!data) continue;
+        if (data->kind == DECL_COMPONENT && !same_entities) continue;
         for (int k = 0; k < later->params.count; k++) {
             const param *b = &later->params.items[k];
-            if (b->type.decl != a->type.decl || (b->mode != PARAM_READ && b->mode != PARAM_MUT)) continue;
+            if (accessed(b) != data) continue;
             const bool a_writes = a->mode == PARAM_MUT;
             const bool b_writes = b->mode == PARAM_MUT;
             if (!a_writes && !b_writes) continue;
-            const conflict c = {a->type.decl, a_writes && b_writes ? CONFLICT_BOTH_WRITE
-                                                : a_writes         ? CONFLICT_EARLIER_WRITES
-                                                                   : CONFLICT_EARLIER_READS};
+            const conflict c = {(decl *)data, a_writes && b_writes ? CONFLICT_BOTH_WRITE
+                                              : a_writes         ? CONFLICT_EARLIER_WRITES
+                                                                 : CONFLICT_EARLIER_READS};
             vec_push(w->conflicts, c);
         }
     }
@@ -185,7 +194,7 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
     };
     // What the whole world shares, said once each
     static const char *const shared[] = {
-        [CONFLICT_TEXT] = "both change text or lists, which the match keeps in one heap",
+        [CONFLICT_TEXT] = "both change text, lists or grids, which the match keeps in one heap",
         [CONFLICT_SPAWN] = "both spawn, and entities get their IDs in order",
         [CONFLICT_TASKS] = "tasks start in order, and spawn and change text as they start",
     };
@@ -221,18 +230,49 @@ void describe_wait(const decl *sys, const system_wait *w, const char *quote, sb 
     }
 }
 
-// The components or singletons a system reads (writes = false) or writes.
+// The components or singletons a system reads (writes = false) or writes:
+// for a chunk system's grid, its field.
 static void put_access(sb *out, const decl *sys, const bool writes)
 {
     int count = 0;
     for (int i = 0; i < sys->params.count; i++) {
         const param *p = &sys->params.items[i];
-        if (p->type.kind != TY_COMPONENT && p->type.kind != TY_SINGLETON) continue;
-        if (p->mode != (writes ? PARAM_MUT : PARAM_READ)) continue;
+        const decl *data = accessed(p);
+        if (!data || p->mode != (writes ? PARAM_MUT : PARAM_READ)) continue;
         sb_put(out, count++ ? ", " : writes ? "         writes " : "         reads ");
-        put_decl_name(out, p->type.decl, "", NULL);
+        put_decl_name(out, data, "", NULL);
+        if (p->chunk) sb_printf(out, "." STR_FMT, STR_ARG(data->fields.items[p->chunk_field].name));
     }
     if (count) sb_put(out, "\n");
+}
+
+// How many phases a chunk system's chunks run in: as few as keep two chunks
+// in a phase from touching the same chunk (reach.c).
+int chunk_phases(const decl *sys)
+{
+    return sys->chunk_param && sys->reach_phases > 1 ? sys->reach_phases : 1;
+}
+
+// How far a chunk system reaches past its chunk, in cells before and after
+// it, like ", reaches x -1..+1, y -1", and how many of the chunks that spans
+// it gets into when it's not all of them, or nothing when it stays in its own.
+static void put_reach(sb *out, const decl *sys)
+{
+    const char *axes = "xyz";
+    int written = 0;
+    int spanned = 1;
+    for (int i = 0; i < sys->params.items[sys->chunk_param - 1].type.decl->dims; i++) {
+        const int before = sys->reach_before[i];
+        const int after = sys->reach_after[i];
+        spanned *= 1 + (before > 0) + (after > 0);
+        if (!before && !after) continue;
+        sb_printf(out, "%s%c ", written++ ? ", " : ", reaches ", axes[i]);
+        if (before && after) sb_printf(out, "-%d..+%d", before, after);
+        else if (before) sb_printf(out, "-%d", before);
+        else sb_printf(out, "+%d", after);
+    }
+    const int touched = __builtin_popcount(sys->reach_chunks | 1u << 13);
+    if (touched < spanned) sb_printf(out, ", %d of those %d chunks", touched, spanned);
 }
 
 void print_schedule(const program *prog, const char *game, sb *out)
@@ -256,7 +296,14 @@ void print_schedule(const program *prog, const char *game, sb *out)
         const decl *sys = prog->systems.items[i];
         sb_printf(out, "stage %-2d ", sys->stage);
         put_decl_name(out, sys, "", NULL);
-        sb_put(out, sys->per_entity ? "  (per entity)\n" : "  (once)\n");
+        if (sys->chunk_param) {
+            const int phases = chunk_phases(sys);
+            sb_printf(out, "  (per chunk, %d phase%s", phases, phases == 1 ? "" : "s");
+            put_reach(out, sys);
+            sb_put(out, sys->sleeps ? ", sleeps)\n" : ")\n");
+        } else {
+            sb_put(out, sys->per_entity ? "  (per entity)\n" : "  (once)\n");
+        }
         put_access(out, sys, false);
         put_access(out, sys, true);
         for (int k = 0; k < sys->waits.count; k++) {

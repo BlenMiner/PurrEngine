@@ -1,0 +1,8 @@
+// expect: 'Step' reaches 20 cells past its chunk, and Grid2<float4x4>'s chunks are 16 cells across
+singleton Field { Grid2<float4x4> cells; }
+[Reach(20)]
+system Step(chunk mut Field.cells cells)
+{
+    cells[0, 0] = cells[1, 0];
+}
+scene Main { }

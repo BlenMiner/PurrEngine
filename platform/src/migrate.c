@@ -42,21 +42,46 @@ static bool carries(const tide_layout_field *to, const tide_layout_field *from)
 
 static void carry_fields(const carry *c, int32_t to_type, int32_t from_type, uint8_t *to, const uint8_t *from);
 
+// An enum's value, as wide as its field: a byte, a ushort or an int.
+static int32_t member_at(const uint8_t *at, const uint32_t size)
+{
+    if (size == 1) return at[0];
+    if (size == 2) {
+        uint16_t v;
+        memcpy(&v, at, sizeof v);
+        return v;
+    }
+    int32_t v;
+    memcpy(&v, at, sizeof v);
+    return v;
+}
+
+static void set_member(uint8_t *at, const uint32_t size, const int32_t value)
+{
+    if (size == 1) {
+        at[0] = (uint8_t)value;
+    } else if (size == 2) {
+        const uint16_t v = (uint16_t)value;
+        memcpy(at, &v, sizeof v);
+    } else {
+        memcpy(at, &value, sizeof value);
+    }
+}
+
 // An enum's member, by its name: the new build's number for it, or false when
-// it has none.
+// it has none (or it doesn't fit the field, which a new build made narrower).
 static bool carry_member(const carry *c, const tide_layout_field *tf, uint8_t *to, const tide_layout_field *ff,
                          const uint8_t *from)
 {
     if (tf->decl < 0 || ff->decl < 0) return false;
     const tide_layout_enum *te = &c->to->enums[tf->decl];
     const tide_layout_enum *fe = &c->from->enums[ff->decl];
-    int32_t value;
-    memcpy(&value, from, sizeof value);
+    const int32_t value = member_at(from, ff->size);
     for (uint32_t i = 0; i < fe->member_count; i++) {
         if (fe->members[i].value != value) continue;
         for (uint32_t k = 0; k < te->member_count; k++) {
             if (strcmp(te->members[k].name, fe->members[i].name) != 0) continue;
-            memcpy(to, &te->members[k].value, sizeof value);
+            set_member(to, tf->size, te->members[k].value);
             return true;
         }
         return false;

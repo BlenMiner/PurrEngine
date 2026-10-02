@@ -17,6 +17,9 @@
 
 static tide_world one;  // Ticked on the page's thread
 static tide_world many; // On threads
+// Of `many`, before each tick, as a client keeps them: it shares its pages, so
+// the tick's tasks copy pages and grow the program's memory on threads
+static tide_world snapshot;
 static const tide_jobs *jobs;
 static int ticks;
 static double now;
@@ -55,6 +58,7 @@ static int frame(void *user, const float seconds)
     now += seconds;
     if (now > 45.0) return fail(threads_seen & ~1u ? "the ticks took over 45 seconds" : "no worker joined in 45 seconds");
     for (int i = 0; i < 4 && ticks < TICKS; i++, ticks++) {
+        tide_world_copy(&snapshot, &many);
         const double start = seconds_now();
         tide_world_tick(&one);
         const double middle = seconds_now();

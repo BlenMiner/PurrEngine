@@ -1,3 +1,0 @@
-// expect: a Block can't be 'mut'
-scene Main { }
-void Section(mut Block content) { }

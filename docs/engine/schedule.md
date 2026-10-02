@@ -64,7 +64,7 @@ Some things never make systems wait:
 
 Some things are the whole match's, so systems wait for each other over them whatever entities they run for:
 
-- **Text and lists.** Two systems that change the match's text or lists conflict, since they share its heap. Reading text alongside them is fine.
+- **Text, lists and grids.** Two systems that change the match's text, lists or grids conflict, since they share its heap. Reading them alongside is fine.
 - **Spawns.** Entities get their IDs in order. A system that runs on one thread gives a new entity its ID as it spawns, so it waits for the systems before it that spawn. A system that splits its entities across threads doesn't wait: see below.
 - **Tasks.** A system that starts [tasks](../language/tasks.md) runs their code until they first wait, which can spawn and change text, and the match keeps its tasks in the order they start. So it runs on one thread, and waits for the systems before it that start tasks, spawn or change text. Tasks that go on later do so after the tick's changes, one at a time, in the order they started: `--schedule` says so at its end.
 
@@ -76,9 +76,13 @@ Some things are the whole match's, so systems wait for each other over them what
 
 ## Splitting across threads
 
-The other kind of parallelism is a system splitting its entities across threads: each thread takes a chunk of them, up to 1,024. It doesn't change results either, and needs nothing from you, but a system only splits when nothing it does has to happen in order across its entities. One that changes text or lists, or changes a singleton, runs on one thread, alongside the others. Everything a system records (spawns, adds, removes, destroys, events) is applied in the order one thread would have recorded it.
+The other kind of parallelism is a system splitting its entities across threads: each thread takes a chunk of them, up to 1,024. It doesn't change results either, and needs nothing from you, but a system only splits when nothing it does has to happen in order across its entities. One that changes text, lists or grids, or changes a singleton, runs on one thread, alongside the others. Everything a system records (spawns, adds, removes, destroys, events) is applied in the order one thread would have recorded it.
 
 A system that splits can spawn. Its `Spawn` gives a temporary handle, which works like any other: store it in the entity's components, `Add` to it, `Send` to it or put it in an event. Once the system is done, its new entities get their IDs, in the order one thread would have given them, and every handle it kept (in the components it changes, the changes it recorded and its events) becomes the real one, before any system that waits for it starts. Only while the system runs does the difference show: text shows a temporary handle as `Entity(new)`, and C can tell with `tide_entity_is_temporary` (see [C functions](../language/c-functions.md)).
+
+## Chunk systems
+
+A chunk system runs once for each chunk of a grid, on threads: `system Fall(chunk mut Field.cells cells)` (see [Grids](../language/grids.md)). tidec works out how far past its chunk it touches cells, before and after it on each axis, and which of the chunks around its own it gets into, from the cells it indexes (or `[Reach]` says, where it can't). When it gets into others, its chunks run in phases, as few as keep two that run together from touching the same chunk; each phase waits for the one before. Sand that reads below and to both sides gets into 6 chunks and runs in 6 phases, heat that spreads to the cells beside each one, never across corners, runs in 5, and a system that stays in its chunk runs every chunk at once. Either way, the result is the same as on one thread. The schedule shows a chunk system as `(per chunk, 5 phases, reaches x -1..+1, y -1..+1, 5 of those 9 chunks)`, in cells, and it waits for others as a system that writes its grid's component or singleton would.
 
 ## In CMake builds
 

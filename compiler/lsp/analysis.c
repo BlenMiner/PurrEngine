@@ -245,12 +245,16 @@ static void type_ref(const loc qual_at, const loc at, const str text, const type
         type_ref(qual_at, at, (str){text.ptr, text.len - 1}, inner);
         return;
     }
-    if (str_starts_with_c(text, "List<") && text.ptr[text.len - 1] == '>') {
-        add_occ((occurrence){.at = qual_at, .len = 4, .kind = OCC_TYPE, .name = str_from("List"), .type = t});
-        // The element's type, as the formatter writes it: right after "List<"
-        const str inner = {text.ptr + 5, text.len - 6};
-        const loc inner_at = {qual_at.line, qual_at.col + 5, qual_at.file};
-        const type element = t.kind == TY_LIST ? t.decl->fields.items[0].type : (type){TY_ERROR, NULL};
+    // List<T>, Grid2<T> and Grid3<T>: the generic type, then the one it holds
+    const int generic = str_starts_with_c(text, "List<") ? 4
+                      : str_starts_with_c(text, "Grid2<") || str_starts_with_c(text, "Grid3<") ? 5
+                                                                                               : 0;
+    if (generic && text.ptr[text.len - 1] == '>') {
+        add_occ((occurrence){.at = qual_at, .len = generic, .kind = OCC_TYPE, .name = (str){text.ptr, generic}, .type = t});
+        // The held type, as the formatter writes it: right after the '<'
+        const str inner = {text.ptr + generic + 1, text.len - generic - 2};
+        const loc inner_at = {qual_at.line, qual_at.col + generic + 1, qual_at.file};
+        const type element = t.kind == TY_LIST || t.kind == TY_GRID ? t.decl->fields.items[0].type : (type){TY_ERROR, NULL};
         const str last = last_part(inner);
         const loc last_at = {qual_at.line, inner_at.col + (int)(last.ptr - inner.ptr), qual_at.file};
         type_ref(inner_at, last_at, inner, element);
@@ -456,7 +460,7 @@ static void walk_expr(const expr *e)
             o.decl = e->method;
             add_occ(o);
             vec_push(A.calls, e);
-        } else if (e->call == CALL_BLOCK) { // content(): the Block parameter
+        } else if (e->call == CALL_ACTION) { // content(): the Action parameter
             o.kind = OCC_PARAM;
             o.param = e->param;
             add_occ(o);
@@ -850,8 +854,10 @@ static const char *builtin_type_doc(const type_kind kind)
     case TY_COLOR: return "A color: r, g, b and a from 0 to 1. `Color(r, g, b)` or `Color(r, g, b, a)`.";
     case TY_RECT: return "A rectangle on the screen, for the GUI: x and y from the top left, y down, then width and height.";
     case TY_STRING: return "Text, written in double quotes.";
-    case TY_BLOCK: return "Code the caller writes in braces after the call, run with `content();`.";
+    case TY_ACTION: return "Code the caller writes in braces after the call, run with `content();`.";
     case TY_LIST: return "A list of values, which grows and shrinks: `Count`, `items[i]`, `Add`, `RemoveAt`, `foreach`.";
+    case TY_GRID: return "Cells at positions, kept in chunks only where something's set: `cells[x, y]`, `size`, `Clear()`. "
+                         "Its size is given when it's made, `Grid2(1024, 1024)`; 0 or nothing is open.";
     default: return NULL;
     }
 }
@@ -869,6 +875,7 @@ static const char *decl_keyword(const decl *d)
     case DECL_EVENT: return "event";
     case DECL_ENUM: return "enum";
     case DECL_LIST: return "list";
+    case DECL_GRID: return "grid";
     case DECL_RESULT: return "result";
     case DECL_CONST: return "const";
     case DECL_SETTINGS: return "settings";
@@ -977,7 +984,9 @@ static void format_default(const field *f, sb *out)
 
 static void format_data_decl(const decl *d, sb *out)
 {
-    sb_printf(out, "%s%s " STR_FMT "\n{\n", d->is_local ? "local " : "", decl_keyword(d), STR_ARG(d->name));
+    sb_printf(out, "%s%s " STR_FMT, d->is_local ? "local " : "", decl_keyword(d), STR_ARG(d->name));
+    if (d->kind == DECL_ENUM && d->backing.len > 0) sb_printf(out, " : " STR_FMT, STR_ARG(d->backing));
+    sb_put(out, "\n{\n");
     for (int i = 0; i < d->members.count; i++) {
         sb_printf(out, "    " STR_FMT " = %lld,\n", STR_ARG(d->members.items[i].name), (long long)d->members.items[i].number);
     }
@@ -1088,6 +1097,7 @@ static void describe_default(const type t, sb *out)
     case TY_PLAYER: sb_put(out, "No player"); break;
     case TY_STRING: sb_put(out, "Empty text"); break;
     case TY_LIST: sb_put(out, "An empty list"); break;
+    case TY_GRID: sb_put(out, "An empty grid, open every way"); break;
     case TY_ENUM: {
         const enum_member *zero = NULL;
         for (int i = 0; i < t.decl->members.count && !zero; i++) {
@@ -1731,6 +1741,37 @@ void analysis_code_actions(const int start_line, const int end_line, jbuf *out)
             break;
         }
         case FIX_USE_THIS: continue; // use_this_action
+        case FIX_REMOVE_REACH: {
+            // [Reach(1)] alone: its line; [Reach(1), Sleeps]: it and its comma
+            const int name = token_at(f->at);
+            if (name < 1) continue;
+            int last = name;
+            if (last + 1 < DOC->tok_count && DOC->toks[last + 1].kind == T_LPAREN) {
+                while (last + 1 < DOC->tok_count && DOC->toks[last].kind != T_RPAREN) last++;
+            }
+            if (last + 1 >= DOC->tok_count) continue;
+            const token *open = &DOC->toks[name - 1];
+            const token *next = &DOC->toks[last + 1];
+            sb_put(&title, "Remove [Reach]: tidec works it out");
+            if (open->kind == T_LBRACKET && next->kind == T_RBRACKET) {
+                start = open->at;
+                end = token_end(next);
+                const bool first = name < 2 || DOC->toks[name - 2].at.line < open->at.line;
+                const bool alone = last + 2 >= DOC->tok_count || DOC->toks[last + 2].at.line > next->at.line;
+                if (first && alone) { // The whole line
+                    start = (loc){open->at.line, 1, open->at.file};
+                    end = (loc){open->at.line + 1, 1, open->at.file};
+                }
+            } else if (next->kind == T_COMMA && last + 2 < DOC->tok_count) {
+                start = f->at;
+                end = DOC->toks[last + 2].at;
+            } else {
+                start = open->at; // The comma before it
+                end = token_end(&DOC->toks[last]);
+            }
+            sb_put(&text, "");
+            break;
+        }
         }
         if (written++) jb_put(out, ",");
         jb_put(out, "{\"title\":");
@@ -2450,6 +2491,9 @@ static type member_type(const type t, const str member)
     }
     if (t.kind == TY_STRING && str_eq_c(member, "Length")) return (type){TY_INT, NULL};
     if (t.kind == TY_LIST && str_eq_c(member, "Count")) return (type){TY_INT, NULL};
+    if (t.kind == TY_GRID && (str_eq_c(member, "size") || str_eq_c(member, "min") || str_eq_c(member, "max"))) {
+        return (type){t.decl->dims == 3 ? TY_INT3 : TY_INT2, NULL};
+    }
     if (t.kind == TY_QUATERNION && str_eq_c(member, "value")) return (type){TY_FLOAT4, NULL};
     const int n = matrix_dim(t);
     if (n > 0 && member.len == 2 && member.ptr[0] == 'c' && member.ptr[1] >= '0' && member.ptr[1] < '0' + n) {
@@ -2534,6 +2578,13 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "Contains", CK_METHOD, "items.Contains(item) -> bool", "Whether an element is equal to `item`.", "Contains($1)");
         item(c, "IndexOf", CK_METHOD, "items.IndexOf(item) -> int", "Where the first element equal to `item` is, or -1.",
              "IndexOf($1)");
+    }
+    if (t.kind == TY_GRID) {
+        const char *at = t.decl->dims == 3 ? "int3" : "int2";
+        item(c, "size", CK_PROPERTY, at, "The grid's size, 0 on the axes where it's open.", NULL);
+        item(c, "Clear", CK_METHOD, "cells.Clear()", "Sets every cell back to zero, keeping the size.", "Clear()");
+        item(c, "min", CK_PROPERTY, at, "In a chunk system: its chunk's first cell.", NULL);
+        item(c, "max", CK_PROPERTY, at, "In a chunk system: past its chunk's last cell.", NULL);
     }
     if (t.kind == TY_STRING) {
         item(c, "Length", CK_PROPERTY, "int", "How many characters the text has.", NULL);
@@ -2864,6 +2915,8 @@ static void complete_value_types(completion *c, const bool constructors_only)
     if (!constructors_only) {
         item(c, "string", CK_STRUCT, "built-in type", builtin_type_doc(TY_STRING), NULL);
         item(c, "List", CK_STRUCT, "List<T>", builtin_type_doc(TY_LIST), "List<$1>");
+        item(c, "Grid2", CK_STRUCT, "Grid2<T>", builtin_type_doc(TY_GRID), "Grid2<$1>");
+        item(c, "Grid3", CK_STRUCT, "Grid3<T>", builtin_type_doc(TY_GRID), "Grid3<$1>");
     }
 }
 
@@ -2963,10 +3016,10 @@ static void complete_expression(completion *c, const loc at, const bool statemen
     if (view || (routine && sc.decl->kind == DECL_FUNCTION) || (sc.in_input && !sc.in_sanitize)) {
         item(c, "Devices", CK_MODULE, "This machine's keyboard, mouse and gamepad", NULL, NULL);
     }
-    // content(): a function's Block
+    // content(): a function's Action
     for (int i = 0; sc.decl && i < sc.decl->params.count; i++) {
         const param *p = &sc.decl->params.items[i];
-        if (p->type.kind == TY_BLOCK) item(c, str_to_cstr(p->name), CK_FUNCTION, "Block", "Runs the caller's block.", "$0();");
+        if (p->type.kind == TY_ACTION) item(c, str_to_cstr(p->name), CK_FUNCTION, "Action", "Runs the caller's block.", "$0();");
     }
 }
 
@@ -3171,7 +3224,12 @@ void analysis_completion(const int line, const int character, jbuf *out)
     case CTX_TOP:
         if (pk == T_EOF || pk == T_RBRACE || pk == T_SEMI || pk == T_RBRACKET) complete_declarations(&c);
         else if (pk == T_IDENT && str_eq_c(prev->text, "using")) complete_namespaces(&c, true);
-        else if (pk == T_IDENT && str_eq_c(prev->text, "extern")) { // Its return type
+        else if (pk == T_COLON && last >= 2 && DOC->toks[last - 1].kind == T_IDENT && DOC->toks[last - 2].kind == T_IDENT
+                 && str_eq_c(DOC->toks[last - 2].text, "enum")) { // What the enum is stored as
+            item(&c, "byte", CK_KEYWORD, "One byte: members from 0 to 255", NULL, NULL);
+            item(&c, "ushort", CK_KEYWORD, "Two bytes: members from 0 to 65535", NULL, NULL);
+            item(&c, "int", CK_KEYWORD, "Four bytes, as an enum is without one", NULL, NULL);
+        } else if (pk == T_IDENT && str_eq_c(prev->text, "extern")) { // Its return type
             item(&c, "void", CK_KEYWORD, "Returns nothing", NULL, NULL);
             complete_value_types(&c, false);
             complete_structs(&c);
@@ -3186,6 +3244,10 @@ void analysis_completion(const int line, const int character, jbuf *out)
             item(&c, "NativeName", CK_FUNCTION, "[NativeName(\"c_function\")]",
                  "The C function the extern function after it calls, when its name isn't the function's own.",
                  "NativeName(\"$1\")");
+            item(&c, "Reach", CK_FUNCTION, "[Reach(cells)]",
+                 "How many cells past its chunk a chunk system touches, where tidec can't work it out from the cells it indexes.", "Reach($1)");
+            item(&c, "Sleeps", CK_FUNCTION, "[Sleeps]",
+                 "A chunk system that only runs where something within its reach changed.", "Sleeps");
         }
         break;
 
@@ -3260,6 +3322,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 item(&c, "mut", CK_KEYWORD, "Write access", NULL, NULL);
                 item(&c, "with", CK_KEYWORD, "Entities must have this component", NULL, NULL);
                 item(&c, "without", CK_KEYWORD, "Entities must not have this component", NULL, NULL);
+                item(&c, "chunk", CK_KEYWORD, "A grid's chunks, one at a time on threads: chunk mut Field.cells cells", NULL, NULL);
                 item(&c, "Devices", CK_CLASS, "The devices of the entity's owner, or the server's", NULL, NULL);
             }
             complete_types(&c, true, true, pk != T_MUT);
@@ -3545,7 +3608,7 @@ static const char *check_new_name(const occurrence *target, const str name)
                                            "fail", "try", "is", "null", "await"};
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
-                                           "GUI", "GUILayout", "Screen", "Anchor", "Block", "Session", "SessionState",
+                                           "GUI", "GUILayout", "Screen", "Anchor", "Action", "Session", "SessionState",
                                            "DisconnectReason", "Connected", "Disconnected"};
     static char message[160];
 
@@ -3928,6 +3991,15 @@ static bool is_type_question(const int i)
     return k == 0 || DOC->toks[k - 1].at.line != DOC->toks[k].at.line || DOC->toks[k - 1].kind == T_MUT;
 }
 
+// Whether the `{` at token `i` opens an enum's members: `enum Name {` or
+// `enum Name : byte {`, whose members go one to a line, none continuing another.
+static bool opens_enum(const int i)
+{
+    int k = i - 1;
+    if (k >= 2 && DOC->toks[k].kind == T_IDENT && DOC->toks[k - 1].kind == T_COLON) k -= 2;
+    return k >= 1 && DOC->toks[k].kind == T_IDENT && DOC->toks[k - 1].kind == T_IDENT && str_eq_c(DOC->toks[k - 1].text, "enum");
+}
+
 // Whether the `default` at token `i` is a switch's label rather than a value:
 // `default:`, but not `c ? default : x`.
 static bool is_default_label(const int i)
@@ -3947,6 +4019,12 @@ static bool is_label_colon(const int i)
     return false;
 }
 
+// A type written with another in <>, which the formatter keeps tight: List<int>.
+static bool generic_type(const str name)
+{
+    return str_eq_c(name, "List") || str_eq_c(name, "Grid2") || str_eq_c(name, "Grid3");
+}
+
 static bool space_between(const fmt_item *a, const fmt_item *b)
 {
     if (a->tok < 0 || b->tok < 0) return true; // Comments
@@ -3963,12 +4041,12 @@ static bool space_between(const fmt_item *a, const fmt_item *b)
     if (y == T_QUESTION && is_type_question(b->tok)) return false;
     if (a->unary || (x == T_NOT && !is_postfix_bang(a->tok)) || x == T_TILDE) return false;
     // List<Item>: a type, not a comparison
-    if (x == T_IDENT && y == T_LT && str_eq_c(DOC->toks[a->tok].text, "List")) return false;
-    if (x == T_LT && a->tok > 0 && str_eq_c(DOC->toks[a->tok - 1].text, "List")) return false;
+    if (x == T_IDENT && y == T_LT && generic_type(DOC->toks[a->tok].text)) return false;
+    if (x == T_LT && a->tok > 0 && generic_type(DOC->toks[a->tok - 1].text)) return false;
     if (y == T_GT) {
         int k = b->tok - 1;
         while (k > 0 && (DOC->toks[k].kind == T_IDENT || DOC->toks[k].kind == T_DOT)) k--;
-        if (k > 0 && DOC->toks[k].kind == T_LT && str_eq_c(DOC->toks[k - 1].text, "List")) return false;
+        if (k > 0 && DOC->toks[k].kind == T_LT && generic_type(DOC->toks[k - 1].text)) return false;
     }
     // i++ and ++i: against what they change
     if ((y == T_PLUS_PLUS || y == T_MINUS_MINUS) && ends_operand(x)) return false;
@@ -4156,11 +4234,14 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
     // `parens` at each brace depth: inside a literal in a call, like
     // Spawn(Body {, only parentheses opened since the brace continue a line.
     int *parens_at = arena_alloc(sizeof(int) * ((size_t)DOC->tok_count + 1));
+    bool *enum_at = arena_alloc(sizeof(bool) * ((size_t)DOC->tok_count + 1)); // Each brace depth: an enum's members
+    enum_at[0] = false;
     int pending = 0; // Extra indents for the statement after `if (...)` or `else` without braces
     bool blank_before = true; // Drops blank lines at the start of the file
     // The last line with code: did it end a statement or block, or open a braceless if?
     bool statement_open = false;
     bool opened_pending = false;
+    bool ended_comma = false; // ...or ended with a comma, which in an enum ends a member
     for (int l = 1; l <= line_count; l++) {
         const str original = line_text(l);
         const fmt_line *items = &lines[l];
@@ -4222,7 +4303,7 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
                 // still: code aligned under an opening parenthesis stays aligned.
                 const bool continuation = first != T_LBRACE && first != T_RBRACE && (depth > 0 || parens > 0)
                                        && ((parens > parens_at[depth] && first != T_RPAREN)
-                                           || (statement_open && !opened_pending));
+                                           || (statement_open && !opened_pending && !(enum_at[depth] && ended_comma)));
                 int own_width = 0;
                 if (piece == 0) {
                     for (const char *c = original.ptr; c < from->text; c++) own_width += *c == '\t' ? tab_size : 1;
@@ -4252,7 +4333,10 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
             for (const fmt_item *item = from; item < to; item++) {
                 if (item->tok < 0) continue;
                 switch (DOC->toks[item->tok].kind) {
-                case T_LBRACE: parens_at[++depth] = parens; break;
+                case T_LBRACE:
+                    parens_at[++depth] = parens;
+                    enum_at[depth] = opens_enum(item->tok);
+                    break;
                 case T_RBRACE: if (depth > 0) depth--; break;
                 case T_LPAREN: parens++; break;
                 case T_RPAREN: if (parens > 0) parens--; break;
@@ -4270,6 +4354,7 @@ const char *analysis_format(int tab_size, const bool insert_spaces, jbuf *out)
                     opened_pending = true;
                 }
                 statement_open = k != T_SEMI && k != T_LBRACE && k != T_RBRACE && !label;
+                ended_comma = k == T_COMMA;
             }
         }
         if (!verbatim[l] && (text.len != (size_t)original.len || memcmp(text.data, original.ptr, text.len) != 0)) {

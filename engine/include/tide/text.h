@@ -135,9 +135,18 @@ typedef struct tide_text {
 // and the local world's (or NULL).
 void tide_text_use(tide_heap *match_heap, tide_heap *local_heap);
 
+// This thread's: the heaps tide_text_use set, by `where`, and the scratch
+// area (NULL until it's first used). They're here for the functions below,
+// which run for every element code reads or writes, so they inline.
+extern TIDE_THREAD_LOCAL tide_heap *tide_world_heaps[2];
+extern TIDE_THREAD_LOCAL char *tide_scratch_area;
+
 // The heap of TIDE_IN_MATCH or TIDE_IN_LOCAL, as tide_text_use set it; NULL
 // for TIDE_IN_SCRATCH.
-tide_heap *tide_heap_of(uint32_t where);
+static inline tide_heap *tide_heap_of(const uint32_t where)
+{
+    return where == TIDE_IN_MATCH || where == TIDE_IN_LOCAL ? tide_world_heaps[where] : NULL;
+}
 
 // Reading: a view of the text, which lasts until the running code is done.
 tide_str tide_text_view(tide_text t);
@@ -170,8 +179,23 @@ tide_block *tide_scratch_block(uint32_t bytes, uint32_t *at);
 
 // A tagged offset's block, or NULL for 0: to read, and to change (a world's
 // is made its own, apart from its snapshots: see tide/page.h).
-tide_block *tide_block_at(uint32_t at);
-tide_block *tide_block_write(uint32_t at);
+static inline tide_block *tide_block_at(const uint32_t at)
+{
+    if (!at) return NULL;
+    const uint32_t offset = at & 0x3FFFFFFFu;
+    if (at >> 30 == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+    const tide_heap *heap = tide_heap_of(at >> 30);
+    return heap ? tide_heap_block(heap, offset) : NULL;
+}
+
+static inline tide_block *tide_block_write(const uint32_t at)
+{
+    if (!at) return NULL;
+    const uint32_t offset = at & 0x3FFFFFFFu;
+    if (at >> 30 == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+    tide_heap *heap = tide_heap_of(at >> 30);
+    return heap ? tide_heap_write(heap, offset) : NULL;
+}
 
 // A `mut string` parameter: the caller's text, a field's or a local's, which
 // the function reads and changes.

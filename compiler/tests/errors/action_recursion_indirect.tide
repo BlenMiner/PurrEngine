@@ -1,4 +1,4 @@
 // expect: it calls itself through 'Inner'
 scene Main { }
-void Outer(Block content) { Inner(); }
+void Outer(Action content) { Inner(); }
 void Inner() { Outer() { } }

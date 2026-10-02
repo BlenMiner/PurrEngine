@@ -1,0 +1,83 @@
+// Gallery: every player paints on a canvas of their own, which everyone sees,
+// the joining benchmark (see AGENTS.md, Benchmarks). The match starts with
+// canvases painted long ago, by players who left, so whoever joins gets a big
+// world that doesn't pack.
+
+const int PEN = 3; // The pen's radius, in pixels
+
+scene Main { }
+
+// The benchmark sets these once the world is made, and the first tick reads
+// them (Setup).
+singleton Gallery
+{
+    int size = 256;   // Each canvas's width and height, in pixels
+    int archived = 2; // Canvases already painted when the match starts
+    int made;         // Canvases so far, which tells their noise apart
+    bool open;        // Setup has run
+}
+
+// A grid of pixels, colors as 0xRRGGBBAA. A blank one has no chunks, so it
+// costs nothing until it's painted on.
+component Canvas
+{
+    Grid2<int> pixels;
+    int seed;
+    bool painted; // One of the archive's, full of noise
+}
+
+input Pen
+{
+    int x;
+    int y;
+    int color;
+    bool down;
+}
+
+int Hash(int x, int y)
+{
+    mut var h = x * 374761393 + y * 668265263;
+    h = (h ^ (h >> 13)) * 1103515245;
+    return h ^ (h >> 16);
+}
+
+system Setup(mut Gallery gallery)
+{
+    if (gallery.open) return;
+    gallery.open = true;
+    for (var i = 0; i < gallery.archived; i++)
+    {
+        gallery.made += 1;
+        Spawn(Canvas { pixels = Grid2(gallery.size, gallery.size), seed = gallery.made, painted = true });
+    }
+}
+
+event(PlayerJoined joined) Join(mut Gallery gallery)
+{
+    gallery.made += 1;
+    Spawn(Canvas { pixels = Grid2(gallery.size, gallery.size), seed = gallery.made }, Owner { player = joined.player });
+}
+
+// The archive's canvases are noise, every pixel of them.
+event(Spawned) Fill(mut Canvas canvas)
+{
+    if (!canvas.painted) return;
+    var size = canvas.pixels.size;
+    for (var y = 0; y < size.y; y++)
+    {
+        for (var x = 0; x < size.x; x++) canvas.pixels[x, y] = Hash(y * size.x + x, canvas.seed) | 1;
+    }
+}
+
+// Painting past the canvas's edge does nothing.
+system Stroke(Pen pen, mut Canvas canvas, with Owner)
+{
+    if (!pen.down) return;
+    for (var dy = -PEN; dy <= PEN; dy++)
+    {
+        for (var dx = -PEN; dx <= PEN; dx++)
+        {
+            if (dx * dx + dy * dy <= PEN * PEN) canvas.pixels[pen.x + dx, pen.y + dy] = pen.color;
+        }
+    }
+}

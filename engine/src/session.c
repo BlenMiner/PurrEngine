@@ -277,6 +277,9 @@ typedef struct connection {
     uint32_t frame_ack;  // It has every tick before this one
     uint32_t frame_mask; // ...and these after it
     sent_mark *frame_sent; // history
+    // It was sent the world and needs every tick from it on, however long
+    // that took: the server keeps them until it catches up (keep_needed)
+    bool catching_up;
 
     // Its inputs, by tick
     uint32_t newest_input; // The last tick it sent an input for, plus one
@@ -449,6 +452,7 @@ static void start_snapshot(tide_server *s, connection *c)
     c->sending = true;
     c->frame_ack = s->tick;
     c->frame_mask = 0;
+    c->catching_up = true;
     memset(c->frame_sent, 0, s->w.history * sizeof *c->frame_sent);
     const bool base = c->has_world || (c->can_start && s->start_kind != START_UNKNOWN && !c->local);
     const bool big = !g->pack_world || g->pack_world(s->world, NULL, 0) > CHUNK * CHUNKS_PER_UPDATE;
@@ -777,6 +781,62 @@ static void put_input(tide_server *s, tide_writer *w, const uint32_t slot, const
     tide_write_bytes(w, packed, size);
 }
 
+// Twice the ticks kept, each where it goes in the bigger ring, with what each
+// player was sent of it. False, changing nothing, without the memory.
+static bool grow_history(tide_server *s)
+{
+    const uint32_t old = s->w.history;
+    const uint32_t grown = old * 2u;
+    stored_frame *frames = calloc(grown, sizeof *frames);
+    sent_mark *marks[TIDE_MAX_PLAYERS] = {0};
+    bool ok = frames != NULL;
+    for (uint32_t p = 0; ok && p < TIDE_MAX_PLAYERS; p++) {
+        if (!s->connections[p].used) continue;
+        marks[p] = calloc(grown, sizeof *marks[p]);
+        ok = marks[p] != NULL;
+    }
+    if (!ok) {
+        free(frames);
+        for (uint32_t p = 0; p < TIDE_MAX_PLAYERS; p++) free(marks[p]);
+        return false;
+    }
+    for (uint32_t i = 0; i < old; i++) {
+        if (s->frames[i].data) frames[s->frames[i].tick % grown] = s->frames[i];
+    }
+    for (uint32_t p = 0; p < TIDE_MAX_PLAYERS; p++) {
+        connection *c = &s->connections[p];
+        if (!c->used) continue;
+        for (uint32_t i = 0; i < old; i++) {
+            if (c->frame_sent[i].at > 0.0) marks[p][c->frame_sent[i].tick % grown] = c->frame_sent[i];
+        }
+        free(c->frame_sent);
+        c->frame_sent = marks[p];
+    }
+    free(s->frames);
+    s->frames = frames;
+    s->w.history = grown;
+    return true;
+}
+
+// The ticks kept are a ring, which the tick about to be stored would go round
+// onto the oldest. While a player who was sent the world still needs that
+// one, the ring grows instead: a world that took longer to send than the
+// ticks kept would otherwise be sent again and again, never caught up with.
+static void keep_needed(tide_server *s, const uint32_t tick)
+{
+    const stored_frame *oldest = &s->frames[tick % s->w.history];
+    if (!oldest->data) return;
+    for (uint32_t p = 0; p < TIDE_MAX_PLAYERS; p++) {
+        const connection *c = &s->connections[p];
+        if (c->used && c->catching_up && oldest->tick >= c->frame_ack) {
+            if (grow_history(s)) return;
+            // Without the memory, players catching up get the world again instead
+            for (uint32_t q = 0; q < TIDE_MAX_PLAYERS; q++) s->connections[q].catching_up = false;
+            return;
+        }
+    }
+}
+
 // Runs one tick: joins and leaves, then the inputs that arrived for it, in
 // slot order, then the systems. Clients do exactly the same with the frame.
 static void server_tick(tide_server *s)
@@ -849,6 +909,7 @@ static void server_tick(tide_server *s)
     s->ended = g->ended && g->ended(s->world);
     patch_u64(s->frame, g->hash_world(s->world));
 
+    keep_needed(s, tick);
     stored_frame *f = &s->frames[tick % s->w.history];
     uint8_t *data = realloc(f->data, w.size);
     if (!data) return;
@@ -920,10 +981,15 @@ static uint32_t piece_header(const tide_server *s, const uint32_t tick, const ui
 // The ticks it lacks, in pieces, as many packets as it takes (up to a limit).
 static void send_frames(tide_server *s, connection *c)
 {
-    if (s->tick - c->frame_ack >= s->w.history) { // Too far behind for the ticks kept: the whole world again
+    // Too far behind for the ticks kept: the whole world again. One catching
+    // up with the world it was sent has them all kept for it (keep_needed).
+    if (!c->catching_up && s->tick - c->frame_ack >= s->w.history) {
         start_snapshot(s, c);
         return;
     }
+    // Caught up with the world it was sent: from here, a player that falls
+    // behind gets the world again, rather than the server keeping every tick
+    if (c->catching_up && s->tick - c->frame_ack <= windows_for(s->desc.tick_rate).history / 2u) c->catching_up = false;
     // While what it lacks fits in one datagram, each one carries all of it:
     // a lost one costs a frame, not a round trip. Beyond that, what was sent
     // goes again once it should have been acknowledged.

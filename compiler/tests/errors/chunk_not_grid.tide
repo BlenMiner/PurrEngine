@@ -1,0 +1,4 @@
+// expect: 'Field.count' is int, not a grid
+singleton Field { int count; }
+system Step(chunk mut Field.count cells) { }
+scene Main { }

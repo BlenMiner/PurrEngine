@@ -1,0 +1,8 @@
+// expect: 'Reach' is for chunk systems, which run once per chunk of a grid
+singleton Field { int count; }
+[Reach(1)]
+system Step(mut Field field)
+{
+    field.count += 1;
+}
+scene Main { }

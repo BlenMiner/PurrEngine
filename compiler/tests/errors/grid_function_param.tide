@@ -1,0 +1,3 @@
+// expect: functions can't take grids yet
+void Fill(mut Grid2<int> cells) { }
+scene Main { }

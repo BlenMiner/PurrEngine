@@ -30,7 +30,7 @@ event(Spawned) Setup(with Main)
 }
 
 // Runs its block for each number below n, in a loop of its own.
-void Each(int n, Block content)
+void Each(int n, Action content)
 {
     for (var i = 0; i < n; i++)
     {

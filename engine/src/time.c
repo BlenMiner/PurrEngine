@@ -22,9 +22,20 @@ uint64_t tide_time_now_ns(void)
     return (c / f) * 1000000000ull + (c % f) * 1000000000ull / f;
 }
 
+void tide_yield(void)
+{
+    SwitchToThread();
+}
+
 #else
 
+#include <sched.h>
 #include <time.h>
+
+void tide_yield(void)
+{
+    sched_yield();
+}
 
 uint64_t tide_time_now_ns(void)
 {

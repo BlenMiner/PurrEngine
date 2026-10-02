@@ -1,0 +1,3 @@
+// expect: a struct can't hold a grid
+struct Map { Grid2<int> cells; }
+scene Main { }

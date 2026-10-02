@@ -1,3 +1,0 @@
-// expect: only functions take a Block, not methods
-scene Main { }
-struct Stats { int hp; void Each(Block content) { } }

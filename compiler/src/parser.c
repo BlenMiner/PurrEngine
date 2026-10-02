@@ -103,11 +103,28 @@ static qname parse_qname(parser *p, const char *what)
 // ---------------------------------------------------------------------------
 // Expressions
 
-// A type: a name, maybe qualified, or List<T>, whose text is "List<T>".
+// Generic types, which take a type in <>: List<T>, Grid2<T> and Grid3<T>.
+static bool generic_name(const str name)
+{
+    return str_eq_c(name, "List") || str_eq_c(name, "Grid2") || str_eq_c(name, "Grid3");
+}
+
+// A type: a name, maybe qualified, or a generic one like List<T>, whose text
+// is "List<T>".
 static qname parse_type(parser *p, const char *what)
 {
     qname q = parse_qname(p, what);
-    if (!at(p, T_LT) || !str_eq_c(q.text, "List")) return q;
+    if (!at(p, T_LT) || !generic_name(q.text)) return q;
+    if (!str_eq_c(q.text, "List")) { // Grid2<T> and Grid3<T>
+        advance(p);
+        const qname cell = parse_type(p, "the grid's cell type, like 'Grid2<int>'");
+        expect(p, T_GT, "'>' after the grid's cell type");
+        const int len = cell.text.len + 7;
+        char *text = arena_alloc((size_t)len + 1);
+        snprintf(text, (size_t)len + 1, STR_FMT "<" STR_FMT ">", STR_ARG(q.text), STR_ARG(cell.text));
+        q.text = (str){text, len};
+        return q;
+    }
     advance(p);
     const qname element = parse_type(p, "the list's element type, like 'List<int>'");
     if (at(p, T_SHR)) {
@@ -303,11 +320,18 @@ static expr *parse_postfix(parser *p)
             e = value;
             continue;
         }
-        if (at(p, T_LBRACKET)) { // items[i]
+        if (at(p, T_LBRACKET)) { // items[i], or a grid's cells[x, y]: cells[int2(x, y)]
             const token *open = advance(p);
             expr *index = new_expr(E_INDEX, open->at);
             index->object = e;
             index->lhs = parse_expr(p);
+            if (at(p, T_COMMA)) {
+                expr *position = new_expr(E_CALL, index->lhs->at);
+                vec_push(position->args, index->lhs);
+                while (accept(p, T_COMMA)) vec_push(position->args, parse_expr(p));
+                position->name = str_from(position->args.count == 2 ? "int2" : "int3");
+                index->lhs = position;
+            }
             expect(p, T_RBRACKET, "']' after the index");
             e = index;
             continue;
@@ -704,7 +728,7 @@ static bool at_local_decl(const parser *p)
 {
     const token *t = peek(p);
     if (t->kind != T_IDENT) return false;
-    if (str_eq_c(t->text, "List") && peek_at(p, 1)->kind == T_LT) return true;
+    if (generic_name(t->text) && peek_at(p, 1)->kind == T_LT) return true;
     int next = 1;
     while (peek_at(p, next)->kind == T_DOT && peek_at(p, next + 1)->kind == T_IDENT) next += 2;
     if (peek_at(p, next)->kind == T_IDENT) return true;
@@ -1280,10 +1304,21 @@ static void parse_query_rest(parser *p, decl *d)
             param prm = {0};
             prm.at = peek(p)->at;
             const char *what = "parameter type";
-            if (accept(p, T_WITH)) {
+            // `chunk mut Field.cells cells`: a chunk system's grid. `chunk` is
+            // only a keyword here, before `mut` or a name.
+            const token *first = peek(p);
+            if (first->kind == T_IDENT && str_eq_c(first->text, "chunk")
+                && (peek_at(p, 1)->kind == T_MUT || (peek_at(p, 1)->kind == T_IDENT && peek_at(p, 2)->kind != T_COMMA
+                                                     && peek_at(p, 2)->kind != T_RPAREN))) {
+                advance(p);
+                prm.chunk = true;
+                prm.chunk_at = first->at;
+                what = "the grid after 'chunk', like 'chunk mut Field.cells cells'";
+            }
+            if (!prm.chunk && accept(p, T_WITH)) {
                 prm.mode = PARAM_WITH;
                 what = "component name after 'with'";
-            } else if (accept(p, T_WITHOUT)) {
+            } else if (!prm.chunk && accept(p, T_WITHOUT)) {
                 prm.mode = PARAM_WITHOUT;
                 what = "component name after 'without'";
             } else {
@@ -1310,6 +1345,11 @@ static decl *parse_enum(parser *p)
 {
     const token *name = expect_ident(p, "enum name");
     decl *d = new_decl(DECL_ENUM, name);
+    if (accept(p, T_COLON)) { // enum Voxel : byte, as in C#
+        const token *backing = expect_ident(p, "what the enum is stored as: 'byte', 'ushort' or 'int'");
+        d->backing = backing->text;
+        d->backing_at = backing->at;
+    }
     expect(p, T_LBRACE, "'{'");
     while (!at(p, T_RBRACE)) {
         const token *member = expect_ident(p, "a member name or '}'");
@@ -1378,7 +1418,9 @@ static void parse_attributes(parser *p)
         if (accept(p, T_LPAREN)) {
             if (!at(p, T_RPAREN)) {
                 do {
-                    if (at(p, T_STRING)) vec_push(a.values, parse_expr(p)); // [NativeName("stb_perlin_noise3")]
+                    // [NativeName("stb_perlin_noise3")], [Reach(1)] and [Reach(int2(0, -1))] take values
+                    const bool call = at(p, T_IDENT) && peek_at(p, 1)->kind == T_LPAREN;
+                    if (at(p, T_STRING) || at(p, T_INT) || at(p, T_MINUS) || call) vec_push(a.values, parse_expr(p));
                     else vec_push(a.args, parse_qname(p, "a name"));
                 } while (accept(p, T_COMMA));
             }

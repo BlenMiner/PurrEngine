@@ -42,8 +42,7 @@ static void make_room(tide_entities *t, const uint32_t pages)
     if (pages <= t->room) return;
     uint32_t room = t->room ? t->room : 4u;
     while (room < pages) room *= 2u;
-    tide_page **base = malloc((room + 1u) * sizeof *base);
-    if (!base) tide_out_of_memory();
+    tide_page **base = tide_alloc((room + 1u) * sizeof *base);
     tide_page **grown = base + 1;
     if (t->pages) memcpy(grown, t->page, t->pages * sizeof *grown);
     base[0] = t->page ? (tide_page *)(void *)(t->page - 1) : NULL;

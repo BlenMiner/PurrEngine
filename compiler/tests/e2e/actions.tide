@@ -1,4 +1,4 @@
-// Functions that take a Block: the code the caller writes in braces after the
+// Functions that take an Action: the code the caller writes in braces after the
 // call, run where the function runs it, as the caller's own code.
 
 component Counter
@@ -23,24 +23,24 @@ event(Spawned) Setup(with Main)
     Spawn(Counter);
 }
 
-void Twice(Block content)
+void Twice(Action content)
 {
     content();
     content();
 }
 
-void Never(Block content)
+void Never(Action content)
 {
 }
 
-void When(bool yes, Block content)
+void When(bool yes, Action content)
 {
     if (!yes) return; // Ends When, not its caller
     content();
 }
 
 // Its own switch around the block: a break in the block still ends the caller's.
-void Pick(int which, Block content)
+void Pick(int which, Action content)
 {
     switch (which)
     {
@@ -52,20 +52,20 @@ void Pick(int which, Block content)
     }
 }
 
-void Shadow(Block content)
+void Shadow(Action content)
 {
     var x = 100;
     content();
 }
 
-void Bump(mut int n, Block content)
+void Bump(mut int n, Action content)
 {
     n += 1;
     content();
 }
 
 // Passes its own block on, inside another's.
-void Outer(Block content)
+void Outer(Action content)
 {
     Twice()
     {

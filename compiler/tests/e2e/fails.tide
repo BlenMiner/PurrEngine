@@ -115,7 +115,7 @@ int FirstValid(string a, string b) fails ParseError
     return b == "" ? 0 : try ParseScore(b);
 }
 
-void Repeat(int times, Block body)
+void Repeat(int times, Action body)
 {
     for (var i = 0; i < times; i++) body();
 }

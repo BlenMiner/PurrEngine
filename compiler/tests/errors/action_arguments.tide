@@ -1,0 +1,3 @@
+// expect: an Action takes no arguments: 'content();'
+scene Main { }
+void Twice(Action content) { content(1); }

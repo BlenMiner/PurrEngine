@@ -1,0 +1,3 @@
+// expect: a function that takes an Action returns nothing
+scene Main { }
+bool Section(Action content) { content(); return true; }

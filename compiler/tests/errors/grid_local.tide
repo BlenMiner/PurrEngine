@@ -1,0 +1,7 @@
+// expect: a local can't hold a grid
+singleton Field { Grid2<int> cells; }
+system Copy(Field field)
+{
+    var cells = field.cells;
+}
+scene Main { }

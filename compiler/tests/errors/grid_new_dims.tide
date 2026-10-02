@@ -1,0 +1,3 @@
+// expect: this is a Grid2<int>, made with Grid2(...)
+singleton Field { Grid2<int> cells = Grid3(4, 4, 4); }
+scene Main { }

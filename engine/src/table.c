@@ -17,9 +17,7 @@ static void make_room(tide_table *t, const tide_columns *c, const uint32_t chunk
     if (chunks <= t->room) return;
     uint32_t room = t->room ? t->room * 2u : 4u;
     while (room < chunks) room *= 2u;
-    tide_page **grown = realloc(t->pages, (size_t)room * c->count * sizeof *grown);
-    if (!grown) tide_out_of_memory();
-    t->pages = grown;
+    t->pages = tide_realloc(t->pages, (size_t)t->room * c->count * sizeof *t->pages, (size_t)room * c->count * sizeof *t->pages);
     t->room = room;
 }
 
@@ -292,11 +290,8 @@ void *tide_queue_push(tide_queue *q, const uint32_t size)
 {
     if (q->count == UINT32_MAX) tide_out_of_memory();
     if (q->count / TIDE_QUEUE_PAGE == q->pages) {
-        void **grown = realloc(q->page, (q->pages + 1u) * sizeof *grown);
-        if (!grown) tide_out_of_memory();
-        q->page = grown;
-        q->page[q->pages] = calloc(TIDE_QUEUE_PAGE, size);
-        if (!q->page[q->pages]) tide_out_of_memory();
+        q->page = tide_realloc(q->page, q->pages * sizeof *q->page, (q->pages + 1u) * sizeof *q->page);
+        q->page[q->pages] = tide_alloc_zeroed(TIDE_QUEUE_PAGE, size);
         q->pages++;
     }
     void *item = tide_queue_at(q, q->count++, size);

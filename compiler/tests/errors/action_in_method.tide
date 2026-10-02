@@ -1,0 +1,3 @@
+// expect: only functions take an Action, not methods
+scene Main { }
+struct Stats { int hp; void Each(Action content) { } }

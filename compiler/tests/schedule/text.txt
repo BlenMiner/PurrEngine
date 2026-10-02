@@ -6,7 +6,7 @@ stage 1  Rename  (per entity)
          alongside nothing
 stage 2  Retitle  (per entity)
          writes Title
-         after Rename: both change text or lists, which the match keeps in one heap
+         after Rename: both change text, lists or grids, which the match keeps in one heap
          alongside Count
 stage 2  Count  (per entity)
          reads Name

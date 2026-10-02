@@ -1,0 +1,4 @@
+// expect: a grid's cells can't be 'Bag': it holds text or lists
+struct Bag { List<int> items; }
+singleton Field { Grid2<Bag> bags; }
+scene Main { }

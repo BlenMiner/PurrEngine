@@ -63,6 +63,7 @@ export default defineConfig({
                     { text: 'Errors', link: '/language/errors' },
                     { text: 'Math', link: '/language/math' },
                     { text: 'Text and lists', link: '/language/text-and-lists' },
+                    { text: 'Grids', link: '/language/grids' },
                     { text: 'Events', link: '/language/events' },
                     { text: 'Async and tasks', link: '/language/tasks' },
                     { text: 'Scenes', link: '/language/scenes' },

@@ -40,14 +40,14 @@ local event(Spawned) Setup(with Main)
 }
 
 // A container of our own: runs its content only while open.
-void Foldout(string title, mut bool open, Block content)
+void Foldout(string title, mut bool open, Action content)
 {
     GUILayout.Toggle(title, open);
     if (open) content();
 }
 
 // Runs its content twice, side by side.
-void Twice(Block content)
+void Twice(Action content)
 {
     GUILayout.Horizontal()
     {

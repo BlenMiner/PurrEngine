@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "tide/heap.h"
+#include "tide/text.h"
 
 // Tide's `List<T>`: a list of values, as a value. Generated code calls the
 // functions below with each element's size, and handles the text in elements
@@ -23,18 +24,98 @@
 // Nothing fails: past the end, reads find nothing and writes do nothing. A
 // world's lists grow with its heap; a list in the scratch area stops growing
 // when the area is full.
+//
+// A list's block starts with a header: the count in `a`, and the capacity in
+// `b`. The elements follow it, side by side, unless the list is a world's and
+// they take more than a page: then they're in chunks, heap blocks of a page
+// each, and the list's block lists where each chunk is, `b` saying how many
+// there are (with TIDE_LIST_CHUNKED). A world and its snapshots share pages
+// until one of them changes one (see tide/page.h), and hashes cover each page
+// on its own, so changing an element of a big list copies and hashes its
+// chunk, not the whole list. Growing adds chunks, without moving elements.
 
 typedef struct tide_list {
     uint32_t at; // 0: empty. Otherwise its block's offset, and where in the top two bits
 } tide_list;
 
-int32_t tide_list_count(tide_list l);
+// Bytes of elements in a chunk: a heap block of a page, less its header.
+#define TIDE_LIST_CHUNK ((1u << TIDE_HEAP_PAGE_SHIFT) - (uint32_t)sizeof(tide_block))
+// In a list's header's `b`: the elements are in chunks, as many as the rest says.
+#define TIDE_LIST_CHUNKED 0x80000000u
 
-// The element at `i`, or NULL past the end. It moves when the list grows.
-// tide_list_at is to read it, and tide_list_at_mut to change it in place (a
-// world's block is made its own, apart from its snapshots: see tide/page.h).
-void *tide_list_at(tide_list l, int32_t i, uint32_t size);
-void *tide_list_at_mut(tide_list l, int32_t i, uint32_t size);
+// Reading and writing elements is inline, as code does it for every element
+// it touches.
+
+static inline int32_t tide_list_count(const tide_list l)
+{
+    const tide_block *b = tide_block_at(l.at);
+    return b ? (int32_t)b->a : 0;
+}
+
+// Element `i` of a list in chunks: its chunk (a heap offset), and where in
+// its chunk it is.
+static inline uint32_t tide_list_chunk(const tide_block *b, const uint32_t i, const uint32_t size, uint32_t *place)
+{
+    const uint32_t per = TIDE_LIST_CHUNK / size;
+    *place = i % per * size;
+    return ((const uint32_t *)(b + 1))[i / per];
+}
+
+// The element at `i`, or NULL past the end. tide_list_at is to read it, and
+// tide_list_at_mut to change it in place (a world's page is made its own,
+// apart from its snapshots: see tide/page.h). It moves when a list with its
+// elements side by side grows; one in chunks keeps them where they are.
+//
+// A world's list is found through its heap's page table, which other threads
+// may be reading meanwhile (see tide/heap.h), once for its block and its
+// chunk alike. A chunk is a page of its own, so its elements start right
+// after the header at the page's start.
+static inline void *tide_list_at(const tide_list l, const int32_t i, const uint32_t size)
+{
+    if (!l.at) return NULL;
+    const uint32_t offset = l.at & 0x3FFFFFFFu;
+    if (l.at >> 30 == TIDE_IN_SCRATCH) {
+        tide_block *b = (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+        return i >= 0 && (uint32_t)i < b->a ? (char *)(b + 1) + (size_t)i * size : NULL;
+    }
+    const tide_heap *heap = tide_heap_of(l.at >> 30);
+    if (!heap) return NULL;
+    tide_page *const *pages = __atomic_load_n(&heap->page, __ATOMIC_ACQUIRE);
+    const tide_page *p = __atomic_load_n(&pages[offset >> TIDE_HEAP_PAGE_SHIFT], __ATOMIC_ACQUIRE);
+    tide_block *b = (tide_block *)(uintptr_t)((const uint8_t *)tide_page_data(p) + (offset - (p->first << TIDE_HEAP_PAGE_SHIFT)));
+    if (i < 0 || (uint32_t)i >= b->a) return NULL;
+    if (!(b->b & TIDE_LIST_CHUNKED)) return (char *)(b + 1) + (size_t)i * size;
+    uint32_t place;
+    const uint32_t chunk = tide_list_chunk(b, (uint32_t)i, size, &place);
+    const tide_page *c = __atomic_load_n(&pages[chunk >> TIDE_HEAP_PAGE_SHIFT], __ATOMIC_ACQUIRE);
+    return (char *)tide_page_data(c) + sizeof(tide_block) + place;
+}
+
+// Only the code changing a heap writes it, so it reads the page table as it
+// left it (see tide_heap_write).
+static inline void *tide_list_at_mut(const tide_list l, const int32_t i, const uint32_t size)
+{
+    if (!l.at) return NULL;
+    const uint32_t offset = l.at & 0x3FFFFFFFu;
+    if (l.at >> 30 == TIDE_IN_SCRATCH) {
+        tide_block *b = (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+        return i >= 0 && (uint32_t)i < b->a ? (char *)(b + 1) + (size_t)i * size : NULL;
+    }
+    tide_heap *heap = tide_heap_of(l.at >> 30);
+    if (!heap) return NULL;
+    const tide_page *p = heap->page[offset >> TIDE_HEAP_PAGE_SHIFT];
+    const tide_block *b = (const tide_block *)(uintptr_t)((const uint8_t *)tide_page_data(p) + (offset - (p->first << TIDE_HEAP_PAGE_SHIFT)));
+    if (i < 0 || (uint32_t)i >= b->a) return NULL;
+    if (!(b->b & TIDE_LIST_CHUNKED)) return (char *)(tide_heap_write(heap, offset) + 1) + (size_t)i * size;
+    uint32_t place;
+    const uint32_t chunk = tide_list_chunk(b, (uint32_t)i, size, &place);
+    return (char *)(tide_heap_write(heap, chunk) + 1) + place;
+}
+
+// A world's list, read from outside, like a host reading a component: its
+// count, and its element at `i` (NULL past the end).
+int32_t tide_list_read_count(const tide_heap *heap, tide_list l);
+const void *tide_list_read(const tide_heap *heap, tide_list l, int32_t i, uint32_t size);
 
 // A new element at the end, zeroed, or NULL when there's no room.
 void *tide_list_add(tide_list *l, uint32_t size, uint32_t where);
@@ -67,3 +148,12 @@ void tide_list_own(tide_list *l, uint32_t size, uint32_t where);
 
 // A world's list leaving it. Release its elements' text first.
 void tide_list_release(tide_list *l, uint32_t where);
+
+// For C, which takes a list as a pointer to its elements side by side (NULL
+// for none): the list's own elements when they are, made its world's own when
+// C `changes` them, or else a copy, which tide_list_unflatten lets go of,
+// first writing it back into the list when C changes it. A copy is in memory
+// of its own, as big as the list, rather than the scratch area. `copied` says
+// which it was.
+void *tide_list_flatten(tide_list l, uint32_t size, bool changes, bool *copied);
+void tide_list_unflatten(tide_list l, void *flat, uint32_t size, bool changes, bool copied);

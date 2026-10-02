@@ -1,0 +1,3 @@
+// expect: an event can't hold a grid
+event Painted { Grid2<int> cells; }
+scene Main { }

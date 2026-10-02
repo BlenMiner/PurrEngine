@@ -123,16 +123,17 @@ static const tide_layout old_layout = {
 };
 
 // ---------------------------------------------------------------------------
-// The new build: enum Kind { C, A }, without B. Ball's fields moved, hits is a
-// float, gone an int2, and extra is new; Tag is gone. Rules has a new field and
-// speed is a float. The input has jump. Its archetypes: Arena; Ball.
+// The new build: enum Kind : byte { C, A }, without B. Ball's fields moved, hits
+// is a float, gone an int2, and extra is new; Tag is gone. Rules has a new field
+// and speed is a float. The input has jump. Its archetypes: Arena; Ball.
 
 enum { NEW_C, NEW_A };
 
 typedef struct new_ball {
     tide_float2 pos;
     float hits;
-    int32_t kind;
+    uint8_t kind; // Kind is a byte now
+    uint8_t padding[3];
     tide_float3 extra;
     tide_int2 gone;
 } new_ball;

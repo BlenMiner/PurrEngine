@@ -1,0 +1,3 @@
+// expect: a grid's cells can't be text
+singleton Field { Grid2<string> names; }
+scene Main { }

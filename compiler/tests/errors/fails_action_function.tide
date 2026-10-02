@@ -1,0 +1,7 @@
+// expect: a function that takes an Action can't fail yet
+enum RunError { Stopped }
+void Run(Action body) fails RunError
+{
+    body();
+}
+scene Main { }

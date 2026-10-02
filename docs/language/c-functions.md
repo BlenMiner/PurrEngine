@@ -64,7 +64,7 @@ Extern functions take and return plain data, by value:
 | `int`, `float`, `bool` | `int32_t` (`int`), `float`, `bool` |
 | `float3`, `int2`, `quaternion`, `float4x4`, ... | `tide_float3`, `tide_int2`, ... from `tide/math.h` |
 | `Color`, `Rect`, `Entity`, `PlayerID` | `tide_color`, `tide_rect`, `tide_entity`, `tide_player_id` |
-| an enum | `int32_t` |
+| an enum | `int32_t`, or `uint8_t` and `uint16_t` for `: byte` and `: ushort` |
 | a struct or component | a struct with the same fields, in the same order |
 
 A system that splits its entities across threads gives the entities it spawns temporary handles until it's done (see [The schedule](../engine/schedule.md#splitting-across-threads)), so an `Entity` C gets from one may be temporary: `tide_entity_is_temporary(e)`, from `tide/entity.h`, tells. Tide gives the real handle to what the system kept, but not to C, so C that keeps entities should keep real ones.
@@ -78,6 +78,8 @@ C often takes pointers. Tide has none, and no pointer arithmetic: the parameter 
 | `List<T> xs` | `const T *`: the list's elements, NULL when it's empty. Pass `xs.Count` too |
 | `mut List<T> xs` | `T *`: the elements, which C can change, but not how many there are |
 | `string s` | `const char *`: UTF-8, ending in a zero |
+
+A world keeps a list whose elements take more than 16 KB in pieces, so that changing one element doesn't copy the rest. C gets those elements side by side in a copy, made for the call, and with `mut`, written back into the list once C returns. Smaller lists, and lists that aren't a world's, go to C as they are.
 
 An extern function can return `string` from C's `const char *`: the text is copied, so C can reuse its buffer, and NULL is empty text.
 

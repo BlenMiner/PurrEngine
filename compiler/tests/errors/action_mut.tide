@@ -1,0 +1,3 @@
+// expect: an Action can't be 'mut'
+scene Main { }
+void Section(mut Action content) { }

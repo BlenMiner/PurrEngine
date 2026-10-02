@@ -1,0 +1,9 @@
+// expect: a chunk system changes the cells within its reach, and nothing else
+singleton Field { Grid2<int> cells; }
+singleton Stats { int steps; }
+system Step(chunk mut Field.cells cells, mut Stats stats)
+{
+    cells[0, 0] = 1;
+    stats.steps += 1;
+}
+scene Main { }
