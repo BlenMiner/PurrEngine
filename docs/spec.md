@@ -420,6 +420,13 @@ float2 flat = trs.position.xz;
 - Quaternions: `Mul`, `Rotate`, `Inverse`, `Conjugate`, `Normalize`, `NormalizeSafe`, `Dot`, `Slerp`, `Nlerp`, `Forward`, `Up`, `Right`, `Angle`.
 - Matrices: `Mul`, `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
 - Everything is deterministic (see AGENTS.md). The transcendental functions are Tide's own, accurate to about 1 ulp but not correctly rounded.
+- `Math.Hash(value)` on an `int`, `int2`, `int3` or `int4` gives random numbers that keep no state: the same int for the same value on every machine, like `Math.Hash(int3(x, y, seed)) % 6`.
+
+### Provisional
+
+Implemented, awaiting approval:
+
+- `Math.Hash` gives an int from 0 to 2147483647, so `%` never goes negative. It's xxHash32 of the value's bytes (little-endian, seed 0) without the top bit: what Unity's `math.hash` gives for a block of memory. Unity's `math.hash` on vectors is a cheaper mix whose low bits follow the input's, so `& 3` of it makes stripes; Tide's differs from it on purpose.
 
 ## Constants
 

@@ -319,6 +319,64 @@ static inline tide_int4 tide_i4_from_f4(const tide_float4 v)
 }
 
 // ---------------------------------------------------------------------------
+// Hashes: xxHash32 of the value's bytes (little-endian, seed 0), as Unity's
+// math.hash gives for a block of memory, without its top bit, so `% n` never
+// goes negative. Every input bit changes every output bit, so any of them make
+// a random number. Unity's math.hash for vectors is a cheaper mix whose low
+// bits follow the input's, which makes stripes.
+
+#define TIDE_XXH_P1 0x9E3779B1u
+#define TIDE_XXH_P2 0x85EBCA77u
+#define TIDE_XXH_P3 0xC2B2AE3Du
+#define TIDE_XXH_P4 0x27D4EB2Fu
+#define TIDE_XXH_P5 0x165667B1u
+
+static inline uint32_t tide_xxh_rotl(const uint32_t x, const int r) { return (x << r) | (x >> (32 - r)); }
+
+// An input shorter than 16 bytes, a word at a time, from P5 plus its length.
+static inline uint32_t tide_xxh_word(const uint32_t h, const int32_t word)
+{
+    return tide_xxh_rotl(h + (uint32_t)word * TIDE_XXH_P3, 17) * TIDE_XXH_P4;
+}
+
+// One of the four lanes of a 16-byte stripe.
+static inline uint32_t tide_xxh_lane(const uint32_t lane, const int32_t word)
+{
+    return tide_xxh_rotl(lane + (uint32_t)word * TIDE_XXH_P2, 13) * TIDE_XXH_P1;
+}
+
+static inline int32_t tide_xxh_end(uint32_t h)
+{
+    h ^= h >> 15;
+    h *= TIDE_XXH_P2;
+    h ^= h >> 13;
+    h *= TIDE_XXH_P3;
+    h ^= h >> 16;
+    return (int32_t)(h & 0x7FFFFFFFu);
+}
+
+static inline int32_t tide_hash_i(const int32_t x) { return tide_xxh_end(tide_xxh_word(TIDE_XXH_P5 + 4u, x)); }
+
+static inline int32_t tide_hash_i2(const tide_int2 v)
+{
+    return tide_xxh_end(tide_xxh_word(tide_xxh_word(TIDE_XXH_P5 + 8u, v.x), v.y));
+}
+
+static inline int32_t tide_hash_i3(const tide_int3 v)
+{
+    return tide_xxh_end(tide_xxh_word(tide_xxh_word(tide_xxh_word(TIDE_XXH_P5 + 12u, v.x), v.y), v.z));
+}
+
+static inline int32_t tide_hash_i4(const tide_int4 v)
+{
+    const uint32_t a = tide_xxh_lane(TIDE_XXH_P1 + TIDE_XXH_P2, v.x);
+    const uint32_t b = tide_xxh_lane(TIDE_XXH_P2, v.y);
+    const uint32_t c = tide_xxh_lane(0u, v.z);
+    const uint32_t d = tide_xxh_lane(0u - TIDE_XXH_P1, v.w);
+    return tide_xxh_end(tide_xxh_rotl(a, 1) + tide_xxh_rotl(b, 7) + tide_xxh_rotl(c, 12) + tide_xxh_rotl(d, 18) + 16u);
+}
+
+// ---------------------------------------------------------------------------
 // Vectors: geometry
 
 static inline float tide_dot_f2(const tide_float2 a, const tide_float2 b) { return a.x * b.x + a.y * b.y; }

@@ -1,5 +1,7 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "tide/math.h"
 #include "tide_test.h"
@@ -276,4 +278,95 @@ TIDE_TEST(math_matrices)
     const tide_float2x2 m2 = {{4, 2}, {7, 6}};
     const tide_float2x2 id2 = tide_mul_f2x2(m2, tide_inverse_f2x2(m2));
     TIDE_CHECK(near(id2.c0.x, 1) && near(id2.c0.y, 0) && near(id2.c1.x, 0) && near(id2.c1.y, 1));
+}
+
+// xxHash32 as its spec writes it, byte by byte, for Math.Hash's versions to
+// agree with.
+static uint32_t xxh32_read(const uint8_t *p) { return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static uint32_t xxh32(const void *data, const size_t size, const uint32_t seed)
+{
+    const uint8_t *p = data;
+    const uint8_t *const end = p + size;
+    uint32_t h;
+    if (size >= 16) {
+        uint32_t lanes[4] = {seed + TIDE_XXH_P1 + TIDE_XXH_P2, seed + TIDE_XXH_P2, seed, seed - TIDE_XXH_P1};
+        for (; end - p >= 16; p += 16) {
+            for (int i = 0; i < 4; i++) {
+                lanes[i] = tide_xxh_rotl(lanes[i] + xxh32_read(p + 4 * i) * TIDE_XXH_P2, 13) * TIDE_XXH_P1;
+            }
+        }
+        h = tide_xxh_rotl(lanes[0], 1) + tide_xxh_rotl(lanes[1], 7) + tide_xxh_rotl(lanes[2], 12)
+          + tide_xxh_rotl(lanes[3], 18);
+    } else {
+        h = seed + TIDE_XXH_P5;
+    }
+    h += (uint32_t)size;
+    for (; end - p >= 4; p += 4) h = tide_xxh_rotl(h + xxh32_read(p) * TIDE_XXH_P3, 17) * TIDE_XXH_P4;
+    for (; p < end; p++) h = tide_xxh_rotl(h + *p * TIDE_XXH_P5, 11) * TIDE_XXH_P1;
+    h ^= h >> 15;
+    h *= TIDE_XXH_P2;
+    h ^= h >> 13;
+    h *= TIDE_XXH_P3;
+    h ^= h >> 16;
+    return h;
+}
+
+// The value's bytes, little-endian whatever the machine's order.
+static int32_t hash_reference(const int32_t *words, const int count)
+{
+    uint8_t bytes[16];
+    for (int i = 0; i < count; i++) {
+        const uint32_t u = (uint32_t)words[i];
+        for (int b = 0; b < 4; b++) bytes[4 * i + b] = (uint8_t)(u >> (8 * b));
+    }
+    return (int32_t)(xxh32(bytes, (size_t)count * 4, 0) & 0x7FFFFFFFu);
+}
+
+TIDE_TEST(math_hash_is_xxhash32)
+{
+    // The reference against xxHash's own: the short path, the bytes at the
+    // end, and stripes, words and bytes together (39 bytes).
+    TIDE_CHECK(xxh32("", 0, 0) == 0x02CC5D05u);
+    TIDE_CHECK(xxh32("abc", 3, 0) == 0x32D153FFu);
+    const char *nobody = "Nobody inspects the spammish repetition";
+    TIDE_CHECK(xxh32(nobody, strlen(nobody), 0) == 0xE2293B2Fu);
+
+    rng_state = 777;
+    for (int i = 0; i < 1000; i++) {
+        int32_t w[4];
+        for (int k = 0; k < 4; k++) {
+            rng_state = rng_state * 1664525u + 1013904223u;
+            w[k] = (int32_t)rng_state;
+        }
+        TIDE_CHECK(tide_hash_i(w[0]) == hash_reference(w, 1));
+        TIDE_CHECK(tide_hash_i2(tide_i2(w[0], w[1])) == hash_reference(w, 2));
+        TIDE_CHECK(tide_hash_i3(tide_i3(w[0], w[1], w[2])) == hash_reference(w, 3));
+        TIDE_CHECK(tide_hash_i4(tide_i4(w[0], w[1], w[2], w[3])) == hash_reference(w, 4));
+    }
+    TIDE_CHECK(tide_hash_i(INT32_MIN) >= 0 && tide_hash_i(-1) >= 0);
+}
+
+// Cells next to each other give unrelated numbers: every one of the low bits
+// is set about half the time, as one bit of a neighbor changes.
+TIDE_TEST(math_hash_of_cells_has_no_stripes)
+{
+    int ones[8] = {0};
+    int differ[8] = {0};
+    const int size = 128;
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            const int32_t h = tide_hash_i2(tide_i2(x, y));
+            const int32_t right = tide_hash_i2(tide_i2(x + 1, y));
+            for (int b = 0; b < 8; b++) {
+                ones[b] += (h >> b) & 1;
+                differ[b] += ((h ^ right) >> b) & 1;
+            }
+        }
+    }
+    const int half = size * size / 2;
+    for (int b = 0; b < 8; b++) {
+        TIDE_CHECK(abs(ones[b] - half) < half / 20);
+        TIDE_CHECK(abs(differ[b] - half) < half / 20);
+    }
 }

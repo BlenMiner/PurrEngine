@@ -34,13 +34,6 @@ input Pen
     bool down;
 }
 
-int Hash(int x, int y)
-{
-    mut var h = x * 374761393 + y * 668265263;
-    h = (h ^ (h >> 13)) * 1103515245;
-    return h ^ (h >> 16);
-}
-
 system Setup(mut Gallery gallery)
 {
     if (gallery.open) return;
@@ -65,7 +58,7 @@ event(Spawned) Fill(mut Canvas canvas)
     var size = canvas.pixels.size;
     for (var y = 0; y < size.y; y++)
     {
-        for (var x = 0; x < size.x; x++) canvas.pixels[x, y] = Hash(y * size.x + x, canvas.seed) | 1;
+        for (var x = 0; x < size.x; x++) canvas.pixels[x, y] = Math.Hash(int3(x, y, canvas.seed)) | 1;
     }
 }
 

@@ -16,17 +16,10 @@ input Controls
 
 scene Main { }
 
-int Hash(int x)
-{
-    mut var h = x * 374761393;
-    h = (h ^ (h >> 13)) * 1103515245;
-    return h ^ (h >> 16);
-}
-
 system Fill(mut Archive archive)
 {
     if (archive.noise.Count > 0) return;
-    for (var i = 0; i < 1_000_000; i++) archive.noise.Add(Hash(i + 1));
+    for (var i = 0; i < 1_000_000; i++) archive.noise.Add(Math.Hash(i + 1));
 }
 
 event(PlayerJoined joined) Join()

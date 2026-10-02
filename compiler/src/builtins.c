@@ -196,6 +196,13 @@ static void build_signatures(void)
         add("Math", "Cmax", T_F, c_function("cmax", v), 1, v, T_NONE, T_NONE);
     }
     add("Math", "Cross", T_F3, "tide_cross_f3", 2, T_F3, T_F3, T_NONE);
+    for (int n = 1; n <= 4; n++) {
+        const type v = vector_type(false, n);
+        describe(add("Math", "Hash", (type){TY_INT, NULL}, c_function("hash", v), 1, v, T_NONE, T_NONE), "value",
+                 "A well-mixed int from 0 to 2147483647, the same for the same value on every machine: random numbers "
+                 "from cells, indices and seeds, like `Math.Hash(int3(x, y, seed)) % 6`. It's xxHash32 of the "
+                 "value's bytes, without the top bit.");
+    }
 
     // Quaternions
     add("Math", "Dot", T_F, "tide_dot_q", 2, T_Q, T_Q, T_NONE);

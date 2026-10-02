@@ -40,6 +40,10 @@ component Results
     float2x2 matrixFromRows;
     float3 columnScaled;
     float3 negated;
+    int hashed;
+    int hashed2;
+    int hashed3;
+    int hashed4;
 }
 
 scene Main { }
@@ -91,4 +95,9 @@ system Compute(mut Body body, mut Results r)
                                 3, 4);
     r.columnScaled = body.basis.c1 * 3;
     r.negated = -body.position;
+
+    r.hashed = Math.Hash(-7);
+    r.hashed2 = Math.Hash(body.cell);
+    r.hashed3 = Math.Hash(int3(body.cell, 9));
+    r.hashed4 = Math.Hash(int4(1, 2, 3, 4));
 }

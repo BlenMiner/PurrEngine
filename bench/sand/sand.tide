@@ -59,13 +59,6 @@ input Brush
 // Someone painting: their brush is their input.
 component Painter { }
 
-int Hash(int x, int y, int t)
-{
-    mut var h = x * 374761393 + y * 668265263 + t * 1274126177;
-    h = (h ^ (h >> 13)) * 1103515245;
-    return h ^ (h >> 16);
-}
-
 // A box of wall, with ledges in it and sand scattered above them, so it starts
 // out falling. The box keeps sand off the grid's edges, which the blocks Step
 // goes through only take in every other tick.
@@ -83,7 +76,7 @@ system Setup(mut Field field)
         {
             if (x == 0 || y == 0 || x == size - 1 || y == size - 1) field.cells[x, y] = Material.Wall;
             else if (y % ledges == ledges / 2 && (x / span) % 2 == 1) field.cells[x, y] = Material.Wall;
-            else if (y > size / 2 && (Hash(x, y, 0) & 3) == 0) field.cells[x, y] = Material.Sand;
+            else if (y > size / 2 && Math.Hash(int2(x, y)) % 4 == 0) field.cells[x, y] = Material.Sand;
         }
     }
 }

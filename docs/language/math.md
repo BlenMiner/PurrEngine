@@ -73,6 +73,17 @@ And these build values:
 
 `Mul`, `Transpose`, `Inverse`, `Determinant`, and for `float4x4`, `Transform` (a point) and `Rotate` (a direction).
 
+**Hashing:**
+
+`Math.Hash(value)` turns an `int`, `int2`, `int3` or `int4` into a random-looking int from 0 to 2147483647. The same value always gives the same number, on every machine. It keeps no state, so it works anywhere, parallel loops included:
+
+```csharp
+// About one cell in four starts as sand, the same cells everywhere.
+if (Math.Hash(int2(x, y)) % 4 == 0) field.cells[x, y] = Material.Sand;
+```
+
+Put a seed in the value to get other numbers for the same cell: `Math.Hash(int3(x, y, seed))`. It's xxHash32, so every bit of the value changes every bit of the result.
+
 ## Forgiving with bad values
 
 Values can come from other players' input, so math avoids spreading NaN where it can:

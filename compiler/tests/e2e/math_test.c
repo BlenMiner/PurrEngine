@@ -103,3 +103,14 @@ TIDE_TEST(math_swizzle_writes)
     // w = (0,0,0); w.xz = (4,5) -> (4,0,5); w.y += 1 -> (4,1,5); w.zx += (1,1) -> (5,1,6)
     TIDE_CHECK(eq3(r->written, 5, 1, 6));
 }
+
+TIDE_TEST(math_hash)
+{
+    const Results *r = results();
+    TIDE_REQUIRE(r != NULL);
+    TIDE_CHECK(r->hashed == tide_hash_i(-7));
+    TIDE_CHECK(r->hashed2 == tide_hash_i2(tide_i2(3, -4)));
+    TIDE_CHECK(r->hashed3 == tide_hash_i3(tide_i3(3, -4, 9)));
+    TIDE_CHECK(r->hashed4 == tide_hash_i4(tide_i4(1, 2, 3, 4)));
+    TIDE_CHECK(r->hashed2 != r->hashed3);
+}
