@@ -2234,6 +2234,29 @@ TIDE_TEST(lsp_format)
                       "system Main()\n{\n    var x = 1\n        + 2;\n    Spawn(Owner,\n          Owner);\n}\n") == 0);
 }
 
+// Selection grows from the word at the cursor through what holds it, out to
+// its declaration.
+TIDE_TEST(lsp_selection_ranges)
+{
+    start();
+    open_document(GAME_TYPES "system Move(mut Body body)\n{\n    if (body.radius > 1)\n    {\n"
+                  "        body.radius = Math.Max(body.ra$dius * 2, 1);\n    }\n}\n");
+    const char *ranges = request_with("textDocument/selectionRange", "\"positions\":[{\"line\":26,\"character\":38}]");
+    TIDE_CHECK(has(ranges, "\"result\":[{\"range\":{\"start\":{\"line\":26,\"character\":36},\"end\":{\"line\":26,\"character\":42}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":26,\"character\":31},\"end\":{\"line\":26,\"character\":42}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":26,\"character\":31},\"end\":{\"line\":26,\"character\":46}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":26,\"character\":22},\"end\":{\"line\":26,\"character\":50}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":26,\"character\":8},\"end\":{\"line\":26,\"character\":51}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":25,\"character\":4},\"end\":{\"line\":27,\"character\":5}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":24,\"character\":4},\"end\":{\"line\":27,\"character\":5}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":23,\"character\":0},\"end\":{\"line\":28,\"character\":1}},"
+                           "\"parent\":{\"range\":{\"start\":{\"line\":22,\"character\":0},\"end\":{\"line\":28,\"character\":1}}}}}}}}}}}]"));
+    if (!has(ranges, "\"parent\":{\"range\":{\"start\":{\"line\":22,")) printf("%s\n", ranges);
+    // Every position gets one, even outside the code
+    const char *two = request_with("textDocument/selectionRange", "\"positions\":[{\"line\":0,\"character\":0},{\"line\":30,\"character\":0}]");
+    TIDE_CHECK(count(two, "{\"range\":") == 3); // `component` in its declaration, and the empty end
+}
+
 // Formatting a range changes its lines only, as formatting everything would.
 TIDE_TEST(lsp_range_formatting)
 {
@@ -2356,7 +2379,11 @@ TIDE_TEST(lsp_every_prefix_is_safe)
         "int Parse(string t) fails ParseError\n{\n    if (t == \"\") fail ParseError.Empty;\n    return 1;\n}\n"
         "int? Find(int x)\n{\n    if (x > 0) return x;\n    return null;\n}\n"
         "int Twice(string t) fails ParseError\n{\n    var n = try Parse(t);\n"
-        "    if (Parse(t) is int m && m > 0) return m;\n    return (Find(n) ?? 0) + Parse(t)!;\n}\n";
+        "    if (Parse(t) is int m && m > 0) return m;\n    return (Find(n) ?? 0) + Parse(t)!;\n}\n"
+        "singleton Field { Grid2<int> cells = Grid2(8, 8); List<int> items; }\n"
+        "system Fill(mut Field field)\n{\n    foreach (var i in field.items) field.items.Add(i);\n"
+        "    parallel (var at in field.cells) field.cells[at] = 1;\n"
+        "    field.cells[1, 2] = field.items.IndexOf($$\"{3}\".Length);\n    field.cells.Clear();\n}\n";
     start();
     char text[sizeof program];
     for (size_t n = 0; n < sizeof program; n++) {
@@ -2380,11 +2407,25 @@ TIDE_TEST(lsp_every_prefix_is_safe)
         request("textDocument/semanticTokens/full");
         request("textDocument/signatureHelp");
         request("textDocument/documentHighlight");
+        request("textDocument/typeDefinition");
+        char positions[96];
+        snprintf(positions, sizeof positions, "\"positions\":[{\"line\":%d,\"character\":%d}]", line, character);
+        request_with("textDocument/selectionRange", positions);
         if (n % 16 == 0) {
             request("textDocument/documentSymbol");
             request_with("textDocument/references", "\"context\":{\"includeDeclaration\":true}");
             request_with("textDocument/rename", "\"newName\":\"renamed\"");
             request_with("textDocument/formatting", "\"options\":{\"tabSize\":4,\"insertSpaces\":true}");
+            request_with("textDocument/rangeFormatting", "\"range\":{\"start\":{\"line\":3,\"character\":0},\"end\":"
+                                                         "{\"line\":9,\"character\":0}},\"options\":{\"tabSize\":4}");
+            request("textDocument/implementation");
+            request("textDocument/prepareCallHierarchy");
+            request("textDocument/foldingRange");
+            char range[160];
+            snprintf(range, sizeof range, "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":%d,\"character\":0}}",
+                     line + 1);
+            request_with("textDocument/codeAction", range);
+            request_with("textDocument/inlayHint", range);
         }
     }
     TIDE_CHECK(has(last_sent(), "\"result\""));

@@ -46,6 +46,7 @@ void analysis_symbols(jbuf *out);                                            // 
 void analysis_workspace_symbols(const char *query, jbuf *out, int *written);
 void analysis_inlay_hints(int start_line, int end_line, jbuf *out);          // InlayHint[]
 void analysis_folding_ranges(jbuf *out);                                     // FoldingRange[]
+void analysis_selection_ranges(const json *positions, jbuf *out);            // SelectionRange[], one per Position
 void analysis_semantic_tokens(jbuf *out);                                    // SemanticTokens
 void analysis_semantic_legend(jbuf *out);                                    // SemanticTokensLegend
 void analysis_references(const char *uri, int line, int character, bool declaration, jbuf *out); // Location[]

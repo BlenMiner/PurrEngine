@@ -600,6 +600,7 @@ static void initialize(lsp_server *s, const json *id, const json *params)
                "\"workspaceSymbolProvider\":true,"
                "\"inlayHintProvider\":true,"
                "\"foldingRangeProvider\":true,"
+               "\"selectionRangeProvider\":true,"
                "\"codeLensProvider\":{},"
                "\"codeActionProvider\":{\"codeActionKinds\":[\"quickfix\",\"refactor.move\"]},"
                "\"semanticTokensProvider\":{\"legend\":");
@@ -668,6 +669,8 @@ static void document_request(lsp_server *s, const char *method, const json *id, 
         analysis_code_lenses(&b);
     } else if (strcmp(method, "textDocument/foldingRange") == 0) {
         analysis_folding_ranges(&b);
+    } else if (strcmp(method, "textDocument/selectionRange") == 0) {
+        analysis_selection_ranges(json_get(params, "positions"), &b);
     } else if (strcmp(method, "textDocument/inlayHint") == 0) {
         analysis_inlay_hints(json_int(json_path(params, "range", "start", "line", NULL), 0),
                              json_int(json_path(params, "range", "end", "line", NULL), 0), &b);
@@ -790,7 +793,7 @@ static bool is_document_request(const char *method)
         "textDocument/rename", "textDocument/formatting", "textDocument/documentSymbol",
         "textDocument/codeLens", "textDocument/codeAction", "textDocument/inlayHint", "textDocument/foldingRange",
         "textDocument/semanticTokens/full", "textDocument/typeDefinition", "textDocument/implementation",
-        "textDocument/prepareCallHierarchy", "textDocument/rangeFormatting",
+        "textDocument/prepareCallHierarchy", "textDocument/rangeFormatting", "textDocument/selectionRange",
     };
     for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++) {
         if (strcmp(method, methods[i]) == 0) return true;

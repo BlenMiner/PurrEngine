@@ -2599,6 +2599,142 @@ void analysis_outgoing_calls(const int line, const int character, jbuf *out)
 }
 
 // ---------------------------------------------------------------------------
+// Selection ranges: what holds the cursor, from its word out to its declaration
+
+typedef struct span {
+    loc start;
+    loc end; // Just past it
+} span;
+
+typedef VEC(span) span_list;
+
+static loc stmt_start(const stmt *s);
+static loc stmt_end(const stmt *s);
+
+static bool around(const loc at, const loc start, const loc end)
+{
+    return start.file == at.file && loc_cmp(start, at) <= 0 && loc_cmp(at, end) <= 0;
+}
+
+// Adds a span around the cursor, inside the last one: once, however many
+// things it's the span of.
+static void add_span(span_list *spans, const loc at, const loc start, const loc end)
+{
+    if (!around(at, start, end)) return;
+    if (spans->count > 0) {
+        const span *outer = &spans->items[spans->count - 1];
+        if (loc_cmp(start, outer->start) < 0 || loc_cmp(outer->end, end) < 0) return;
+        if (loc_cmp(outer->start, start) == 0 && loc_cmp(outer->end, end) == 0) return;
+    }
+    const span s = {start, end};
+    vec_push(*spans, s);
+}
+
+static void select_in_stmt(const stmt *s, loc at, span_list *spans);
+
+static void select_in_expr(const expr *e, const loc at, span_list *spans)
+{
+    if (!e || !around(at, expr_start(e), expr_end(e))) return;
+    add_span(spans, at, expr_start(e), expr_end(e));
+    select_in_expr(e->object, at, spans);
+    select_in_expr(e->lhs, at, spans);
+    select_in_expr(e->rhs, at, spans);
+    select_in_expr(e->cond, at, spans);
+    for (int i = 0; i < e->args.count; i++) select_in_expr(e->args.items[i], at, spans);
+    for (int i = 0; e->kind == E_LITERAL && i < e->inits.count; i++) select_in_expr(e->inits.items[i].value, at, spans);
+    if (e->kind == E_CALL || e->kind == E_METHOD) select_in_stmt(e->block, at, spans);
+}
+
+static void select_in_stmt(const stmt *s, const loc at, span_list *spans)
+{
+    if (!s || !around(at, stmt_start(s), stmt_end(s))) return;
+    add_span(spans, at, stmt_start(s), stmt_end(s));
+    for (int i = 0; s->kind == S_BLOCK && i < s->stmts.count; i++) select_in_stmt(s->stmts.items[i], at, spans);
+    select_in_stmt(s->init, at, spans);
+    select_in_expr(s->cond, at, spans);
+    select_in_stmt(s->step, at, spans);
+    select_in_expr(s->target, at, spans);
+    select_in_expr(s->value, at, spans);
+    select_in_expr(s->by, at, spans);
+    select_in_expr(s->offset, at, spans);
+    select_in_stmt(s->then_stmt, at, spans);
+    select_in_stmt(s->else_stmt, at, spans);
+    for (int i = 0; s->kind == S_SWITCH && i < s->cases.count; i++) {
+        const switch_case *section = &s->cases.items[i];
+        for (int k = 0; k < section->labels.count; k++) select_in_expr(section->labels.items[k], at, spans);
+        for (int k = 0; k < section->body.count; k++) select_in_stmt(section->body.items[k], at, spans);
+    }
+}
+
+// A declaration's lines, from its attributes to its closing brace or ';'.
+static void select_decl(const decl *d, const stmt *body, const loc at, span_list *spans)
+{
+    int first = d->at.line;
+    for (int a = 0; a < d->attributes.count; a++) {
+        if (d->attributes.items[a].at.line < first) first = d->attributes.items[a].at.line;
+    }
+    const loc end = body ? body->end : d->end.line > 0 ? d->end : d->at;
+    add_span(spans, at, (loc){first, 1, d->at.file}, (loc){end.line, end.col + 1, end.file});
+}
+
+// The spans around `at`, outermost first.
+static void selection_spans(const loc at, span_list *spans)
+{
+    for (int i = 0; i < A.prog->decls.count; i++) {
+        const decl *d = A.prog->decls.items[i];
+        if (d->builtin || d->at.file != at.file) continue;
+        const int before = spans->count;
+        select_decl(d, d->kind == DECL_SYSTEM || d->kind == DECL_FUNCTION ? d->body : NULL, at, spans);
+        if (spans->count == before) continue;
+        for (int k = 0; k < d->methods.count; k++) {
+            select_decl(d->methods.items[k], d->methods.items[k]->body, at, spans);
+            select_in_stmt(d->methods.items[k]->body, at, spans);
+        }
+        if (d->kind == DECL_INPUT) { // Sample and Sanitize, from their names
+            if (d->body) add_span(spans, at, d->body_at, (loc){d->body->end.line, d->body->end.col + 1, d->at.file});
+            select_in_stmt(d->body, at, spans);
+            if (d->sanitize) add_span(spans, at, d->sanitize_at, (loc){d->sanitize->end.line, d->sanitize->end.col + 1, d->at.file});
+            select_in_stmt(d->sanitize, at, spans);
+        } else {
+            select_in_stmt(d->body, at, spans);
+        }
+        select_in_expr(d->value, at, spans); // A constant's
+        for (int f = 0; f < d->fields.count; f++) select_in_expr(d->fields.items[f].default_value, at, spans);
+        break;
+    }
+    // The word at the cursor
+    const afile *f = &A.files[at.file];
+    for (int i = 0; i < f->tok_count; i++) {
+        const token *t = &f->toks[i];
+        if (t->at.line == at.line && t->at.col <= at.col && at.col <= t->at.col + token_len(t)) {
+            add_span(spans, at, t->at, token_end(t));
+            break;
+        }
+    }
+}
+
+void analysis_selection_ranges(const json *positions, jbuf *out)
+{
+    jb_put(out, "[");
+    for (int p = 0; positions && positions->kind == JSON_ARRAY && p < positions->count; p++) {
+        if (p) jb_put(out, ",");
+        const loc at = from_lsp(json_int(json_get(positions->items[p], "line"), 0),
+                                json_int(json_get(positions->items[p], "character"), 0));
+        span_list spans = {0};
+        selection_spans(at, &spans);
+        if (spans.count == 0) add_span(&spans, at, at, at); // Each position gets one
+        // Innermost first, each with the one around it as its parent
+        for (int i = spans.count - 1; i >= 0; i--) {
+            jb_put(out, "{\"range\":");
+            write_edit_range(out, spans.items[i].start, spans.items[i].end);
+            if (i > 0) jb_put(out, ",\"parent\":");
+        }
+        for (int i = 0; i < spans.count; i++) jb_put(out, "}");
+    }
+    jb_put(out, "]");
+}
+
+// ---------------------------------------------------------------------------
 // Folding: blocks and literals over several lines, and runs of comment lines
 
 static void folding_range(jbuf *out, int *written, const int first, const int last, const char *kind)
