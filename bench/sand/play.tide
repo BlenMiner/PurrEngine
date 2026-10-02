@@ -1,0 +1,106 @@
+// Sand to play: the field drawn, the brush under the mouse, and the GUI.
+// sand.tide is the game; these only draw it and change this machine's own
+// state (Canvas, Lobby).
+
+// What this machine types to join someone's room.
+local singleton Lobby
+{
+    string code;
+}
+
+Color Shade(Material material)
+{
+    if (material == Material.Sand) return Color(0.87, 0.73, 0.43);
+    if (material == Material.Water) return Color(0.25, 0.52, 0.92);
+    if (material == Material.Wall) return Color(0.42, 0.42, 0.48);
+    return Color(0.06, 0.06, 0.09);
+}
+
+const float TOP = 100; // Pixels along the top for the GUI
+
+// The field is as big as fits under the GUI, a world unit a cell, and each
+// row of cells goes as runs of one material, a rect each.
+view DrawField(Field field, mut Canvas canvas)
+{
+    Draw.Clear(Shade(Material.Empty));
+    if (!field.ready) return;
+    var size = field.size;
+    var screen = float2(float(Screen.width), float(Screen.height));
+    var scale = Math.Max(Math.Min((screen.x - 24) / size, (screen.y - TOP - 12) / size), 0.1);
+    canvas.middle = float2(screen.x * 0.5, screen.y - TOP - size * scale * 0.5);
+    canvas.scale = scale;
+    canvas.size = size;
+    // The camera's middle is the window's, so the field's lands on canvas.middle
+    Draw.Camera(float2(size, size) * 0.5 + (screen * 0.5 - canvas.middle) / scale, screen.y * 0.5 / scale);
+
+    Draw.Rect(float2(size, size) * 0.5, float2(size, size), Color(0.1, 0.1, 0.14));
+    for (var y = 0; y < size; y++)
+    {
+        mut var x = 0;
+        while (x < size)
+        {
+            var material = field.cells[x, y];
+            mut var end = x + 1;
+            while (end < size && field.cells[end, y] == material) end++;
+            if (material != Material.Empty) Draw.Rect(float2((x + end) * 0.5, y + 0.5), float2(end - x, 1), Shade(material));
+            x = end;
+        }
+    }
+}
+
+// The brush, where the left button would paint, while the mouse is over the field.
+view DrawBrush(Canvas canvas)
+{
+    if (canvas.scale <= 0) return;
+    var cell = (Devices.mouse.position - canvas.middle) / canvas.scale + float2(canvas.size, canvas.size) * 0.5;
+    if (cell.x < 0 || cell.y < 0 || cell.x >= canvas.size || cell.y >= canvas.size) return;
+    var at = float2(Math.Floor(cell.x), Math.Floor(cell.y)) + 0.5;
+    Draw.WireCircle(at, BRUSH + 0.5, canvas.material == Material.Empty ? Color.white : Shade(canvas.material));
+}
+
+// A button for a material, which shows whether it's the one picked.
+bool Pick(Material picked, Material material, string name, string key)
+{
+    return GUILayout.Button(picked == material ? "[" + name + "]" : name + " " + key);
+}
+
+view Panel(mut Canvas canvas, mut Lobby lobby, Session session)
+{
+    var keys = Devices.keyboard;
+    if (keys.digit1.down) canvas.material = Material.Sand;
+    if (keys.digit2.down) canvas.material = Material.Water;
+    if (keys.digit3.down) canvas.material = Material.Wall;
+    if (keys.digit4.down) canvas.material = Material.Empty;
+    GUILayout.Area(Anchor.UpperLeft)
+    {
+        GUILayout.Horizontal()
+        {
+            if (Pick(canvas.material, Material.Sand, "Sand", "1")) canvas.material = Material.Sand;
+            if (Pick(canvas.material, Material.Water, "Water", "2")) canvas.material = Material.Water;
+            if (Pick(canvas.material, Material.Wall, "Wall", "3")) canvas.material = Material.Wall;
+            if (Pick(canvas.material, Material.Empty, "Eraser", "4")) canvas.material = Material.Empty;
+            GUILayout.Label("  Right button erases");
+        }
+        // Others join this machine's match by its room's code, or this
+        // machine joins theirs.
+        GUILayout.Horizontal()
+        {
+            if (session.server && !session.open)
+            {
+                if (GUILayout.Button("Invite")) Session.Open();
+            }
+            else if (session.room != "")
+            {
+                GUILayout.Label("Room " + session.room + "  ");
+            }
+            GUILayout.TextField("Code", lobby.code);
+            if (GUILayout.Button("Join") && lobby.code != "") Session.Join(lobby.code);
+        }
+    }
+}
+
+// A match this machine was in ended or couldn't be joined: on to one of its own.
+local event(Disconnected gone) Alone()
+{
+    if (gone.reason != DisconnectReason.Left) Session.Start(Main);
+}

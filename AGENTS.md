@@ -102,6 +102,7 @@ The first configure downloads raylib (see `cmake/Raylib.cmake`). Configure with 
 - Each is a program, `bench_<name>` (`--help` lists its options), on a harness of its own (`bench/bench.h`): a dedicated server and bots, each a client of its own on the loopback network, with latency and loss, in made-up time, so a run goes as fast as the machine can take it and repeats exactly. It reports each machine's update times, what they spent simulating, hashing, snapshotting and packing worlds (through the game's `tide_game`), what each machine sends, how long joins take, and the world's size.
 - Measure with the `release` preset. The machines run one after another, so a run takes about as long as all of them together.
 - Tests run each one `--quick`, which fails when a client's world went wrong, a bot couldn't join, or the server's world ends with another hash than the one in `bench/CMakeLists.txt`, which every platform and thread count has to agree on. Timings aren't checked: machines differ too much.
+- Sand is a game people play too: `sand` (`sand.html` on the web) is `sand/sand.tide` with `sand/play.tide`, its views, GUI and rooms, and the mouse through the input's `Sample`, which the benchmark's bots don't call. The docs site shows it (see Docs site).
 - A benchmark holds its game as the engine can today, and says where that's not how it should be. It changes as the engine does (sand's cells were a list, then a grid that a chunk system steps on threads), and its expected hash with it.
 
 ### Tide programs
@@ -139,7 +140,7 @@ The generated header is the API between the game and the host. Namespaced declar
 ### Docs site
 
 - `docs/` is the docs site, built with VitePress and published to GitHub Pages (https://blenminer.github.io/tide-engine/) from `dev` by `.github/workflows/docs.yml`, which also builds it on pull requests. It needs Node: `npm ci`, then `npm run dev` in `docs/` serves it, and `npm run build` builds it and fails on dead links.
-- The workflow builds the web demo (`web-release`, target `demo`) and puts it at `demo/`, where `docs/guide/demo.md` shows it. To see it locally, copy `build/web-release/bin/demo.html` to `docs/public/demo/index.html`.
+- The workflow builds the web demo (`web-release`, target `demo`) and puts it at `demo/`, where `docs/guide/demo.md` shows it, and sand (target `sand`, see Benchmarks) at `sand/`, where `docs/guide/sand.md` does. To see them locally, copy `build/web-release/bin/demo.html` to `docs/public/demo/index.html` and `sand.html` to `docs/public/sand/index.html`.
 - The docs' Markdown fences Tide as `csharp`, which GitHub highlights; the site highlights it with the editors' grammar (`tools/tide-syntax`).
 
 ## Packaging and releases

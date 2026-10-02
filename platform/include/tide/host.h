@@ -267,6 +267,7 @@ static inline void tide_run_end(void)
     tide_run_start = NULL;
     tide_run_dropped = false;
     tide_run_migrating_since = 0.0;
+    tide_draw_free(&tide_run_gui.list);
     memset(&tide_run_gui, 0, sizeof tide_run_gui);
 }
 

@@ -36,13 +36,15 @@ jobs:
           path: build/wasi-sdk-*
           key: wasi-sdk-${{ hashFiles('cmake/wasi-toolchain.cmake') }}
 
-      # The demo's page (docs/guide/demo.md) shows it at demo/.
-      - name: Build the demo
+      # The demo's page (docs/guide/demo.md) shows it at demo/, and the sand
+      # page (docs/guide/sand.md) sand at sand/.
+      - name: Build the demos
         run: |
           cmake --preset web-release
-          cmake --build --preset web-release --target demo
-          mkdir -p docs/public/demo
+          cmake --build --preset web-release --target demo sand
+          mkdir -p docs/public/demo docs/public/sand
           cp build/web-release/bin/demo.html docs/public/demo/index.html
+          cp build/web-release/bin/sand.html docs/public/sand/index.html
       - name: Build the site
         working-directory: docs
         run: |

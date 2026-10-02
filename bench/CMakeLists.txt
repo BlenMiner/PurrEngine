@@ -12,6 +12,9 @@ target_compile_definitions(tide_bench PRIVATE TIDE_BENCH_RESULTS="${CMAKE_CURREN
 tide_add_game(bench_sand SOURCES sand/sand.tide NAME sand HOST sand/main.c)
 target_link_libraries(bench_sand PRIVATE tide_bench)
 add_test(NAME bench_sand COMMAND bench_sand --quick --expect 0x4f8c29e1545be234)
+# Sand to play, with its views and the mouse: `sand` in a window, sand.html on
+# the web, which the docs site shows (docs/guide/sand.md).
+tide_add_game(sand SOURCES sand/sand.tide sand/play.tide TITLE "Tide sand")
 
 tide_add_game(bench_gallery SOURCES gallery/gallery.tide NAME gallery HOST gallery/main.c)
 target_link_libraries(bench_gallery PRIVATE tide_bench)

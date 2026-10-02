@@ -1,5 +1,6 @@
 // Sand: falling sand and water that every player paints into at once, the
-// cellular automaton benchmark (see AGENTS.md, Benchmarks).
+// cellular automaton benchmark (see AGENTS.md, Benchmarks). Bots play it
+// there; play.tide makes it a game people play, with the mouse.
 //
 // The cells are a grid, which a chunk system steps a chunk at a time, on
 // threads, in phases (see docs/spec.md, Grids).
@@ -25,12 +26,34 @@ singleton Field
     bool ready;
 }
 
+// Where the field is on this machine's screen, which its view works out
+// (play.tide), and what the player paints with.
+local singleton Canvas
+{
+    float2 middle; // The field's middle, in window pixels from the bottom left
+    float scale;   // Pixels a cell, 0 until the field is drawn
+    int size;      // Cells across
+    Material material = Material.Sand;
+}
+
 input Brush
 {
     int x;
     int y;
     Material material;
     bool down;
+
+    // The left button paints, the right one erases.
+    Sample(Canvas canvas)
+    {
+        if (canvas.scale <= 0) return;
+        var mouse = Devices.mouse;
+        var cell = (mouse.position - canvas.middle) / canvas.scale + float2(canvas.size, canvas.size) * 0.5;
+        x = int(Math.Floor(cell.x));
+        y = int(Math.Floor(cell.y));
+        down = mouse.left.pressed || mouse.right.pressed;
+        material = mouse.right.pressed ? Material.Empty : canvas.material;
+    }
 }
 
 // Someone painting: their brush is their input.

@@ -24,3 +24,7 @@
     border-radius: 8px;
     background: #0e0e14;
 }
+
+.demo-frame.square-ish {
+    aspect-ratio: 4 / 3;
+}
