@@ -6553,7 +6553,7 @@ static void add_builtins(program *prog)
     static const char *const vertex_fields[][2] = {{"position", "float2"}, {"uv", "float2"}, {"color", "Color"}};
     for (int i = 0; i < (int)(sizeof vertex_fields / sizeof vertex_fields[0]); i++) {
         const field f = {str_from(vertex_fields[i][0]), str_from(vertex_fields[i][1]), {0, 0, 0}, {0}, NULL, {0, 0, 0},
-                         {0}, {0, 0, 0}, false, 0, false};
+                         {0}, {0, 0, 0}, false, 0, false, false};
         vec_push(vertex->fields, f);
     }
     expr *white = NEW(expr);
