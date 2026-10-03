@@ -6,8 +6,9 @@
 
 // Libraries by their formats: static ones are archives (`!<arch>`) of object
 // files, whose first object says what they're for; dynamic ones are PE (.dll),
-// ELF (.so) or Mach-O (.dylib) files. Only headers are read, so a library of
-// any size costs a few small reads.
+// ELF (.so) or Mach-O (.dylib) files. Only headers are read (and of an ELF
+// shared library, its notes and its name), so a library of any size costs a
+// few small reads.
 
 static uint16_t le16(const unsigned char *p)
 {
@@ -17,6 +18,11 @@ static uint16_t le16(const unsigned char *p)
 static uint32_t le32(const unsigned char *p)
 {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static uint64_t le64(const unsigned char *p)
+{
+    return le32(p) | (uint64_t)le32(p + 4) << 32;
 }
 
 static uint32_t be32(const unsigned char *p)
@@ -70,10 +76,10 @@ static lib_info identify_object(const unsigned char *h, const size_t n)
     } else if (n >= 8 && le16(h) == 0 && le16(h + 2) == 0xFFFF) {
         // An import library's member, or a big COFF object: the machine is later
         const unsigned cpu = coff_cpu(le16(h + 6));
-        if (cpu) info = (lib_info){LIB_WINDOWS, cpu, false};
+        if (cpu) info = (lib_info){.platform = LIB_WINDOWS, .cpus = cpu};
     } else if (n >= 20) {
         const unsigned cpu = coff_cpu(le16(h));
-        if (cpu) info = (lib_info){LIB_WINDOWS, cpu, false};
+        if (cpu) info = (lib_info){.platform = LIB_WINDOWS, .cpus = cpu};
     }
     return info;
 }
@@ -122,12 +128,103 @@ static lib_info identify_archive(const lib_read_fn read, void *user)
     return (lib_info){0};
 }
 
+// ---------------------------------------------------------------------------
+// ELF shared libraries: 64-bit, little-endian
+
+enum { PT_LOAD = 1, PT_DYNAMIC = 2, PT_NOTE = 4 };
+enum { DT_STRTAB = 5, DT_SONAME = 14 };
+#define NOTE_ANDROID_IDENT 1 // Android's notes are named "Android"; this one says what it was built for
+
+typedef struct elf_segment {
+    uint64_t offset, address, size; // In the file, in memory, and how much of the file
+} elf_segment;
+
+// Whether the notes at `offset` have Android's among them. A note is the
+// sizes of its name and description, its type, then the two, each ending on
+// a multiple of `align` from the note's start.
+static bool has_android_note(const lib_read_fn read, void *user, uint64_t offset, const uint64_t size, const uint64_t align)
+{
+    const uint64_t end = offset + size;
+    const uint64_t pad = align == 8 ? 7 : 3;
+    for (int note = 0; note < 64 && offset + 12 <= end; note++) {
+        unsigned char h[12 + 8];
+        const size_t n = read(user, offset, h, sizeof h);
+        if (n < 12) break;
+        const uint64_t name_size = le32(h);
+        const uint64_t description_size = le32(h + 4);
+        if (n == sizeof h && name_size == 8 && le32(h + 8) == NOTE_ANDROID_IDENT && memcmp(h + 12, "Android", 8) == 0) {
+            return true;
+        }
+        const uint64_t description = (12 + name_size + pad) & ~pad;
+        offset += (description + description_size + pad) & ~pad;
+    }
+    return false;
+}
+
+// What a shared library's program headers lead to: Android's note, the
+// alignment of what it loads, and the name its dynamic section gives it.
+// False for one it can't read.
+static bool identify_shared_elf(const lib_read_fn read, void *user, const unsigned char *h, lib_info *info)
+{
+    const uint64_t headers = le64(h + 32);
+    const unsigned header_size = le16(h + 54);
+    const unsigned count = le16(h + 56);
+    if (count && header_size < 56) return false;
+    elf_segment loads[16];
+    int load_count = 0;
+    elf_segment dynamic = {0};
+    for (unsigned i = 0; i < count; i++) {
+        unsigned char p[56];
+        if (read(user, headers + (uint64_t)i * header_size, p, sizeof p) != sizeof p) return false;
+        const elf_segment segment = {le64(p + 8), le64(p + 16), le64(p + 32)};
+        const uint64_t align = le64(p + 48);
+        switch (le32(p)) {
+        case PT_LOAD:
+            if (load_count < 16) loads[load_count++] = segment;
+            if (info->page_size == 0 || align < info->page_size) info->page_size = align ? align : 1;
+            break;
+        case PT_DYNAMIC: dynamic = segment; break;
+        case PT_NOTE:
+            if (has_android_note(read, user, segment.offset, segment.size, align)) info->platform = LIB_ANDROID;
+            break;
+        default: break;
+        }
+    }
+
+    // Its name: DT_SONAME is where in the strings, which DT_STRTAB says the
+    // address of, as loaded
+    uint64_t strings = 0, name = 0;
+    bool named = false;
+    for (uint64_t at = 0; at + 16 <= dynamic.size && at < 16 * 4096; at += 16) {
+        unsigned char d[16];
+        if (read(user, dynamic.offset + at, d, sizeof d) != sizeof d) return false;
+        const uint64_t tag = le64(d);
+        if (tag == 0) break;
+        if (tag == DT_STRTAB) strings = le64(d + 8);
+        if (tag == DT_SONAME) {
+            name = le64(d + 8);
+            named = true;
+        }
+    }
+    if (!named) return true;
+    for (int i = 0; i < load_count; i++) {
+        const elf_segment *load = &loads[i];
+        if (strings < load->address || strings - load->address >= load->size) continue;
+        const size_t n = read(user, load->offset + (strings - load->address) + name, info->name, sizeof info->name);
+        const char *end = memchr(info->name, '\0', n);
+        if (!end) return false; // Too long to be a file's
+        memset(info->name + (end - info->name), 0, sizeof info->name - (size_t)(end - info->name));
+        return true;
+    }
+    return false; // A name that's nowhere
+}
+
 // A universal macOS library: a slice per CPU.
 static lib_info identify_universal(const lib_read_fn read, void *user, const unsigned char *h)
 {
     const uint32_t count = be32(h + 4);
     if (count == 0 || count > 16) return (lib_info){0}; // Java's class files start the same
-    lib_info info = {LIB_MACOS, 0, false};
+    lib_info info = {.platform = LIB_MACOS};
     for (uint32_t i = 0; i < count; i++) {
         unsigned char arch[20];
         if (read(user, 8 + 20 * (uint64_t)i, arch, sizeof arch) != sizeof arch) return (lib_info){0};
@@ -150,9 +247,13 @@ lib_info lib_identify(const lib_read_fn read, void *user)
         unsigned char pe[6];
         if (read(user, le32(h + 0x3C), pe, sizeof pe) != sizeof pe || memcmp(pe, "PE\0\0", 4) != 0) return (lib_info){0};
         const unsigned cpu = coff_cpu(le16(pe + 4));
-        return (lib_info){LIB_WINDOWS, cpu ? cpu : LIB_OTHER_CPU, true};
+        return (lib_info){.platform = LIB_WINDOWS, .cpus = cpu ? cpu : LIB_OTHER_CPU, .dynamic = true};
     }
-    return identify_object(h, n);
+    lib_info info = identify_object(h, n);
+    // Linux's or Android's: 64-bit ones say (32-bit ones are for CPUs tide doesn't build for)
+    const bool shared_elf = info.platform == LIB_LINUX && info.dynamic && n >= 64 && h[4] == 2;
+    if (shared_elf && !identify_shared_elf(read, user, h, &info)) return (lib_info){0};
+    return info;
 }
 
 static size_t read_file(void *user, const uint64_t offset, void *buf, const size_t n)

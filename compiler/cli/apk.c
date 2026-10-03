@@ -644,12 +644,20 @@ typedef struct zip_entry {
 
 typedef struct zip {
     bytes files; // Each one's local header, then it
-    zip_entry list[16];
-    int count;
+    zip_entry *list;
+    int count, capacity;
 } zip;
 
 static void zip_add(zip *z, const char *name, const uint8_t *data, const size_t size, const size_t align)
 {
+    if (z->count == z->capacity) {
+        z->capacity = z->capacity ? z->capacity * 2 : 16;
+        z->list = realloc(z->list, sizeof(zip_entry) * (size_t)z->capacity);
+        if (!z->list) {
+            fprintf(stderr, "tide: out of memory\n");
+            exit(1);
+        }
+    }
     zip_entry *e = &z->list[z->count++];
     snprintf(e->name, sizeof e->name, "%s", name);
     const size_t name_size = strlen(e->name);
@@ -743,16 +751,20 @@ static bool fail(char *error, const size_t error_size, const char *message, cons
     return false;
 }
 
-// What goes in the app from disk: its icon and its libraries
+// What goes in the app from disk: its icon, its libraries and those they need
 typedef struct app_files {
     bytes icon;
     bytes libs[APK_MAX_LIBS];
+    bytes *needed;
+    int needed_count;
 } app_files;
 
 static void free_app(app_files *a)
 {
     free(a->icon.data);
     for (int i = 0; i < APK_MAX_LIBS; i++) free(a->libs[i].data);
+    for (int i = 0; i < a->needed_count; i++) free(a->needed[i].data);
+    free(a->needed);
 }
 
 static bool read_app(const apk_desc *desc, app_files *a, char *error, const size_t error_size)
@@ -769,7 +781,27 @@ static bool read_app(const apk_desc *desc, app_files *a, char *error, const size
             return fail(error, error_size, "can't read ", desc->libs[i]);
         }
     }
+    a->needed = calloc((size_t)desc->needed_count + 1, sizeof(bytes));
+    if (!a->needed) {
+        free_app(a);
+        return fail(error, error_size, "out of memory", NULL);
+    }
+    a->needed_count = desc->needed_count;
+    for (int i = 0; i < desc->needed_count; i++) {
+        if (!read_file(desc->needed[i].path, &a->needed[i])) {
+            free_app(a);
+            return fail(error, error_size, "can't read ", desc->needed[i].path);
+        }
+    }
     return true;
+}
+
+// Where a library goes in an app: lib/<abi>/<name>, after `prefix`
+#define LIB_PATH_MAX 256
+
+static void lib_path(char *out, const char *prefix, const char *abi, const char *name)
+{
+    snprintf(out, LIB_PATH_MAX, "%slib/%s/%s", prefix, abi, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -898,10 +930,15 @@ bool apk_write(const char *path, const apk_desc *desc, const apk_key *key, char 
         free(table);
         zip_add(&z, ICON_PATH, app.icon.data, app.icon.size, 4);
     }
+    char name[LIB_PATH_MAX], file[LIB_PATH_MAX];
     for (int i = 0; i < desc->lib_count; i++) {
-        char name[256];
-        snprintf(name, sizeof name, "lib/%s/lib%s.so", desc->abis[i], desc->lib_name);
+        snprintf(file, sizeof file, "lib%s.so", desc->lib_name);
+        lib_path(name, "", desc->abis[i], file);
         zip_add(&z, name, app.libs[i].data, app.libs[i].size, 16384);
+    }
+    for (int i = 0; i < desc->needed_count; i++) {
+        lib_path(name, "", desc->needed[i].abi, desc->needed[i].name);
+        zip_add(&z, name, app.needed[i].data, app.needed[i].size, 16384);
     }
     free_app(&app);
 
@@ -915,6 +952,7 @@ bool apk_write(const char *path, const apk_desc *desc, const apk_key *key, char 
     const bytes *const parts[] = {&z.files, &block, &directory, &end};
     if (ok && !write_file(path, parts, 4)) ok = fail(error, error_size, "can't write ", path);
     free(z.files.data);
+    free(z.list);
     free(directory.data);
     free(end.data);
     free(block.data);
@@ -945,7 +983,15 @@ bool apk_bundle_write(const char *path, const apk_desc *desc, const apk_key *key
 {
     app_files app;
     if (!read_app(desc, &app, error, error_size)) return false;
-    jar_entry files[4 + APK_MAX_LIBS];
+    const int lib_count = desc->lib_count + desc->needed_count;
+    jar_entry *files = malloc(sizeof(jar_entry) * (size_t)(4 + lib_count));
+    char(*names)[LIB_PATH_MAX] = malloc(LIB_PATH_MAX * (size_t)(lib_count + 1));
+    if (!files || !names) {
+        free(files);
+        free(names);
+        free_app(&app);
+        return fail(error, error_size, "out of memory", NULL);
+    }
     int count = 0;
     bytes config = {0};
     bundle_config(&config);
@@ -958,10 +1004,16 @@ bool apk_bundle_write(const char *path, const apk_desc *desc, const apk_key *key
         files[count++] = (jar_entry){"base/resources.pb", table, table_size};
         files[count++] = (jar_entry){"base/" ICON_PATH, app.icon.data, app.icon.size};
     }
-    char names[APK_MAX_LIBS][256];
     for (int i = 0; i < desc->lib_count; i++) {
-        snprintf(names[i], sizeof names[i], "base/lib/%s/lib%s.so", desc->abis[i], desc->lib_name);
+        char file[LIB_PATH_MAX];
+        snprintf(file, sizeof file, "lib%s.so", desc->lib_name);
+        lib_path(names[i], "base/", desc->abis[i], file);
         files[count++] = (jar_entry){names[i], app.libs[i].data, app.libs[i].size};
+    }
+    for (int i = 0; i < desc->needed_count; i++) {
+        char *const name = names[desc->lib_count + i];
+        lib_path(name, "base/", desc->needed[i].abi, desc->needed[i].name);
+        files[count++] = (jar_entry){name, app.needed[i].data, app.needed[i].size};
     }
 
     // The signature first, as jarsigner puts it, then what it signs
@@ -980,6 +1032,8 @@ bool apk_bundle_write(const char *path, const apk_desc *desc, const apk_key *key
     free(config.data);
     free(manifest);
     free(table);
+    free(files);
+    free(names);
     free_app(&app);
 
     bytes directory = {0}, end = {0};
@@ -987,6 +1041,7 @@ bool apk_bundle_write(const char *path, const apk_desc *desc, const apk_key *key
     const bytes *const parts[] = {&z.files, &directory, &end};
     if (ok && !write_file(path, parts, 3)) ok = fail(error, error_size, "can't write ", path);
     free(z.files.data);
+    free(z.list);
     free(directory.data);
     free(end.data);
     return ok;

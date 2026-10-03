@@ -32,7 +32,7 @@ In the game's folder, with nothing to set up:
 
 - Every `.c` file in the folder and its subfolders compiles with the game, with the same determinism flags as the engine. Headers next to them are found as C finds them.
 - Every `.cpp` file does too, as C++ with no runtime behind it: see [C++](#c).
-- Every prebuilt library there links with the game when it was built for the platform being built for: `.a` and `.lib` files, and `.so`, `.dll` and `.dylib` ones. tide reads each library to tell which platform and CPU it's for, so one folder holds them all, named and placed however you like.
+- Every prebuilt library there links with the game when it was built for the platform being built for: `.a` and `.lib` files, and `.so`, `.dll` and `.dylib` ones. tide reads each library to tell which platform and CPU it's for, so one folder holds them all, named and placed however you like (for phones, see [Android](#android)).
 - Code for one platform only goes in `#ifdef`, as in any C.
 
 ```
@@ -46,6 +46,10 @@ MyGame/
     libsteam_api.so    // Linux
     libsteam_api.dylib // macOS
   steam_web.c          // #ifdef __wasm__: stand-ins, as the web has no Steam
+  physics/
+    linux/libjoltc.so  // Linux
+    arm64/libjoltc.so  // Android, on phones: goes in the app
+    x86_64/libjoltc.so // Android, on its emulator
 ```
 
 `.so`, `.dll` and `.dylib` files are copied next to the built game, where it finds them. On Windows, a `.dll` links through its import library, the `.lib` that comes with it.
@@ -106,6 +110,17 @@ The rest of the language is there, as C++20: classes, templates, lambdas, virtua
 When a build fails for want of the runtime, tide says so after the compiler's error, and what to write instead.
 
 Libraries written to need no runtime, as Dear ImGui is, go in as source. One that needs it comes prebuilt instead: a `.dll`, `.so` or `.dylib` behind a C API has its runtime inside. A static library (`.a`, `.lib`) has to be built to need none, as the game's own C++ is (`-fno-exceptions -fno-rtti -fno-threadsafe-statics`, and nothing of the standard library), and the web only has static ones, so a library that needs the runtime can't be used there.
+
+### Android
+
+On Android, the game's `.so` libraries go in the app with it:
+
+- An app is built for two CPUs, arm64 (phones and tablets) and x86-64 (Android's emulator), so a library comes as a file for each. Where one only exists for phones, give its functions stand-ins for the emulator, inside `#if defined(__ANDROID__) && defined(__x86_64__)`.
+- Android's libraries and Linux's are the same kind of file. tide tells them apart by the note Android's NDK puts in every shared library it links, which says the Android it was built for, so both can be in the game's folder.
+- In the app, a library goes by the name it was linked with (its soname), or by its file's name when it was linked with none. Android wants that name to be `lib<name>.so`.
+- A static library (`.a`) can't say it's Android's: the same C compiles to the same thing for Linux and Android. tide takes it for Linux's, so for Android, build the library as a shared one.
+- A library written in C++ needs C++'s own library with it: link it in when building yours (`-static-libstdc++`), or put the NDK's `libc++_shared.so` in the game's folder too.
+- Newer phones have memory pages of 16 KiB, and a library linked for 4 KiB ones may not load there. `tide` warns about such a library; Google Play requires apps to run on those phones. The NDK links for 16 KiB from r28 on, and older ones with `-Wl,-z,max-page-size=16384`.
 
 ## Values across
 
