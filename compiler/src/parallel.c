@@ -3,8 +3,6 @@
 // shown in editors (above each system, and on hover) and by `tidec --schedule`
 // so game code can be written for it now.
 
-#include <string.h>
-
 #include "ast.h"
 
 // The archetypes a system runs on, as a bitset.
@@ -112,13 +110,12 @@ static bool contains(const decl *const *items, const int count, const decl *d)
     return false;
 }
 
-// Where a system is in the tick.
-static int position(const program *prog, const decl *sys)
+// Whether the system at place `j` in the tick runs after the one at `i`,
+// directly or through others: a bit of `before`, which has a row of `words`
+// words per system, a bit per system.
+static bool runs_after(const uint64_t *before, const int words, const int j, const int i)
 {
-    for (int i = 0; i < prog->systems.count; i++) {
-        if (prog->systems.items[i] == sys) return i;
-    }
-    return 0;
+    return (before[(size_t)j * (size_t)words + (size_t)(i / 64)] >> (i % 64)) & 1;
 }
 
 void analyze_parallelism(program *prog)
@@ -126,14 +123,16 @@ void analyze_parallelism(program *prog)
     const int n = prog->systems.count;
     if (n == 0) return;
     arch_set *sets = arena_alloc(sizeof(arch_set) * (size_t)n);
-    // before[j * n + i]: system j runs after system i, directly or through others.
-    bool *before = arena_alloc(sizeof(bool) * (size_t)n * (size_t)n);
-    memset(before, 0, sizeof(bool) * (size_t)n * (size_t)n);
+    // A row per system, with a bit for each system it runs after, directly or
+    // through others. A system's row is its place in the tick, `decl.index`.
+    const int words = (n + 63) / 64;
+    uint64_t *before = arena_alloc(sizeof(uint64_t) * (size_t)n * (size_t)words);
     for (int i = 0; i < n; i++) sets[i] = archetypes_of(prog, prog->systems.items[i]);
 
     // The systems are in tick order, so everything a system waits for comes first.
     for (int j = 0; j < n; j++) {
         decl *sys = prog->systems.items[j];
+        uint64_t *row = before + (size_t)j * (size_t)words;
         sys->stage = 1;
         for (int i = 0; i < j; i++) {
             decl *earlier = prog->systems.items[i];
@@ -143,16 +142,19 @@ void analyze_parallelism(program *prog)
             w.ordered = contains((const decl *const *)sys->after.items, sys->after.count, earlier);
             if (w.conflicts.count == 0 && !w.ordered) continue;
             vec_push(sys->waits, w);
-            before[j * n + i] = true;
-            for (int k = 0; k < i; k++) before[j * n + k] |= before[i * n + k];
+            // It runs after `earlier`, and after everything `earlier` runs after
+            const uint64_t *after = before + (size_t)i * (size_t)words;
+            row[i / 64] |= (uint64_t)1 << (i % 64);
+            for (int k = 0; k < words; k++) row[k] |= after[k];
             if (earlier->stage + 1 > sys->stage) sys->stage = earlier->stage + 1;
         }
-        // A wait goes through another when that other system already waits for it.
+        // A wait goes through another when that other system already waits for
+        // it. The waits are in tick order, so only a later one can.
         for (int a = 0; a < sys->waits.count; a++) {
             system_wait *w = &sys->waits.items[a];
-            for (int b = 0; b < sys->waits.count && !w->through; b++) {
+            for (int b = a + 1; b < sys->waits.count && !w->through; b++) {
                 decl *other = sys->waits.items[b].on;
-                if (other != w->on && before[position(prog, other) * n + position(prog, w->on)]) w->through = other;
+                if (runs_after(before, words, other->index, w->on->index)) w->through = other;
             }
         }
     }
@@ -160,7 +162,9 @@ void analyze_parallelism(program *prog)
     for (int j = 0; j < n; j++) {
         decl *sys = prog->systems.items[j];
         for (int k = 0; k < n; k++) {
-            if (k != j && !before[j * n + k] && !before[k * n + j]) vec_push(sys->alongside, prog->systems.items[k]);
+            if (k != j && !runs_after(before, words, j, k) && !runs_after(before, words, k, j)) {
+                vec_push(sys->alongside, prog->systems.items[k]);
+            }
         }
     }
 }
