@@ -2789,10 +2789,10 @@ static type check_member(checker *c, expr *e)
         return T_ERR;
     }
     if (obj.kind == TY_LIST) {
-        if (str_eq_c(e->member, "Count")) return T_INT_;
-        diag_error(e->at, "a list has 'Count' and methods like Add(...), not '" STR_FMT "'", STR_ARG(e->member));
+        if (str_eq_c(e->member, "count")) return T_INT_;
+        diag_error(e->at, "a list has 'count' and methods like Add(...), not '" STR_FMT "'", STR_ARG(e->member));
         suggestion sg = suggest_start(e->member);
-        suggest_consider_c(&sg, "Count");
+        suggest_consider_c(&sg, "count");
         suggest_note(&sg);
         return T_ERR;
     }
@@ -2805,10 +2805,10 @@ static type check_member(checker *c, expr *e)
         return T_ERR;
     }
     if (obj.kind == TY_STRING) {
-        if (str_eq_c(e->member, "Length")) return T_INT_;
-        diag_error(e->at, "text has 'Length' and methods like Contains(...), not '" STR_FMT "'", STR_ARG(e->member));
+        if (str_eq_c(e->member, "length")) return T_INT_;
+        diag_error(e->at, "text has 'length' and methods like Contains(...), not '" STR_FMT "'", STR_ARG(e->member));
         suggestion s = suggest_start(e->member);
-        suggest_consider_c(&s, "Length");
+        suggest_consider_c(&s, "length");
         suggest_note(&s);
         return T_ERR;
     }
@@ -3827,7 +3827,7 @@ static bool check_writable(checker *c, expr *target, const decl *called, const p
     }
     if (root->bind == BIND_LOCAL && root->local->kind == S_FOREACH) {
         diag_error(root->at, "'" STR_FMT "' is a copy of the list's element, so it can't be changed", STR_ARG(root->name));
-        diag_note("change the list itself: 'for (var i = 0; i < items.Count; i++) { ... items[i] = ...; }'");
+        diag_note("change the list itself: 'for (var i = 0; i < items.count; i++) { ... items[i] = ...; }'");
         return false;
     }
     if (root->bind == BIND_LOCAL && !root->local->is_mut) {

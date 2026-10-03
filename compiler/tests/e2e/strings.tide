@@ -45,7 +45,7 @@ system Check(mut Results r)
     Expect(r, $"a{{b}}c" == "a{b}c");
     Expect(r, "a" + 1 + "b" == "a1b");
     Expect(r, 1 + "a" == "1a");
-    Expect(r, "héllo".Length == 5);
+    Expect(r, "héllo".length == 5);
     Expect(r, "héllo".Substring(1, 2) == "él");
     Expect(r, "hello".IndexOf("l") == 2);
     Expect(r, "hello".IndexOf("z") == -1);
@@ -58,7 +58,7 @@ system Check(mut Results r)
     Expect(r, $"{(r.checks > 0 ? 1 : 2)}" == "1");
     Expect(r, $"{this}" == "Entity(1:1)");
     Expect(r, Greet("cat") == "hi cat");
-    Expect(r, "".Length == 0);
+    Expect(r, "".length == 0);
 
     mut var digits = "";
     for (var i = 0; i < 5; i++) digits += i;
@@ -72,5 +72,5 @@ system Check(mut Results r)
 
     mut var many = "";
     for (var i = 0; i < 2000; i++) many += "ab";
-    Expect(r, many.Length == 4000);
+    Expect(r, many.length == 4000);
 }

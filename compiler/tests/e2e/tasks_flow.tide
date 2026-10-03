@@ -63,7 +63,7 @@ async void Opened(bool ok) fails Problem
 
 int? Find(List<int> items, int wanted)
 {
-    for (var i = 0; i < items.Count; i++)
+    for (var i = 0; i < items.count; i++)
     {
         if (items[i] == wanted) return i;
     }
@@ -92,7 +92,7 @@ async void Flow(mut Log log)
     await Wait.Ticks(1);
     note.text = $"{note.text}b";
     items.Add(5);
-    log.trail = $"{note.text}{items.Count}{found ?? -1}";
+    log.trail = $"{note.text}{items.count}{found ?? -1}";
 
     // In a loop's condition
     mut var n = 0;

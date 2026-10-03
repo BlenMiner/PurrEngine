@@ -32,7 +32,7 @@ int ParseScore(string text) fails ParseError
 {
     if (text == "") fail ParseError.Empty;
     mut var value = 0;
-    for (var i = 0; i < text.Length; i++)
+    for (var i = 0; i < text.length; i++)
     {
         var digit = "0123456789".IndexOf(text.Substring(i, 1));
         if (digit < 0) fail ParseError.NotANumber;
@@ -84,7 +84,7 @@ List<int> Digits(string text) fails ParseError
 // T?: a value or nothing, where nothing isn't an error.
 int? Find(List<int> items, int wanted)
 {
-    for (var i = 0; i < items.Count; i++)
+    for (var i = 0; i < items.count; i++)
     {
         if (items[i] == wanted) return i;
     }
@@ -279,8 +279,8 @@ system Unwrap(mut Results results)
     results.held = held ?? 0;
 
     var digits = Digits("123") ?? [];
-    results.digits = digits.Count;
-    results.noDigits = (Digits("") ?? []).Count;
+    results.digits = digits.count;
+    results.noDigits = (Digits("") ?? []).count;
 
     var stats = Stats { hp = 20 };
     results.spent = stats.Spend(5) ?? -1;

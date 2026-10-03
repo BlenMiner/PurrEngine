@@ -192,7 +192,7 @@ system Rename(mut Name name, Body body)
 // ...while the rocks' labels are read, on other threads
 system Measure(Label label, mut Size size)
 {
-    size.letters = label.text.Length;
+    size.letters = label.text.length;
 }
 
 // Tasks, started from a system that runs alongside others, many waiting at
@@ -313,7 +313,7 @@ system Gather(mut Swarm swarm)
         swarm.ready = true;
         for (var i = 0; i < 6000; i++) swarm.bodies.Add(float3(float(i * 37 % 1000), float(i % 13), 0));
     }
-    var n = swarm.bodies.Count;
+    var n = swarm.bodies.count;
     parallel (var i in swarm.bodies)
     {
         var near = swarm.bodies[(i + 1) % n] + swarm.bodies[(i + n - 1) % n];

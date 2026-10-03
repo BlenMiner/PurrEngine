@@ -1,4 +1,4 @@
 // expect: can't initialize string with a list
 scene Main { }
 component T { int n; }
-system S(mut T t) { string s = ["a"]; t.n = s.Length; }
+system S(mut T t) { string s = ["a"]; t.n = s.length; }

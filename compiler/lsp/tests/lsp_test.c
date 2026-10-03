@@ -613,7 +613,7 @@ TIDE_TEST(lsp_type_definition_and_implementation)
     open_document(GAME_TYPES "system Move(mut Body body)\n{\n    bo$dy.radius = 1;\n}\n");
     TIDE_CHECK(has(request("textDocument/typeDefinition"), "\"range\":{\"start\":{\"line\":0,\"character\":10}"));
     open_document("struct Part { float size; }\ncomponent Kit { List<Part> parts; }\nscene Main { }\n"
-                  "system S(Kit kit)\n{\n    var n = kit.pa$rts.Count;\n}\n");
+                  "system S(Kit kit)\n{\n    var n = kit.pa$rts.count;\n}\n");
     TIDE_CHECK(has(request("textDocument/typeDefinition"), "\"range\":{\"start\":{\"line\":0,\"character\":7}")); // Part
     open_document(GAME_TYPES "system Move(mut Body body)\n{\n    body.rad$ius = 1;\n}\n");
     TIDE_CHECK(has(request("textDocument/typeDefinition"), "\"result\":null")); // A float
@@ -1209,7 +1209,7 @@ TIDE_TEST(lsp_text)
                                 "    GUILayout.Label($$\"poi$ {score.points}\");\n}\n"),
                        "score"));
     const char *methods = complete("scene Main { }\nview V()\n{\n    var name = \"cat\";\n    var n = name.$\n}\n");
-    TIDE_CHECK(offers(methods, "Length"));
+    TIDE_CHECK(offers(methods, "length"));
     TIDE_CHECK(offers(methods, "Contains"));
 
     open_document("scene Main { }\nview V() { var n = \"cat\".Cont$ains(\"a\"); }\n");
@@ -1221,7 +1221,7 @@ TIDE_TEST(lsp_text)
     TIDE_CHECK(has(request("textDocument/hover"), "string value"));
     const char *fields = complete("component Name { string value; }\nscene Main { }\nsystem S(Name name)\n{\n"
                                   "    var n = name.value.$\n}\n");
-    TIDE_CHECK(offers(fields, "Length"));
+    TIDE_CHECK(offers(fields, "length"));
 }
 
 TIDE_TEST(lsp_format_text)
@@ -1249,7 +1249,7 @@ TIDE_TEST(lsp_lists)
 
     const char *members = complete("component Inventory { List<int> scores; }\nscene Main { }\nsystem S(Inventory inv)\n{\n"
                                    "    var n = inv.scores.$\n}\n");
-    TIDE_CHECK(offers(members, "Count"));
+    TIDE_CHECK(offers(members, "count"));
     TIDE_CHECK(offers(members, "Add"));
     TIDE_CHECK(offers(complete("component Inventory\n{\n    $\n}\nscene Main { }\n"), "List"));
 
@@ -1324,9 +1324,9 @@ TIDE_TEST(lsp_parallel)
 TIDE_TEST(lsp_format_lists)
 {
     start();
-    static const char messy[] = "scene Main { }\nint F(List < int > xs)\n{\nmut List<int> ys = [ 1,2 ];\nys.Add(xs [0]);\nreturn ys.Count;\n}\n";
+    static const char messy[] = "scene Main { }\nint F(List < int > xs)\n{\nmut List<int> ys = [ 1,2 ];\nys.Add(xs [0]);\nreturn ys.count;\n}\n";
     static const char expected[] = "scene Main { }\nint F(List<int> xs)\n{\n    mut List<int> ys = [1, 2];\n    ys.Add(xs[0]);\n"
-                                   "    return ys.Count;\n}\n";
+                                   "    return ys.count;\n}\n";
     format_reply(messy);
     const char *formatted = apply_reply(messy, NULL);
     TIDE_CHECK(strcmp(formatted, expected) == 0);
@@ -1812,11 +1812,11 @@ TIDE_TEST(lsp_format_braceless_loops)
 {
     start();
     static const char messy[] = "singleton F { List<int> xs; Grid2<int> cells; }\nscene Main { }\n"
-                                "system S(mut F f)\n{\nwhile (f.xs.Count > 3)\nif (f.xs.Count > 4)\nreturn;\n"
+                                "system S(mut F f)\n{\nwhile (f.xs.count > 3)\nif (f.xs.count > 4)\nreturn;\n"
                                 "foreach (var x in f.xs)\nfor (var i = 0; i < x; i++)\nif (i > 2)\nreturn;\n"
                                 "parallel (var at in f.cells)\nf.cells[at] = 1;\nreturn;\n}\n";
     static const char expected[] = "singleton F { List<int> xs; Grid2<int> cells; }\nscene Main { }\n"
-                                   "system S(mut F f)\n{\n    while (f.xs.Count > 3)\n        if (f.xs.Count > 4)\n"
+                                   "system S(mut F f)\n{\n    while (f.xs.count > 3)\n        if (f.xs.count > 4)\n"
                                    "            return;\n    foreach (var x in f.xs)\n        for (var i = 0; i < x; i++)\n"
                                    "            if (i > 2)\n                return;\n    parallel (var at in f.cells)\n"
                                    "        f.cells[at] = 1;\n    return;\n}\n";
@@ -2091,7 +2091,7 @@ TIDE_TEST(lsp_built_in_methods)
     TIDE_CHECK(has(request("textDocument/hover"), "singleton.Snap()"));
     open_document(BUILT_IN_METHODS "system S(mut Body body)\n{\n    this.Dest$roy();\n}\n");
     TIDE_CHECK(has(request("textDocument/hover"), "entity.Destroy()"));
-    open_document(BUILT_IN_METHODS "system S(Field field)\n{\n    var n = field.name.Len$gth;\n}\n");
+    open_document(BUILT_IN_METHODS "system S(Field field)\n{\n    var n = field.name.len$gth;\n}\n");
     TIDE_CHECK(has(request("textDocument/hover"), "How many characters the text has."));
     // A grid made in a default: a type, as constructors are
     open_document("singleton Field { Grid2<int> cells = Gr$id2(8, 8); }\nscene Main { }\n");
@@ -2454,7 +2454,7 @@ TIDE_TEST(lsp_every_prefix_is_safe)
         "singleton Field { Grid2<int> cells = Grid2(8, 8); List<int> items; }\n"
         "system Fill(mut Field field)\n{\n    foreach (var i in field.items) field.items.Add(i);\n"
         "    parallel (var at in field.cells) field.cells[at] = 1;\n"
-        "    field.cells[1, 2] = field.items.IndexOf($$\"{3}\".Length);\n    field.cells.Clear();\n}\n";
+        "    field.cells[1, 2] = field.items.IndexOf($$\"{3}\".length);\n    field.cells.Clear();\n}\n";
     start();
     char text[sizeof program];
     for (size_t n = 0; n < sizeof program; n++) {

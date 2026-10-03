@@ -36,5 +36,5 @@ system Retitle(mut Title title)
 
 system Count(mut Score score, Name name)
 {
-    score.points = name.value.Length;
+    score.points = name.value.length;
 }

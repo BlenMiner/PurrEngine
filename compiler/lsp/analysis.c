@@ -1591,8 +1591,8 @@ static void describe(const occurrence *o, sb *out)
         code_block(out, code.data);
         if (str_eq_c(o->name, "down")) sb_put(out, "\n\nTrue on the tick it became true.");
         if (str_eq_c(o->name, "up")) sb_put(out, "\n\nTrue on the tick it became false.");
-        if (o->object_type.kind == TY_STRING && str_eq_c(o->name, "Length")) sb_put(out, "\n\n" TEXT_LENGTH_DOC);
-        if (o->object_type.kind == TY_LIST && str_eq_c(o->name, "Count")) sb_put(out, "\n\n" LIST_COUNT_DOC);
+        if (o->object_type.kind == TY_STRING && str_eq_c(o->name, "length")) sb_put(out, "\n\n" TEXT_LENGTH_DOC);
+        if (o->object_type.kind == TY_LIST && str_eq_c(o->name, "count")) sb_put(out, "\n\n" LIST_COUNT_DOC);
         if (o->object_type.kind == TY_RECORD && o->object_type.decl && o->object_type.decl->array_of
             && str_eq_c(o->name, "count")) {
             sb_put(out, "\n\n" DEVICE_ARRAY_COUNT_DOC);
@@ -3516,8 +3516,8 @@ static type member_type(const type t, const str member)
                               || str_eq_c(member, "height"))) {
         return (type){TY_FLOAT, NULL};
     }
-    if (t.kind == TY_STRING && str_eq_c(member, "Length")) return (type){TY_INT, NULL};
-    if (t.kind == TY_LIST && str_eq_c(member, "Count")) return (type){TY_INT, NULL};
+    if (t.kind == TY_STRING && str_eq_c(member, "length")) return (type){TY_INT, NULL};
+    if (t.kind == TY_LIST && str_eq_c(member, "count")) return (type){TY_INT, NULL};
     if (t.kind == TY_RECORD && t.decl->array_of && str_eq_c(member, "count")) return (type){TY_INT, NULL};
     if (t.kind == TY_GRID && (str_eq_c(member, "size") || str_eq_c(member, "min") || str_eq_c(member, "max"))) {
         return (type){t.decl->dims == 3 ? TY_INT3 : TY_INT2, NULL};
@@ -3636,11 +3636,11 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         item(c, "b", CK_PROPERTY, "float", "Blue, 0 to 1.", NULL);
         item(c, "a", CK_PROPERTY, "float", "Alpha, 0 to 1.", NULL);
     }
-    if (t.kind == TY_LIST) item(c, "Count", CK_PROPERTY, "int", LIST_COUNT_DOC, NULL);
+    if (t.kind == TY_LIST) item(c, "count", CK_PROPERTY, "int", LIST_COUNT_DOC, NULL);
     if (t.kind == TY_RECORD && t.decl->array_of) item(c, "count", CK_PROPERTY, "int", DEVICE_ARRAY_COUNT_DOC, NULL);
     if (t.kind == TY_GRID) item(c, "size", CK_PROPERTY, t.decl->dims == 3 ? "int3" : "int2", GRID_SIZE_FIELD_DOC, NULL);
     if (t.kind == TY_STRING) {
-        item(c, "Length", CK_PROPERTY, "int", TEXT_LENGTH_DOC, NULL);
+        item(c, "length", CK_PROPERTY, "int", TEXT_LENGTH_DOC, NULL);
         builtin_visit v = {c};
         builtin_list_members(str_from("string"), add_builtin_member, &v);
     }

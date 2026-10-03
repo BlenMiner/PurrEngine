@@ -1834,7 +1834,7 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             sb_put(o, ")");
             break;
         }
-        if (e->object->type.kind == TY_LIST) { // items.Count
+        if (e->object->type.kind == TY_LIST) { // items.count
             sb_put(o, "tide_list_count(");
             gen_expr(g, o, e->object);
             sb_put(o, ")");
@@ -1846,7 +1846,7 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             sb_put(o, ")");
             break;
         }
-        if (e->object->type.kind == TY_STRING) { // name.Length
+        if (e->object->type.kind == TY_STRING) { // name.length
             sb_put(o, "(");
             gen_expr(g, o, e->object);
             sb_put(o, ").chars");
@@ -3295,7 +3295,7 @@ static void gen_stmt(gen *g, const stmt *s)
             task_pop(g, mark);
             break;
         }
-        // The list's Count is read each round, so changes to it while it's gone
+        // The list's count is read each round, so changes to it while it's gone
         // through count; each element is a copy.
         const int k = s->value->type.decl->index;
         if (g->task) {

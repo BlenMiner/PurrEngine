@@ -38,7 +38,7 @@ Matrices can't be shown yet, so neither can a value that holds one.
 
 ### Members
 
-- `Length` counts characters (Unicode code points), not bytes.
+- `length` counts characters (Unicode code points), not bytes.
 - `Contains`, `StartsWith`, `EndsWith` and `IndexOf`, which gives -1 when it's not there.
 - `Substring(start)` and `Substring(start, length)`.
 - `ToUpper` and `ToLower`, for ASCII letters for now.
@@ -65,7 +65,7 @@ system Collect(mut Inventory inventory, Pickup pickup)
 
 ### Members
 
-- `Count`, `items[i]` to read, and `items[i] = x` or `items[i] += x` to write.
+- `count`, `items[i]` to read, and `items[i] = x` or `items[i] += x` to write.
 - `Add(item)`, `Insert(index, item)`, `RemoveAt(index)` and `Clear()`.
 - For elements that `==` compares (numbers, bools, enums, text, entities and players): `Contains(item)`, `IndexOf(item)` (-1 if it's not there) and `Remove(item)`, which returns whether it found one.
 
@@ -105,7 +105,7 @@ singleton Space
 // Every body is pulled by every other, from where they all were
 system Gravity(mut Space space, Time time)
 {
-    var n = space.bodies.Count;
+    var n = space.bodies.count;
     parallel (var i in space.bodies)
     {
         mut var body = space.bodies[i];

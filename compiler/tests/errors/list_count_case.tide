@@ -1,0 +1,4 @@
+// expect: did you mean 'count'?
+scene Main { }
+component Tally { int n; }
+system S(mut Tally t) { List<int> scores = [1, 2]; t.n = scores.Count; }

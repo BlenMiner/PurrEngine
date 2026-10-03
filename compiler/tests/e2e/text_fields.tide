@@ -41,14 +41,14 @@ void Rename(mut string name, string to)
 
 void Promote(mut Tag tag)
 {
-    if (tag.label.Length < 8) tag.label = tag.label + "!";
+    if (tag.label.length < 8) tag.label = tag.label + "!";
     tag.level += 1;
 }
 
 system Grow(mut Named n, mut Log log)
 {
     var before = n.name; // A copy: it keeps the old text
-    if (n.name.Length < 12) n.name += "s";
+    if (n.name.length < 12) n.name += "s";
     else n.name = n.name.ToUpper(); // New text every tick, the old released
     if (before + "s" == n.name) log.renames += 1;
     Promote(n.tag);

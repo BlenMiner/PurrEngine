@@ -29,8 +29,8 @@ system Walk(Time time, mut Walker w, mut Log log)
     w.position += float2(Math.Sin(time.tick * 0.1), Math.Cos(time.tick * 0.07)) * 0.3;
     w.label = $"{w.position:F3} {w.position.x}";
     w.path.Add(w.position.x / 3);
-    if (w.path.Count > 8) w.path.RemoveAt(0);
+    if (w.path.count > 8) w.path.RemoveAt(0);
     if (time.tick % 10 == 0) log.lines.Add(w.label);
-    if (log.lines.Count > 20) log.lines.RemoveAt(0);
+    if (log.lines.count > 20) log.lines.RemoveAt(0);
     log.last = $"{Math.Sqrt(w.position.y * w.position.y + 2)} after {time.tick}";
 }

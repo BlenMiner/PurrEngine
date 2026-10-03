@@ -1,4 +1,4 @@
-// expect: did you mean 'Length'?
+// expect: did you mean 'length'?
 scene Main { }
 component Tally { int n; }
-system S(mut Tally t) { t.n = "cat".length; }
+system S(mut Tally t) { t.n = "cat".Length; }
