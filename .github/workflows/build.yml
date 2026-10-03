@@ -162,6 +162,10 @@ jobs:
           # Its yes to the licenses, without a pipe: yes ends with a broken one, which pipefail takes for failing
           "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" \
             > /dev/null < <(yes)
+          # One folder for AVDs, which avdmanager and the emulator would each
+          # look for in their own places (the runner sets XDG_CONFIG_HOME)
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | "$tools/avdmanager" create avd -n tide -k "system-images;android-36;default;x86_64" --force
           # The memory and disk Android 16 wants, which a new AVD's defaults don't give it
           "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
