@@ -60,13 +60,19 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     env:
-      TIDE_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+      TIDE_VERSION: ${{ needs.version.outputs.version }}
       TIDE_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+
+      # A push that releases nothing builds as this repo's version, as builds
+      # here do: the package's tests check `#if TIDE_0_1_OR_NEWER` against it.
+      - name: Version
+        if: env.TIDE_VERSION == ''
+        run: echo "TIDE_VERSION=$(cat VERSION)-dev" >> "$GITHUB_ENV"
 
       # Windows and Linux build with the LLVM tide's built-in clang comes from
       # (cmake/LLVM.cmake), which builds players' games: the runners' own is
