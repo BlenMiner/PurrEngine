@@ -13,25 +13,33 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 
 // Runs the game of the .tide file at hand (Run in its context menu, or
-// Ctrl+Shift+F10): in a window, or on the web. For a file tide run can't play
-// (one of a game CMake builds from a list of files), running says why.
+// Ctrl+Shift+F10): in a window, on the web, or on Android. For a file tide run
+// can't play (one of a game CMake builds from a list of files), running says
+// why.
 public abstract class TideRunProducer extends LazyRunConfigurationProducer<TideRunConfiguration> {
     public static final class Desktop extends TideRunProducer {
         public Desktop() {
-            super(false);
+            super(false, false);
         }
     }
 
     public static final class Web extends TideRunProducer {
         public Web() {
-            super(true);
+            super(true, false);
         }
     }
 
-    private final boolean web;
+    public static final class Android extends TideRunProducer {
+        public Android() {
+            super(false, true);
+        }
+    }
 
-    private TideRunProducer(boolean web) {
+    private final boolean web, android;
+
+    private TideRunProducer(boolean web, boolean android) {
         this.web = web;
+        this.android = android;
     }
 
     @Override
@@ -47,12 +55,13 @@ public abstract class TideRunProducer extends LazyRunConfigurationProducer<TideR
         final TideGames.Game game = game(context, file);
         final TideRunConfiguration.Options options = configuration.getOptions();
         options.setWeb(web);
+        options.setAndroid(android);
         if (game.folder() != null) {
             options.setFolder(game.folder().toString());
             configuration.setGeneratedName();
         } else {
             options.setProblem(game.error()); // checkConfiguration says it when it runs
-            configuration.setName(file.getName() + (web ? " (web)" : ""));
+            configuration.setName(file.getName() + options.suffix());
         }
         return true;
     }
@@ -61,7 +70,7 @@ public abstract class TideRunProducer extends LazyRunConfigurationProducer<TideR
     public boolean isConfigurationFromContext(@NotNull TideRunConfiguration configuration, @NotNull ConfigurationContext context) {
         final VirtualFile file = tideFile(context);
         final TideRunConfiguration.Options options = configuration.getOptions();
-        if (file == null || options.isWeb() != web) return false;
+        if (file == null || options.isWeb() != web || options.isAndroid() != android) return false;
         final TideGames.Game game = game(context, file);
         return game.folder() != null ? game.folder().toString().equals(options.getFolder())
                                      : game.error() != null && game.error().equals(options.getProblem());

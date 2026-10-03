@@ -68,7 +68,7 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "The `tide` that **Tide: Run** and **Tide: Run on the Web** run. Empty: `tide` from `PATH`, or from where tide is installed. `~` is your home folder; `${workspaceFolder}` and relative paths are the folder whose settings set it, or for user and workspace settings, the game's folder; `${workspaceFolder:name}` is the open folder of that name."
+          "markdownDescription": "The `tide` that **Tide: Run**, **Tide: Run on the Web** and **Tide: Run on Android** run. Empty: `tide` from `PATH`, or from where tide is installed. `~` is your home folder; `${workspaceFolder}` and relative paths are the folder whose settings set it, or for user and workspace settings, the game's folder; `${workspaceFolder:name}` is the open folder of that name."
         },
         "tide.trace.server": {
           "type": "string",
@@ -107,6 +107,12 @@
         "icon": "$(globe)"
       },
       {
+        "command": "tide.runAndroid",
+        "title": "Run on Android",
+        "category": "Tide",
+        "icon": "$(device-mobile)"
+      },
+      {
         "command": "tide.openDevTools",
         "title": "Game Developer Tools",
         "category": "Tide",
@@ -121,6 +127,10 @@
         },
         {
           "command": "tide.runWeb",
+          "when": "resourceLangId == tide && isWorkspaceTrusted"
+        },
+        {
+          "command": "tide.runAndroid",
           "when": "resourceLangId == tide && isWorkspaceTrusted"
         }
       ],

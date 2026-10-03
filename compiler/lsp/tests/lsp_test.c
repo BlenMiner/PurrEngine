@@ -947,10 +947,19 @@ TIDE_TEST(lsp_settings)
     TIDE_CHECK(has(request("textDocument/prepareRename"), "Settings are the engine's"));
     open_document("settings\n{\n    hostMig$ration = true;\n}\nscene Main { }\n");
     TIDE_CHECK(has(request("textDocument/hover"), "bool hostMigration"));
+    open_document("settings\n{\n    vers$ion = \"1.2.0\";\n}\nscene Main { }\n");
+    hover = request("textDocument/hover");
+    TIDE_CHECK(has(hover, "string version"));
+    TIDE_CHECK(has(hover, "Without it: 1.0."));
 
     const char *empty = complete("settings\n{\n    $\n}\nscene Main { }\n");
     TIDE_CHECK(offers(empty, "tickRate"));
     TIDE_CHECK(offers(empty, "title"));
+    TIDE_CHECK(offers(empty, "appId"));
+    TIDE_CHECK(offers(empty, "version"));
+    // A version phones won't take is an error the editor shows
+    open_document("settings { version = \"v2\"; }\nscene Main { }\n");
+    TIDE_CHECK(has(last_sent(), "isn't a version that Android and iOS both take"));
     TIDE_CHECK(!offers(empty, "float3")); // Names, not values
     const char *rest = complete("settings\n{\n    tickRate = 30;\n    $\n}\nscene Main { }\n");
     TIDE_CHECK(!offers(rest, "tickRate")); // Set already

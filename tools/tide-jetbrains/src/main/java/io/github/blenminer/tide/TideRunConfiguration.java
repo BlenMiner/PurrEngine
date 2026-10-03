@@ -21,10 +21,10 @@ import com.intellij.openapi.components.StoredProperty;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
 import com.intellij.openapi.options.SettingsEditor;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.TextBrowseFolderListener;
 import com.intellij.openapi.ui.TextFieldWithBrowseButton;
 import com.intellij.openapi.util.Key;
-import com.intellij.ui.components.JBCheckBox;
 import com.intellij.util.ui.FormBuilder;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -39,15 +39,22 @@ import java.util.regex.Pattern;
 
 // `tide run` on a game's folder, in the Run tool window: tide's output and the
 // game's, where errors link to their place, and what's typed there goes to
-// tide (r and Enter starts the game over). On the web, tide serves the page
-// without opening a browser, and the Tide Game tool window shows it.
+// tide (r and Enter starts the game over, and y answers whether to download
+// Android's tools). On the web, tide serves the page without opening a
+// browser, and the Tide Game tool window shows it. On Android, the game plays
+// on the phone or emulator that's connected.
 public final class TideRunConfiguration extends LocatableConfigurationBase<TideRunConfiguration.Options> {
     // Where tide says it serves the page (see tide_run_web in compiler/cli/build.c).
     private static final Pattern PAGE = Pattern.compile("tide: the game is at (http://\\S+)");
 
+    // Where a run plays the game, as the editor offers them
+    private static final String[] WHERE = {"In a window", "On the web, in the Tide Game tool window",
+                                           "On Android: the phone or emulator that's connected"};
+
     public static final class Options extends LocatableRunConfigurationOptions {
         private final StoredProperty<String> folder = string("").provideDelegate(this, "folder");
         private final StoredProperty<Boolean> web = property(false).provideDelegate(this, "web");
+        private final StoredProperty<Boolean> android = property(false).provideDelegate(this, "android");
         private final StoredProperty<String> tide = string("").provideDelegate(this, "tide"); // Empty: the installed one
         // Why tide run can't play the file it was made for (see TideRunProducer). Empty: it can.
         private final StoredProperty<String> problem = string("").provideDelegate(this, "problem");
@@ -66,6 +73,19 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
 
         public void setWeb(boolean value) {
             web.setValue(this, value);
+        }
+
+        public boolean isAndroid() {
+            return android.getValue(this);
+        }
+
+        public void setAndroid(boolean value) {
+            android.setValue(this, value);
+        }
+
+        // " (web)", " (Android)", or "" in a window: what its name ends with
+        public String suffix() {
+            return isAndroid() ? " (Android)" : isWeb() ? " (web)" : "";
         }
 
         public String getTide() {
@@ -99,7 +119,7 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         final String folder = getOptions().getFolder();
         if (folder == null || folder.isEmpty()) return null;
         final Path name = Path.of(folder).getFileName();
-        return (name != null ? name.toString() : folder) + (getOptions().isWeb() ? " (web)" : "");
+        return (name != null ? name.toString() : folder) + getOptions().suffix();
     }
 
     @Override
@@ -147,15 +167,19 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         if (tide == null) {
             throw new ExecutionException("Couldn't find tide. Install it (" + Tide.INSTALL + "), or choose it in the run configuration.");
         }
+        // TIDE_INTERACTIVE: someone can answer tide's questions here, though its
+        // input isn't a terminal.
         final GeneralCommandLine command = new GeneralCommandLine(tide.toString(), "run")
             .withWorkDirectory(options.getFolder())
-            .withCharset(StandardCharsets.UTF_8);
-        if (options.isWeb()) command.addParameters("--web", "--no-open");
+            .withCharset(StandardCharsets.UTF_8)
+            .withEnvironment("TIDE_INTERACTIVE", "1");
+        if (options.isAndroid()) command.addParameter("--android");
+        else if (options.isWeb()) command.addParameters("--web", "--no-open");
 
         final KillableColoredProcessHandler handler = new KillableColoredProcessHandler(command);
         handler.setShouldKillProcessSoftly(false); // Stop ends tide and the game it started at once
         ProcessTerminatedListener.attach(handler);
-        if (options.isWeb()) {
+        if (options.isWeb() && !options.isAndroid()) {
             handler.addProcessListener(new ProcessListener() {
                 private final StringBuilder seen = new StringBuilder(); // tide's output until it says where the page is
                 private boolean shown;
@@ -176,7 +200,7 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
 
     private static final class Editor extends SettingsEditor<TideRunConfiguration> {
         private final TextFieldWithBrowseButton folder = new TextFieldWithBrowseButton();
-        private final JBCheckBox web = new JBCheckBox("On the web, in the Tide Game tool window");
+        private final ComboBox<String> where = new ComboBox<>(WHERE);
         private final TextFieldWithBrowseButton tide = new TextFieldWithBrowseButton();
 
         Editor(@NotNull Project project) {
@@ -188,7 +212,7 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         protected void resetEditorFrom(@NotNull TideRunConfiguration configuration) {
             final Options options = configuration.getOptions();
             folder.setText(options.getFolder());
-            web.setSelected(options.isWeb());
+            where.setSelectedIndex(options.isAndroid() ? 2 : options.isWeb() ? 1 : 0);
             tide.setText(options.getTide());
         }
 
@@ -198,7 +222,8 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
             // Another folder is another game, which tide run may play.
             if (!folder.getText().trim().equals(options.getFolder())) options.setProblem("");
             options.setFolder(folder.getText().trim());
-            options.setWeb(web.isSelected());
+            options.setWeb(where.getSelectedIndex() == 1);
+            options.setAndroid(where.getSelectedIndex() == 2);
             options.setTide(tide.getText().trim());
         }
 
@@ -206,7 +231,7 @@ public final class TideRunConfiguration extends LocatableConfigurationBase<TideR
         protected @NotNull JComponent createEditor() {
             return FormBuilder.createFormBuilder()
                 .addLabeledComponent("Game folder:", folder)
-                .addComponent(web)
+                .addLabeledComponent("Play it:", where)
                 .addLabeledComponent("tide:", tide)
                 .addTooltip("Empty: tide from PATH, or where it's installed")
                 .getPanel();

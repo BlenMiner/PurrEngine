@@ -28,8 +28,9 @@ The play button above a `.tide` file runs its game, which is the folder you open
 
 - **Tide: Run** plays it in a window of its own, as `tide run` does.
 - **Tide: Run on the Web** plays it in a browser tab beside your code: VS Code's integrated browser, or the Simple Browser in editors without it. A game only gets keys while its tab has focus, and the editor may pause it while its tab is hidden, so keep it in a group of its own.
+- **Tide: Run on Android** plays it on the Android phone or emulator that's connected, as `tide run --android` does (see [Android](cli.md#android)).
 
-Either runs `tide` in a terminal of its own, so saving a file reloads the game, and typing `r` and Enter in that terminal starts it over. Running it again starts the game over. The `tide.path` setting runs another `tide`.
+Each runs `tide` in a terminal of its own, so saving a file reloads the game (on Android, builds it again and starts it over), and typing `r` and Enter in that terminal starts it over. Running it again starts the game over. The first run on Android may ask to download Android's tools from Google: type `y` and Enter in that terminal to accept. The `tide.path` setting runs another `tide`.
 
 On the web, each reload says what it did in the page's console: **Tide: Game Developer Tools** shows it.
 
@@ -52,8 +53,9 @@ Right-click a `.tide` file and pick **Run**, or press Ctrl+Shift+F10 in it (Ctrl
 
 - **mygame** plays it in a window of its own, as `tide run` does.
 - **mygame (web)** plays it on the web, in the **Tide Game** tool window. Its **Open DevTools** button shows the page's console, where each reload says what it did. The game only gets keys while the tool window has focus.
+- **mygame (Android)** plays it on the Android phone or emulator that's connected, as `tide run --android` does (see [Android](cli.md#android)).
 
-Both are Tide run configurations, which you can also make and edit under **Run > Edit Configurations**. `tide`'s output is in the Run tool window, where an error's place links to the file: saving a file reloads the game, and typing `r` and Enter there starts it over. A run configuration can run another `tide`.
+They're Tide run configurations, which you can also make and edit under **Run > Edit Configurations**, where **Play it** picks among the three. `tide`'s output is in the Run tool window, where an error's place links to the file: saving a file reloads the game (on Android, builds it again and starts it over), and typing `r` and Enter there starts it over. The first run on Android may ask to download Android's tools from Google: type `y` and Enter there to accept. A run configuration can run another `tide`.
 
 ## Other editors
 

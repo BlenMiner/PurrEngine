@@ -92,7 +92,8 @@ static bool agreed(const char *root, const char *what, const char *size)
            "  tide can download it from Google (%s), under Google's license, the Android Software\n"
            "  Development Kit License Agreement: https://developer.android.com/studio/terms\n",
            what, size);
-    if (!stdin_is_terminal()) {
+    // Editors' runs pass on what's typed, though tide's input isn't a terminal
+    if (!stdin_is_terminal() && !sys_env("TIDE_INTERACTIVE")) {
         fprintf(stderr, "  = note: to accept it without being asked, set TIDE_ACCEPT_ANDROID_LICENSE=1; or install "
                         "Android Studio, whose SDK Manager has it\n");
         free(mark);

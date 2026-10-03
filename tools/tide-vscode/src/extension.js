@@ -1,6 +1,7 @@
 // Tide for VS Code (and Cursor, VSCodium, Windsurf): the grammar colors
 // the text, and tidels, the language server that comes with tide, does the rest.
-// Tide: Run plays the game in a window, and Run on the Web beside the code.
+// Tide: Run plays the game in a window, Run on the Web beside the code, and
+// Run on Android on the phone or emulator that's connected.
 //
 // In Restricted Mode (an untrusted workspace), nothing from the workspace
 // runs: the server is the one that comes with tide, and games don't run.
@@ -226,7 +227,7 @@ function restart() {
 }
 
 // ---------------------------------------------------------------------------
-// Run, and Run on the Web
+// Run, Run on the Web and Run on Android
 
 // The games of the open folders that build them with CMake, like Tide
 // itself: tide_add_game lists them in build/tools/games.txt, a game and one of
@@ -352,21 +353,29 @@ async function pickGame(last) {
     return picked?.folder;
 }
 
+// How each kind of run runs tide, and its terminal's icon
+const KINDS = {
+    desktop: { args: ['run'], icon: 'play' },
+    web: { args: ['run', '--web', '--no-open'], icon: 'globe' },
+    android: { args: ['run', '--android'], icon: 'device-mobile' },
+};
+
 // `tide run` in a terminal of its own, which shows tide's output and the
 // game's, and sends tide what's typed there (r and Enter starts the game
-// over). On the web, tide serves the page without opening a browser, and
-// `onPage` gets its address once tide says where it is.
+// over, and y answers whether to download Android's tools). On the web, tide
+// serves the page without opening a browser, and `onPage` gets its address
+// once tide says where it is.
 class Run {
-    constructor(tide, folder, web, onPage) {
+    constructor(tide, folder, kind, onPage) {
         this.output = new vscode.EventEmitter();
         this.closed = new vscode.EventEmitter();
         this.process = null;
         this.line = ''; // Typed, not sent yet
         this.ended = false;
-        const args = web ? ['run', '--web', '--no-open'] : ['run'];
+        const args = KINDS[kind].args;
         this.terminal = vscode.window.createTerminal({
             name: `${path.basename(folder)} (tide ${args.slice(0, 2).join(' ')})`,
-            iconPath: new vscode.ThemeIcon(web ? 'globe' : 'play'),
+            iconPath: new vscode.ThemeIcon(KINDS[kind].icon),
             pty: {
                 onDidWrite: this.output.event,
                 onDidClose: this.closed.event,
@@ -385,8 +394,14 @@ class Run {
     start(tide, folder, args, onPage) {
         this.print(`${folder}> tide ${args.join(' ')}\n`);
         // Outside Windows, tide and the game it starts get a process group of
-        // their own, which stop() ends.
-        const child = spawn(tide, args, { cwd: folder, windowsHide: true, detached: process.platform !== 'win32' });
+        // their own, which stop() ends. TIDE_INTERACTIVE: someone can answer
+        // tide's questions here, though its input isn't a terminal.
+        const child = spawn(tide, args, {
+            cwd: folder,
+            windowsHide: true,
+            detached: process.platform !== 'win32',
+            env: { ...process.env, TIDE_INTERACTIVE: '1' },
+        });
         this.process = child;
         let seen = ''; // tide's output until it says where the page is
         child.stdout.setEncoding('utf8');
@@ -478,14 +493,14 @@ async function showPage(address, lastAddress) {
     return url;
 }
 
-const runs = { desktop: null, web: null }; // Running, or that ran last
+const runs = { desktop: null, web: null, android: null }; // Running, or that ran last
 let lastGame = null;
 let lastPage = null; // The web run's address in the editor
 
-// Runs the game, starting it over if it's running: in a window of its own, or
-// on the web, in the editor. Running a game runs its code, so not in an
-// untrusted workspace.
-async function run(web) {
+// Runs the game, starting it over if it's running: in a window of its own, on
+// the web, in the editor, or on Android. Running a game runs its code, so not
+// in an untrusted workspace.
+async function run(kind) {
     if (!vscode.workspace.isTrusted) {
         const choice = await vscode.window.showErrorMessage(
             "Tide: running a game runs its code, so it only runs once you trust this workspace.", 'Manage Workspace Trust');
@@ -501,9 +516,8 @@ async function run(web) {
         return;
     }
     lastGame = game;
-    const kind = web ? 'web' : 'desktop';
     runs[kind]?.dispose();
-    runs[kind] = new Run(tide, game, web, web ? async address => {
+    runs[kind] = new Run(tide, game, kind, kind === 'web' ? async address => {
         lastPage = await showPage(address, lastPage);
         vscode.commands.executeCommand('setContext', 'tide.gamePage', true);
     } : null);
@@ -534,8 +548,9 @@ function activate(context) {
         output,
         trace,
         vscode.commands.registerCommand('tide.restartServer', restart),
-        vscode.commands.registerCommand('tide.run', () => run(false)),
-        vscode.commands.registerCommand('tide.runWeb', () => run(true)),
+        vscode.commands.registerCommand('tide.run', () => run('desktop')),
+        vscode.commands.registerCommand('tide.runWeb', () => run('web')),
+        vscode.commands.registerCommand('tide.runAndroid', () => run('android')),
         vscode.commands.registerCommand('tide.openDevTools', openDevTools),
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('tide.server.path')) restart();

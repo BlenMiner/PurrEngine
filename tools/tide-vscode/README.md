@@ -27,10 +27,14 @@ The play button above a `.tide` file runs its game:
   VS Code's integrated browser, or the Simple Browser in editors without it.
   The game gets keys while its tab has focus, and the editor may pause it
   while its tab is hidden, so keep it in a group of its own.
+- **Tide: Run on Android** plays it on the Android phone or emulator that's
+  connected, as `tide run --android` does.
 
-Either runs `tide` in a terminal of its own, so saving a file reloads the
-game, and typing `r` and Enter there starts it over. Running it again starts
-the game over.
+Each runs `tide` in a terminal of its own, so saving a file reloads the
+game (on Android, builds it again and starts it over), and typing `r` and
+Enter there starts it over. Running it again starts the game over. The
+first run on Android may ask to download Android's tools from Google: type
+`y` and Enter there to accept.
 
 On the web, each reload says what it did in the page's console. **Tide: Game
 Developer Tools** shows it: the integrated browser's developer tools for the

@@ -9,8 +9,8 @@ import com.intellij.openapi.components.BaseState;
 import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
 
-// Tide run configurations: tide runs a game, in a window of its own or on
-// the web, in the Tide Game tool window.
+// Tide run configurations: tide runs a game, in a window of its own, on the
+// web, in the Tide Game tool window, or on Android.
 public final class TideRunConfigurationType extends ConfigurationTypeBase {
     public TideRunConfigurationType() {
         super("Tide", "Tide", "Runs a Tide game with tide", AllIcons.Actions.Execute);

@@ -8,8 +8,8 @@
         implementation, find usages, highlights, rename, the call hierarchy, formatting, parameter hints, inlay hints,
         the structure view, symbols across the game, folding, extending a selection, moving a declaration to a file of
         its own, and each system's schedule above it, for <code>.tide</code> files.</p>
-        <p>Run a game from its <code>.tide</code> files: in a window of its own, or on the web, in the IDE. Saving a
-        file reloads it as it runs.</p>
+        <p>Run a game from its <code>.tide</code> files: in a window of its own, on the web, in the IDE, or on an Android
+        phone or emulator. Saving a file reloads it as it runs.</p>
         <p>It runs <code>tidels</code>, the language server that comes with tide: install tide first
         (see the <a href="https://github.com/BlenMiner/tide-engine#install">install steps</a>), or choose a
         <code>tidels</code> under Settings | Languages &amp; Frameworks | Tide. Then open your game's folder, the one
@@ -37,6 +37,7 @@
         <configurationType implementation="io.github.blenminer.tide.TideRunConfigurationType"/>
         <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Desktop"/>
         <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Web"/>
+        <runConfigurationProducer implementation="io.github.blenminer.tide.TideRunProducer$Android"/>
         <toolWindow id="Tide Game" anchor="right" icon="AllIcons.General.Web" doNotActivateOnStart="true"
                     factoryClass="io.github.blenminer.tide.TideGamePage$Window"/>
     </extensions>
