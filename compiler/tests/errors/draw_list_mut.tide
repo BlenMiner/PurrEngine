@@ -1,0 +1,4 @@
+// expect: a DrawList goes to C as it is, a 'tide_draw_list *'; drop 'mut'
+scene Main { }
+
+extern void Paint(mut DrawList list);

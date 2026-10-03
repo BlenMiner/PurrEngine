@@ -38,12 +38,12 @@ static void end(void)
 {
     tide_draw_reset(&draw);
     tide_gui_end(&gui, &draw);
-    devices.text.count = 0; // Typed characters last one frame
+    devices.keyboard.text.count = 0; // Typed characters last one frame
 }
 
 static void type(const char *text)
 {
-    for (const char *c = text; *c; c++) devices.text.chars[devices.text.count++] = (uint32_t)*c;
+    for (const char *c = text; *c; c++) devices.keyboard.text.chars[devices.keyboard.text.count++] = (uint32_t)*c;
 }
 
 // A frame with two layout buttons; returns which were pressed (bit 0 and 1).
@@ -85,7 +85,7 @@ TIDE_TEST(gui_draws_over_the_world)
     tide_gui_layout_button(&gui, 1, "Go");
     end();
     TIDE_REQUIRE(draw.count >= 4);
-    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_GUI);
+    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_SCREEN);
     TIDE_CHECK(draw.commands[1].kind == TIDE_DRAW_TEXT && strcmp(draw.text + draw.commands[1].text, "Hello") == 0);
     TIDE_CHECK(draw.commands[2].kind == TIDE_DRAW_RECT); // The button, below the label
     TIDE_CHECK(draw.commands[2].a.y == 28.0f + 5.0f + 14.0f);
@@ -93,6 +93,22 @@ TIDE_TEST(gui_draws_over_the_world)
     begin(); // A frame without a GUI adds nothing
     end();
     TIDE_CHECK(draw.count == 0);
+}
+
+// A clip the views left on is theirs: the GUI draws on the whole screen.
+TIDE_TEST(gui_isnt_clipped_by_the_views)
+{
+    start();
+    begin();
+    tide_gui_layout_label(&gui, "Hello");
+    tide_draw_reset(&draw);
+    tide_draw_clip(&draw, (tide_rect){0.0f, 0.0f, 10.0f, 10.0f});
+    tide_gui_end(&gui, &draw);
+    TIDE_REQUIRE(draw.count == 4);
+    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_CLIP);
+    TIDE_CHECK(draw.commands[1].kind == TIDE_DRAW_NO_CLIP);
+    TIDE_CHECK(draw.commands[2].kind == TIDE_DRAW_SCREEN);
+    TIDE_CHECK(draw.commands[3].kind == TIDE_DRAW_TEXT);
 }
 
 TIDE_TEST(gui_toggle_and_slider_change_values)
@@ -228,7 +244,264 @@ TIDE_TEST(gui_fingers_press_buttons)
     TIDE_CHECK(touch_frame(NONE, NONE, 0.0f, 0.0f) == 1);
 }
 
+// What a host does before a frame's GUI, with a finger: polls the touchscreen,
+// with up to two events at (x, y) from the top left (TIDE_TOUCHES for none),
+// then samples the game's input. Returns whether the sample has the finger's
+// press.
+static bool finger_sample(const tide_touch_phase first, const tide_touch_phase second, const float x, const float y)
+{
+    tide_touches_poll(&devices.touchscreen);
+    const tide_touch_phase phases[] = {first, second};
+    for (int i = 0; i < 2; i++) {
+        if ((int)phases[i] != TIDE_TOUCHES) tide_touch_event(&devices.touchscreen, phases[i], 1, tide_f2(x, 1080.0f - y));
+    }
+    tide_pointer_poll(&devices, false);
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    tide_devices_consume(&devices);
+    return sampled.pointer.press.pressed || sampled.touchscreen.primaryTouch.press.pressed
+        || sampled.touchscreen.touches.at[0].press.pressed;
+}
+
+// The same with the mouse at (x, y) from the top left: whether the sample has
+// its left button's press.
+static bool mouse_sample(const float x, const float y, const bool held)
+{
+    tide_touches_poll(&devices.touchscreen); // No finger did anything this poll
+    mouse(x, y, held);
+    tide_pointer_poll(&devices, true);
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    tide_devices_consume(&devices);
+    return sampled.mouse.left.pressed || sampled.pointer.press.pressed;
+}
+
+// Whether views read a press this frame: the pointer's, the primary touch's
+// or the mouse's left button's.
+static bool views_read_a_press(void)
+{
+    const tide_devices *d = &gui.devices;
+    return d->pointer.press.pressed || d->pointer.press.down || d->pointer.press.up
+        || d->touchscreen.primaryTouch.press.pressed || d->touchscreen.primaryTouch.press.down
+        || d->mouse.left.pressed || d->mouse.left.down || d->mouse.left.up;
+}
+
+// ...and then the frame's GUI, two_buttons': which were pressed (bits 0 and 1),
+// and whether views read a press (bit 2).
+static int sampled_frame(void)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    const bool read = views_read_a_press();
+    const bool a = tide_gui_layout_button(&gui, 10, "Play");
+    const bool b = tide_gui_layout_button(&gui, 20, "Quit");
+    end();
+    return (a ? 1 : 0) | (b ? 2 : 0) | (read ? 4 : 0);
+}
+
+TIDE_TEST(gui_a_finger_on_a_button_is_never_the_games)
+{
+    start();
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0); // The buttons are up, and no finger is anywhere
+    // A finger touches Quit. The game samples before the GUI sees the touch,
+    // and still doesn't get it; nor do views.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 20.0f, 47.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(gui.active == 20);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_ENDED, NONE, 20.0f, 47.0f));
+    TIDE_CHECK(sampled_frame() == 2); // Lifted on it: a click, and not the game's
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+
+    // A tap between two frames, too.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, TIDE_TOUCH_ENDED, 20.0f, 20.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 1);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+
+    // Away from the buttons, a finger is the game's and the views', from the frame it touches.
+    TIDE_CHECK(finger_sample(TIDE_TOUCH_BEGAN, NONE, 900.0f, 900.0f));
+    TIDE_CHECK(sampled_frame() == 4);
+}
+
+TIDE_TEST(gui_where_the_mouse_is_now_says_whose_click_it_is)
+{
+    start();
+    TIDE_CHECK(!mouse_sample(900.0f, 900.0f, false));
+    TIDE_CHECK(sampled_frame() == 0);
+    // Between two frames, the mouse comes onto Quit and presses: the GUI never
+    // saw it there, and the click is still the GUI's.
+    TIDE_CHECK(!mouse_sample(20.0f, 47.0f, true));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(gui.active == 20);
+    TIDE_CHECK(!mouse_sample(20.0f, 47.0f, false));
+    TIDE_CHECK(sampled_frame() == 2);
+
+    // And it leaves Quit and presses between two frames: the game's and the
+    // views', though the GUI last saw it on the button.
+    TIDE_CHECK(!mouse_sample(20.0f, 47.0f, false));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(mouse_sample(900.0f, 900.0f, true));
+    TIDE_CHECK(sampled_frame() == 4);
+}
+
+// A frame with a button in an anchored area, if it's `up`, and a disabled
+// button at a rect. Returns whether views read a press.
+static bool area_frame(const bool up)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    const bool read = views_read_a_press();
+    if (up) {
+        const int area = tide_gui_begin_area_at(&gui, 99, TIDE_ANCHOR_MIDDLE_CENTER);
+        tide_gui_layout_button(&gui, 1, "Play");
+        tide_gui_close(&gui, area);
+    }
+    const int off = tide_gui_begin_disabled(&gui, true);
+    tide_gui_button(&gui, 2, (tide_rect){100.0f, 100.0f, 200.0f, 40.0f}, "Locked");
+    tide_gui_close(&gui, off);
+    end();
+    return read;
+}
+
+TIDE_TEST(gui_a_finger_on_an_area_or_a_disabled_widget_is_never_the_games)
+{
+    start();
+    // The area is in the middle of the screen, 52 tall: its button, and 12 of padding around it.
+    for (int frame = 0; frame < 3; frame++) {
+        finger_sample(NONE, NONE, 0.0f, 0.0f);
+        area_frame(true);
+    }
+    // On the area's padding, which no widget has.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 962.0f, 518.0f));
+    TIDE_CHECK(!area_frame(true));
+    TIDE_CHECK(gui.active == 0);
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_ENDED, NONE, 962.0f, 518.0f));
+    TIDE_CHECK(!area_frame(true));
+    // On a disabled button: it doesn't work, and it's still the GUI's.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 150.0f, 120.0f));
+    TIDE_CHECK(!area_frame(true));
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_ENDED, NONE, 150.0f, 120.0f));
+    TIDE_CHECK(!area_frame(true));
+
+    // An area that wasn't up last frame takes the finger a frame after it
+    // comes up under it: nothing said it was coming.
+    finger_sample(NONE, NONE, 0.0f, 0.0f);
+    area_frame(false);
+    TIDE_CHECK(finger_sample(TIDE_TOUCH_BEGAN, NONE, 962.0f, 518.0f));
+    TIDE_CHECK(area_frame(true));
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(!area_frame(true));
+}
+
+// A frame's GUI after a sample: the Play button, and two views, the first with
+// a widget of its own at `rect`, which it says each frame. Returns whether the
+// first view read a press (bit 0), and the second (bit 1).
+static int widget_frame(const tide_rect rect)
+{
+    int read = 0;
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    tide_gui_view(&gui, 1);
+    if (views_read_a_press()) read |= 1;
+    tide_gui_claim_pointer_at(&gui, rect);
+    tide_gui_view(&gui, 2);
+    if (views_read_a_press()) read |= 2;
+    tide_gui_layout_button(&gui, 10, "Play");
+    end();
+    return read;
+}
+
+TIDE_TEST(gui_a_press_on_a_views_own_widget_is_the_views)
+{
+    start();
+    const tide_rect widget = {0.0f, 0.0f, 400.0f, 400.0f}; // Under Play, which is at the top left
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(widget_frame(widget) == 0);
+    // A finger touches the widget, with nothing before it: the view's from the
+    // frame it lands in, and never the game's or the other view's.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 300.0f, 300.0f));
+    TIDE_CHECK(widget_frame(widget) == 1);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(widget_frame(widget) == 1);
+    // Off the widget, it's everyone's: a view that drags claims the pointer wherever it goes.
+    TIDE_CHECK(finger_sample(TIDE_TOUCH_MOVED, NONE, 900.0f, 900.0f));
+    TIDE_CHECK(widget_frame(widget) == 3);
+    finger_sample(TIDE_TOUCH_ENDED, NONE, 900.0f, 900.0f);
+    widget_frame(widget);
+
+    // The GUI comes first: on a button of the GUI's over the widget, the press is the GUI's.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 20.0f, 14.0f));
+    TIDE_CHECK(widget_frame(widget) == 0);
+    TIDE_CHECK(gui.active == 10);
+    finger_sample(TIDE_TOUCH_ENDED, NONE, 20.0f, 14.0f);
+    widget_frame(widget);
+
+    // A click the mouse made as it came onto the widget, too.
+    TIDE_CHECK(!mouse_sample(900.0f, 900.0f, false));
+    TIDE_CHECK(widget_frame(widget) == 0);
+    TIDE_CHECK(!mouse_sample(300.0f, 300.0f, true));
+    TIDE_CHECK(widget_frame(widget) == 1);
+    // A widget that's gone leaves nothing claimed, a frame later.
+    TIDE_CHECK(!mouse_sample(300.0f, 300.0f, true));
+    TIDE_CHECK(widget_frame((tide_rect){0}) == 1);
+    TIDE_CHECK(mouse_sample(300.0f, 300.0f, true));
+    TIDE_CHECK(widget_frame((tide_rect){0}) == 3);
+}
+
+TIDE_TEST(gui_places_claimed_past_the_limit_hide_a_frame_late)
+{
+    start();
+    const tide_rect widget = {800.0f, 800.0f, 100.0f, 100.0f};
+    for (int frame = 0; frame < 3; frame++) {
+        mouse_sample(850.0f, 850.0f, frame == 2);
+        tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+        tide_gui_view(&gui, 1);
+        for (uint32_t i = 0; i < TIDE_GUI_MAX_CLAIM_RECTS; i++) {
+            tide_gui_claim_pointer_at(&gui, (tide_rect){(float)i, 0.0f, 1.0f, 1.0f});
+        }
+        tide_gui_claim_pointer_at(&gui, widget); // One more than fit: the pointer is on it
+        end();
+        TIDE_CHECK(gui.taken == TIDE_GUI_POINTER);
+    }
+    TIDE_CHECK(!mouse_sample(850.0f, 850.0f, true));
+}
+
 #undef NONE
+
+// A frame of more buttons than a frame remembers the places of, 28 wide, in
+// rows of 64.
+static void many_buttons(void)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    for (uint32_t i = 0; i < TIDE_GUI_MAX_RECTS + 6; i++) {
+        tide_gui_button(&gui, i + 1, (tide_rect){(float)(i % 64) * 30.0f, (float)(i / 64) * 30.0f, 28.0f, 28.0f}, "");
+    }
+    end();
+}
+
+TIDE_TEST(gui_widgets_past_those_remembered_hide_a_frame_late)
+{
+    start();
+    const uint32_t last = TIDE_GUI_MAX_RECTS + 5;
+    const float x = (float)(last % 64) * 30.0f + 10.0f;
+    const float y = (float)(last / 64) * 30.0f + 10.0f;
+    mouse_sample(1900.0f, 1000.0f, false);
+    many_buttons();
+    TIDE_CHECK(gui.rects_full);
+    // A button whose place is remembered takes a click made as the mouse came.
+    TIDE_CHECK(!mouse_sample(40.0f, 10.0f, true));
+    many_buttons();
+    mouse_sample(40.0f, 10.0f, false);
+    many_buttons();
+    // One past those takes it once the GUI saw the mouse on it, as every widget did before.
+    TIDE_CHECK(!mouse_sample(x, y, false));
+    many_buttons();
+    TIDE_CHECK(gui.over && gui.active == 0);
+    TIDE_CHECK(!mouse_sample(x, y, true));
+}
 
 TIDE_TEST(gui_mouse_over_the_gui_is_hidden)
 {
@@ -520,4 +793,228 @@ TIDE_TEST(gui_close_ends_what_was_left_open)
     tide_gui_begin_vertical(&gui, 3);
     end(); // Closes the rest
     TIDE_CHECK(gui.depth == 0);
+}
+
+TIDE_TEST(gui_views_read_what_is_typed)
+{
+    start();
+    int32_t players = 4;
+    mouse(900.0f, 900.0f, false); // Away from the field
+    devices.keyboard.text.count = 3;
+    devices.keyboard.text.chars[0] = 'h';
+    devices.keyboard.text.chars[1] = 0xE9; // e with an acute accent: two bytes in UTF-8
+    devices.keyboard.text.chars[2] = 0xD800; // Half of a UTF-16 pair: no character
+    begin();
+    tide_gui_layout_int_field(&gui, 5, "Players", &players);
+    const tide_str typed = tide_str_typed(&gui.devices.keyboard.text);
+    TIDE_CHECK(typed.bytes == 3 && typed.chars == 2 && memcmp(typed.ptr, "h\xC3\xA9", 3) == 0);
+    // It's a frame's: the game's sample never has it.
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(sampled.keyboard.text.count == 0);
+    end();
+    begin();
+    tide_gui_layout_int_field(&gui, 5, "Players", &players);
+    TIDE_CHECK(tide_str_typed(&gui.devices.keyboard.text).bytes == 0); // Typed once
+    end();
+
+    // While the player types into a field of the GUI's, it's the GUI's.
+    mouse(170.0f, 14.0f, true);
+    int_field(&players);
+    mouse(170.0f, 14.0f, false);
+    TIDE_CHECK(gui.editing == 5);
+    type("12");
+    begin();
+    tide_gui_layout_int_field(&gui, 5, "Players", &players);
+    TIDE_CHECK(gui.devices.keyboard.text.count == 0);
+    end();
+}
+
+// What `d` has of the mouse's left button, the pointer's press and the scroll
+// (bits 0 to 2), the W key (bit 3) and what's typed (bit 4).
+static int has(const tide_devices *d)
+{
+    return (d->mouse.left.pressed ? 1 : 0) | (d->pointer.press.pressed ? 2 : 0) | (d->mouse.scroll.y != 0.0f ? 4 : 0)
+         | (d->keyboard.w.pressed ? 8 : 0) | (d->keyboard.text.count ? 16 : 0);
+}
+
+#define POINTER 7  // has: the pointer's bits
+#define KEYBOARD 24 // ...and the keyboard's
+
+// A frame of two views, the first with a widget of its own that it claims
+// `what` for: what each read, the first view's in the low byte and the
+// second's in the next.
+static int two_views(const uint32_t what)
+{
+    int seen = 0;
+    begin();
+    for (uint32_t view = 1; view <= 2; view++) {
+        tide_gui_view(&gui, view);
+        seen |= has(&gui.devices) << (8 * (view - 1));
+        if (view == 1 && (what & TIDE_GUI_POINTER)) tide_gui_claim_pointer(&gui);
+        if (view == 1 && (what & TIDE_GUI_KEYBOARD)) tide_gui_claim_keyboard(&gui);
+    }
+    end();
+    return seen;
+}
+
+// What the game's next sample has. What's typed is never in one.
+static int sample(void)
+{
+    tide_pointer_poll(&devices, true); // As the platform polls it, before a frame's samples
+    tide_devices d = devices;
+    tide_gui_hide(&gui, &d);
+    return has(&d);
+}
+
+// The mouse pressed and scrolled away from the GUI, W held and typed.
+static void use_everything(void)
+{
+    mouse(900.0f, 900.0f, true);
+    devices.mouse.poll_scroll = devices.mouse.scroll = tide_f2(0.0f, 1.0f);
+    key(&devices.keyboard.w, true);
+    type("w");
+}
+
+TIDE_TEST(gui_claims_hide_the_pointer_from_the_game_and_other_views)
+{
+    start();
+    // The pointer comes onto the view's widget, which claims it before any press.
+    mouse(900.0f, 900.0f, false);
+    TIDE_CHECK(two_views(TIDE_GUI_POINTER) == 0);
+    use_everything();
+    TIDE_CHECK(sample() == 8); // The click isn't the game's; the keyboard still is
+    // The view that claimed it reads the press, and the other doesn't.
+    TIDE_CHECK(two_views(TIDE_GUI_POINTER) == ((POINTER | KEYBOARD) | KEYBOARD << 8));
+    TIDE_CHECK(sample() == 8);
+    // The mouse's position is everyone's, as it is over the GUI.
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(sampled.mouse.position.x == 900.0f && sampled.pointer.position.x == 900.0f);
+
+    // A claim lasts a frame: the frame after the view stops is the last without the pointer.
+    use_everything();
+    TIDE_CHECK(two_views(0) == ((POINTER | KEYBOARD) | KEYBOARD << 8));
+    TIDE_CHECK(sample() == (POINTER | 8));
+    use_everything();
+    TIDE_CHECK(two_views(0) == ((POINTER | KEYBOARD) | (POINTER | KEYBOARD) << 8));
+}
+
+TIDE_TEST(gui_claims_hide_the_keyboard_from_the_game_and_other_views)
+{
+    start();
+    mouse(900.0f, 900.0f, false);
+    TIDE_CHECK(two_views(TIDE_GUI_KEYBOARD) == 0);
+    use_everything();
+    key(&devices.gamepad.buttonSouth, true);
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(!sampled.keyboard.w.pressed && !sampled.keyboard.w.held);
+    TIDE_CHECK(sampled.gamepad.buttonSouth.pressed); // The gamepad isn't the keyboard's
+    TIDE_CHECK(sample() == POINTER);                 // Nor is the pointer
+    // The view that claimed it reads the key and what's typed, and the other doesn't.
+    TIDE_CHECK(two_views(TIDE_GUI_KEYBOARD) == ((POINTER | KEYBOARD) | POINTER << 8));
+
+    // Both at once.
+    use_everything();
+    TIDE_CHECK(two_views(TIDE_GUI_KEYBOARD | TIDE_GUI_POINTER) == ((POINTER | KEYBOARD) | POINTER << 8));
+    TIDE_CHECK(sample() == 0);
+    use_everything();
+    TIDE_CHECK(two_views(0) == (POINTER | KEYBOARD));
+    use_everything();
+    TIDE_CHECK(two_views(0) == ((POINTER | KEYBOARD) | (POINTER | KEYBOARD) << 8));
+}
+
+#undef POINTER
+#undef KEYBOARD
+
+TIDE_TEST(gui_two_views_that_claim_both_keep_it)
+{
+    start();
+    mouse(900.0f, 900.0f, true);
+    for (int frame = 0; frame < 2; frame++) {
+        begin();
+        for (uint32_t view = 1; view <= 3; view++) {
+            tide_gui_view(&gui, view);
+            if (frame == 1) TIDE_CHECK(gui.devices.mouse.left.pressed == (view != 3));
+            if (view != 3) tide_gui_claim_pointer(&gui);
+        }
+        end();
+    }
+    TIDE_CHECK(gui.claim_count == 2 && gui.taken == TIDE_GUI_POINTER);
+}
+
+TIDE_TEST(gui_use_comes_before_a_claim)
+{
+    start();
+    // On a button of the GUI's, the pointer is the GUI's, whatever a view claimed.
+    for (int frame = 0; frame < 3; frame++) {
+        mouse(20.0f, 20.0f, frame > 0);
+        begin();
+        tide_gui_view(&gui, 1);
+        if (frame == 2) TIDE_CHECK(!gui.devices.mouse.left.pressed && !gui.devices.pointer.press.pressed);
+        tide_gui_claim_pointer(&gui);
+        tide_gui_layout_button(&gui, 10, "Play");
+        end();
+    }
+    TIDE_CHECK(gui.active == 10);
+}
+
+TIDE_TEST(gui_claimed_keyboard_keeps_tab_and_the_arrows)
+{
+    start();
+    TIDE_CHECK(two_buttons() == 0); // Lays them out, for the order
+    // A view has the keyboard: Tab and the arrows are its own, and don't start moving the focus.
+    for (int frame = 0; frame < 3; frame++) {
+        key(&devices.keyboard.tab, frame == 1);
+        key(&devices.keyboard.downArrow, frame == 2);
+        begin();
+        tide_gui_view(&gui, 1);
+        tide_gui_claim_keyboard(&gui);
+        if (frame == 1) TIDE_CHECK(gui.devices.keyboard.tab.down);
+        tide_gui_layout_button(&gui, 10, "Play");
+        tide_gui_layout_button(&gui, 20, "Quit");
+        end();
+        TIDE_CHECK(gui.focus == 0);
+    }
+    key(&devices.keyboard.downArrow, false);
+    // Once it lets go, Tab moves the focus again, a frame later: the claim stood for one more.
+    TIDE_CHECK(two_buttons() == 0);
+    key(&devices.keyboard.tab, true);
+    TIDE_CHECK(two_buttons() == 0);
+    TIDE_CHECK(gui.focus == 10);
+}
+
+TIDE_TEST(gui_views_show_the_phone_keyboard)
+{
+    start();
+    begin();
+    end();
+    TIDE_CHECK(!tide_gui_typing(&gui));
+    begin();
+    tide_gui_show_keyboard(&gui);
+    end();
+    TIDE_CHECK(tide_gui_typing(&gui)); // While a view asks, each frame
+    begin();
+    end();
+    TIDE_CHECK(!tide_gui_typing(&gui));
+}
+
+TIDE_TEST(gui_claims_past_the_limit_still_hide)
+{
+    start();
+    mouse(900.0f, 900.0f, true);
+    for (int frame = 0; frame < 2; frame++) {
+        begin();
+        for (uint32_t view = 1; view <= TIDE_GUI_MAX_CLAIMS + 1; view++) {
+            tide_gui_view(&gui, view);
+            // The views that fit keep reading it; the one past them doesn't
+            if (frame == 1) TIDE_CHECK(gui.devices.mouse.left.pressed == (view <= TIDE_GUI_MAX_CLAIMS));
+            tide_gui_claim_pointer(&gui);
+        }
+        end();
+    }
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    TIDE_CHECK(!sampled.mouse.left.pressed);
 }

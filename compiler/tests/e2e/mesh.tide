@@ -1,0 +1,76 @@
+// Meshes: Draw.Mesh with lists of Vertex and of int, a grid of colors as the
+// texture, Draw.Clip, Draw.Screen, and C that draws into the view's list.
+
+local singleton Art
+{
+    Grid2<Color> checker = Grid2(4, 2);
+    Grid2<Color> open;
+    List<Vertex> kept;
+    int frames;
+}
+
+singleton Canvas
+{
+    Grid2<Color> pixels = Grid2(3, 3);
+}
+
+scene Main { }
+
+system Paint(mut Canvas canvas, Time time)
+{
+    canvas.pixels[time.tick, 0] = Color.green;
+}
+
+// C gets the view's draw list, and draws as much as it likes into it.
+extern void DrawFan(DrawList list, int blades, Color color);
+
+[NativeName("commands_so_far")]
+extern int Count(DrawList list);
+
+// A function that draws: views call it, and it passes the list on.
+void Square(float2 at, float size, Color color)
+{
+    List<Vertex> corners = [
+        Vertex { position = at },
+        Vertex { position = at + float2(size, 0), uv = float2(1, 0), color = color },
+        Vertex { position = at + float2(size, size), uv = float2(1, 1), color = color },
+        Vertex { position = at + float2(0, size), uv = float2(0, 1) },
+    ];
+    Draw.Mesh(corners, [0, 1, 2, 0, 2, 3]);
+    DrawFan(Draw.list, 1, color);
+}
+
+view Meshes(mut Art art)
+{
+    art.frames += 1;
+    if (art.frames == 1)
+    {
+        art.checker[0, 0] = Color.red;
+        art.checker[3, 1] = Color(0, 0, 1, 0.5);
+        art.open[0, 0] = Color.red;
+        art.kept.Add(Vertex { position = float2(1, 2) });
+        art.kept.Add(Vertex { position = float2(3, 4), uv = float2(1, 0), color = Color.green });
+        art.kept.Add(Vertex { position = float2(5, 6), uv = float2(0, 1) });
+    }
+    if (art.frames == 3) art.checker[1, 0] = Color.white;
+
+    Draw.Clear(Color.black);
+    Square(float2(10, 20), 2, Color.green);
+    Draw.Clip(Rect(1, 2, 3, 4));
+    Draw.Mesh(art.kept, [0, 1, 2], art.checker);
+    Draw.Mesh(art.kept, [2, 1, 0, 0, 1, 7], art.checker, Filter.Point);
+    Draw.Mesh(art.kept, [0, 1, 2], art.open); // No size, so no texture
+    Draw.Clip();
+    Draw.Screen();
+    var before = Count(Draw.list);
+    DrawFan(Draw.list, art.frames, Color.cyan);
+    Draw.Text($"{Count(Draw.list) - before}", float2(0, 0), 10, Color.white);
+}
+
+// The match's grids draw too: a view reads them as they are.
+view Match(Canvas canvas)
+{
+    Draw.Camera(float2(0, 0), 5);
+    Draw.Mesh([Vertex { }, Vertex { position = float2(1, 0) }, Vertex { position = float2(0, 1) }], [0, 1, 2],
+              canvas.pixels, Filter.Bilinear);
+}

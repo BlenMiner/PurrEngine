@@ -1,0 +1,7 @@
+// expect: 'Vertex' is built into the engine
+scene Main { }
+
+struct Vertex
+{
+    float2 at;
+}

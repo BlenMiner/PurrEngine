@@ -1,0 +1,4 @@
+// expect: only extern functions take a DrawList
+scene Main { }
+
+void Paint(DrawList list) { }

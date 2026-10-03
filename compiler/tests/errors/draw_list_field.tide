@@ -1,0 +1,7 @@
+// expect: fields can't hold a DrawList
+scene Main { }
+
+local singleton Art
+{
+    DrawList list;
+}

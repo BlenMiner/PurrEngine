@@ -880,7 +880,7 @@ Implemented, awaiting approval:
 - Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`, and so can the fields of structs an input holds. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector. They go on input and struct fields only, for now: on a component's or singleton's field, they're an error.
 - **Input is an attack point,** so the engine is forgiving with it. Before `Sanitize` runs, NaN and infinite floats become the field's default. Nothing a client sends can put NaN in the simulation, and `Sanitize` only deals with values that are merely out of range.
 - `Devices` has a keyboard, a mouse, a gamepad, a touchscreen and the pointer; pen, joysticks and sensors come later. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up), named as in Unity: the Input System's `isPressed`, and the old `GetKeyDown` and `GetKeyUp`.
-  - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
+  - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY. `text` is what was typed since the last frame, a `string`, which follows the keyboard's layout as keys don't. It's a frame's: views read it, and the functions they call. `Sample` and the match can't, and the input never sends it.
   - **Mouse:** `position`, `delta` and `scroll` (`float2`), and buttons `left`, `right` and `middle`.
   - **Gamepad:** `connected`; `leftStick` and `rightStick` (`float2`); `leftTrigger` and `rightTrigger` (`float`, 0 to 1); face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`); `dpad.up` and the other directions; `leftShoulder`, `rightShoulder`, `start` and `select`.
   - **Touchscreen:** `connected`, `primaryTouch`, and `touches`, a slot for each of 10 fingers, as Unity's. A `Touch` has `press` (a button: `.down` when the finger touched, Unity's Began, and `.up` when it lifted, Ended), `id` (Unity's `touchId`: the same while the finger touches, a new one for each touch), and `position`, `delta` and `startPosition` (`float2`). A finger keeps its slot while it touches. `primaryTouch` is the finger that touched while no other was the primary one, until it lifts. A finger that touches and lifts between two samples reads as held for one, so no tap is lost. A finger is never the mouse, as in Unity's Input System.
@@ -945,7 +945,8 @@ input PlayerInput
 - The types inside `Devices` are `Keyboard`, `Mouse`, `Gamepad`, `Dpad`, `Touchscreen`, `Touch`, `Pointer` and `Button`. Functions take them and `Devices` as parameters, read-only, passed without a copy: `float2 Steer(Gamepad pad)`.
 - `touches` is a fixed-size array, read-only: `touches[i]` (an empty touch past the last, as forgiving as a list), `touches.count` (10: every slot, touching or not) and `foreach`, which goes through every slot. Its type has no name in Tide yet: it's the first fixed-size array, and fixed-size arrays in components (see Lists, Open) will decide how one is written.
 - `Sample` takes local singletons, read-only: `Sample(Settings settings)`. Hosts pass the local state to `tide_input_sample`.
-- `Devices` in views is this frame's: `.down` and `.up` since the last frame, and the `delta` of the mouse, touches and the pointer, and the mouse's `scroll`, too. What the GUI is using is hidden from views, as from `Sample`. A function that reads `Devices` needs the frame, like one that draws: views and the functions they call can call it, and `Sample` can't (pass it `Devices` instead).
+- `Devices` in views is this frame's: `.down` and `.up` since the last frame, and the `delta` of the mouse, touches and the pointer, and the mouse's `scroll`, too. What the GUI is using is hidden from views, as from `Sample`, and so is what another view claimed (see GUI). A function that reads `Devices` needs the frame, like one that draws: views and the functions they call can call it, and `Sample` can't (pass it `Devices` instead).
+- `keyboard.text` is the characters typed since the last frame, with Shift, dead keys and a phone's keyboard applied, and what's pasted too, but for newlines and tabs. Backspace, Enter and the arrows are keys, not characters. It holds up to 32 characters a frame: the platform keeps the rest for the frames after, up to 1024, so a long paste comes over a few frames, as it does into the GUI's fields. It's empty while the GUI has the keyboard (a widget with the focus, a field being typed into, a modal). A function that reads it through a `Keyboard` or `Devices` parameter needs the frame, as one that reads `Devices` does, so `Sample` and systems can't call it. It can't be written, like the rest of the devices.
 - A `Devices` parameter goes in systems and match event handlers, one per system; views and local handlers read `Devices`. Match code can't read `Devices`: the error says to take the parameter.
 - What the input sends of the devices comes from the whole program: each value read through a `Devices` parameter, in systems and handlers and in the functions and methods they call, and every value of a part used whole, like `var pad = devices.gamepad;`, but its positions in the window, which count once they're read. A `Touch` read through a function's parameter or a copy (a `foreach` over `touches`, `touches[i]` at an index that isn't a number) is sent for every place it could be: the primary touch, every slot, or both. A game without an `input` declaration gets one that only sends the devices.
 - Buttons are sent as held (`.pressed`), like bool input fields: `.down` and `.up` in match code are against last tick's input, so a guessed input that repeats the last one doesn't press them again. A button let go and pressed again between two ticks is one press.
@@ -976,6 +977,11 @@ component Body
 ```
 
 - Something that jumps, like a respawn, a portal or a camera cut, says so from match code: `entity.Snap()` or `singleton.Snap()`. For the tick it happens in, views draw it as it is instead of sliding from where it was.
+- Meshes are the general shape: `Draw.Mesh(vertices, indices)` draws triangles with a position, a texture coordinate and a color at each corner, three indices each, in order with the other Draw calls. The engine gives general primitives rather than a helper for each case.
+- A texture is a grid of colors: `Draw.Mesh(vertices, indices, texture)` takes a `Grid2<Color>` with a size. There's no texture type and no handle. The pixels are the game's state, local or the match's, and the engine keeps a copy on the GPU, which it uploads again when the cells change. So hot reloading carries textures as it carries any state, on every platform.
+- Filtering is how a draw reads the pixels, not part of them: `Draw.Mesh(vertices, indices, texture, Filter.Point)`. Left out, it's `Filter.Bilinear`, as Unity's default.
+- `Draw.Clip(rect)` keeps the Draw calls after it inside a rectangle, and `Draw.Clip()` ends it.
+- `Draw.Screen()` puts the Draw calls after it in the screen's pixels, from the top left with `y` down, as the GUI's are. What views draw there is under the GUI's widgets.
 - A struct or component can say how it blends with an `Interpolate` override: `T Interpolate(T from, T to, float t)`, declared in it like an operator, with no value of its own. It replaces the default blend for that type wherever views see it:
 
 ```csharp
@@ -1019,7 +1025,18 @@ event(Died dead) Respawn(mut Body body, Arena arena)
   - `Draw.Rect(center, size, color)` and `Draw.WireRect(center, size, color)`.
   - `Draw.Line(from, to, color)`.
   - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the height.
+  - `Draw.Mesh(vertices, indices)`, `Draw.Mesh(vertices, indices, texture)` and `Draw.Mesh(vertices, indices, texture, filter)`: a `List<Vertex>`, a `List<int>`, a `Grid2<Color>` and a `Filter`.
+  - `Draw.Clip(rect)` and `Draw.Clip()`, and `Draw.Screen()`.
 - Later Draw calls draw over earlier ones.
+- `Vertex` is a built-in struct: `float2 position`, `float2 uv` and `Color color = Color.white`, so a corner that leaves its color out takes the texture's as it is. `Filter` is a built-in enum, `Point` and `Bilinear`, with the values of Unity's `FilterMode`. A game can't declare either name outside a namespace.
+- Triangles draw whichever way round their corners go. A triangle with an index past the vertices is left out, and so are the one or two indices after the last whole triangle. Colors blend over what's behind them by their alpha, which isn't premultiplied.
+- `uv` (0, 0) is the outer corner of the grid's cell (0, 0), and (1, 1) the outer corner of its last cell. Past them, it reads the cells at the edge.
+- The GPU's copy of a texture is a byte a channel: a cell's floats are clamped to 0 to 1, and NaN is 0. Where the grid has no chunk, it's clear. A grid with an open axis has no size, so it's no texture, and the mesh draws with its colors alone. How big a texture can be is the GPU's limit, at least 2048 by 2048.
+- The engine tells whether a grid's cells changed from the hashes it keeps of the grid's chunks, without reading the cells: a frame that changed nothing costs a hash per chunk. A texture no call of a frame draws with is let go, and comes back when one does.
+- Views read the match's grids as they are at the latest tick: cells aren't blended.
+- `[a, b, c]` where a built-in function takes a list is that list, as it is for a function's argument: `Draw.Mesh(corners, [0, 1, 2])`.
+- `Draw.Clip`'s `Rect` goes from (x, y) to (x + width, y + height) in the units the calls are in: the world's under a camera, with `y` up, and pixels after `Draw.Screen()`. It's set where it lands on the screen then, to whole pixels, and stays there when the camera changes. `Draw.Clear` fills the clip. Each frame starts with none, and a view's clip never clips the GUI.
+- `Draw.Camera` after `Draw.Screen()` goes back to the world.
 - `Color` is a built-in value type with `r`, `g`, `b` and `a`, floats from 0 to 1, as in Unity. It's built with `Color(r, g, b)` (alpha 1) or `Color(r, g, b, a)`. The constants are `Color.white`, `black`, `red`, `green`, `blue`, `yellow`, `cyan`, `magenta`, `gray` and `clear`, with Unity's values and names. Components and singletons can hold colors. There are no operators on colors yet.
 - Text is written in double quotes, with the escapes `\"`, `\\` and `\n`. Its type is `string` (see Text).
 - Blending: a view's match components and singletons are copies, their fields that blend set between last tick's value and this tick's, as far as this moment is between the two ticks. Vectors, matrices, colors and rects blend component by component, quaternions the short way round (normalized), and structs field by field. An entity that wasn't there last tick is drawn as it is. Local state isn't blended: it's this machine's, as it is.
@@ -1045,7 +1062,8 @@ view DrawHud(Arena arena)
 
 - Drawing from systems, with the prediction stage (verified, predicted, replayed) visible to the code.
 - Views reading input, for example to draw where the local player aims before the tick runs.
-- 3D drawing, sprites and textures, layers.
+- 3D drawing, layers, and a sprite in one call (a textured rectangle is a mesh of four corners for now).
+- Textures: mipmaps and how `uv` wraps, chosen like the filter; a pixel of a byte a channel, a quarter of a `Color`'s memory; pixels from image files; sending only the part that changed.
 
 ## GUI
 
@@ -1063,6 +1081,9 @@ view DrawHud(Arena arena)
 - `Screen.width` and `Screen.height` are the window's size.
 - The widgets: `Label`, `Button`, `Toggle`, `Slider`, `IntSlider`, `TextField`, `IntField`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field`, `ColorField` and `Space`, and the containers `Horizontal`, `Vertical`, `Area` and `Modal`.
 - `GUILayout.Modal(anchor, mut bool open) { ... }` is a panel over the whole screen while `open` is true, like a pause menu. While it's up, it has the focus, the widgets outside it don't work, the game and views get nothing from the devices, and back (Escape or the east button) closes it.
+- **Claims:** a view with widgets of its own, drawn with `Draw` or a C library's, says what they're using: `GUI.ClaimPointer()` and `GUI.ClaimKeyboard()`. What's claimed is hidden from the input's `Sample` and from the other views, as what the GUI uses is, and the view that claimed it goes on reading it.
+- A claim lasts one frame. The view makes it again every frame its widget uses the device, as immediate-mode code draws every frame, so a view that stops running leaves nothing claimed.
+- `GUI.ShowKeyboard()` shows a phone's keyboard, as typing into a field does, each frame it's called. It's apart from the keyboard's claim, so a claim for a widget's shortcuts doesn't bring the keyboard up.
 
 ```csharp
 local singleton Settings
@@ -1081,6 +1102,31 @@ view Options(mut Settings settings)
     {
         GUILayout.Toggle("Fullscreen", settings.fullscreen);
         GUILayout.Slider("Volume", settings.volume, 0, 1);
+    }
+}
+
+local singleton Toolbox
+{
+    bool dragging;
+    bool renaming;
+    string name;
+}
+
+// A widget of the view's own, in the window's lower left corner
+view Tools(mut Toolbox box)
+{
+    var pointer = Devices.pointer;
+    var over = pointer.position.x < 200 && pointer.position.y < 200;
+    if (over && pointer.press.down) box.dragging = true;
+    if (!pointer.press.pressed) box.dragging = false;
+    if (over || box.dragging) GUI.ClaimPointer();
+
+    if (box.renaming)
+    {
+        GUI.ClaimKeyboard();
+        GUI.ShowKeyboard();
+        box.name += Devices.keyboard.text;
+        if (Devices.keyboard.enter.down) box.renaming = false;
     }
 }
 ```
@@ -1105,6 +1151,13 @@ Implemented, awaiting approval:
 - Typing: clicking a number field, or pressing Enter on it, starts typing into it with its value selected, so the first character replaces it; typing a number into a focused field starts too. Enter or leaving the field keeps a valid number; Escape keeps the old value.
 - Widgets follow the pointer: the mouse, or a finger. A finger that lifted is nowhere, so nothing stays hovered where it was.
 - Hidden from the input's `Sample` and from views' `Devices`: the keyboard and gamepad while a widget has the focus, and the mouse's buttons and scroll, the pointer's press and the primary touch while the pointer is over a widget or an area, or pressing a widget. While a modal is up, everything is, the movement of the mouse and the pointer too.
+- The pointer is over a widget or an area where it is now, against where the last frame drew them: the game samples, and views read, before the frame's GUI sees the devices. So a press is the GUI's from the frame it lands in, with nothing before it: a finger that touches a button, or a click the mouse made as it came. And a click made as the mouse left a widget is the game's. A widget takes the pointer a frame after it first appears, so a press on it in that frame reaches the game. A frame remembers the places of up to 1024 widgets and areas; past those, the pointer is the GUI's a frame after the GUI saw it there.
+- What a claim hides: `GUI.ClaimPointer()` the mouse's buttons and scroll, the pointer's press and the primary touch, which is what the pointer over a widget hides; `GUI.ClaimKeyboard()` the keys and what's typed, and not the gamepad (the GUI's focus hides both, as both move it). Where the pointer is stays everyone's.
+- Claims are statements of views and the functions they call, like widgets; a function's claim is the view's that called it. A view that runs once per entity is one view.
+- A claim stands from the end of its frame to the end of the next: it hides from the samples taken after it, and from the next frame's views. So a widget claims the pointer while the pointer is over it, before any press, and a click on it never reaches the game. With no rect, the engine doesn't know where a view's own widgets are, as it does the GUI's, so a press with nothing before it (a finger that touches, a widget that appears under the pointer) reaches the game and the other views for the frame it lands in.
+- `GUI.ClaimPointer(Rect rect)` says where a widget of the view's own is, in the GUI's pixels, every frame it's there. While the pointer is on it, the pointer is the view's, as it's the GUI's on the GUI's own widgets: by where the pointer is now against where the last frame's claims were, so from the frame a press lands in, a finger's too. Off the rect it claims nothing: a widget that's dragged claims the pointer with no rect meanwhile. Up to 256 rects in one frame; past those, a rect claims the pointer while the pointer is on it, which hides a frame late.
+- The GUI's own use comes first: a view never reads what the GUI is using, whatever it claimed, and the GUI's widgets work under a claim, as they're drawn on top. While a view has the keyboard, Tab and the arrows don't start moving the GUI's focus.
+- Views that claim the same device all go on reading it: which of their widgets is on top is theirs to know. Up to 16 views claim in one frame and go on reading; past that, a claim still hides.
 - A modal is an anchored area over the screen, dimmed. The one drawn last is on top, and only its widgets work. Its first widget takes the focus the frame after it comes up, and back doesn't close it on the frame it came up, so the press that opened it doesn't. `GUI` has no modal at a rect yet.
 - The drawing: a dark panel behind each area and the engine's default font, with no style to change yet.
 - `GUI.Disabled(bool disabled) { ... }` grays out the widgets in its block while `disabled` is true, as Unity's `GUI.enabled = false` and `EditorGUI.DisabledScope` do: they're drawn at half opacity, and can't be hovered, pressed, focused or typed into, so Tab skips them. A widget disabled while it's pressed lets go, and a field disabled while it's typed into keeps its old value. The block lays nothing out: its widgets go on in the container around it, `GUI`'s and `GUILayout`'s alike. The mouse on a disabled widget is still the GUI's, hidden from the input's `Sample`. Inside a disabled block, another stays disabled whatever its own `disabled` is. An area's panel doesn't fade, only its widgets.
@@ -1115,7 +1168,7 @@ Implemented, awaiting approval:
 - A field for any enum. A game couldn't write one itself until there are generics.
 - Styles and themes.
 - More than one block per function, like Swift's labelled trailing closures.
-- The pieces widgets are made of, so a game can build its own like the built-in ones: a control's ID, which the compiler derives from the call as for the built-in widgets, whether it's hovered, pressed or focused, and drawing in GUI units.
+- The pieces widgets are made of, so a game can build its own like the built-in ones: a control's ID, which the compiler derives from the call as for the built-in widgets, whether it's hovered, pressed or focused, and drawing in the GUI's layer, over its panels (`Draw.Screen()` draws in its pixels, under it).
 - Scrolling, clipping, and keys that repeat while held.
 
 ## Local state
@@ -1382,6 +1435,7 @@ Implemented, awaiting approval:
 - Writing `external` gets an error that points to `extern`.
 - C takes pointers without Tide having pointer arithmetic: the parameter says how a value is passed, and the call takes its address. `mut T` is `T *`, `in T` is `const T *`, a `List<T>` is a pointer to its elements (`T *` with `mut`), with the count passed separately, and a `string` is a zero-terminated UTF-8 copy. Each is only valid during the call. A `const char *` that C returns is copied into text.
 - C calls keep the order of evaluation: calls to C, and to functions that call it, run left to right like the rest of Tide, whatever order C would pick.
+- A game's C draws by taking the frame's draw list: `extern void DrawUI(DrawList list);`, called as `DrawUI(Draw.list)` from a view or a function it calls. C draws into it with `tide/draw.h`, as much as it likes, in order with the view's own Draw calls. So libraries that hand over triangles each frame (Dear ImGui, Nuklear, Spine) need no way to return lists to Tide.
 
 ```csharp
 [NativeName("stb_perlin_noise3")]
@@ -1409,6 +1463,10 @@ Implemented, awaiting approval:
 - A list's elements are plain data (no text or lists in them). C gets NULL for an empty list. With `mut`, C can change the elements, but not how many there are. C can't return a list.
 - C gets text as it is when a zero follows it, and a copy in the scratch area otherwise. Text C returns is copied into the scratch area, as C may reuse its memory; NULL is empty text. A `mut string` can't go to C.
 - An `Action` and the devices can't be passed to C, nor structs that hold text or lists.
+- `DrawList` is only an extern function's parameter, a `tide_draw_list *` in C, neither `mut` nor `in`. `Draw.list` is only an argument for one: a local, a field or a Tide function's parameter can't hold it. It needs the frame, as `Draw` does, so it's an error in systems, tasks and a parallel loop's steps.
+- C draws meshes with `tide_draw_mesh`, or `tide_draw_vertices` and `tide_draw_triangles` for vertices that several batches share, and clips with `tide_draw_clip` and `tide_draw_no_clip`. `tide_vertex` is `Vertex`.
+- C's textures are pixels it keeps: `tide_texture` is their address, `width`, `height` and a `version`, 4 bytes a pixel (red, green, blue, alpha), rows from the first. The draw list copies them when their version or size isn't what it last copied, so C can free or change them once the call returns, and says they changed by changing the version. C holds no handle, and nothing is created or freed.
+- At a hot reload the draw list forgets the textures it copied, as the new build's C may name other pixels at the same address and version.
 - Calls are put in order the way spawns and GUI calls are: what has to go first runs before its statement, and before a loop's condition each round. An `&&` or `||` whose right side calls C, or a `?:` whose sides do, runs as `if` statements then, so each part still only runs when it would, with its own calls in order. So do struct operators that call C.
 - `extern` declarations go at the top level of a file, not in structs. `local` doesn't apply to them.
 - The C name must be a C identifier, not a C keyword. `[NativeName]` can't name the engine's functions (`tide_...`), and two externs can't name the same C function.

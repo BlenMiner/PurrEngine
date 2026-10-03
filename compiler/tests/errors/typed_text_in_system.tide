@@ -1,0 +1,7 @@
+// expect: the match can't read what's typed: it stays on this machine, and the input never sends it
+component Chat { int typed; }
+scene Main { }
+system Type(Devices devices, mut Chat chat)
+{
+    chat.typed += devices.keyboard.text.length;
+}

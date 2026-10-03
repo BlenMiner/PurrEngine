@@ -231,6 +231,13 @@ elseif(NOT TIDE_ANDROID)
     # A hidden window, so it needs a desktop session with working OpenGL.
     add_test(NAME tide_platform_draw COMMAND tide_platform_draw)
     set_tests_properties(tide_platform_draw PROPERTIES LABELS gpu)
+else()
+    # On Android a renderer needs an app's window: install
+    # tide_platform_draw_app.apk, start it, and read what it prints
+    # (`adb logcat -s tide`).
+    add_library(tide_platform_draw_app SHARED tests/draw.c)
+    target_link_libraries(tide_platform_draw_app PRIVATE tide_platform)
+    tide_android_app(tide_platform_draw_app LABEL "Tide draw")
 endif()
 
 if(TIDE_WEB)

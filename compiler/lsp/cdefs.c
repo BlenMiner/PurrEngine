@@ -11,7 +11,7 @@
 #endif
 
 // The headers generated code includes, so everything Tide builds on.
-static const char *const header_names[] = {"color.h", "devices.h", "draw.h", "entity.h", "math.h", "player.h"};
+static const char *const header_names[] = {"color.h", "devices.h", "draw.h", "entity.h", "math.h", "mesh.h", "player.h"};
 #define HEADER_COUNT (sizeof header_names / sizeof header_names[0])
 
 typedef struct header {

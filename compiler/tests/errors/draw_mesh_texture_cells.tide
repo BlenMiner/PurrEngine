@@ -1,0 +1,13 @@
+// expect: Draw.Mesh(List<Vertex> vertices, List<int> indices, Grid2<Color> texture)
+scene Main { }
+
+local singleton Art
+{
+    Grid2<int> cells = Grid2(4, 4);
+    List<Vertex> corners;
+}
+
+view Show(Art art)
+{
+    Draw.Mesh(art.corners, [0, 1, 2], art.cells);
+}

@@ -2,9 +2,10 @@
 // layer, OpenGL or WebGL), read back from an offscreen render.
 //
 // It checks that each shape lands where it should, that commands draw in
-// the order they were recorded whatever the renderer batches together, and
-// that a frame can draw far more than a list used to hold. `--bench` (or
-// `?bench` on the web) times frames of many shapes instead.
+// the order they were recorded whatever the renderer batches together, that
+// a frame can draw far more than a list used to hold, and that meshes draw
+// their triangles with their corners' colors, their textures and the clip.
+// `--bench` (or `?bench` on the web) times frames of many shapes instead.
 
 #include <stdio.h>
 #include <string.h>
@@ -18,11 +19,15 @@
 static tide_draw_list list;
 static int failures;
 
+// The window's size: the one asked for on desktop and the web, and the
+// screen's on a phone, where the checks stay in its top left corner.
+static tide_float2 screen = {WIDTH, HEIGHT};
+
 // The world position at window pixel (x, y), through the frame's first
 // camera: the origin at the middle, a world unit a pixel, y up.
 static tide_float2 at(const float x, const float y)
 {
-    return tide_f2(x - WIDTH * 0.5f, HEIGHT * 0.5f - y);
+    return tide_f2(x - screen.x * 0.5f, screen.y * 0.5f - y);
 }
 
 static uint32_t rgba(const tide_color c)
@@ -90,11 +95,11 @@ static void scene(void)
     tide_draw_wire_circle(&list, at(208, 160), 20, yellow);
 
     // Another camera: 2 pixels a world unit
-    tide_draw_camera(&list, tide_f2(1000, 1000), HEIGHT / 4.0f);
+    tide_draw_camera(&list, tide_f2(1000, 1000), screen.y / 4.0f);
     tide_draw_rect(&list, tide_f2(1040, 970), tide_f2(4, 4), purple);
 
     // The GUI's pixels: from the top left, y down
-    tide_draw_gui(&list);
+    tide_draw_screen(&list);
     tide_draw_rect(&list, tide_f2(16, 250), tide_f2(10, 10), green);
 }
 
@@ -129,7 +134,7 @@ static int run_checks(void)
         {48, 160, background, "and its middle"},
         {208.5f, 140.5f, yellow, "a wire circle's edge"},
         {208, 160, background, "and its middle"},
-        {208, 236, purple, "a rect through another camera"},
+        {screen.x * 0.5f + 80, screen.y * 0.5f + 60, purple, "a rect through another camera"},
         {16, 250, green, "a rect in the GUI's pixels"},
     };
     enum { CHECKS = sizeof checks / sizeof checks[0] };
@@ -163,6 +168,169 @@ static int run_checks(void)
     return failures == 0 ? 0 : 1;
 }
 
+// ---------------------------------------------------------------------------
+// Meshes: triangles with a color at each corner, textures and the clip
+
+// A quad from `top_left` to `bottom_right`, as the list's units have them:
+// its left corners `left` and its right ones `right`, and the texture's first
+// pixel at its top left.
+static void quad(const tide_float2 top_left, const tide_float2 bottom_right, const tide_color left, const tide_color right,
+                 const tide_texture *texture, const tide_filter filter, const bool clockwise)
+{
+    const tide_vertex vertices[4] = {
+        {top_left, {0.0f, 0.0f}, left},
+        {{bottom_right.x, top_left.y}, {1.0f, 0.0f}, right},
+        {bottom_right, {1.0f, 1.0f}, right},
+        {{top_left.x, bottom_right.y}, {0.0f, 1.0f}, left},
+    };
+    static const uint32_t one_way[6] = {0, 1, 2, 0, 2, 3}, other_way[6] = {2, 1, 0, 3, 2, 0};
+    tide_draw_mesh(&list, vertices, 4, clockwise ? one_way : other_way, 6, texture, filter);
+}
+
+// Red, green, blue and white, two by two, and yellow beside a clear pixel
+static uint8_t four[2 * 2 * 4] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255};
+static const uint8_t two[2 * 1 * 4] = {255, 255, 0, 255, 0, 0, 0, 0};
+static tide_texture four_texture = {four, 2, 2, 1};
+static const tide_texture two_texture = {two, 2, 1, 1};
+
+static void mesh_scene(void)
+{
+    const tide_color gray = {0.5f, 1.0f, 1.0f, 1.0f};
+    tide_draw_reset(&list);
+    tide_draw_clear(&list, background);
+
+    // Colors blend from corner to corner
+    quad(at(16, 16), at(80, 80), red, blue, NULL, TIDE_FILTER_BILINEAR, true);
+    // A texture, pixel by pixel and blended, and times its corners' colors
+    quad(at(96, 16), at(160, 80), white, white, &four_texture, TIDE_FILTER_POINT, true);
+    quad(at(176, 16), at(240, 80), white, white, &four_texture, TIDE_FILTER_BILINEAR, false);
+    quad(at(16, 96), at(80, 160), gray, gray, &four_texture, TIDE_FILTER_POINT, true);
+    quad(at(96, 96), at(160, 128), white, white, &two_texture, TIDE_FILTER_POINT, true);
+
+    // A clip, in the world's units: what's drawn after it only shows inside
+    // it, a clear and shapes too
+    const tide_float2 corner = at(176, 136);
+    tide_draw_clip(&list, (tide_rect){corner.x, corner.y, 40, 40});
+    tide_draw_clear(&list, cyan);
+    quad(at(186, 106), at(206, 126), magenta, magenta, NULL, TIDE_FILTER_BILINEAR, true);
+    tide_draw_rect(&list, at(226, 131), tide_f2(40, 6), orange);
+    tide_draw_no_clip(&list);
+    tide_draw_rect(&list, at(236, 150), tide_f2(10, 10), green);
+
+    // In the order they were recorded, among shapes
+    tide_draw_rect(&list, at(48, 240), tide_f2(64, 32), yellow);
+    quad(at(16, 224), at(48, 256), blue, blue, NULL, TIDE_FILTER_BILINEAR, false);
+    tide_draw_rect(&list, at(24, 240), tide_f2(16, 32), red);
+
+    // On the screen: pixels from the top left, y down, the clip too
+    tide_draw_screen(&list);
+    tide_draw_clip(&list, (tide_rect){16, 176, 48, 32});
+    quad(tide_f2(0, 170), tide_f2(100, 220), purple, purple, NULL, TIDE_FILTER_BILINEAR, true);
+    tide_draw_no_clip(&list);
+    quad(tide_f2(80, 176), tide_f2(112, 208), white, white, &four_texture, TIDE_FILTER_POINT, true);
+    // ...and through a camera again
+    tide_draw_camera(&list, tide_f2(0, 0), screen.y / 2.0f);
+    quad(at(120, 176), at(136, 192), white, white, NULL, TIDE_FILTER_BILINEAR, true);
+}
+
+static void check_pixels(const check *checks, const int count)
+{
+    static tide_float2 points[64];
+    static uint32_t got[64];
+    for (int i = 0; i < count; i++) points[i] = tide_f2(checks[i].x, checks[i].y);
+    tide_platform_read_pixels(&list, points, count, got);
+    for (int i = 0; i < count; i++) {
+        const bool ok = near(got[i], rgba(checks[i].color), 8);
+        printf("%s: %s (0x%08X, expected 0x%08X)\n", ok ? "ok" : "FAIL", checks[i].what, (unsigned)got[i],
+               (unsigned)rgba(checks[i].color));
+        if (!ok) failures++;
+    }
+}
+
+static void meshes(void)
+{
+    const tide_color dim = {0.5f, 0.0f, 0.0f, 1.0f}, pale = {0.5f, 1.0f, 1.0f, 1.0f};
+    const tide_color between = {0.5f, 0.0f, 0.5f, 1.0f}, blend = {0.5f, 0.5f, 0.5f, 1.0f};
+    mesh_scene();
+    const check checks[] = {
+        {17, 48, red, "a mesh's left corners' color"},
+        {79, 48, blue, "and its right ones'"},
+        {48, 48, between, "blended between them"},
+        {112, 32, red, "a texture's first pixel, at uv (0, 0)"},
+        {144, 32, green, "the one beside it"},
+        {112, 64, blue, "the one below it"},
+        {144, 64, white, "and its last"},
+        {208, 48, blend, "a texture's pixels blended, between them"},
+        {178, 18, red, "and not with the far edge's, at its edge"},
+        {32, 112, dim, "a texture's pixel times its corners' color"},
+        {64, 144, pale, "and another"},
+        {112, 112, yellow, "another texture, wider than it's tall"},
+        {144, 112, background, "and its clear pixel"},
+        {196, 116, magenta, "a mesh inside the clip"},
+        {180, 100, cyan, "a clear fills the clip"},
+        {170, 116, background, "and nothing outside it"},
+        {215, 100, cyan, "the clip's last column"},
+        {216, 100, background, "and the one past it"},
+        {180, 96, cyan, "the clip's first row"},
+        {180, 95, background, "and the one before it"},
+        {180, 135, cyan, "the clip's last row"},
+        {180, 136, background, "and the one past it"},
+        {210, 131, orange, "a rect inside the clip"},
+        {230, 131, background, "and the rest of it, outside"},
+        {236, 150, green, "a rect after the clip is off"},
+        {24, 240, red, "a rect over a mesh"},
+        {40, 240, blue, "a mesh over a rect"},
+        {64, 240, yellow, "and the rect under it"},
+        {40, 192, purple, "a mesh on the screen, inside the screen's clip"},
+        {70, 192, background, "and nothing beside the clip"},
+        {40, 212, background, "or below it"},
+        {88, 184, red, "a texture on the screen: its first pixel at the top left"},
+        {104, 200, white, "and its last at the bottom right"},
+        {128, 184, white, "a mesh through a camera again"},
+    };
+    check_pixels(checks, (int)(sizeof checks / sizeof checks[0]));
+
+    // Pixels that changed, at another version
+    four[0] = 0, four[1] = 255, four[2] = 255;
+    four_texture.version = 2;
+    mesh_scene();
+    const check changed[] = {
+        {112, 32, cyan, "a texture's pixel that changed"},
+        {144, 32, green, "and one that didn't"},
+    };
+    check_pixels(changed, 2);
+
+    // ...and of another size
+    four_texture.width = four_texture.height = 1;
+    four_texture.version = 3;
+    mesh_scene();
+    const check resized[] = {{144, 64, cyan, "a texture that changed size"}};
+    check_pixels(resized, 1);
+
+    // A frame without it lets it go, and the next draws with it again
+    tide_draw_reset(&list);
+    tide_draw_clear(&list, background);
+    const check none[] = {{144, 64, background, "a frame without meshes"}};
+    check_pixels(none, 1);
+    four[0] = 255, four[1] = 0, four[2] = 0;
+    four_texture = (tide_texture){four, 2, 2, 4};
+    mesh_scene();
+    const check again[] = {
+        {112, 32, red, "a texture drawn again after a frame without it"},
+        {144, 64, white, "all of it"},
+    };
+    check_pixels(again, 2);
+
+    // A host whose game was swapped for another build has the list forget its
+    // textures: the new build's pixels show, though it names them as the old
+    // one named its own
+    four[0] = 255, four[1] = 255, four[2] = 0;
+    tide_draw_forget(&list);
+    mesh_scene();
+    const check forgotten[] = {{112, 32, yellow, "a texture after the list forgot it"}};
+    check_pixels(forgotten, 1);
+}
+
 // Rects side by side, a cell each as a grid's view draws them, leave no gap
 // between them at any scale: not even where their shared edge falls exactly
 // on a row or column of pixel centers, as it does every 8 cells at 3.125
@@ -176,17 +344,17 @@ static void tiles_leave_no_gaps(void)
         const float s = scales[k];
         tide_draw_reset(&list);
         tide_draw_clear(&list, background);
-        tide_draw_camera(&list, centers[k], HEIGHT / (2.0f * s));
+        tide_draw_camera(&list, centers[k], screen.y / (2.0f * s));
         for (int y = -HALF; y < HALF; y++) {
             for (int x = -HALF; x < HALF; x++) {
                 tide_draw_rect(&list, tide_f2((float)x + 0.5f, (float)y + 0.5f), tide_f2(1, 1), orange);
             }
         }
         // Every pixel inside the tiles, but for a pixel's margin
-        const float left = WIDTH * 0.5f + (-HALF - centers[k].x) * s + 1.0f;
-        const float right = WIDTH * 0.5f + (HALF - centers[k].x) * s - 1.0f;
-        const float top = HEIGHT * 0.5f - (HALF - centers[k].y) * s + 1.0f;
-        const float bottom = HEIGHT * 0.5f - (-HALF - centers[k].y) * s - 1.0f;
+        const float left = screen.x * 0.5f + (-HALF - centers[k].x) * s + 1.0f;
+        const float right = screen.x * 0.5f + (HALF - centers[k].x) * s - 1.0f;
+        const float top = screen.y * 0.5f - (HALF - centers[k].y) * s + 1.0f;
+        const float bottom = screen.y * 0.5f - (-HALF - centers[k].y) * s - 1.0f;
         static tide_float2 points[WIDTH * HEIGHT];
         static uint32_t got[WIDTH * HEIGHT];
         int count = 0;
@@ -211,7 +379,8 @@ static void tiles_leave_no_gaps(void)
 
 #define BENCH_FRAMES 100
 
-static int bench_kind; // 0: nothing (what reading back costs), 1: rects, 2: circles, 3: rects with text between
+// 0: nothing (what reading back costs), 1: rects, 2: circles, 3: rects with text between, 4: quads of one mesh
+static int bench_kind;
 static int bench_frame;
 static double bench_ms;
 
@@ -221,6 +390,10 @@ static void bench_scene(void)
     for (uint32_t i = 0; bench_kind > 0 && i < WIDTH * 256u; i++) {
         const tide_float2 p = at((float)(i % WIDTH) + 0.5f, (float)(i / WIDTH) + 0.5f);
         const tide_color c = {(float)(i % WIDTH) / WIDTH, (float)(i / WIDTH) / 256.0f, 0.5f, 1.0f};
+        if (bench_kind == 4) {
+            quad(tide_f2(p.x - 0.5f, p.y + 0.5f), tide_f2(p.x + 0.5f, p.y - 0.5f), c, c, &four_texture, TIDE_FILTER_POINT, true);
+            continue;
+        }
         if (bench_kind == 2) tide_draw_circle(&list, p, 0.6f, c);
         else tide_draw_rect(&list, p, tide_f2(1, 1), c);
         if (bench_kind == 3 && i % 1024u == 0) tide_draw_text(&list, "x", p, 10, white);
@@ -229,7 +402,8 @@ static void bench_scene(void)
 
 static int bench(void)
 {
-    static const char *names[] = {"nothing", "65536 rects", "65536 circles", "65536 rects, text every 1024"};
+    static const char *names[] = {"nothing", "65536 rects", "65536 circles", "65536 rects, text every 1024",
+                                  "65536 textured quads"};
     bench_scene();
     const uint64_t start = tide_time_now_ns();
     const tide_float2 point = tide_f2(1, 1);
@@ -240,7 +414,7 @@ static int bench(void)
     printf("%s: %.2f ms a frame\n", names[bench_kind], bench_ms / BENCH_FRAMES);
     bench_frame = 0;
     bench_ms = 0.0;
-    return ++bench_kind < 4 ? TIDE_KEEP_RUNNING : 0;
+    return ++bench_kind < 5 ? TIDE_KEEP_RUNNING : 0;
 }
 
 static bool benching;
@@ -248,7 +422,9 @@ static bool benching;
 static int frame(void *user, const float seconds)
 {
     (void)user, (void)seconds;
+    screen = tide_platform_screen_size();
     if (benching) return bench();
+    meshes();
     tiles_leave_no_gaps();
     return run_checks();
 }

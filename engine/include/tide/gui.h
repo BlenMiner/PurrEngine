@@ -41,6 +41,15 @@ typedef struct tide_textref tide_textref;
 // GUI: tide_gui_begin works out what changed since last frame, and hides what
 // the GUI is using from them too.
 //
+// A view that draws widgets of its own, or a library's, claims what they use
+// (GUI.ClaimPointer, GUI.ClaimKeyboard), each frame it uses it: from the end
+// of that frame to the end of the next, it's hidden from the game and from the
+// other views as what the GUI uses is, and the view that claimed it goes on
+// reading it. A view that says where its widget is (GUI.ClaimPointer(rect))
+// has the pointer wherever it's on it, from the frame it comes there. The
+// GUI's own use comes first: a view never reads what the GUI is using,
+// whatever it claimed.
+//
 // A modal (GUILayout.Modal) takes the whole screen while it's up: the widgets
 // outside it stop working, the focus goes to its first widget, the game and
 // the views get nothing from the devices, and back (Escape, or the east
@@ -66,11 +75,15 @@ typedef struct tide_textref tide_textref;
 #ifndef TIDE_GUI_MAX_SIZES
 #define TIDE_GUI_MAX_SIZES 256 // Containers whose size is remembered; a power of two
 #endif
-
-// A rectangle: its top left corner and its size.
-typedef struct tide_rect {
-    float x, y, width, height;
-} tide_rect;
+#ifndef TIDE_GUI_MAX_RECTS
+#define TIDE_GUI_MAX_RECTS 1024 // Widgets and areas whose place a frame remembers: the pointer there is the GUI's
+#endif
+#ifndef TIDE_GUI_MAX_CLAIMS
+#define TIDE_GUI_MAX_CLAIMS 16 // Views that claim devices in one frame and go on reading them
+#endif
+#ifndef TIDE_GUI_MAX_CLAIM_RECTS
+#define TIDE_GUI_MAX_CLAIM_RECTS 256 // Places views claim the pointer at, per frame
+#endif
 
 // Where GUILayout.Area puts an area, named as Unity's TextAnchor. Tide's
 // Anchor enum has the same values.
@@ -106,6 +119,7 @@ typedef struct tide_gui_group {
     uint32_t panel;           // An area: its background's command
     tide_rect rect;           // An area at a rect: the rect
     uint32_t hot_before;      // An area: what was under the mouse before its content
+    uint32_t rects_before;    // An area: how many places were remembered before its content
     uint32_t in_modal_before; // The modal it's in, back when it closes
     bool disabled;            // Its widgets are grayed out and don't work: it's in a Disabled block
     bool scope;               // A Disabled block: the container around it, carried on, and handed back when it closes
@@ -128,6 +142,22 @@ typedef struct tide_gui_seen {
     uint32_t count;
 } tide_gui_seen;
 
+// What a view claims (GUI.ClaimPointer, GUI.ClaimKeyboard).
+#define TIDE_GUI_POINTER 1u  // The mouse's buttons and scroll, the pointer's press and the primary touch
+#define TIDE_GUI_KEYBOARD 2u // The keys and what's typed
+
+// What one view claimed in a frame.
+typedef struct tide_gui_claim {
+    uint32_t view;
+    uint32_t what;
+} tide_gui_claim;
+
+// Where a view claimed the pointer (GUI.ClaimPointer(rect)): a widget of its own.
+typedef struct tide_gui_claim_rect {
+    tide_rect rect;
+    uint32_t view;
+} tide_gui_claim_rect;
+
 typedef struct tide_gui {
     // The screen this frame (Screen in Tide).
     float width;
@@ -144,8 +174,24 @@ typedef struct tide_gui {
     bool game_input; // tide_gui_hide ran since the last frame: the game reads the devices
     bool nav_arrows; // The arrows and d-pad can move the focus this frame
     bool back;       // Escape or the east button went down, and didn't stop typing
-    tide_devices devices; // As views read them: what changed since last frame, less what the GUI uses
-    tide_devices last;    // The devices last frame, as the platform had them
+    // As the view that's running reads them: what changed since last frame,
+    // less what the GUI uses and what the other views claimed
+    tide_devices devices;
+    tide_devices unclaimed; // ...less what the GUI uses alone
+    tide_devices last;      // The devices last frame, as the platform had them
+
+    // What views claimed, kept from the end of a frame to the end of the next
+    uint32_t view;                                   // The view that's running, from 1; 0 for none
+    uint32_t taken, taken_next;                      // What any view claimed last frame, and so far this frame
+    tide_gui_claim claims[TIDE_GUI_MAX_CLAIMS];      // Who claimed what last frame
+    tide_gui_claim claims_next[TIDE_GUI_MAX_CLAIMS]; // ...and so far this frame
+    uint32_t claim_count, claim_count_next;
+    // Where views' own widgets were last frame, and this frame so far: the
+    // pointer there is the view's from the frame it comes, as on the GUI's own
+    tide_gui_claim_rect claim_rects[TIDE_GUI_MAX_CLAIM_RECTS];
+    tide_gui_claim_rect claim_rects_next[TIDE_GUI_MAX_CLAIM_RECTS];
+    uint32_t claim_rect_count, claim_rect_count_next;
+    bool keyboard_shown, keyboard_shown_next; // A view asked for the phone's keyboard (GUI.ShowKeyboard)
 
     // Kept between frames
     uint32_t frame;
@@ -160,7 +206,14 @@ typedef struct tide_gui {
     uint32_t edit_len;
     char edit[256];                   // What's typed so far
     bool edit_fresh;                  // Nothing typed yet: the first character replaces the value
-    bool over, over_next;             // The mouse is over the GUI
+    bool over, over_next;             // The mouse was over the GUI as the frame drew it
+    // Where the last frame drew its widgets and areas, and this frame so far.
+    // The game and views read the devices before a frame's GUI does, so the
+    // pointer is the GUI's where it's on one of these now.
+    tide_rect rects[TIDE_GUI_MAX_RECTS];
+    tide_rect rects_next[TIDE_GUI_MAX_RECTS];
+    uint32_t rect_count, rect_count_next;
+    bool rects_full, rects_full_next; // More than fit: past them, `over` says, a frame late
     uint32_t modal, modal_next;       // The modal on top, last frame's and this frame's
     uint32_t in_modal;                // The modal whose content is being drawn
     uint32_t grab;                    // A modal just came on top: its first widget takes the focus
@@ -184,18 +237,51 @@ void tide_gui_begin(tide_gui *g, const tide_devices *devices, tide_float2 screen
 // end of `draw`, over everything else.
 void tide_gui_end(tide_gui *g, tide_draw_list *draw);
 
-// Whether the player is typing into a field: phones show their keyboard
-// meanwhile (tide_platform_typing).
+// Whether the player is typing: into a field of the GUI's, or into what a
+// view said shows the keyboard (GUI.ShowKeyboard) in the frame that just
+// ended. Phones show their keyboard meanwhile (tide_platform_typing).
 bool tide_gui_typing(const tide_gui *g);
 
 // Hides what the GUI is using from `devices`, a copy about to be sampled as
 // the game's input: the keyboard and gamepad while a widget has the focus,
 // the mouse's buttons and the primary touch while the pointer is over the GUI
-// or pressing a widget, and everything while a modal is up.
+// or pressing a widget, and everything while a modal is up. What views claimed
+// in the last frame is hidden too, and what's typed always: it's a frame's.
+//
+// The pointer is over the GUI where `devices` has it on a widget or an area as
+// the last frame drew them, so a press there is the GUI's from the sample it
+// lands in, before the GUI's own frame sees it: a finger that touches a
+// button, or a click the mouse made as it came. Fill the pointer first
+// (tide_pointer_poll). A widget that first appears under the pointer takes it
+// a frame later.
 void tide_gui_hide(tide_gui *g, tide_devices *devices);
 
 // ---------------------------------------------------------------------------
 // For generated code
+
+// Before each view runs: `view` tells the views apart, from 1. The devices it
+// reads are the frame's, less what the GUI uses and what the other views
+// claimed last frame: what it claimed itself, it goes on reading.
+void tide_gui_view(tide_gui *g, uint32_t view);
+
+// GUI.ClaimPointer and GUI.ClaimKeyboard: the view that's running is using
+// the pointer or the keyboard, for widgets of its own. Called every frame it
+// does: a claim lasts until the end of the next frame.
+void tide_gui_claim_pointer(tide_gui *g);
+void tide_gui_claim_keyboard(tide_gui *g);
+
+// GUI.ClaimPointer(rect): the view that's running has a widget of its own at
+// `rect`, in the GUI's pixels. Called every frame the widget is there. The
+// pointer on it is the view's, as it's the GUI's on the GUI's own widgets:
+// from the frame it comes there, with no claim before it, so a finger that
+// touches the widget never reaches the game. Past TIDE_GUI_MAX_CLAIM_RECTS
+// places in a frame, it claims the pointer while the pointer is on the rect,
+// which hides a frame late.
+void tide_gui_claim_pointer_at(tide_gui *g, tide_rect rect);
+
+// GUI.ShowKeyboard: the player is typing into something of the view's, so
+// phones show their keyboard. Called every frame they are.
+void tide_gui_show_keyboard(tide_gui *g);
 
 // Mixes two numbers into an ID. Never 0, which means no widget.
 uint32_t tide_gui_seed(uint32_t a, uint32_t b);

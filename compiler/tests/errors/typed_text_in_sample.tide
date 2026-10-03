@@ -1,0 +1,7 @@
+// expect: Sample can't read what's typed: it's a frame's, and Sample runs once per tick
+input PlayerInput
+{
+    int typed;
+    Sample() { typed = Devices.keyboard.text.length; }
+}
+scene Main { }

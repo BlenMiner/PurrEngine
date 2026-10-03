@@ -1,0 +1,9 @@
+// expect: pass the frame's draw list: 'Draw.list'
+scene Main { }
+
+extern void Paint(DrawList list);
+
+view Show()
+{
+    Paint(5);
+}

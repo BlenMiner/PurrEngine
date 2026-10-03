@@ -27,20 +27,49 @@ static const type T_BOOL = {TY_BOOL, NULL};
 static const type T_ANCHOR = {TY_ENUM, NULL};
 static const decl *anchor_decl;
 
+static const decl *vertices_decl, *indices_decl, *pixels_decl, *filter_decl;
+
 void builtins_use(const decl *anchor)
 {
     anchor_decl = anchor;
+    // Another program's: this one's come with its first Draw.Mesh
+    vertices_decl = indices_decl = pixels_decl = filter_decl = NULL;
+}
+
+// What Draw.Mesh takes, the same way: these stand for the program's own
+// List<Vertex>, List<int>, Grid2<Color> and Filter.
+static decl mesh_vertices, mesh_indices, mesh_pixels, mesh_filter;
+static const type T_VERTICES = {TY_LIST, &mesh_vertices};
+static const type T_INDICES = {TY_LIST, &mesh_indices};
+static const type T_PIXELS = {TY_GRID, &mesh_pixels};
+static const type T_FILTER = {TY_ENUM, &mesh_filter};
+static const type T_RECT = {TY_RECT, NULL};
+
+void builtins_use_mesh(const decl *vertices, const decl *indices, const decl *pixels, const decl *filter)
+{
+    vertices_decl = vertices;
+    indices_decl = indices;
+    pixels_decl = pixels;
+    filter_decl = filter;
 }
 
 // A signature's type as a program sees it.
 static type real_type(const type t)
 {
     if (t.kind == TY_ENUM && !t.decl) return (type){TY_ENUM, (decl *)anchor_decl};
+    if (t.decl == &mesh_vertices && vertices_decl) return (type){TY_LIST, (decl *)vertices_decl};
+    if (t.decl == &mesh_indices && indices_decl) return (type){TY_LIST, (decl *)indices_decl};
+    if (t.decl == &mesh_pixels && pixels_decl) return (type){TY_GRID, (decl *)pixels_decl};
+    if (t.decl == &mesh_filter && filter_decl) return (type){TY_ENUM, (decl *)filter_decl};
     return t;
 }
 
 static const char *signature_type_name(const type t)
 {
+    if (t.decl == &mesh_vertices) return "List<Vertex>";
+    if (t.decl == &mesh_indices) return "List<int>";
+    if (t.decl == &mesh_pixels) return "Grid2<Color>";
+    if (t.decl == &mesh_filter) return "Filter";
     return t.kind == TY_ENUM && !t.decl ? "Anchor" : type_name(t);
 }
 
@@ -268,6 +297,26 @@ static void build_signatures(void)
     text->argc = 4;
     text->params[3] = T_COLOR;
     describe(text, "text, position, size, color", "Text: `position` is its top left corner and `size` its height.");
+    static const char mesh_doc[] =
+        "Triangles: three of `indices` each, places in `vertices`. Each pixel is its corners' colors blended "
+        "across the triangle, times `texture`'s at their uvs: a grid of colors with a size, whose cell (0, 0) is at "
+        "uv (0, 0). `filter` is how it's read between cells: `Filter.Bilinear` (the default) or `Filter.Point`.";
+    describe(add("Draw", "Mesh", T_NONE, "tide_draw_mesh_lists", 2, T_VERTICES, T_INDICES, T_NONE),
+             "vertices, indices", mesh_doc);
+    describe(add("Draw", "Mesh", T_NONE, "tide_draw_mesh_grid", 3, T_VERTICES, T_INDICES, T_PIXELS),
+             "vertices, indices, texture", mesh_doc);
+    signature *sampled = add("Draw", "Mesh", T_NONE, "tide_draw_mesh_grid", 3, T_VERTICES, T_INDICES, T_PIXELS);
+    sampled->argc = 4;
+    sampled->params[3] = T_FILTER;
+    describe(sampled, "vertices, indices, texture, filter", mesh_doc);
+    static const char clip_doc[] =
+        "Only what's inside `rect` draws, for the Draw calls after it: from (x, y) to (x + width, y + height), in "
+        "the units they're in. `Draw.Clip()` with no rect draws everywhere again. Each frame starts with none.";
+    describe(add("Draw", "Clip", T_NONE, "tide_draw_clip", 1, T_RECT, T_NONE, T_NONE), "rect", clip_doc);
+    describe(add("Draw", "Clip", T_NONE, "tide_draw_no_clip", 0, T_NONE, T_NONE, T_NONE), NULL, clip_doc);
+    describe(add("Draw", "Screen", T_NONE, "tide_draw_screen", 0, T_NONE, T_NONE, T_NONE), NULL,
+             "The Draw calls after it are in the screen's pixels: from the top left, with y down, as the GUI's are. "
+             "`Draw.Camera` goes back to the world.");
 
     // Text's methods: tide/text.h, with the text first. Positions and lengths
     // count characters, and are clamped to the text, never out of range.
@@ -335,6 +384,24 @@ static void build_signatures(void)
     add_gui("GUI", "Disabled", T_NONE, "tide_gui_begin_disabled", "bool disabled", GUI_CONTAINER,
             "Grays out the widgets in its block while `disabled` is true: they're drawn faded and can't be "
             "clicked, focused or typed into. They stay where they are, laid out as usual.");
+    // Widgets a view draws itself, or a library's: what they use of the devices
+    add_gui("GUI", "ClaimPointer", T_NONE, "tide_gui_claim_pointer_at", "Rect rect", 0,
+            "This view has a widget of its own at `rect`: while the pointer is on it, the mouse's buttons and "
+            "scroll, the pointer's press and the primary touch are hidden from the input's `Sample` and from the "
+            "other views, as on a button, and this view goes on reading them. Call it every frame the widget is "
+            "there: a press on it is the view's from the frame it lands in, a finger's too.");
+    add_gui("GUI", "ClaimPointer", T_NONE, "tide_gui_claim_pointer", "", 0,
+            "This view is using the pointer, wherever it is, like a widget of its own that's being dragged: the "
+            "mouse's buttons and scroll, the pointer's press and the primary touch are hidden from the input's "
+            "`Sample` and from the other views, and this view goes on reading them. Call it every frame it "
+            "does: a claim hides from the next frame on. For a widget at a rect, give the rect.");
+    add_gui("GUI", "ClaimKeyboard", T_NONE, "tide_gui_claim_keyboard", "", 0,
+            "This view is using the keyboard, for a widget of its own: the keys and what's typed are hidden from "
+            "the input's `Sample` and from the other views, as typing in a field is. This view goes on reading "
+            "them. Call it every frame the widget has the keyboard: a claim hides from the next frame on.");
+    add_gui("GUI", "ShowKeyboard", T_NONE, "tide_gui_show_keyboard", "", 0,
+            "The player is typing into a widget of this view's own: phones show their keyboard, as they do for a "
+            "text field. Call it every frame they are.");
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +430,7 @@ static const struct {
     {"Color", "magenta", TY_COLOR, "TIDE_COLOR_MAGENTA"},
     {"Color", "gray", TY_COLOR, "TIDE_COLOR_GRAY"},
     {"Color", "clear", TY_COLOR, "TIDE_COLOR_CLEAR"},
+    {"Draw", "list", TY_DRAW_LIST, "tide_draw"},
     {"Screen", "width", TY_FLOAT, "tide_ui->width"},
     {"Screen", "height", TY_FLOAT, "tide_ui->height"},
 };
@@ -439,6 +507,11 @@ static bool fits(const signature *s, const expr *e)
         const type want = real_type(s->params[a]);
         const expr *arg = e->args.items[a];
         const bool mut = s->mut & (1u << a);
+        // A type the program doesn't have, like Grid2<Color> where no grid is one: nothing is it
+        if (want.decl == &mesh_vertices || want.decl == &mesh_indices || want.decl == &mesh_pixels
+            || want.decl == &mesh_filter) {
+            return false;
+        }
         if (arg->kind == E_DEFAULT) {
             if (mut) return false;
             continue;
@@ -471,6 +544,22 @@ static bool default_ambiguous(const int first, const expr *e)
         }
     }
     return false;
+}
+
+bool builtin_list_param(const str owner, const str name, const int index, type *out)
+{
+    build_signatures();
+    bool found = false;
+    for (int i = 0; i < signature_count; i++) {
+        const signature *s = &signatures[i];
+        if (!str_eq_c(owner, s->owner) || !str_eq_c(name, s->name) || s->argc <= index) continue;
+        const type t = real_type(s->params[index]);
+        if (t.kind != TY_LIST || t.decl == &mesh_vertices || t.decl == &mesh_indices) return false;
+        if (found && t.decl != out->decl) return false;
+        *out = t;
+        found = true;
+    }
+    return found;
 }
 
 type resolve_builtin_call(const str owner, expr *e)

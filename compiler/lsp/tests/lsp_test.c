@@ -410,6 +410,22 @@ TIDE_TEST(lsp_complete_in_constructor)
     // Views read them too, and systems take them.
     const char *view = complete("scene Main { }\nview Pause()\n{\n    if (Devices.keyboard.$\n}\n");
     TIDE_CHECK(offers(view, "escape"));
+    // What's typed is a frame's: views and functions read it, not Sample or systems.
+    TIDE_CHECK(offers(view, "text"));
+    TIDE_CHECK(offers(complete("scene Main { }\nint Typed(Keyboard keys)\n{\n    return keys.$\n}\n"), "text"));
+    TIDE_CHECK(!offers(complete("input PlayerInput\n{\n    float2 move;\n\n    Sample()\n    {\n"
+                                "        if (Devices.keyboard.$\n    }\n}\nscene Main { }\n"),
+                       "text"));
+    TIDE_CHECK(!offers(complete("scene Main { }\ncomponent Body { float x; }\n"
+                                "system Move(Devices devices, mut Body body)\n{\n    body.x += devices.keyboard.$\n}\n"),
+                       "text"));
+    TIDE_CHECK(offers(complete("scene Main { }\nview Chat()\n{\n    var n = Devices.keyboard.text.$\n}\n"), "length"));
+    open_document("scene Main { }\nlocal singleton Chat { string line; }\n"
+                  "view Type(mut Chat chat)\n{\n    chat.line += Devices.keyboard.te$xt;\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    const char *typed = request("textDocument/hover");
+    TIDE_CHECK(has(typed, "string text"));
+    TIDE_CHECK(has(typed, "What was typed since the last frame"));
     const char *system = complete("scene Main { }\ncomponent Body { float x; }\n"
                                   "system Move(Devices devices, mut Body body)\n{\n    body.x += devices.gamepad.$\n}\n");
     TIDE_CHECK(offers(system, "leftStick"));
@@ -604,6 +620,50 @@ static const char *c_definition(const char *marked)
     open_document(marked);
     request("textDocument/definition");
     return definition_line();
+}
+
+// Meshes: Draw.Mesh, Draw.Clip and Draw.Screen, the built-in Vertex and
+// Filter, and the draw list a view passes to C.
+TIDE_TEST(lsp_meshes)
+{
+    start();
+#define MESH_TYPES                                                                 \
+    "scene Main { }\n"                                                             \
+    "extern void DrawUI(DrawList list);\n"                                         \
+    "local singleton Art\n{\n    Grid2<Color> pixels = Grid2(4, 4);\n    List<Vertex> corners;\n}\n"
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Screen();\n    Draw.Clip(Rect(0, 0, 4, 4));\n"
+                             "    Draw.Mesh(art.corners, [0, 1, 2], art.pixels, Filter.Point);\n"
+                             "    Draw.Mesh([Vertex { position = float2(1, 2) }], [0, 0, 0]);\n"
+                             "    Draw.Clip();\n    DrawUI(Draw.list);\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    const char *draw = complete(MESH_TYPES "view V(Art art)\n{\n    Draw.$\n}\n");
+    TIDE_CHECK(offers(draw, "Mesh") && offers(draw, "Clip") && offers(draw, "Screen") && offers(draw, "list"));
+    TIDE_CHECK(has(draw, "Mesh(${1:vertices}, ${2:indices})"));
+    TIDE_CHECK(has(draw, "Draw.list: DrawList"));
+    const char *filter = complete(MESH_TYPES "view V(Art art)\n{\n    Draw.Mesh(art.corners, [0, 1, 2], art.pixels, Filter.$);\n}\n");
+    TIDE_CHECK(offers(filter, "Point") && offers(filter, "Bilinear"));
+    const char *corner = complete(MESH_TYPES "view V(Art art)\n{\n    var v = Vertex { $ };\n}\n");
+    TIDE_CHECK(offers(corner, "position") && offers(corner, "uv") && offers(corner, "color"));
+    const char *param = complete(MESH_TYPES "extern void Paint($);\n");
+    TIDE_CHECK(offers(param, "DrawList") && offers(param, "Vertex"));
+    const char *tide_param = complete(MESH_TYPES "void Paint($) { }\n"); // Only C takes one
+    TIDE_CHECK(!offers(tide_param, "DrawList") && offers(tide_param, "Vertex"));
+
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Me$sh(art.corners, [0, 1, 2], art.pixels);\n}\n");
+    const char *mesh = request("textDocument/hover");
+    TIDE_CHECK(has(mesh, "Draw.Mesh(List<Vertex> vertices, List<int> indices, Grid2<Color> texture, Filter filter)"));
+    TIDE_CHECK(has(mesh, "Triangles: three of `indices` each"));
+    open_document(MESH_TYPES "view V(Art art)\n{\n    DrawUI(Draw.li$st);\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "Draw.list: DrawList"));
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Mesh(art.corners, $\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "Draw.Mesh(List<Vertex> vertices, List<int> indices)"));
+
+    TIDE_CHECK(has(c_definition(MESH_TYPES "view V(Art art)\n{\n    Draw.Me$sh(art.corners, [0, 1, 2]);\n}\n"),
+                   "void tide_draw_mesh_lists("));
+    TIDE_CHECK(has(c_definition(MESH_TYPES "view V(Art art)\n{\n    Draw.Cl$ip();\n}\n"), "void tide_draw_no_clip("));
+    TIDE_CHECK(has(c_definition(MESH_TYPES "view V(Art art)\n{\n    Draw.Scr$een();\n}\n"), "void tide_draw_screen("));
+#undef MESH_TYPES
 }
 
 // The type of what's at the cursor, and an event's or the input's code.
@@ -1039,6 +1099,21 @@ TIDE_TEST(lsp_gui)
     TIDE_CHECK(offers(complete("scene Main { }\nview V()\n{\n    $\n}\n"), "GUILayout"));
     TIDE_CHECK(!offers(complete("scene Main { }\nsystem S()\n{\n    $\n}\n"), "GUILayout"));
     TIDE_CHECK(offers(complete("scene Main { }\nvoid F()\n{\n    $\n}\n"), "Screen"));
+
+    // Claims, for widgets a view draws itself
+    const char *claims = complete("scene Main { }\nview V()\n{\n    GUI.$\n}\n");
+    TIDE_CHECK(offers(claims, "ClaimPointer"));
+    TIDE_CHECK(offers(claims, "ClaimKeyboard"));
+    TIDE_CHECK(offers(claims, "ShowKeyboard"));
+    open_document("scene Main { }\nview V()\n{\n    GUI.Claim$Pointer();\n    GUI.ClaimKeyboard();\n    GUI.ShowKeyboard();\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    const char *claim = request("textDocument/hover");
+    TIDE_CHECK(has(claim, "GUI.ClaimPointer()"));
+    TIDE_CHECK(has(claim, "hidden from the input's `Sample` and from the other views"));
+    // At a rect: where a widget of the view's own is
+    open_document("scene Main { }\nview V()\n{\n    GUI.Claim$Pointer(Rect(0, 0, 200, 200));\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(request("textDocument/hover"), "GUI.ClaimPointer(Rect rect)"));
 
     open_document("local singleton M { bool on; }\nscene Main { }\nview V(mut M m) { GUILayout.Tog$gle(\"On\", m.on); }\n");
     const char *toggle = request("textDocument/hover");

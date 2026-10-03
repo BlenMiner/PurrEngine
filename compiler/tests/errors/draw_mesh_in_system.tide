@@ -1,0 +1,12 @@
+// expect: Draw can only be used in views, and in functions they call
+scene Main { }
+
+singleton Shape
+{
+    List<Vertex> corners;
+}
+
+system Run(Shape shape)
+{
+    Draw.Mesh(shape.corners, [0, 1, 2]);
+}
