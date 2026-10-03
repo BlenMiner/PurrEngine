@@ -102,7 +102,7 @@ static void copy_elements(const tide_list to, const tide_list from, const uint32
 
 // A new block for `capacity` elements side by side, where a list at `where`
 // keeps them: its world's heap, or the scratch area. Returns its tagged
-// offset, or 0 when the scratch area has no room.
+// offset, or 0 when they'd take more than an offset reaches.
 static uint32_t new_block(const uint32_t where, const uint32_t capacity, const uint32_t size)
 {
     const uint64_t bytes = (uint64_t)capacity * size;
@@ -115,8 +115,7 @@ static uint32_t new_block(const uint32_t where, const uint32_t capacity, const u
         b = tide_heap_write(heap, block);
         at = where << 30 | block;
     } else {
-        b = tide_scratch_block((uint32_t)bytes, &at);
-        if (!b) return 0;
+        b = tide_scratch_block((uint32_t)bytes, "a list", &at);
     }
     b->a = 0;
     b->b = capacity;
@@ -180,8 +179,8 @@ static void grow_chunks(tide_list *l, const uint32_t need, const uint32_t size, 
 
 // Room for `more` elements: in the list's own block, grown if it's full, and
 // moved into a block of its own if it borrowed one. A world's list keeps its
-// elements in chunks once they take more than a page. False when there's no
-// room.
+// elements in chunks once they take more than a page. False when the list is
+// as big as one gets.
 static bool reserve(tide_list *l, const uint32_t more, const uint32_t size, const uint32_t where)
 {
     const tide_block *b = tide_block_at(l->at);
@@ -279,8 +278,7 @@ tide_list tide_list_copy(const tide_list l, const uint32_t size)
     const int32_t count = tide_list_count(l);
     if (count <= 0) return out;
     uint32_t at;
-    tide_block *b = tide_scratch_block((uint32_t)count * size, &at);
-    if (!b) return out;
+    tide_block *b = tide_scratch_block((uint32_t)count * size, "a list", &at);
     b->a = (uint32_t)count;
     b->b = (uint32_t)count;
     out.at = at;
@@ -293,8 +291,7 @@ tide_list tide_list_from(const void *elements, const int32_t count, const uint32
     tide_list out = {0};
     if (count <= 0) return out;
     uint32_t at;
-    tide_block *b = tide_scratch_block((uint32_t)count * size, &at);
-    if (!b) return out;
+    tide_block *b = tide_scratch_block((uint32_t)count * size, "a list", &at);
     memcpy(items(b), elements, (size_t)count * size);
     b->a = (uint32_t)count;
     b->b = (uint32_t)count;

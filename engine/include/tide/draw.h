@@ -35,7 +35,7 @@ typedef enum tide_draw_kind {
     TIDE_DRAW_RECT,        // a = center, b = size, color
     TIDE_DRAW_WIRE_RECT,   // a = center, b = size, color
     TIDE_DRAW_LINE,        // a = from, b = to, color
-    TIDE_DRAW_TEXT,        // a = top left corner, b.x = height, color, text
+    TIDE_DRAW_TEXT,        // a = top left corner, b.x = font size, color, text
     TIDE_DRAW_SCREEN,      // The commands after it are in the screen's pixels
     TIDE_DRAW_MESH,        // mesh: its triangles, and the texture they sample
     TIDE_DRAW_CLIP,        // a = the corner where x and y are lowest, b = size
@@ -227,8 +227,9 @@ void tide_draw_rect(tide_draw_list *d, tide_float2 center, tide_float2 size, tid
 void tide_draw_wire_rect(tide_draw_list *d, tide_float2 center, tide_float2 size, tide_color color);
 void tide_draw_line(tide_draw_list *d, tide_float2 from, tide_float2 to, tide_color color);
 
-// `position` is the text's top left corner and `size` its height. The text is
-// copied into the list.
+// `position` is the text's top left corner and `size` its font size: the
+// height of a line of it, with its capitals in the line's middle. A newline
+// starts another line under it. The text is copied into the list.
 void tide_draw_text(tide_draw_list *d, const char *text, tide_float2 position, float size, tide_color color);
 
 // Triangles: three of `indices` each, places in `vertices`, both copied into

@@ -32,7 +32,7 @@ Positions and sizes are in world units, with `y` up. The camera maps them to the
 | `Draw.Rect(center, size, color)` | A filled rectangle |
 | `Draw.WireRect(center, size, color)` | A rectangle's outline |
 | `Draw.Line(from, to, color)` | A line |
-| `Draw.Text(text, position, size, color)` | Text, with `position` its top left corner and `size` its height |
+| `Draw.Text(text, position, size, color)` | Text, with `position` its top left corner and `size` its font size, the height of a line of it |
 | `Draw.Mesh(vertices, indices)` | Triangles, with a color at each corner (see [Meshes](#meshes)) |
 | `Draw.Mesh(vertices, indices, texture)` | Triangles drawn with a grid of colors (see [Textures](#textures)) |
 | `Draw.Clip(rect)` | Only what's inside `rect` draws, for the calls after it; `Draw.Clip()` draws everywhere again (see [Clipping](#clipping)) |

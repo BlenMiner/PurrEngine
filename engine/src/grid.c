@@ -135,8 +135,7 @@ void *tide_grid_poke_slow(tide_grid *g, const int32_t x, const int32_t y, const 
 tide_grid tide_grid_new(const uint32_t dims, const int32_t x, const int32_t y, const int32_t z)
 {
     uint32_t at = 0;
-    tide_block *b = tide_scratch_block((uint32_t)sizeof(tide_grid_dir), &at);
-    if (!b) return (tide_grid){0};
+    tide_block *b = tide_scratch_block((uint32_t)sizeof(tide_grid_dir), "a grid", &at);
     tide_grid_dir *d = (tide_grid_dir *)(void *)(b + 1);
     *d = (tide_grid_dir){{x > 0 ? x : 0, y > 0 ? y : 0, dims == 3 && z > 0 ? z : 0}, dims, 0, 0, 0, 0, {1, 1, 1}, 0};
     return (tide_grid){at};

@@ -88,7 +88,10 @@ void sb_putn(sb *b, const char *s, const size_t n)
 {
     if (b->line == 0) b->line = 1;
     if (b->len + n + 1 > b->cap) {
-        size_t cap = b->cap ? b->cap * 2 : 4096;
+        // Most builders hold a name or a line of code, so a new one takes
+        // little: the arena never frees, and code that makes thousands would
+        // otherwise take pages for a few bytes each.
+        size_t cap = b->cap ? b->cap * 2 : 64;
         while (cap < b->len + n + 1) cap *= 2;
         b->data = vec_grow(b->data, b->cap, cap, 1);
         b->cap = cap;

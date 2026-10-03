@@ -11,7 +11,7 @@
 // numbers) and to depend on the window's size.
 
 // Sizes, in GUI units (pixels)
-#define FONT 16.0f         // Text height
+#define FONT 16.0f         // Text's size
 #define LINE 28.0f         // A widget's height
 #define PAD 10.0f          // Text inside a button, from its sides
 #define SPACING 5.0f       // Between widgets

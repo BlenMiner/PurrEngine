@@ -612,7 +612,7 @@ system Advance(mut Match match)
 - `string` is text, as a value: assigning copies it, and nothing is ever shared.
 - A string's `length` counts characters (Unicode code points), not bytes.
 - Components, singletons, structs and events can hold text. A world keeps it in its heap, part of the world, so snapshots have it too. The heap grows as it needs, with no limit but memory.
-- Nothing about text fails: past the end of a string, positions are clamped. Text that code makes stops growing when the scratch area is full.
+- Nothing about text fails: past the end of a string, positions are clamped. Text that code makes can be of any size: the scratch area it lives in grows as it needs, with no limit but memory.
 
 ### Provisional
 
@@ -640,7 +640,7 @@ system Advance(mut Match match)
 
 - `List<T>` is a list of values, as a value: assigning or passing one copies it, and changing a copy never changes the original.
 - A world keeps its lists in its heap, like text.
-- Nothing about lists fails: past the end, a read gives the element type's zero and a write does nothing. A world's lists grow with its heap, and a list that code makes stops growing when the scratch area is full.
+- Nothing about lists fails: past the end, a read gives the element type's zero and a write does nothing. A world's lists grow with its heap, and a list that code makes grows with the scratch area, which grows as it needs, with no limit but memory.
 
 ### Provisional
 
@@ -1025,7 +1025,7 @@ event(Died dead) Respawn(mut Body body, Arena arena)
   - `Draw.Circle(center, radius, color)` and `Draw.WireCircle(center, radius, color)`.
   - `Draw.Rect(center, size, color)` and `Draw.WireRect(center, size, color)`.
   - `Draw.Line(from, to, color)`.
-  - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the height.
+  - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the font size, the height of a line of it. A newline in `text` starts another line under it.
   - `Draw.Mesh(vertices, indices)`, `Draw.Mesh(vertices, indices, texture)` and `Draw.Mesh(vertices, indices, texture, filter)`: a `List<Vertex>`, a `List<int>`, a `Grid2<Color>` and a `Filter`.
   - `Draw.Clip(rect)` and `Draw.Clip()`, and `Draw.Screen()`.
   - In 3D: `Draw.Camera(position, rotation, fieldOfView)` and `Draw.Camera(transform, projection)`, and `Draw.Mesh(vertices, indices, transform)`, `Draw.Mesh(vertices, indices, transform, texture)` and `Draw.Mesh(vertices, indices, transform, texture, filter)`: a `List<Vertex3>`, a `List<int>`, a `float4x4`, a `Grid2<Color>` and a `Filter`.

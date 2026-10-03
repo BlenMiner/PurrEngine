@@ -449,33 +449,34 @@ static void add_mesh(const tide_draw_list *list, const tide_draw_command *c, con
     mesh_vertex_count += count;
 }
 
-// Text `size` tall with its top left corner at `at`, in window pixels: a quad
-// a glyph, after the text before it when nothing came between them. Glyphs
-// are drawn into the atlas as tall as they are on the target, to the nearest
-// pixel, and land on its pixels, so they're as sharp as the display.
+// Text of `size` with its top left corner at `at`, in window pixels: a quad a
+// glyph, after the text before it when nothing came between them. It's drawn
+// on the target's own pixels (see font.h): its lines start on one, and each
+// glyph is a whole number of them from the last, so none is ever blended
+// between two.
 static void add_text(const char *text, const tide_float2 at, const float size, const rgba color)
 {
     if (!(size > 0.0f)) return;
     const tide_float2 scale = pixel_scale();
-    const float tall = size * scale.y; // In the target's pixels, as the pen below
-    int pixels = (int)(tall + 0.5f);
-    if (pixels < 1) pixels = 1;
-    if (pixels > TIDE_FONT_MAX_PIXELS) pixels = TIDE_FONT_MAX_PIXELS;
-    const float stretch = tall / (float)pixels;
-    const float left = at.x * scale.x;
-    float pen_x = left, pen_y = at.y * scale.y;
+    float stretch;
+    const int pixels = tide_font_pixels(size, scale.y, &stretch);
+    // In the target's pixels, as the pen is
+    const float left = floorf(at.x * scale.x + 0.5f);
+    const float pitch = floorf(tide_font_line() * (float)pixels * stretch + 0.5f);
+    float pen_x = left, pen_y = floorf((at.y + tide_font_baseline() * size) * scale.y + 0.5f); // On the baseline
 
     if (step_count == 0 || steps[step_count - 1].kind != STEP_TEXT) add_step(STEP_TEXT)->first = mesh_vertex_count;
     for (uint32_t c; (c = tide_utf8_next(&text)) != 0;) {
         if (c == '\n') {
             pen_x = left;
-            pen_y += tide_font_line() * tall;
+            pen_y += pitch;
             continue;
         }
         tide_font_glyph g;
-        if (tide_font_glyph_for(c, pixels, &g) && g.width) {
-            const float x0 = floorf(pen_x + (float)g.left * stretch + 0.5f) / scale.x;
-            const float y0 = floorf(pen_y + (float)g.top * stretch + 0.5f) / scale.y;
+        if (!tide_font_glyph_for(c, pixels, &g)) continue; // No room for it this frame
+        if (g.width) {
+            const float x0 = (pen_x + (float)g.left * stretch) / scale.x;
+            const float y0 = (pen_y + (float)g.top * stretch) / scale.y;
             const float x1 = x0 + (float)g.width * stretch / scale.x, y1 = y0 + (float)g.height * stretch / scale.y;
             const float u0 = (float)g.x, v0 = (float)g.y, u1 = u0 + (float)g.width, v1 = v0 + (float)g.height;
             const mesh_vertex corners[4] = {
@@ -490,7 +491,7 @@ static void add_text(const char *text, const tide_float2 at, const float size, c
             mesh_vertex_count += 6;
             steps[step_count - 1].count += 6;
         }
-        pen_x += tide_font_advance(c) * tall * (scale.x / scale.y);
+        pen_x += (float)g.advance * stretch;
     }
 }
 
@@ -1081,9 +1082,15 @@ tide_float2 tide_platform_screen_size(void)
     return tide_f2((float)screen_width, (float)screen_height);
 }
 
+// The window's pixels in a logical one, which text is fitted to (see font.h).
+static float window_scale(void)
+{
+    return (float)pixel_height / (float)screen_height;
+}
+
 float tide_platform_measure_text(const char *text, const float size)
 {
-    return tide_font_measure(text, size);
+    return tide_font_measure(text, size, window_scale());
 }
 
 const char *tide_platform_renderer(void)
@@ -1107,7 +1114,7 @@ void tide_platform_draw_overlay(const char *text)
         if (n >= sizeof lines[0]) n = sizeof lines[0] - 1;
         memcpy(lines[count], line, n);
         lines[count][n] = '\0';
-        widths[count] = ceilf(tide_font_measure(lines[count], size));
+        widths[count] = ceilf(tide_font_measure(lines[count], size, window_scale()));
         if (widths[count] > widest) widest = widths[count];
         line = end ? end + 1 : NULL;
     }
