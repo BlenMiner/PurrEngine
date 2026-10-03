@@ -110,6 +110,12 @@ typedef struct gen {
     VEC(const struct stmt *) pars;
     VEC(const char *) par_names;
     const struct stmt *par_loop;
+    // Names made once, before anything is written (name_program): the C names
+    // of the program's types, functions and constants, which a local can't
+    // take, and each archetype's name.
+    const char **taken;   // A hash set, open addressing, NULL where empty
+    uint32_t taken_mask;  // Its capacity less one, a power of two
+    const char **arch_names;
 } gen;
 
 // A task's locals are written again as it goes on after a wait, so none is const.
@@ -151,15 +157,22 @@ static const char *mangle(const str name)
 // A declaration's name in C: its namespace joined with underscores, then its
 // name, so Combat.Health is Combat_Health. The checker rejects names that
 // would collide.
-static const char *decl_cname(const decl *d)
+static const char *make_cname(const decl *d)
 {
     const str ns = d->unit ? d->unit->ns : (str){"", 0};
     if (ns.len == 0) return mangle(d->name);
-    sb b = {0};
-    for (int i = 0; i < ns.len; i++) sb_putn(&b, ns.ptr[i] == '.' ? "_" : &ns.ptr[i], 1);
-    sb_put(&b, "_");
-    sb_putn(&b, d->name.ptr, (size_t)d->name.len);
-    return b.data;
+    char *out = arena_alloc((size_t)ns.len + (size_t)d->name.len + 2);
+    for (int i = 0; i < ns.len; i++) out[i] = ns.ptr[i] == '.' ? '_' : ns.ptr[i];
+    out[ns.len] = '_';
+    memcpy(out + ns.len + 1, d->name.ptr, (size_t)d->name.len);
+    return out;
+}
+
+// Generated code writes each name thousands of times, so every declaration
+// gets its name once (name_program); one made along the way is named here.
+static const char *decl_cname(const decl *d)
+{
+    return d->gen_name ? d->gen_name : make_cname(d);
 }
 
 static const char *type_cname(const decl *d)
@@ -167,20 +180,53 @@ static const char *type_cname(const decl *d)
     return decl_cname(d);
 }
 
+// A T? or `T fails E` as a struct: tide_result<n> (see gen_result_types).
+static const char *result_cname(const decl *d)
+{
+    if (d->gen_name) return d->gen_name;
+    sb b = {0};
+    sb_printf(&b, "tide_result%d", d->index);
+    return b.data;
+}
+
 static const char *field_cname(const field *f)
 {
     return mangle(f->name);
+}
+
+// The names a local can't take (g->taken): a hash set of C strings, which
+// every identifier is looked up in.
+static uint32_t name_hash(const str name)
+{
+    uint32_t h = 2166136261u; // FNV-1a
+    for (int i = 0; i < name.len; i++) h = (h ^ (uint8_t)name.ptr[i]) * 16777619u;
+    return h;
+}
+
+static void take_name(gen *g, const char *name)
+{
+    for (uint32_t i = name_hash(str_from(name)) & g->taken_mask;; i = (i + 1) & g->taken_mask) {
+        if (!g->taken[i]) {
+            g->taken[i] = name;
+            return;
+        }
+        if (strcmp(g->taken[i], name) == 0) return;
+    }
+}
+
+static bool name_taken(const gen *g, const str name)
+{
+    for (uint32_t i = name_hash(name) & g->taken_mask;; i = (i + 1) & g->taken_mask) {
+        if (!g->taken[i]) return false;
+        if (str_eq_c(name, g->taken[i])) return true;
+    }
 }
 
 // Locals and parameters also can't reuse a type's name: in C that would hide
 // the typedef inside the function.
 static const char *local_cname(const gen *g, const str name)
 {
-    bool clash = is_c_reserved(name) || str_eq_c(name, "tide_float3");
-    for (int i = 0; i < g->prog->decls.count && !clash; i++) {
-        const decl *d = g->prog->decls.items[i];
-        if (d->kind != DECL_SYSTEM && str_eq_c(name, type_cname(d))) clash = true;
-    }
+    const bool clash = is_c_reserved(name) || str_eq_c(name, "tide_float3") || name_taken(g, name);
     // Inlined code's names start with its prefix, so the caller's block,
     // copied inside it, still sees the caller's.
     const char *prefix = g->frame ? g->frame->prefix : "";
@@ -199,11 +245,7 @@ static const char *c_type(const type t)
         return type_cname(t.decl);
     }
     if (t.kind == TY_RECORD) return t.decl->c_name;
-    if (t.kind == TY_OPTIONAL || t.kind == TY_FAILABLE) { // See gen_result_types
-        sb b = {0};
-        sb_printf(&b, "tide_result%d", t.decl->index);
-        return b.data;
-    }
+    if (t.kind == TY_OPTIONAL || t.kind == TY_FAILABLE) return result_cname(t.decl);
     return type_c_name(t);
 }
 
@@ -418,7 +460,7 @@ static bool has_component(const uint64_t mask, const int component)
 }
 
 // "arch0_Transform_Player": the world member and, prefixed with tide_, the type.
-static const char *arch_name(const gen *g, const int index)
+static const char *make_arch_name(const gen *g, const int index)
 {
     const uint64_t mask = g->prog->archetypes.items[index];
     sb b = {0};
@@ -428,6 +470,32 @@ static const char *arch_name(const gen *g, const int index)
         if (has_component(mask, i)) sb_printf(&b, "_%s", type_cname(g->prog->components.items[i]));
     }
     return b.data;
+}
+
+static const char *arch_name(const gen *g, const int index)
+{
+    return g->arch_names[index];
+}
+
+// Names everything once, before any code is written: each declaration's C
+// name (decl_cname), the result types' (c_type), the archetypes' (arch_name),
+// and the set of names a local can't take (local_cname). They were made again
+// at every use, and the set was a scan of every declaration, so a game's
+// compile time grew with its size squared.
+static void name_program(gen *g)
+{
+    const program *prog = g->prog;
+    for (int i = 0; i < prog->decls.count; i++) prog->decls.items[i]->gen_name = make_cname(prog->decls.items[i]);
+    for (int i = 0; i < prog->results.count; i++) prog->results.items[i]->gen_name = result_cname(prog->results.items[i]);
+    uint32_t capacity = 16;
+    while (capacity < 2u * (uint32_t)prog->decls.count) capacity *= 2;
+    g->taken = arena_alloc(sizeof(const char *) * capacity);
+    g->taken_mask = capacity - 1;
+    for (int i = 0; i < prog->decls.count; i++) {
+        if (prog->decls.items[i]->kind != DECL_SYSTEM) take_name(g, prog->decls.items[i]->gen_name);
+    }
+    g->arch_names = arena_alloc(sizeof(const char *) * (size_t)(prog->archetypes.count > 0 ? prog->archetypes.count : 1));
+    for (int i = 0; i < prog->archetypes.count; i++) g->arch_names[i] = make_arch_name(g, i);
 }
 
 // "Transform, Player" for comments and error messages.
@@ -3691,6 +3759,7 @@ static void add_task(gen *g, decl *fn)
     sb name = {0};
     sb_printf(&name, "tide_frame_%s", task_id(fn));
     frame->name = frame->qualified = str_from(name.data);
+    frame->gen_name = make_cname(frame);
     const type int_t = {TY_INT, NULL};
     frame_field(frame, "tide_state", int_t); // Where it stopped: 0 before it starts
     frame_field(frame, "tide_until", int_t); // The tick or frame it waits for
@@ -8346,6 +8415,7 @@ bool codegen(program *prog, const codegen_options *opts)
         if (prog->decls.items[i]->is_extern) sb_printf(opts->externs, "%s\n", prog->decls.items[i]->c_name);
     }
 
+    name_program(&g);
     collect_tasks(&g);
     gen_header(&g);
     // The game's hash: its header, but for the first line, which names files.

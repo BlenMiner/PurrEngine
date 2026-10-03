@@ -99,6 +99,17 @@ foreach(source IN LISTS TIDE_ERROR_TESTS)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_error.cmake")
 endforeach()
 
+# Scale test: a big game of many namespaces, made up at test time, which tidec
+# has to compile within a generous time (see scale/scale.cmake). It took
+# minutes, and tens of gigabytes, while codegen's time grew with the game's
+# size squared.
+add_test(NAME tidec_scale
+    COMMAND "${CMAKE_COMMAND}"
+        "-DTIDEC=${TIDEC_PATH}"
+        "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/scale"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scale/scale.cmake")
+set_tests_properties(tidec_scale PROPERTIES TIMEOUT 600)
+
 # Schedule tests: `tidec --schedule` on schedule/<name>.tide must print
 # schedule/<name>.txt exactly.
 file(GLOB TIDE_SCHEDULE_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/schedule/*.tide")
