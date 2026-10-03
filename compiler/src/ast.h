@@ -199,6 +199,7 @@ typedef struct decl {
     bool is_scene;    // `scene Arena { ... }`: a DECL_COMPONENT whose entity is a loaded scene
     bool is_extern;   // `extern float Noise(float x);`: a DECL_FUNCTION written in C, with no body
     const char *c_name; // Records: the C struct name. Extern functions: the C function, from [NativeName] or the name.
+    const char *gen_name; // Its name in generated C (Combat_Health for Combat.Health), which codegen gives every declaration once, before it writes any
     bool device_group;  // Devices, Keyboard, Mouse, Gamepad, Dpad, Touch, ...: records made of device values
     int leaves_count;   // ...how many
     VEC(int) instances; // ...where each place it has in the devices starts in program.device_leaves
