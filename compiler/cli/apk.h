@@ -17,6 +17,14 @@
 
 #define APK_MAX_LIBS 4
 
+// A library the app's own needs: it goes beside it, where Android looks for
+// it by its name when it loads the app's.
+typedef struct apk_lib {
+    const char *abi;  // "arm64-v8a"
+    const char *name; // "libsteam_api.so": what the app's library asks for
+    const char *path; // On disk
+} apk_lib;
+
 typedef struct apk_desc {
     const char *package;      // The app's ID: "dev.tide.sand"
     const char *label;        // Its name under its icon
@@ -30,6 +38,8 @@ typedef struct apk_desc {
     const char *abis[APK_MAX_LIBS]; // "arm64-v8a", "x86_64"
     const char *libs[APK_MAX_LIBS]; // The library for each, on disk
     const char *icon;               // Its icon, a PNG on disk, or NULL for the system's
+    int needed_count;
+    const apk_lib *needed; // The libraries those need, each for one of the CPUs
 } apk_desc;
 
 // The app's manifest, as Android reads it: binary XML. Returns its size, and

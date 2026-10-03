@@ -417,3 +417,104 @@ TIDE_TEST(apk_bundle_is_signed_as_a_jar)
     remove("apk_test_icon.png");
     remove("apk_test_libgame.so");
 }
+
+// The libraries the game's needs go beside it, each under its CPU and its
+// name, stored on 16 KiB pages as the game's is: Android loads them from the
+// app when it loads the game's. In a bundle too, each signed.
+TIDE_TEST(apk_holds_the_libraries_the_game_needs)
+{
+    enum { PER_ABI = 9, NEEDED = 2 * PER_ABI }; // More than a few
+    static const char *const abis[2] = {"arm64-v8a", "x86_64"};
+    FILE *f = fopen("apk_test_libgame.so", "wb");
+    TIDE_REQUIRE(f && fwrite("game", 1, 4, f) == 4);
+    fclose(f);
+    static char names[NEEDED][32], paths[NEEDED][48], contents[NEEDED][48];
+    apk_lib needed[NEEDED];
+    for (int i = 0; i < NEEDED; i++) {
+        snprintf(names[i], sizeof names[i], "libneeded%d.so", i % PER_ABI);
+        snprintf(paths[i], sizeof paths[i], "apk_test_needed%d.so", i);
+        snprintf(contents[i], sizeof contents[i], "library %d for %s", i % PER_ABI, abis[i / PER_ABI]);
+        f = fopen(paths[i], "wb");
+        TIDE_REQUIRE(f && fwrite(contents[i], 1, strlen(contents[i]), f) == strlen(contents[i]));
+        fclose(f);
+        needed[i] = (apk_lib){abis[i / PER_ABI], names[i], paths[i]};
+    }
+    char error[256];
+    const apk_key *key = test_key();
+    TIDE_REQUIRE(key);
+    const apk_desc desc = {.package = "dev.tide.test", .label = "Test", .lib_name = "game", .version_code = 1,
+                           .version_name = "1.0", .min_sdk = 29, .target_sdk = 36, .lib_count = 2,
+                           .abis = {abis[0], abis[1]}, .libs = {"apk_test_libgame.so", "apk_test_libgame.so"},
+                           .needed_count = NEEDED, .needed = needed};
+
+    TIDE_REQUIRE(apk_write("apk_test.apk", &desc, key, error, sizeof error));
+    size_t size = 0;
+    uint8_t *apk = read_all("apk_test.apk", &size);
+    TIDE_REQUIRE(apk && size > 22);
+    const uint8_t *end = apk + size - 22;
+    TIDE_REQUIRE(get32(end) == 0x06054b50);
+    const uint32_t count = get16(end + 10);
+    TIDE_CHECK(count == 1 + 2 + NEEDED); // The manifest, the game's library for each CPU, and those
+    const uint8_t *e = apk + get32(end + 16);
+    int found = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        TIDE_REQUIRE(get32(e) == 0x02014b50);
+        const uint32_t name_size = get16(e + 28), local = get32(e + 42), entry_size = get32(e + 24);
+        const uint8_t *header = apk + local;
+        const uint32_t data = local + 30 + get16(header + 26) + get16(header + 28);
+        for (int k = 0; k < NEEDED; k++) {
+            char name[96];
+            snprintf(name, sizeof name, "lib/%s/%s", needed[k].abi, needed[k].name);
+            if (name_size != strlen(name) || memcmp(e + 46, name, name_size) != 0) continue;
+            found++;
+            TIDE_CHECK(get16(e + 10) == 0); // Stored
+            TIDE_CHECK(data % 16384 == 0);
+            TIDE_CHECK(entry_size == strlen(contents[k]) && memcmp(apk + data, contents[k], entry_size) == 0);
+        }
+        e += 46 + name_size + get16(e + 30) + get16(e + 32);
+    }
+    TIDE_CHECK(found == NEEDED);
+    TIDE_CHECK(memcmp(apk + get32(end + 16) - 16, "APK Sig Block 42", 16) == 0); // Signed, as the others are
+    free(apk);
+
+    TIDE_REQUIRE(apk_bundle_write("apk_test.aab", &desc, key, error, sizeof error));
+    uint8_t *aab = read_all("apk_test.aab", &size);
+    TIDE_REQUIRE(aab && size > 22);
+    end = aab + size - 22;
+    const uint32_t bundle_count = get16(end + 10);
+    TIDE_CHECK(bundle_count == 3 + 2 + 2 + NEEDED); // The signature, the config and manifest, and the libraries
+    e = aab + get32(end + 16);
+    const uint8_t *manifest_header = aab + get32(e + 42); // META-INF/MANIFEST.MF comes first
+    const uint32_t manifest_size = get32(e + 24);
+    char *manifest = malloc(manifest_size + 1);
+    memcpy(manifest, manifest_header + 30 + get16(manifest_header + 26) + get16(manifest_header + 28), manifest_size);
+    manifest[manifest_size] = 0;
+    found = 0;
+    for (uint32_t i = 0; i < bundle_count; i++) {
+        const uint32_t name_size = get16(e + 28), local = get32(e + 42), entry_size = get32(e + 24);
+        const uint8_t *header = aab + local;
+        const uint8_t *data = header + 30 + get16(header + 26) + get16(header + 28);
+        for (int k = 0; k < NEEDED; k++) {
+            char name[96];
+            snprintf(name, sizeof name, "base/lib/%s/%s", needed[k].abi, needed[k].name);
+            if (name_size != strlen(name) || memcmp(e + 46, name, name_size) != 0) continue;
+            found++;
+            TIDE_CHECK(entry_size == strlen(contents[k]) && memcmp(data, contents[k], entry_size) == 0);
+            TIDE_CHECK(has_digest(manifest, name, "SHA-256-Digest", data, entry_size));
+        }
+        e += 46 + name_size + get16(e + 30) + get16(e + 32);
+    }
+    TIDE_CHECK(found == NEEDED);
+    free(manifest);
+    free(aab);
+
+    // One that isn't there is said, by its path
+    needed[3].path = "apk_test_missing.so";
+    TIDE_CHECK(!apk_write("apk_test.apk", &desc, key, error, sizeof error));
+    TIDE_CHECK(strstr(error, "apk_test_missing.so") != NULL);
+
+    remove("apk_test.apk");
+    remove("apk_test.aab");
+    remove("apk_test_libgame.so");
+    for (int i = 0; i < NEEDED; i++) remove(paths[i]);
+}

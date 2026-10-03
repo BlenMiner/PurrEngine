@@ -196,6 +196,200 @@ TIDE_TEST(cli_libraries_shared_object)
     TIDE_CHECK(info.dynamic);
 }
 
+static void le64_at(bytes *b, const size_t at, const unsigned long long v)
+{
+    le32_at(b, at, (unsigned long)(v & 0xFFFFFFFFu));
+    le32_at(b, at + 4, (unsigned long)(v >> 32));
+}
+
+// A 64-bit ELF file's header, with `count` program headers after it.
+static void elf_file(bytes *b, const unsigned type, const unsigned machine, const unsigned count)
+{
+    unsigned char h[64];
+    elf(h, type, machine);
+    put(b, h, sizeof h);
+    le64_at(b, 32, 64); // Where the program headers are
+    le16_at(b, 54, 56); // ...and the size of each
+    le16_at(b, 56, count);
+}
+
+enum { LOAD = 1, DYNAMIC = 2, NOTE = 4 };
+
+// The `index`th program header: `size` bytes at `offset`, loaded at `address`.
+static void segment(bytes *b, const unsigned index, const unsigned type, const size_t offset,
+                    const unsigned long long address, const size_t size, const unsigned long long align)
+{
+    const size_t at = 64 + 56 * (size_t)index;
+    le32_at(b, at, type);
+    le64_at(b, at + 8, offset);
+    le64_at(b, at + 16, address);
+    le64_at(b, at + 32, size);
+    le64_at(b, at + 40, size);
+    le64_at(b, at + 48, align);
+}
+
+// A note at `at`, its name and its description each padded to `align` from
+// the note's start; returns where the next one goes.
+static size_t note(bytes *b, const size_t at, const char *name, const unsigned type, const void *description,
+                   const size_t size, const size_t align)
+{
+    const size_t name_size = strlen(name) + 1;
+    le32_at(b, at, (unsigned long)name_size);
+    le32_at(b, at + 4, (unsigned long)size);
+    le32_at(b, at + 8, type);
+    put_at(b, at + 12, name, name_size);
+    const size_t start = (12 + name_size + align - 1) / align * align;
+    put_at(b, at + start, description, size);
+    const size_t end = (start + size + align - 1) / align * align;
+    if (at + end > b->len) b->len = at + end;
+    return at + end;
+}
+
+// Android's note, as the NDK's crtbegin_so.o has it: the API level the
+// library was built for, then the NDK and its build, 64 bytes each.
+static size_t android_note(bytes *b, const size_t at)
+{
+    unsigned char ident[4 + 64 + 64] = {29};
+    memcpy(ident + 4, "r30", 3);
+    memcpy(ident + 68, "16248370", 8);
+    return note(b, at, "Android", 1, ident, sizeof ident, 4);
+}
+
+// The dynamic section at 0x400, whose strings are at 0x500 in the file and
+// 0x10500 as loaded: what the library needs, and its name if it has one.
+static void dynamic(bytes *b, const char *needs, const char *soname)
+{
+    char strings[64] = {0};
+    const size_t needs_at = 1;
+    const size_t soname_at = needs_at + strlen(needs) + 1;
+    memcpy(strings + needs_at, needs, strlen(needs));
+    if (soname) memcpy(strings + soname_at, soname, strlen(soname));
+    put_at(b, 0x500, strings, sizeof strings);
+    size_t at = 0x400;
+    le64_at(b, at, 1); // DT_NEEDED
+    le64_at(b, at + 8, needs_at);
+    at += 16;
+    if (soname) {
+        le64_at(b, at, 14); // DT_SONAME
+        le64_at(b, at + 8, soname_at);
+        at += 16;
+    }
+    le64_at(b, at, 5); // DT_STRTAB
+    le64_at(b, at + 8, 0x10500);
+    le64_at(b, at + 16, 0); // DT_NULL
+    le64_at(b, at + 24, 0);
+}
+
+// A shared library the NDK linked: Android's note says so, among the others
+// its notes hold, and its segments are aligned to 16 KiB pages.
+TIDE_TEST(cli_libraries_android_shared_object)
+{
+    bytes b = {0};
+    elf_file(&b, 3, 183, 5); // ET_DYN, AArch64
+    static const unsigned char id[20] = {1, 2, 3};
+    static const unsigned char property[16] = {0, 0, 0, 0xC0, 4, 0, 0, 0, 3};
+    const size_t notes_end = android_note(&b, note(&b, 0x200, "GNU", 3, id, sizeof id, 4)); // After its build ID
+    const size_t property_end = note(&b, 0x300, "GNU", 5, property, sizeof property, 8);
+    dynamic(&b, "libc.so", "libnoise.so");
+    segment(&b, 0, LOAD, 0, 0x10000, 0x600, 0x4000);
+    segment(&b, 1, LOAD, 0x600, 0x14600, 0, 0x4000);
+    segment(&b, 2, NOTE, 0x300, 0x10300, property_end - 0x300, 8);
+    segment(&b, 3, NOTE, 0x200, 0x10200, notes_end - 0x200, 4);
+    segment(&b, 4, DYNAMIC, 0x400, 0x10400, 64, 8);
+    const lib_info info = identify(&b);
+    TIDE_CHECK(info.platform == LIB_ANDROID);
+    TIDE_CHECK(info.cpus == LIB_ARM64);
+    TIDE_CHECK(info.dynamic);
+    TIDE_CHECK(info.page_size == 16384);
+    TIDE_CHECK(strcmp(info.name, "libnoise.so") == 0);
+}
+
+// One linked by an older NDK, for 4 KiB pages, and with no name of its own
+// (Go's are so): the game asks for it by its file's name.
+TIDE_TEST(cli_libraries_android_shared_object_for_small_pages)
+{
+    bytes b = {0};
+    elf_file(&b, 3, 62, 4); // ET_DYN, x86-64
+    const size_t notes_end = android_note(&b, 0x200);
+    dynamic(&b, "libc.so", NULL);
+    segment(&b, 0, NOTE, 0x200, 0x10200, notes_end - 0x200, 4);
+    segment(&b, 1, LOAD, 0, 0x10000, 0x600, 0x1000);
+    segment(&b, 2, LOAD, 0x600, 0x11600, 0, 0x4000);
+    segment(&b, 3, DYNAMIC, 0x400, 0x10400, 48, 8);
+    const lib_info info = identify(&b);
+    TIDE_CHECK(info.platform == LIB_ANDROID);
+    TIDE_CHECK(info.cpus == LIB_X64);
+    TIDE_CHECK(info.page_size == 4096); // The smallest of its segments' alignments
+    TIDE_CHECK(info.name[0] == '\0');
+}
+
+// Linux's has no such note, whatever it needs: musl's C library is libc.so
+// too, as Android's is.
+TIDE_TEST(cli_libraries_linux_shared_object_has_no_android_note)
+{
+    static const char *const needs[] = {"libc.so.6", "libc.so"};
+    for (int i = 0; i < 2; i++) {
+        bytes b = {0};
+        elf_file(&b, 3, 62, 3);
+        static const unsigned char id[20] = {1, 2, 3};
+        // Another's note of the same type, and one named like Android's of another type
+        size_t notes_end = note(&b, 0x200, "GNU", 1, id, 16, 4);
+        notes_end = note(&b, notes_end, "Android", 4, id, 8, 4);
+        dynamic(&b, needs[i], "libnoise.so");
+        segment(&b, 0, LOAD, 0, 0x10000, 0x600, 0x1000);
+        segment(&b, 1, NOTE, 0x200, 0x10200, notes_end - 0x200, 4);
+        segment(&b, 2, DYNAMIC, 0x400, 0x10400, 64, 8);
+        const lib_info info = identify(&b);
+        TIDE_CHECK(info.platform == LIB_LINUX);
+        TIDE_CHECK(info.cpus == LIB_X64);
+        TIDE_CHECK(info.dynamic);
+        TIDE_CHECK(info.page_size == 4096);
+        TIDE_CHECK(strcmp(info.name, "libnoise.so") == 0);
+    }
+}
+
+// A static library's objects are the same for Linux and Android (the note
+// is in the C runtime's own objects, which a shared library is linked with),
+// so an ELF one is Linux's.
+TIDE_TEST(cli_libraries_archive_of_elf_is_linux)
+{
+    bytes b = {0};
+    put(&b, "!<arch>\n", 8);
+    member(&b, "/", "\0\0\0\0", 4);
+    unsigned char object[64];
+    elf(object, 1, 183); // ET_REL, AArch64
+    member(&b, "noise.o/", object, sizeof object);
+    const lib_info info = identify(&b);
+    TIDE_CHECK(info.platform == LIB_LINUX);
+    TIDE_CHECK(info.cpus == LIB_ARM64);
+    TIDE_CHECK(!info.dynamic);
+}
+
+// A shared library cut short, or whose name never ends, is one tide can't read.
+TIDE_TEST(cli_libraries_broken_shared_object_is_unknown)
+{
+    bytes cut = {0};
+    elf_file(&cut, 3, 183, 3);
+    segment(&cut, 0, LOAD, 0, 0x10000, 0x600, 0x4000); // The other two headers aren't there
+    TIDE_CHECK(identify(&cut).platform == LIB_UNKNOWN);
+
+    bytes endless = {0};
+    elf_file(&endless, 3, 183, 2);
+    dynamic(&endless, "libc.so", "libnoise.so");
+    segment(&endless, 0, LOAD, 0, 0x10000, 0x600, 0x4000);
+    segment(&endless, 1, DYNAMIC, 0x400, 0x10400, 64, 8);
+    memset(endless.data + 0x500 + 9, 'x', 0x200); // Its name runs on past any file's
+    endless.len = 0x700;
+    TIDE_CHECK(identify(&endless).platform == LIB_UNKNOWN);
+
+    bytes nowhere = {0};
+    elf_file(&nowhere, 3, 183, 2);
+    dynamic(&nowhere, "libc.so", "libnoise.so");
+    segment(&nowhere, 0, LOAD, 0, 0x20000, 0x600, 0x4000); // Its strings' address isn't in what it loads
+    segment(&nowhere, 1, DYNAMIC, 0x400, 0x20400, 64, 8);
+    TIDE_CHECK(identify(&nowhere).platform == LIB_UNKNOWN);
+}
+
 TIDE_TEST(cli_libraries_universal_dylib)
 {
     bytes b = {0};

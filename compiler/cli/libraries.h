@@ -15,7 +15,15 @@ typedef enum lib_platform {
     LIB_LINUX,   // ELF
     LIB_MACOS,   // Mach-O, maybe universal
     LIB_WEB,     // WebAssembly objects
+    LIB_ANDROID, // ELF that says it's Android's
 } lib_platform;
+
+// Linux's libraries and Android's are both ELF, for the same CPUs. A shared
+// library says which it is: Android's toolchain puts a note in each one it
+// links (.note.android.ident, from the NDK's crtbegin_so.o: the Android it was
+// built for and the NDK that built it), and so do the others that link for
+// Android (Go's). A static library doesn't: the objects clang makes for the
+// two are the same, so an ELF one is taken for Linux's.
 
 enum {
     LIB_X64 = 1,
@@ -24,10 +32,15 @@ enum {
     LIB_OTHER_CPU = 8,
 };
 
+#define LIB_NAME_MAX 128
+
 typedef struct lib_info {
     lib_platform platform;
     unsigned cpus; // LIB_X64 and the like: a universal macOS library has several
     bool dynamic;  // Loaded when the program starts (.dll, .so, .dylib), rather than linked in
+    // A 64-bit ELF shared library's:
+    uint64_t page_size;      // What its segments are aligned to: it loads where pages are no bigger. 0 if it has none
+    char name[LIB_NAME_MAX]; // Its soname, which what links to it asks for it by; "" for none: its file's name then
 } lib_info;
 
 // Reads up to `n` bytes at `offset`, returning how many it read.
