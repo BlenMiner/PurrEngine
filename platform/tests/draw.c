@@ -8,6 +8,7 @@
 // and that 3D meshes draw through their cameras, nearest in front.
 // `--bench` (or `?bench` on the web) times frames of many shapes instead.
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -335,13 +336,30 @@ static void meshes(void)
 // ---------------------------------------------------------------------------
 // 3D meshes: cameras, depth, instances and textures
 
+// The pixels a unit takes 10 away from mesh_3d_scene's camera, where most of
+// its meshes are: half the screen's height over 10, as a camera seeing 90
+// degrees up and down has it, or fewer on a screen too narrow for the scene
+// at that (a phone's, upright), which is 14.5 units across there.
+static float unit_3d(void)
+{
+    const float by_height = screen.y * 0.5f / 10.0f, by_width = screen.x * 0.5f / 7.25f;
+    return by_height < by_width ? by_height : by_width;
+}
+
+// ...and the field of view that gives it: 90 degrees, or more on such a screen.
+static float field_of_view_3d(void)
+{
+    const float unit = unit_3d();
+    if (unit == screen.y * 0.5f / 10.0f) return 90.0f;
+    return 2.0f * atanf(screen.y * 0.5f / (10.0f * unit)) * 180.0f / TIDE_PI_F;
+}
+
 // Where a 3D point lands in the window, through the camera mesh_3d_scene
-// starts with: at (0, 0, -10) looking along +z, seeing 90 degrees up and
-// down, so that at a distance of d, a unit is half the screen's height over
-// d pixels, across as up and down.
+// starts with: at (0, 0, -10) looking along +z, so that at a distance of d,
+// a unit is 10 of unit_3d over d pixels, across as up and down.
 static tide_float2 seen(const float x, const float y, const float z)
 {
-    const float pixels = screen.y * 0.5f / (z + 10.0f);
+    const float pixels = unit_3d() * 10.0f / (z + 10.0f);
     return tide_f2(screen.x * 0.5f + x * pixels, screen.y * 0.5f - y * pixels);
 }
 
@@ -371,7 +389,7 @@ static void mesh_3d_scene(void)
     const tide_quaternion ahead = tide_identity_q();
     tide_draw_reset(&list);
     tide_draw_clear(&list, background);
-    tide_draw_camera_3d(&list, tide_f3(0, 0, -10), ahead, 90.0f);
+    tide_draw_camera_3d(&list, tide_f3(0, 0, -10), ahead, field_of_view_3d());
     // A clear clears depth too: nothing behind this hides after it
     square_3d(tide_f3(0, 0, -5), ahead, 20.0f, yellow, NULL);
     tide_draw_clear(&list, background);
@@ -402,7 +420,7 @@ static void mesh_3d_scene(void)
 
     // Turned a quarter around y, the camera looks along +x, its right along -z
     const tide_quaternion turned = tide_axisangle_q(tide_f3(0, 1, 0), TIDE_PI_F * 0.5f);
-    tide_draw_camera_3d(&list, tide_f3(0, 0, -10), turned, 90.0f);
+    tide_draw_camera_3d(&list, tide_f3(0, 0, -10), turned, field_of_view_3d());
     square_3d(tide_f3(10, -4, -14), turned, 2.0f, purple, NULL);
 
     // Any projection: an orthographic one, 10 pixels a unit
@@ -416,8 +434,8 @@ static void meshes_3d(void)
     const tide_float2 near_red = seen(0, 6, 0), near_green = seen(-4, 2, 0), textured = seen(4, 2, 0);
     const tide_float2 left = seen(-4, -2, 0), middle = seen(0, -2, 0), right = seen(4, -2, 0), turned = seen(4, -4, 0);
     const tide_float2 big = seen(-4, -4, 0);
-    const float edge = screen.y * 0.5f / 10.0f + 4.0f; // Past a near square's edge, inside a far one's
-    const float quarter = screen.y * 0.5f / 20.0f;     // A quarter of a near square across
+    const float edge = unit_3d() + 4.0f;   // Past a near square's edge, inside a far one's
+    const float quarter = unit_3d() * 0.5f; // A quarter of a near square across
     const check checks[] = {
         {near_red.x, near_red.y, red, "a near 3D mesh in front of a far one drawn after it"},
         {near_red.x + edge, near_red.y, blue, "and the far one around it, smaller for being farther"},
