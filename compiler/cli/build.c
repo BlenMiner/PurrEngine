@@ -1748,8 +1748,6 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     arg_list(&a, flags);
     arg(&a, build_target.builtins);
     const int code = sys_run(a.items, NULL, false);
-    if (code > 0) explain_link(b, a.items);
-    free(a.items);
     free(abi_dir);
     free(platform_lib);
     free(raylib_lib);
@@ -1765,6 +1763,8 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
                             "of the two it's for, so build it as a shared one (.so) for Android\n", path);
         }
     }
+    if (code > 0) explain_link(b, a.items);
+    free(a.items);
     return code == 0;
 }
 
