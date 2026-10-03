@@ -322,6 +322,23 @@ static void hide_pointer(tide_devices *d)
 
 #undef RELEASE
 
+// Whether the pointer in `d` is on the GUI: on a widget or an area, where the
+// last frame drew them. The game's samples and the views read a press before
+// the frame's GUI sees it, so where the pointer is now says whose it is, not
+// where the GUI last saw it: a finger that touches a button is the GUI's from
+// the frame it lands in, and so is a click the mouse made as it came.
+static bool on_gui(const tide_gui *g, const tide_devices *d)
+{
+    const tide_pointer *p = &d->pointer;
+    // A finger that's off the screen is nowhere.
+    if (p->touch && !p->press.held && !p->press.pressed && !p->press.up) return false;
+    const tide_float2 at = tide_f2(p->position.x, g->height - p->position.y);
+    for (uint32_t i = 0; i < g->rect_count; i++) {
+        if (contains(g->rects[i], at)) return true;
+    }
+    return g->rects_full && g->over; // More widgets than fit: as the frame saw it
+}
+
 // Hides what the GUI uses from devices the game or views read. The GUI works
 // out the next frame's from the platform's, so nothing is lost.
 static void hide(const tide_gui *g, tide_devices *d)
@@ -330,7 +347,7 @@ static void hide(const tide_gui *g, tide_devices *d)
         hide_keyboard(d);
         hide_gamepad(d);
     }
-    if (g->over || g->active || g->modal) hide_pointer(d);
+    if (g->active || g->modal || on_gui(g, d)) hide_pointer(d);
     if (g->modal) {
         d->mouse.delta = tide_f2(0.0f, 0.0f);
         d->pointer.delta = tide_f2(0.0f, 0.0f);
@@ -441,6 +458,11 @@ void tide_gui_end(tide_gui *g, tide_draw_list *draw)
     g->hot_next = 0;
     g->over = g->over_next;
     g->over_next = false;
+    memcpy(g->rects, g->rects_next, g->rect_count_next * sizeof g->rects[0]);
+    g->rect_count = g->rect_count_next;
+    g->rect_count_next = 0;
+    g->rects_full = g->rects_full_next;
+    g->rects_full_next = false;
     // A modal that just came on top takes the focus next frame.
     g->grab = g->modal_next != g->modal ? g->modal_next : 0;
     g->modal = g->modal_next;
@@ -536,13 +558,23 @@ static bool live(const tide_gui *g)
     return !under_modal(g) && !grayed(g);
 }
 
+// Remembers where a widget or an area is: the pointer there is the GUI's, for
+// the game and views that read it before the next frame's GUI (see on_gui).
+static void remember_place(tide_gui *g, const tide_rect r)
+{
+    if (g->rect_count_next < TIDE_GUI_MAX_RECTS) g->rects_next[g->rect_count_next++] = r;
+    else g->rects_full_next = true;
+}
+
 // Whether the mouse is on the widget. Where widgets overlap, the one drawn
 // last is on top: it was under the mouse last frame, and hides the others
 // while the mouse stays on it. A disabled widget does too, and keeps clicks on
 // it from the game, but it's never hovered itself.
 static bool hovered(tide_gui *g, const uint32_t id, const tide_rect r)
 {
-    if (under_modal(g) || !contains(r, g->mouse)) return false;
+    if (under_modal(g)) return false;
+    remember_place(g, r);
+    if (!contains(r, g->mouse)) return false;
     g->hot_next = id;
     g->hot_rect_next = r;
     g->over_next = true;
@@ -711,6 +743,7 @@ int tide_gui_begin_area(tide_gui *g, const uint32_t id, const tide_rect rect)
     top(g)->rect = rect;
     top(g)->panel = background;
     top(g)->hot_before = g->hot_next;
+    top(g)->rects_before = g->rect_count_next;
     return before;
 }
 
@@ -729,6 +762,7 @@ int tide_gui_begin_area_at(tide_gui *g, const uint32_t id, const int32_t anchor)
     top(g)->anchor = anchor;
     top(g)->panel = background;
     top(g)->hot_before = g->hot_next;
+    top(g)->rects_before = g->rect_count_next;
     return before;
 }
 
@@ -781,6 +815,11 @@ static void close_area(tide_gui *g, const tide_gui_group *grp)
                 if (c->kind == TIDE_DRAW_LINE) c->b = tide_f2(c->b.x + dx, c->b.y + dy);
             }
         }
+        // Its widgets are remembered where they're drawn, too.
+        for (uint32_t i = grp->rects_before; i < g->rect_count_next; i++) {
+            g->rects_next[i].x += dx;
+            g->rects_next[i].y += dy;
+        }
         r = (tide_rect){at.x, at.y, size.x, size.y};
     }
     if (grp->panel != UINT32_MAX) {
@@ -789,6 +828,7 @@ static void close_area(tide_gui *g, const tide_gui_group *grp)
         c->b = tide_f2(r.width, r.height);
     }
     remember(g, grp->id, size, grp->natural, grp->least);
+    remember_place(g, r);
     if (!contains(r, g->mouse)) return;
     g->over_next = true;
     // Under the mouse, but none of its widgets is: the panel hides what's below it.

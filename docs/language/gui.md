@@ -145,6 +145,8 @@ Widgets follow the pointer: the mouse, or a finger on a touchscreen (see [Input]
 
 Whatever the GUI is using, such as a click on a button, a finger on one, or typing in a field, is hidden from the input's `Sample` and from views' `Devices`. So clicking a button never fires a weapon, and typing a name never moves the player.
 
+The pointer is the GUI's wherever it's on a widget or an area, from the moment it's there: a finger that touches a button never reaches the game, not even for the frame it lands in. The engine goes by where the last frame drew its widgets, so the one thing that gets through is a press on a widget in the very frame it first appears.
+
 ## Widgets of your own
 
 A view can draw widgets itself with `Draw`, or hand the devices to a UI library through [C functions](./c-functions.md). The engine doesn't know those widgets are there, so the view says what they're using:
@@ -187,7 +189,7 @@ view Tools(mut Toolbox box)
 A claim lasts one frame: make it every frame the widget uses the device, as you draw the widget every frame. A view that stops running leaves nothing claimed. A function's claim is the view's that called it.
 
 ::: tip Claim before the press
-A claim hides from the next frame on. So claim the pointer while it's over your widget, as the example does, not once it's pressed: then a click on it never reaches the game. A press with nothing before it, like a finger touching the widget, or a widget that appears under the pointer, reaches the game and the other views for that one frame.
+A claim hides from the next frame on, and unlike the GUI's own widgets, the engine doesn't know where yours are. So claim the pointer while it's over your widget, as the example does, not once it's pressed: then a click on it never reaches the game. A press with nothing before it, like a finger touching the widget, or a widget that appears under the pointer, reaches the game and the other views for that one frame.
 :::
 
 The rest follows from the GUI being drawn on top:

@@ -228,7 +228,191 @@ TIDE_TEST(gui_fingers_press_buttons)
     TIDE_CHECK(touch_frame(NONE, NONE, 0.0f, 0.0f) == 1);
 }
 
+// What a host does before a frame's GUI, with a finger: polls the touchscreen,
+// with up to two events at (x, y) from the top left (TIDE_TOUCHES for none),
+// then samples the game's input. Returns whether the sample has the finger's
+// press.
+static bool finger_sample(const tide_touch_phase first, const tide_touch_phase second, const float x, const float y)
+{
+    tide_touches_poll(&devices.touchscreen);
+    const tide_touch_phase phases[] = {first, second};
+    for (int i = 0; i < 2; i++) {
+        if ((int)phases[i] != TIDE_TOUCHES) tide_touch_event(&devices.touchscreen, phases[i], 1, tide_f2(x, 1080.0f - y));
+    }
+    tide_pointer_poll(&devices, false);
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    tide_devices_consume(&devices);
+    return sampled.pointer.press.pressed || sampled.touchscreen.primaryTouch.press.pressed
+        || sampled.touchscreen.touches.at[0].press.pressed;
+}
+
+// The same with the mouse at (x, y) from the top left: whether the sample has
+// its left button's press.
+static bool mouse_sample(const float x, const float y, const bool held)
+{
+    mouse(x, y, held);
+    tide_pointer_poll(&devices, true);
+    tide_devices sampled = devices;
+    tide_gui_hide(&gui, &sampled);
+    tide_devices_consume(&devices);
+    return sampled.mouse.left.pressed || sampled.pointer.press.pressed;
+}
+
+// Whether views read a press this frame: the pointer's, the primary touch's
+// or the mouse's left button's.
+static bool views_read_a_press(void)
+{
+    const tide_devices *d = &gui.devices;
+    return d->pointer.press.pressed || d->pointer.press.down || d->pointer.press.up
+        || d->touchscreen.primaryTouch.press.pressed || d->touchscreen.primaryTouch.press.down
+        || d->mouse.left.pressed || d->mouse.left.down || d->mouse.left.up;
+}
+
+// ...and then the frame's GUI, two_buttons': which were pressed (bits 0 and 1),
+// and whether views read a press (bit 2).
+static int sampled_frame(void)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    const bool read = views_read_a_press();
+    const bool a = tide_gui_layout_button(&gui, 10, "Play");
+    const bool b = tide_gui_layout_button(&gui, 20, "Quit");
+    end();
+    return (a ? 1 : 0) | (b ? 2 : 0) | (read ? 4 : 0);
+}
+
+TIDE_TEST(gui_a_finger_on_a_button_is_never_the_games)
+{
+    start();
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0); // The buttons are up, and no finger is anywhere
+    // A finger touches Quit. The game samples before the GUI sees the touch,
+    // and still doesn't get it; nor do views.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 20.0f, 47.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(gui.active == 20);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_ENDED, NONE, 20.0f, 47.0f));
+    TIDE_CHECK(sampled_frame() == 2); // Lifted on it: a click, and not the game's
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+
+    // A tap between two frames, too.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, TIDE_TOUCH_ENDED, 20.0f, 20.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 1);
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(sampled_frame() == 0);
+
+    // Away from the buttons, a finger is the game's and the views', from the frame it touches.
+    TIDE_CHECK(finger_sample(TIDE_TOUCH_BEGAN, NONE, 900.0f, 900.0f));
+    TIDE_CHECK(sampled_frame() == 4);
+}
+
+TIDE_TEST(gui_where_the_mouse_is_now_says_whose_click_it_is)
+{
+    start();
+    TIDE_CHECK(!mouse_sample(900.0f, 900.0f, false));
+    TIDE_CHECK(sampled_frame() == 0);
+    // Between two frames, the mouse comes onto Quit and presses: the GUI never
+    // saw it there, and the click is still the GUI's.
+    TIDE_CHECK(!mouse_sample(20.0f, 47.0f, true));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(gui.active == 20);
+    TIDE_CHECK(!mouse_sample(20.0f, 47.0f, false));
+    TIDE_CHECK(sampled_frame() == 2);
+
+    // And it leaves Quit and presses between two frames: the game's and the
+    // views', though the GUI last saw it on the button.
+    TIDE_CHECK(!mouse_sample(20.0f, 47.0f, false));
+    TIDE_CHECK(sampled_frame() == 0);
+    TIDE_CHECK(mouse_sample(900.0f, 900.0f, true));
+    TIDE_CHECK(sampled_frame() == 4);
+}
+
+// A frame with a button in an anchored area, if it's `up`, and a disabled
+// button at a rect. Returns whether views read a press.
+static bool area_frame(const bool up)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    const bool read = views_read_a_press();
+    if (up) {
+        const int area = tide_gui_begin_area_at(&gui, 99, TIDE_ANCHOR_MIDDLE_CENTER);
+        tide_gui_layout_button(&gui, 1, "Play");
+        tide_gui_close(&gui, area);
+    }
+    const int off = tide_gui_begin_disabled(&gui, true);
+    tide_gui_button(&gui, 2, (tide_rect){100.0f, 100.0f, 200.0f, 40.0f}, "Locked");
+    tide_gui_close(&gui, off);
+    end();
+    return read;
+}
+
+TIDE_TEST(gui_a_finger_on_an_area_or_a_disabled_widget_is_never_the_games)
+{
+    start();
+    // The area is in the middle of the screen, 52 tall: its button, and 12 of padding around it.
+    for (int frame = 0; frame < 3; frame++) {
+        finger_sample(NONE, NONE, 0.0f, 0.0f);
+        area_frame(true);
+    }
+    // On the area's padding, which no widget has.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 962.0f, 518.0f));
+    TIDE_CHECK(!area_frame(true));
+    TIDE_CHECK(gui.active == 0);
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_ENDED, NONE, 962.0f, 518.0f));
+    TIDE_CHECK(!area_frame(true));
+    // On a disabled button: it doesn't work, and it's still the GUI's.
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_BEGAN, NONE, 150.0f, 120.0f));
+    TIDE_CHECK(!area_frame(true));
+    TIDE_CHECK(!finger_sample(TIDE_TOUCH_ENDED, NONE, 150.0f, 120.0f));
+    TIDE_CHECK(!area_frame(true));
+
+    // An area that wasn't up last frame takes the finger a frame after it
+    // comes up under it: nothing said it was coming.
+    finger_sample(NONE, NONE, 0.0f, 0.0f);
+    area_frame(false);
+    TIDE_CHECK(finger_sample(TIDE_TOUCH_BEGAN, NONE, 962.0f, 518.0f));
+    TIDE_CHECK(area_frame(true));
+    TIDE_CHECK(!finger_sample(NONE, NONE, 0.0f, 0.0f));
+    TIDE_CHECK(!area_frame(true));
+}
+
 #undef NONE
+
+// A frame of more buttons than a frame remembers the places of, 28 wide, in
+// rows of 64.
+static void many_buttons(void)
+{
+    tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
+    for (uint32_t i = 0; i < TIDE_GUI_MAX_RECTS + 6; i++) {
+        tide_gui_button(&gui, i + 1, (tide_rect){(float)(i % 64) * 30.0f, (float)(i / 64) * 30.0f, 28.0f, 28.0f}, "");
+    }
+    end();
+}
+
+TIDE_TEST(gui_widgets_past_those_remembered_hide_a_frame_late)
+{
+    start();
+    const uint32_t last = TIDE_GUI_MAX_RECTS + 5;
+    const float x = (float)(last % 64) * 30.0f + 10.0f;
+    const float y = (float)(last / 64) * 30.0f + 10.0f;
+    mouse_sample(1900.0f, 1000.0f, false);
+    many_buttons();
+    TIDE_CHECK(gui.rects_full);
+    // A button whose place is remembered takes a click made as the mouse came.
+    TIDE_CHECK(!mouse_sample(40.0f, 10.0f, true));
+    many_buttons();
+    mouse_sample(40.0f, 10.0f, false);
+    many_buttons();
+    // One past those takes it once the GUI saw the mouse on it, as every widget did before.
+    TIDE_CHECK(!mouse_sample(x, y, false));
+    many_buttons();
+    TIDE_CHECK(gui.over && gui.active == 0);
+    TIDE_CHECK(!mouse_sample(x, y, true));
+}
 
 TIDE_TEST(gui_mouse_over_the_gui_is_hidden)
 {

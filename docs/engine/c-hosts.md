@@ -70,7 +70,7 @@ The generated header is the API between the game and its host. Namespaced declar
 **Input**
 
 - `TIDE_HAS_INPUT` is defined when the game has an input, and `tide_input` names its type.
-- `tide_input_sample(devices, local)` runs the input's `Sample` with this machine's devices. Give it a copy of the devices that the GUI's own use is taken out of, so a click on a button isn't the game's too, then mark the real ones read, so a press counts once. `tide_gui_hide` takes out what views claimed in the last frame too (`GUI.ClaimPointer`, `GUI.ClaimKeyboard`), and what was typed, which is only ever a frame's:
+- `tide_input_sample(devices, local)` runs the input's `Sample` with this machine's devices. Give it a copy of the devices that the GUI's own use is taken out of, so a click on a button isn't the game's too, then mark the real ones read, so a press counts once. `tide_gui_hide` takes out what views claimed in the last frame too (`GUI.ClaimPointer`, `GUI.ClaimKeyboard`), and what was typed, which is only ever a frame's. It goes by where the copy's pointer is against where the last frame drew the GUI, so a press on a button is hidden in the sample it lands in; fill the pointer (`tide_pointer_poll`) before it:
 
   ```c
   tide_devices sampled = devices;

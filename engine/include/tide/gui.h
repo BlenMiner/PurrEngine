@@ -73,6 +73,9 @@ typedef struct tide_textref tide_textref;
 #ifndef TIDE_GUI_MAX_SIZES
 #define TIDE_GUI_MAX_SIZES 256 // Containers whose size is remembered; a power of two
 #endif
+#ifndef TIDE_GUI_MAX_RECTS
+#define TIDE_GUI_MAX_RECTS 1024 // Widgets and areas whose place a frame remembers: the pointer there is the GUI's
+#endif
 #ifndef TIDE_GUI_MAX_CLAIMS
 #define TIDE_GUI_MAX_CLAIMS 16 // Views that claim devices in one frame and go on reading them
 #endif
@@ -116,6 +119,7 @@ typedef struct tide_gui_group {
     uint32_t panel;           // An area: its background's command
     tide_rect rect;           // An area at a rect: the rect
     uint32_t hot_before;      // An area: what was under the mouse before its content
+    uint32_t rects_before;    // An area: how many places were remembered before its content
     uint32_t in_modal_before; // The modal it's in, back when it closes
     bool disabled;            // Its widgets are grayed out and don't work: it's in a Disabled block
     bool scope;               // A Disabled block: the container around it, carried on, and handed back when it closes
@@ -191,7 +195,14 @@ typedef struct tide_gui {
     uint32_t edit_len;
     char edit[256];                   // What's typed so far
     bool edit_fresh;                  // Nothing typed yet: the first character replaces the value
-    bool over, over_next;             // The mouse is over the GUI
+    bool over, over_next;             // The mouse was over the GUI as the frame drew it
+    // Where the last frame drew its widgets and areas, and this frame so far.
+    // The game and views read the devices before a frame's GUI does, so the
+    // pointer is the GUI's where it's on one of these now.
+    tide_rect rects[TIDE_GUI_MAX_RECTS];
+    tide_rect rects_next[TIDE_GUI_MAX_RECTS];
+    uint32_t rect_count, rect_count_next;
+    bool rects_full, rects_full_next; // More than fit: past them, `over` says, a frame late
     uint32_t modal, modal_next;       // The modal on top, last frame's and this frame's
     uint32_t in_modal;                // The modal whose content is being drawn
     uint32_t grab;                    // A modal just came on top: its first widget takes the focus
@@ -225,6 +236,13 @@ bool tide_gui_typing(const tide_gui *g);
 // the mouse's buttons and the primary touch while the pointer is over the GUI
 // or pressing a widget, and everything while a modal is up. What views claimed
 // in the last frame is hidden too, and what's typed always: it's a frame's.
+//
+// The pointer is over the GUI where `devices` has it on a widget or an area as
+// the last frame drew them, so a press there is the GUI's from the sample it
+// lands in, before the GUI's own frame sees it: a finger that touches a
+// button, or a click the mouse made as it came. Fill the pointer first
+// (tide_pointer_poll). A widget that first appears under the pointer takes it
+// a frame later.
 void tide_gui_hide(tide_gui *g, tide_devices *devices);
 
 // ---------------------------------------------------------------------------
