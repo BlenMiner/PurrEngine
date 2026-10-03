@@ -573,6 +573,9 @@ static bool benching;
 static int frame(void *user, const float seconds)
 {
     (void)user, (void)seconds;
+    static bool said;
+    if (!said) printf("renderer: %s\n", tide_platform_renderer()); // What a test of one backend looks for
+    said = true;
     screen = tide_platform_screen_size();
     if (benching) return bench();
     meshes();

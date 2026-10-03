@@ -31,6 +31,7 @@ enum {
     GL_DEPTH_BUFFER_BIT = 0x0100,
     GL_COLOR_BUFFER_BIT = 0x4000,
     GL_LEQUAL = 0x0203,
+    GL_ALWAYS = 0x0207,
     GL_SRC_ALPHA = 0x0302,
     GL_ONE_MINUS_SRC_ALPHA = 0x0303,
     GL_CULL_FACE = 0x0B44,
@@ -70,7 +71,10 @@ enum {
     GL_DEPTH_ATTACHMENT = 0x8D00,
     GL_FRAMEBUFFER = 0x8D40,
     GL_RENDERBUFFER = 0x8D41,
+    GL_UNIFORM_BUFFER = 0x8A11,
 };
+
+#define GL_INVALID_INDEX 0xFFFFFFFFu // A uniform block the program hasn't got
 
 // Every function: V for those that return nothing, R for the others, each
 // with its name after `gl`, its parameters, and those as arguments.
@@ -78,6 +82,7 @@ enum {
     V(ActiveTexture, (GLenum texture), (texture))                                                                      \
     V(AttachShader, (GLuint program, GLuint shader), (program, shader))                                                \
     V(BindBuffer, (GLenum target, GLuint buffer), (target, buffer))                                                    \
+    V(BindBufferBase, (GLenum target, GLuint index, GLuint buffer), (target, index, buffer))                           \
     V(BindFramebuffer, (GLenum target, GLuint framebuffer), (target, framebuffer))                                     \
     V(BindRenderbuffer, (GLenum target, GLuint renderbuffer), (target, renderbuffer))                                  \
     V(BindTexture, (GLenum target, GLuint texture), (target, texture))                                                 \
@@ -118,6 +123,7 @@ enum {
     V(GetShaderInfoLog, (GLuint shader, GLsizei capacity, GLsizei *length, GLchar *log),                               \
       (shader, capacity, length, log))                                                                                 \
     V(GetShaderiv, (GLuint shader, GLenum name, GLint *out), (shader, name, out))                                      \
+    R(GLuint, GetUniformBlockIndex, (GLuint program, const GLchar *name), (program, name))                             \
     R(GLint, GetUniformLocation, (GLuint program, const GLchar *name), (program, name))                                \
     V(LinkProgram, (GLuint program), (program))                                                                        \
     V(PixelStorei, (GLenum name, GLint value), (name, value))                                                          \
@@ -138,9 +144,7 @@ enum {
        const void *pixels),                                                                                            \
       (target, level, x, y, width, height, format, type, pixels))                                                      \
     V(Uniform1i, (GLint location, GLint value), (location, value))                                                     \
-    V(Uniform2f, (GLint location, GLfloat x, GLfloat y), (location, x, y))                                             \
-    V(UniformMatrix4fv, (GLint location, GLsizei count, GLboolean transpose, const GLfloat *values),                   \
-      (location, count, transpose, values))                                                                            \
+    V(UniformBlockBinding, (GLuint program, GLuint block, GLuint binding), (program, block, binding))                  \
     V(UseProgram, (GLuint program), (program))                                                                         \
     V(VertexAttribDivisor, (GLuint index, GLuint divisor), (index, divisor))                                           \
     V(VertexAttribPointer,                                                                                             \

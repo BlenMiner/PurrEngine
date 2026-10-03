@@ -93,6 +93,11 @@ void tide_platform_draw_overlay(const char *text);
 // Frames per second, averaged over the last frames.
 int tide_platform_fps(void);
 
+// What the open window draws with: "WebGPU", "WebGL 2", "OpenGL 3.3" or
+// "OpenGL ES 3". The web draws with WebGPU where the browser has it on a GPU,
+// and with WebGL 2 where it doesn't.
+const char *tide_platform_renderer(void);
+
 // The window's size in pixels, which tide_gui_begin takes.
 tide_float2 tide_platform_screen_size(void);
 

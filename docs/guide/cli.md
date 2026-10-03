@@ -24,14 +24,16 @@ tide <command> [folder] [options]
 | Option | What it does |
 |---|---|
 | `--release` | Optimized, the way players get it |
-| `--web` | A web page (WebGL 2), built with clang's WebAssembly target |
+| `--web` | A web page (WebGPU, or WebGL 2 where the browser has none), built with clang's WebAssembly target |
 | `--android` | An Android app, for phones and the emulator (see [Android](#android)) |
 | `--title <title>` | The window's title, over the game's `title` setting (default: that, or the folder's name) |
-| `--stats` | Shows the frame rate, the ping, the bandwidth (what goes over the network each second, up and down), the tick, the entity count and the threads ticks run on |
+| `--stats` | Shows the frame rate, the ping, the bandwidth (what goes over the network each second, up and down), the tick, the entity count, the threads ticks run on and what draws (WebGPU, WebGL 2 or OpenGL) |
 | `-o <path>` | `build` only: where the program goes |
 | `--no-open` | `run --web` only: serves the page without opening a browser |
 
 `tide build --release --web` makes one self-contained `.html` file with the game inside. It opens straight from disk, and can be put online as it is.
+
+A web page draws with WebGPU where the browser has it on a GPU, and with WebGL 2 where it doesn't; games draw the same with either. Adding `?backend=webgl` (or `?backend=webgpu`) to the page's address picks one, for example to check a problem a player reports with the other.
 
 ### Threads on the web
 

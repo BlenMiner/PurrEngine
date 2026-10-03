@@ -2,12 +2,16 @@
 // wasi-libc (cmake/wasi-toolchain.cmake) in a page, and gives it:
 //
 // - what platform/web/tide_web.h declares: the canvas, input and the frame loop;
-// - the OpenGL ES 3 functions its renderer calls (platform/src/gl.h), on WebGL 2;
+// - what its renderer draws with (platform/src/gpu.h): WebGPU where the browser
+//   has it on a GPU, or else the OpenGL ES 3 functions it calls
+//   (platform/src/gl.h), on WebGL 2;
 // - the few WASI functions wasi-libc needs: output, the clock, arguments, exit.
 //
 // The page defines `var Tide = { canvas, print, printErr, arguments, onExit,
-// onAbort, checkGL }` (all optional) before this script, and TIDE_PROGRAM holds
-// the program as base64 (cmake/web_page.mjs, or the tide command).
+// onAbort, checkGL, backend }` (all optional) before this script, and
+// TIDE_PROGRAM holds the program as base64 (cmake/web_page.mjs, or the tide
+// command). `backend` is 'webgpu' or 'webgl', to draw with that one only; so
+// is `backend=` in the page's address.
 //
 // The lines between the `tide run` markers below are for hot reloading, in the
 // page `tide run --web` serves; the pages made to ship leave them out.
@@ -21,7 +25,10 @@
 
     let memory = null;
     let exports = null;
-    let gl = null;
+    let gl = null;        // The canvas's WebGL 2 context, when the program draws with it...
+    let device = null;    // ...or the WebGPU device it draws with instead (see WebGPU, below)
+    let gpuFormat = null; // ...and what the canvas's pixels are then
+    const wantedBackend = config.backend || new URLSearchParams(location.search).get('backend') || '';
 
     const u8 = () => new Uint8Array(memory.buffer);
     const i32 = () => new Int32Array(memory.buffer);
@@ -399,6 +406,18 @@
             size.height = height;
             size.fill = !!resizable;
             fit();
+            // WebGPU where the page found a device (below), else WebGL 2. A
+            // canvas only ever has the one it first gave.
+            if (device) {
+                windowTarget.context = windowTarget.context || canvas.getContext('webgpu');
+                if (windowTarget.context) {
+                    windowTarget.context.configure({ device, format: gpuFormat, alphaMode: 'opaque' });
+                    if (!plainGroup) gpuStart();
+                    return 2;
+                }
+                device = null;
+            }
+            if (wantedBackend === 'webgpu') return 0; // Asked for, and not to be had
             gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: true, stencil: false });
             return gl ? 1 : 0;
         },
@@ -840,6 +859,7 @@
         glActiveTexture: t => gl.activeTexture(t),
         glAttachShader: (p, s) => gl.attachShader(get('program', p), get('shader', s)),
         glBindBuffer: (target, b) => gl.bindBuffer(target, get('buffer', b)),
+        glBindBufferBase: (target, index, b) => gl.bindBufferBase(target, index, get('buffer', b)),
         glBindFramebuffer: (target, f) => gl.bindFramebuffer(target, get('framebuffer', f)),
         glBindRenderbuffer: (target, r) => gl.bindRenderbuffer(target, get('renderbuffer', r)),
         glBindTexture: (target, t) => gl.bindTexture(target, get('texture', t)),
@@ -883,6 +903,7 @@
         glGetProgramiv: (p, pname, ptr) => writeParameter(gl.getProgramParameter(get('program', p), pname), ptr),
         glGetShaderInfoLog: (s, max, lengthPtr, ptr) => writeLog(gl.getShaderInfoLog(get('shader', s)), max, lengthPtr, ptr),
         glGetShaderiv: (s, pname, ptr) => writeParameter(gl.getShaderParameter(get('shader', s), pname), ptr),
+        glGetUniformBlockIndex: (p, name) => gl.getUniformBlockIndex(get('program', p), string(name)),
         glGetUniformLocation: (p, name) => uniformId(p, string(name)),
         glLinkProgram: p => gl.linkProgram(get('program', p)),
         glPixelStorei: (pname, param) => gl.pixelStorei(pname, param),
@@ -915,8 +936,7 @@
             gl.texSubImage2D(target, level, x, y, w, h, format, type, array, offset);
         },
         glUniform1i: (l, x) => gl.uniform1i(get('uniform', l), x),
-        glUniform2f: (l, x, y) => gl.uniform2f(get('uniform', l), x, y),
-        glUniformMatrix4fv: (l, n, transpose, ptr) => gl.uniformMatrix4fv(get('uniform', l), !!transpose, f32(), ptr >> 2, n * 16),
+        glUniformBlockBinding: (p, block, binding) => gl.uniformBlockBinding(get('program', p), block, binding),
         glUseProgram: p => gl.useProgram(get('program', p)),
         glVertexAttribDivisor: (i, divisor) => gl.vertexAttribDivisor(i, divisor),
         glVertexAttribPointer: (i, size, type, normalized, stride, offset) =>
@@ -939,6 +959,278 @@
             };
         }
     }
+
+    // -----------------------------------------------------------------------
+    // WebGPU: what the program draws with where the browser has it on a GPU,
+    // instead of WebGL 2 above. These are the functions of the platform
+    // layer's GPU interface (platform/src/gpu.h), which platform/web/gpu_web.c
+    // hands it. Buffers, textures, pipelines and targets are numbers to the
+    // program, each kind with a table from number to object.
+    //
+    // The page asks for the device before the program starts: asking takes a
+    // while, and the program can't wait for an answer. `Tide.backend`, or
+    // `backend=` in the page's address, picks what draws: 'webgl', or
+    // 'webgpu', which also takes the browser's software device.
+
+    const gpuTables = { buffer: [null], texture: [null], pipeline: [null], target: [null] };
+    const gpuFree = { buffer: [], texture: [], pipeline: [], target: [] };
+    function gpuAdd(kind, object) {
+        const id = gpuFree[kind].length ? gpuFree[kind].pop() : gpuTables[kind].length;
+        gpuTables[kind][id] = object;
+        return id;
+    }
+    function gpuRemove(kind, id) {
+        gpuTables[kind][id] = null;
+        gpuFree[kind].push(id);
+    }
+
+    async function findDevice() {
+        if (wantedBackend === 'webgl' || !navigator.gpu) return;
+        try {
+            const adapter = await navigator.gpu.requestAdapter();
+            if (!adapter) return;
+            // The browser's software device is slower than WebGL on a GPU
+            const software = adapter.info && 'isFallbackAdapter' in adapter.info ? adapter.info.isFallbackAdapter
+                : adapter.isFallbackAdapter;
+            if (software && wantedBackend !== 'webgpu') return;
+            const found = await adapter.requestDevice();
+            // A mistake in how the program uses it: test pages stop at one, as for GL's
+            found.onuncapturederror = event => {
+                if (config.checkGL) fail(new Error('WebGPU: ' + event.error.message));
+                else printErr('tide: WebGPU: ' + event.error.message);
+            };
+            found.lost.then(info => {
+                if (info.reason !== 'destroyed') printErr('tide: the GPU went away: ' + info.message);
+            });
+            gpuFormat = navigator.gpu.getPreferredCanvasFormat();
+            device = found;
+        } catch (error) {
+            printErr('tide: no WebGPU: ' + error);
+        }
+    }
+    const deviceAsked = findDevice();
+
+    // Whether the device takes bytes straight from memory shared with workers,
+    // which the program's is when it runs on threads. Copied out first if not.
+    let sharedWrites = null;
+    function memoryBytes(ptr, size) {
+        const all = u8();
+        if (!(all.buffer instanceof ArrayBuffer)) {
+            if (sharedWrites === null) {
+                const probe = device.createBuffer({ size: 4, usage: GPUBufferUsage.COPY_DST });
+                try {
+                    device.queue.writeBuffer(probe, 0, all, 0, 4);
+                    sharedWrites = true;
+                } catch {
+                    sharedWrites = false;
+                }
+                probe.destroy();
+            }
+            if (!sharedWrites) return [all.slice(ptr, ptr + size), 0];
+        }
+        return [all, ptr];
+    }
+
+    // What every pipeline is bound with: its uniforms, a slot of the uniform
+    // buffer, and for those that sample one, a texture and how it's sampled.
+    const UNIFORM_SLOT = 256; // The most a pipeline's uniforms take, and how far apart slots have to be
+    let plainGroup = null, texturedGroup = null, plainLayout = null, texturedLayout = null, samplers = null;
+    function gpuStart() {
+        const uniforms = { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+            buffer: { type: 'uniform', hasDynamicOffset: true } };
+        plainGroup = device.createBindGroupLayout({ entries: [uniforms] });
+        texturedGroup = device.createBindGroupLayout({ entries: [uniforms,
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+            { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } }] });
+        plainLayout = device.createPipelineLayout({ bindGroupLayouts: [plainGroup] });
+        texturedLayout = device.createPipelineLayout({ bindGroupLayouts: [texturedGroup] });
+        samplers = ['nearest', 'linear'].map(filter => device.createSampler({ magFilter: filter, minFilter: filter }));
+    }
+
+    // A pass's uniforms go into the uniform buffer one slot after the other,
+    // each written before the pass is handed over. A pass with more of them
+    // than it holds gets a bigger one, for its draws from there on.
+    let uniformBuffer = null, uniformSlots = 0, uniformsUsed = 0, uniformsAt = 0;
+    const retired = [];           // Uniform buffers a pass outgrew, which it still draws from
+    const bindGroups = new Map(); // By texture and how it's sampled, or 'plain': for the uniform buffer as it is
+    function growUniforms() {
+        if (uniformBuffer) retired.push(uniformBuffer);
+        uniformSlots = uniformSlots ? uniformSlots * 2 : 64;
+        uniformBuffer = device.createBuffer({ size: uniformSlots * UNIFORM_SLOT,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        uniformsUsed = 0;
+        bindGroups.clear();
+    }
+    function bindGroup(textured, texture, blended) {
+        const key = textured ? texture + ':' + blended : 'plain';
+        let group = bindGroups.get(key);
+        if (!group) {
+            const entries = [{ binding: 0, resource: { buffer: uniformBuffer, size: UNIFORM_SLOT } }];
+            if (textured) {
+                entries.push({ binding: 1, resource: gpuTables.texture[texture].view });
+                entries.push({ binding: 2, resource: samplers[blended] });
+            }
+            group = device.createBindGroup({ layout: textured ? texturedGroup : plainGroup, entries });
+            bindGroups.set(key, group);
+        }
+        return group;
+    }
+
+    // A target: the canvas, or pixels of its own to read back, each with depth.
+    const depthFor = (width, height) => device.createTexture({ size: [width, height], format: 'depth24plus',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    const windowTarget = { context: null, depth: null, width: 0, height: 0 };
+    function followCanvas() {
+        if (windowTarget.width !== canvas.width || windowTarget.height !== canvas.height) {
+            if (windowTarget.depth) windowTarget.depth.destroy();
+            windowTarget.depth = depthFor(canvas.width, canvas.height);
+            windowTarget.width = canvas.width;
+            windowTarget.height = canvas.height;
+        }
+        return windowTarget;
+    }
+    let reader = null; // A 2D canvas, which a target is drawn into to read it back without waiting
+
+    const alphaBlend = { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' };
+    const attributeFormats = ['float32', 'float32x2', 'float32x3', 'float32x4', 'unorm8x4'];
+    let building = null; // The pipeline being described
+    let pass = null, commands = null;
+    const drawing = { pipeline: null, texture: 0, blended: 0, bound: false }; // What the next draw draws with
+
+    function beforeDraw() {
+        if (drawing.bound) return;
+        const p = drawing.pipeline;
+        pass.setBindGroup(0, bindGroup(p.textured, drawing.texture, drawing.blended), [uniformsAt]);
+        drawing.bound = true;
+    }
+
+    Object.assign(platform, {
+        gpu_buffer(kind, size, ptr) {
+            const buffer = device.createBuffer({ size,
+                usage: (kind === 0 ? GPUBufferUsage.VERTEX : GPUBufferUsage.INDEX) | GPUBufferUsage.COPY_DST });
+            if (ptr) device.queue.writeBuffer(buffer, 0, ...memoryBytes(ptr, size), size);
+            return gpuAdd('buffer', buffer);
+        },
+        gpu_buffer_write: (id, offset, ptr, size) => device.queue.writeBuffer(gpuTables.buffer[id], offset, ...memoryBytes(ptr, size), size),
+        gpu_buffer_free(id) {
+            gpuTables.buffer[id].destroy();
+            gpuRemove('buffer', id);
+        },
+        gpu_texture(format, width, height, ptr) {
+            const texture = device.createTexture({ size: [width, height], format: format === 0 ? 'rgba8unorm' : 'r8unorm',
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+            const id = gpuAdd('texture', { texture, view: texture.createView(), width, height, row: width * (format === 0 ? 4 : 1) });
+            if (ptr) platform.gpu_texture_write(id, ptr);
+            return id;
+        },
+        gpu_texture_write(id, ptr) {
+            const t = gpuTables.texture[id];
+            const [data, offset] = memoryBytes(ptr, t.row * t.height);
+            device.queue.writeTexture({ texture: t.texture }, data, { offset, bytesPerRow: t.row, rowsPerImage: t.height },
+                [t.width, t.height]);
+        },
+        gpu_texture_free(id) {
+            gpuTables.texture[id].texture.destroy();
+            gpuRemove('texture', id);
+            bindGroups.delete(id + ':0');
+            bindGroups.delete(id + ':1');
+        },
+        gpu_pipeline_begin(namePtr, codePtr, uniformSize, texture, blend, depth) {
+            building = { name: string(namePtr), code: string(codePtr), texture: !!texture, blend, depth, slots: [], attributes: [] };
+        },
+        gpu_pipeline_slot: (stride, perInstance) => { building.slots.push({ stride, perInstance: !!perInstance }); },
+        gpu_pipeline_attribute: (slot, format, offset) => { building.attributes.push({ slot, format, offset }); },
+        gpu_pipeline_end() {
+            const b = building;
+            building = null;
+            const module = device.createShaderModule({ label: b.name, code: b.code });
+            const buffers = b.slots.map((slot, index) => ({
+                arrayStride: slot.stride,
+                stepMode: slot.perInstance ? 'instance' : 'vertex',
+                attributes: b.attributes.map((a, location) => ({ shaderLocation: location, offset: a.offset,
+                    format: attributeFormats[a.format], slot: a.slot })).filter(a => a.slot === index)
+                    .map(({ shaderLocation, offset, format }) => ({ shaderLocation, offset, format })),
+            }));
+            const pipeline = device.createRenderPipeline({
+                label: b.name,
+                layout: b.texture ? texturedLayout : plainLayout,
+                vertex: { module, entryPoint: 'vertex', buffers },
+                fragment: { module, entryPoint: 'fragment', targets: [{ format: gpuFormat,
+                    blend: b.blend === 0 ? { color: alphaBlend, alpha: alphaBlend } : undefined }] },
+                primitive: { topology: 'triangle-list', cullMode: 'none' }, // Either side of a triangle draws
+                depthStencil: { format: 'depth24plus', depthWriteEnabled: b.depth !== 0,
+                    depthCompare: b.depth === 1 ? 'less-equal' : 'always' },
+            });
+            return gpuAdd('pipeline', { pipeline, textured: b.texture });
+        },
+        gpu_target(width, height) {
+            const offscreen = new OffscreenCanvas(width, height);
+            const context = offscreen.getContext('webgpu');
+            context.configure({ device, format: gpuFormat, alphaMode: 'opaque' });
+            return gpuAdd('target', { canvas: offscreen, context, depth: depthFor(width, height), width, height });
+        },
+        gpu_target_free(id) {
+            gpuTables.target[id].depth.destroy();
+            gpuRemove('target', id);
+        },
+        gpu_target_read(id, ptr) {
+            const t = gpuTables.target[id];
+            if (!reader) reader = new OffscreenCanvas(t.width, t.height).getContext('2d', { willReadFrequently: true });
+            if (reader.canvas.width !== t.width) reader.canvas.width = t.width;
+            if (reader.canvas.height !== t.height) reader.canvas.height = t.height;
+            reader.globalCompositeOperation = 'copy';
+            reader.drawImage(t.canvas, 0, 0);
+            u8().set(reader.getImageData(0, 0, t.width, t.height).data, ptr);
+        },
+        gpu_begin(id, clear) {
+            const t = id ? gpuTables.target[id] : followCanvas();
+            if (!uniformBuffer) growUniforms();
+            uniformsUsed = 0;
+            commands = device.createCommandEncoder();
+            pass = commands.beginRenderPass({
+                colorAttachments: [{ view: t.context.getCurrentTexture().createView(), loadOp: clear ? 'clear' : 'load',
+                    storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+                depthStencilAttachment: { view: t.depth.createView(), depthLoadOp: clear ? 'clear' : 'load',
+                    depthStoreOp: 'store', depthClearValue: 1 },
+            });
+            drawing.pipeline = null;
+            drawing.bound = false;
+        },
+        gpu_end() {
+            pass.end();
+            device.queue.submit([commands.finish()]);
+            pass = commands = null;
+            for (const buffer of retired.splice(0)) buffer.destroy();
+        },
+        gpu_scissor: (x, y, width, height) => pass.setScissorRect(x, y, width, height),
+        gpu_use(id) {
+            drawing.pipeline = gpuTables.pipeline[id];
+            drawing.bound = false;
+            pass.setPipeline(drawing.pipeline.pipeline);
+        },
+        gpu_uniforms(ptr, size) {
+            if (uniformsUsed === uniformSlots) growUniforms();
+            uniformsAt = uniformsUsed * UNIFORM_SLOT;
+            device.queue.writeBuffer(uniformBuffer, uniformsAt, ...memoryBytes(ptr, size), size);
+            uniformsUsed++;
+            drawing.bound = false;
+        },
+        gpu_sample(id, blended) {
+            drawing.texture = id;
+            drawing.blended = blended ? 1 : 0;
+            drawing.bound = false;
+        },
+        gpu_vertices: (slot, id, offset) => pass.setVertexBuffer(slot, gpuTables.buffer[id], offset),
+        gpu_indices: (id, wide) => pass.setIndexBuffer(gpuTables.buffer[id], wide ? 'uint32' : 'uint16'),
+        gpu_draw(first, count, instances) {
+            beforeDraw();
+            pass.draw(count, instances, first, 0);
+        },
+        gpu_draw_indexed(count, instances) {
+            beforeDraw();
+            pass.drawIndexed(count, instances, 0, 0, 0);
+        },
+    });
 
     // A function the program imports but this file lacks fails when called,
     // with its name, rather than stopping the page from loading.
@@ -1161,6 +1453,9 @@
         }
     }
 
+    // The program starts once the page knows what it draws with.
+    await deviceAsked;
+
     // <tide run>
     // Hot reloading: tide run --web serves the page, and says which build is
     // the newest. Each new one starts in the running one's place, carrying
@@ -1184,6 +1479,18 @@
         uniformIds.clear();
     }
 
+    // ...and what it made in WebGPU.
+    function forgetGPU() {
+        for (const buffer of gpuTables.buffer) if (buffer) buffer.destroy();
+        for (const t of gpuTables.texture) if (t) t.texture.destroy();
+        for (const t of gpuTables.target) if (t) t.depth.destroy();
+        for (const kind in gpuTables) {
+            gpuTables[kind] = [null];
+            gpuFree[kind] = [];
+        }
+        bindGroups.clear();
+    }
+
     // Starts `bytes` in the running program's place: fresh, or going on from
     // where it is.
     async function replace(bytes, fresh) {
@@ -1198,6 +1505,7 @@
             }
         }
         if (gl) forgetGL();
+        if (device) forgetGPU();
         closeRoom(); // The new build plays on alone, like any web game for now
         stopped = false;
         begin(program);

@@ -10,7 +10,8 @@
 #include "tide/page.h"
 #include "tide/time.h"
 #include "font.h"
-#include "gl.h"
+#include "gpu.h"
+#include "shaders.h"
 #include "window.h"
 
 #ifdef __wasm__
@@ -51,6 +52,9 @@ static bool due_asked;     // ...as the frame function asked (tide_platform_next
 static int screen_width = 1, screen_height = 1;
 static int pixel_width = 1, pixel_height = 1;
 
+// What draws in the window (see gpu.h), which it says once it's open.
+static const tide_gpu *gpu;
+
 // The last frames' lengths, for tide_platform_fps.
 static float frame_seconds[32];
 static unsigned frames_counted;
@@ -70,6 +74,7 @@ static void follow_window(void)
 void tide_platform_open(const tide_window_desc *desc)
 {
     if (!tide_window_open(desc)) exit(1); // It said why
+    gpu = tide_window_gpu();
     opened = tide_time_now_ns();
     follow_window();
 #ifdef __wasm__
@@ -489,144 +494,35 @@ static void add_text(const char *text, const tide_float2 at, const float size, c
     }
 }
 
-// OpenGL ES 3 on the web and Android, OpenGL 3.3 on desktop.
-#if defined(__wasm__) || defined(__ANDROID__)
-#define GLSL_VERSION "#version 300 es\nprecision highp float;\n"
-#else
-#define GLSL_VERSION "#version 330\n"
-#endif
-
-// Each instance's quad covers its shape in window pixels, which the camera
-// already applied, and `screen` takes to the target.
-static const char shape_vertex[] = GLSL_VERSION
-    "layout(location = 0) in vec2 corner;\n" // A corner of the quad, 0 to 1
-    "layout(location = 1) in vec4 shape;\n"  // a, then b
-    "layout(location = 2) in vec4 color;\n"
-    "layout(location = 3) in float kind;\n"
-    "uniform mat4 screen;\n"
-    "out vec2 local;\n"  // Pixels from its middle; for a line, along and across it
-    "out vec2 extent;\n" // Half its size in pixels
-    "out vec4 tint;\n"
-    "out float form;\n"
-    "void main() {\n"
-    "    vec2 c = corner * 2.0 - 1.0;\n"
-    "    vec2 p;\n"
-    "    if (kind > 3.5) {\n" // A line: a pixel wide, reaching half a pixel past its ends
-    "        vec2 d = shape.zw - shape.xy;\n"
-    "        float len = length(d);\n"
-    "        vec2 along = len > 0.0 ? d / len : vec2(1.0, 0.0);\n"
-    "        extent = vec2(len * 0.5 + 0.5, 0.5);\n"
-    "        local = c * extent;\n"
-    "        p = (shape.xy + shape.zw) * 0.5 + along * local.x + vec2(-along.y, along.x) * local.y;\n"
-    "    } else {\n"
-    "        extent = abs(shape.zw);\n"
-    "        local = c * (extent + (kind > 1.5 ? 1.0 : 0.0));\n" // Room for a circle's smooth edge
-    "        p = shape.xy + local;\n"
-    "    }\n"
-    "    tint = color;\n"
-    "    form = kind;\n"
-    "    gl_Position = screen * vec4(p, 0.0, 1.0);\n"
-    "}\n";
-
-static const char shape_fragment[] = GLSL_VERSION
-    "in vec2 local;\n"
-    "in vec2 extent;\n"
-    "in vec4 tint;\n"
-    "in float form;\n"
-    "out vec4 pixel;\n"
-    "void main() {\n"
-    "    float cover = 1.0;\n"
-    "    if (form > 0.5 && form < 1.5) {\n" // A rect's outline: the pixel inside its edge
-    "        if (all(lessThan(abs(local), extent - 1.0))) discard;\n"
-    "    } else if (form > 1.5 && form < 3.5) {\n" // Circles, with a smooth edge
-    "        float d = length(local);\n"
-    "        cover = clamp(extent.x - d + 0.5, 0.0, 1.0);\n"
-    "        if (form > 2.5) cover *= clamp(d - extent.x + 1.5, 0.0, 1.0);\n" // An outline: the pixel inside it
-    "        if (cover <= 0.0) discard;\n"
-    "    }\n"
-    "    pixel = vec4(tint.rgb, tint.a * cover);\n"
-    "}\n";
-
-enum { SHAPE_CORNER, SHAPE_SHAPE, SHAPE_COLOR, SHAPE_KIND }; // Its attributes' locations
-
+// What the renderer keeps on the GPU (see gpu.h): its pipelines, whose
+// shaders are in shaders.h, and the buffers and textures a list's steps draw
+// from, made the first time they're needed.
 static struct {
-    GLuint program, vao, corners, instances;
-    uint32_t capacity; // Shapes the instance buffer holds
-    GLint screen;
-} shape_gpu;
+    tide_gpu_id shapes, meshes, text, meshes_3d, clear; // Pipelines
+    tide_gpu_id corners;                                // The shapes' quad
+    tide_gpu_id shape_instances;
+    uint32_t shape_capacity; // Shapes the instance buffer holds
+    tide_gpu_id mesh_vertices;
+    uint32_t mesh_capacity; // Vertices the buffer holds
+    tide_gpu_id matrices;
+    uint32_t matrix_capacity; // Transforms the 3D meshes' instance buffer holds
+    tide_gpu_id white;        // A white pixel, which a mesh with no texture samples
+    tide_gpu_id atlas;        // The font atlas, as of `atlas_version`
+    int atlas_width, atlas_height;
+    uint32_t atlas_version;
+    tide_gpu_id target; // What tide_platform_read_pixels draws into, kept while the window keeps its size
+    int target_width, target_height;
+    uint8_t *target_pixels; // ...read back: RGBA, rows from the top
+} gpu_state;
 
-// A mesh's pixels are its corners' colors, blended across each triangle,
-// times its texture's (a white pixel, for a mesh with none).
-static const char mesh_vertex_shader[] = GLSL_VERSION
-    "layout(location = 0) in vec2 position;\n" // In window pixels
-    "layout(location = 1) in vec2 uv;\n"
-    "layout(location = 2) in vec4 color;\n"
-    "uniform mat4 screen;\n"
-    "out vec2 at;\n"
-    "out vec4 tint;\n"
-    "void main() {\n"
-    "    at = uv;\n"
-    "    tint = color;\n"
-    "    gl_Position = screen * vec4(position, 0.0, 1.0);\n"
-    "}\n";
-
-static const char mesh_fragment_shader[] = GLSL_VERSION
-    "in vec2 at;\n"
-    "in vec4 tint;\n"
-    "uniform sampler2D pixels;\n"
-    "out vec4 pixel;\n"
-    "void main() {\n"
-    "    pixel = texture(pixels, at) * tint;\n"
-    "}\n";
-
-// Text's pixels are its color, as much as the font atlas says its glyph
-// covers each. Its corners say where in the atlas's pixels, so the atlas can
-// grow under them.
-static const char text_fragment_shader[] = GLSL_VERSION
-    "in vec2 at;\n"
-    "in vec4 tint;\n"
-    "uniform sampler2D pixels;\n"
-    "uniform vec2 texel;\n" // 1 over the atlas's size
-    "out vec4 pixel;\n"
-    "void main() {\n"
-    "    pixel = vec4(tint.rgb, tint.a * texture(pixels, at * texel).r);\n"
-    "}\n";
-
-enum { MESH_POSITION, MESH_UV, MESH_COLOR }; // Its attributes' locations, and text's
-
-static struct {
-    GLuint program, vao, vertices;
-    uint32_t capacity; // Vertices the buffer holds
-    GLint screen, pixels;
-} mesh_gpu;
-
-static struct {
-    GLuint program, atlas;
-    GLint screen, pixels, texel;
-    int width, height; // The atlas's on the GPU, and its version there
-    uint32_t version;
-} text_gpu;
-
-// A 3D mesh's corners go through its instance's transform and the camera,
-// with depth; its pixels are as a mesh's.
-static const char mesh_3d_vertex_shader[] = GLSL_VERSION
-    "layout(location = 0) in vec3 position;\n"
-    "layout(location = 1) in vec2 uv;\n"
-    "layout(location = 2) in vec4 color;\n"
-    "layout(location = 3) in vec4 model0;\n" // Its instance's transform, column by column
-    "layout(location = 4) in vec4 model1;\n"
-    "layout(location = 5) in vec4 model2;\n"
-    "layout(location = 6) in vec4 model3;\n"
-    "uniform mat4 camera;\n" // From the world to clip space
-    "out vec2 at;\n"
-    "out vec4 tint;\n"
-    "void main() {\n"
-    "    at = uv;\n"
-    "    tint = color;\n"
-    "    gl_Position = camera * (mat4(model0, model1, model2, model3) * vec4(position, 1.0));\n"
-    "}\n";
-
-enum { MESH_3D_POSITION, MESH_3D_UV, MESH_3D_COLOR, MESH_3D_MODEL }; // Its attributes' locations: the model's four
+// The shapes', meshes' and text's uniforms, as their shaders have them: from
+// the target's logical pixels (from its top left, y down) to clip space, as
+// OpenGL's matrices go, column by column, and for text, 1 over the atlas's size.
+typedef struct screen_uniforms {
+    float screen[16];
+    float texel[2];
+    float unused[2];
+} screen_uniforms;
 
 // A 3D mesh's corner on the GPU. A mesh goes there as its corners, each
 // once, and its triangles as indices into them, uploaded when a list first
@@ -637,23 +533,17 @@ typedef struct mesh_3d_vertex {
     uint8_t color[4]; // RGBA
 } mesh_3d_vertex;
 
-static struct {
-    GLuint program, vao, instances;
-    uint32_t capacity; // Transforms the instance buffer holds
-    GLint camera, pixels;
-} mesh_3d_gpu;
-
 // The GPU's copy of a list's 3D mesh, kept in the place the list keeps it.
 typedef struct gpu_mesh {
     uint64_t id, other, version; // Which it is (see tide_draw_mesh_data)
     uint32_t space;
     uint32_t epoch;
-    GLuint vertices, indices; // Its buffers
-    uint32_t vertex_capacity; // Corners `vertices` has room for
-    uint32_t index_capacity;  // Bytes `indices` has room for
-    uint32_t index_count;     // Three a triangle...
-    GLenum index_type;        // ...of 16 bits where they fit, or 32 (GL_UNSIGNED_SHORT or GL_UNSIGNED_INT)
-    uint32_t frame;           // The frame that last drew it
+    tide_gpu_id vertices, indices; // Its buffers
+    uint32_t vertex_capacity;      // Corners `vertices` has room for
+    uint32_t index_capacity;       // Bytes `indices` has room for
+    uint32_t index_count;          // Three a triangle...
+    bool wide;                     // ...of 16 bits where they fit, or 32
+    uint32_t frame;                // The frame that last drew it
 } gpu_mesh;
 
 static gpu_mesh *gpu_meshes;
@@ -680,122 +570,90 @@ typedef struct gpu_texture {
     uint32_t space;
     int32_t width, height;
     uint32_t epoch; // Its list's when it copied them (see tide_draw_forget)
-    GLuint gl;
-    int filter;     // The last it was sampled with, or -1
+    tide_gpu_id texture;
     uint32_t frame; // The frame that last drew with it
 } gpu_texture;
 
 static gpu_texture *gpu_textures;
 static uint32_t gpu_texture_count, gpu_texture_capacity;
 static uint32_t gpu_frame;
-static GLuint white_texture; // A white pixel, which a mesh with no texture samples
 
-static GLuint compile(const char *what, const GLenum kind, const char *source)
+// The pipelines, the quad and the white pixel, the first time a list is drawn.
+static void renderer_start(void)
 {
-    const GLuint shader = glCreateShader(kind);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-    GLint ok = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[1024] = "";
-        glGetShaderInfoLog(shader, sizeof log, NULL, log);
-        fprintf(stderr, "tide: the %s' %s shader didn't compile:\n%s\n", what,
-                kind == GL_VERTEX_SHADER ? "vertex" : "fragment", log);
-        abort();
-    }
-    return shader;
-}
-
-// A program of the two shaders.
-static GLuint make_program(const char *what, const char *vertex, const char *fragment)
-{
-    const GLuint vertex_shader = compile(what, GL_VERTEX_SHADER, vertex);
-    const GLuint fragment_shader = compile(what, GL_FRAGMENT_SHADER, fragment);
-    const GLuint program = glCreateProgram();
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    glLinkProgram(program);
-    GLint ok = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[1024] = "";
-        glGetProgramInfoLog(program, sizeof log, NULL, log);
-        fprintf(stderr, "tide: the %s' shaders didn't link:\n%s\n", what, log);
-        abort();
-    }
-    glDeleteShader(vertex_shader); // The program keeps them
-    glDeleteShader(fragment_shader);
-    return program;
-}
-
-static GLuint make_buffer(const GLenum target, const void *data, const size_t bytes, const bool changes)
-{
-    GLuint buffer = 0;
-    glGenBuffers(1, &buffer);
-    glBindBuffer(target, buffer);
-    glBufferData(target, (GLsizeiptr)bytes, data, changes ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
-    return buffer;
-}
-
-// An attribute of `count` floats, or of 4 bytes read as 0 to 1, in the array
-// buffer that's bound.
-static void attribute(const int index, const int count, const bool bytes, const size_t stride, const size_t offset)
-{
-    glVertexAttribPointer((GLuint)index, count, bytes ? GL_UNSIGNED_BYTE : GL_FLOAT, bytes, (GLsizei)stride,
-                          (const void *)offset);
-}
-
-// The shader and the quad, the first time they're needed.
-static void shapes_start(void)
-{
-    if (shape_gpu.program) return;
-    shape_gpu.program = make_program("shapes", shape_vertex, shape_fragment);
-    shape_gpu.screen = glGetUniformLocation(shape_gpu.program, "screen");
-    glGenVertexArrays(1, &shape_gpu.vao);
-    glBindVertexArray(shape_gpu.vao);
+    if (gpu_state.shapes) return;
+    gpu_state.shapes = gpu->pipeline(&(tide_gpu_pipeline_desc){
+        .name = "shapes",
+        .glsl_vertex = shape_glsl_vertex,
+        .glsl_fragment = shape_glsl_fragment,
+        .wgsl = shape_wgsl,
+        .slots = {{2 * sizeof(float), false}, {sizeof(shape), true}}, // The quad's corners, and an instance a shape
+        .slot_count = 2,
+        .attributes = {{0, TIDE_GPU_FLOAT2, 0},
+                       {1, TIDE_GPU_FLOAT4, offsetof(shape, a)},
+                       {1, TIDE_GPU_BYTES4, offsetof(shape, color)},
+                       {1, TIDE_GPU_FLOAT, offsetof(shape, kind)}},
+        .attribute_count = 4,
+        .uniform_size = 16 * sizeof(float),
+        .blend = TIDE_GPU_BLEND_ALPHA,
+        .depth = TIDE_GPU_DEPTH_NONE,
+    });
+    tide_gpu_pipeline_desc mesh = {
+        .name = "meshes",
+        .glsl_vertex = mesh_glsl_vertex,
+        .glsl_fragment = mesh_glsl_fragment,
+        .wgsl = mesh_wgsl,
+        .slots = {{sizeof(mesh_vertex), false}},
+        .slot_count = 1,
+        .attributes = {{0, TIDE_GPU_FLOAT2, offsetof(mesh_vertex, position)},
+                       {0, TIDE_GPU_FLOAT2, offsetof(mesh_vertex, uv)},
+                       {0, TIDE_GPU_BYTES4, offsetof(mesh_vertex, color)}},
+        .attribute_count = 3,
+        .uniform_size = sizeof(screen_uniforms),
+        .texture = true,
+        .blend = TIDE_GPU_BLEND_ALPHA,
+        .depth = TIDE_GPU_DEPTH_NONE,
+    };
+    gpu_state.meshes = gpu->pipeline(&mesh);
+    mesh.name = "text"; // A mesh's corners, with pixels of its own
+    mesh.glsl_fragment = text_glsl_fragment;
+    mesh.wgsl = text_wgsl;
+    gpu_state.text = gpu->pipeline(&mesh);
+    gpu_state.meshes_3d = gpu->pipeline(&(tide_gpu_pipeline_desc){
+        .name = "3D meshes",
+        .glsl_vertex = mesh_3d_glsl_vertex,
+        .glsl_fragment = mesh_glsl_fragment,
+        .wgsl = mesh_3d_wgsl,
+        .slots = {{sizeof(mesh_3d_vertex), false}, {sizeof(tide_float4x4), true}}, // Its corners, and an instance a transform
+        .slot_count = 2,
+        .attributes = {{0, TIDE_GPU_FLOAT3, offsetof(mesh_3d_vertex, position)},
+                       {0, TIDE_GPU_FLOAT2, offsetof(mesh_3d_vertex, uv)},
+                       {0, TIDE_GPU_BYTES4, offsetof(mesh_3d_vertex, color)},
+                       {1, TIDE_GPU_FLOAT4, 0 * sizeof(tide_float4)},
+                       {1, TIDE_GPU_FLOAT4, 1 * sizeof(tide_float4)},
+                       {1, TIDE_GPU_FLOAT4, 2 * sizeof(tide_float4)},
+                       {1, TIDE_GPU_FLOAT4, 3 * sizeof(tide_float4)}},
+        .attribute_count = 7,
+        .uniform_size = sizeof(tide_float4x4),
+        .texture = true,
+        .blend = TIDE_GPU_BLEND_ALPHA,
+        .depth = TIDE_GPU_DEPTH_TEST,
+    });
+    gpu_state.clear = gpu->pipeline(&(tide_gpu_pipeline_desc){
+        .name = "clears",
+        .glsl_vertex = clear_glsl_vertex,
+        .glsl_fragment = clear_glsl_fragment,
+        .wgsl = clear_wgsl,
+        .uniform_size = 4 * sizeof(float),
+        .blend = TIDE_GPU_BLEND_REPLACE,
+        .depth = TIDE_GPU_DEPTH_RESET,
+    });
     static const float corners[12] = {0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0};
-    shape_gpu.corners = make_buffer(GL_ARRAY_BUFFER, corners, sizeof corners, false);
-    attribute(SHAPE_CORNER, 2, false, 0, 0);
-    glEnableVertexAttribArray(SHAPE_CORNER);
-    for (int i = SHAPE_SHAPE; i <= SHAPE_KIND; i++) {
-        glEnableVertexAttribArray((GLuint)i);
-        glVertexAttribDivisor((GLuint)i, 1);
-    }
-    glBindVertexArray(0);
-}
-
-static void meshes_start(void)
-{
-    if (mesh_gpu.program) return;
-    mesh_gpu.program = make_program("meshes", mesh_vertex_shader, mesh_fragment_shader);
-    mesh_gpu.screen = glGetUniformLocation(mesh_gpu.program, "screen");
-    mesh_gpu.pixels = glGetUniformLocation(mesh_gpu.program, "pixels");
-    text_gpu.program = make_program("text", mesh_vertex_shader, text_fragment_shader);
-    text_gpu.screen = glGetUniformLocation(text_gpu.program, "screen");
-    text_gpu.pixels = glGetUniformLocation(text_gpu.program, "pixels");
-    text_gpu.texel = glGetUniformLocation(text_gpu.program, "texel");
-    glGenVertexArrays(1, &mesh_gpu.vao);
-    glBindVertexArray(mesh_gpu.vao);
-    for (int i = MESH_POSITION; i <= MESH_COLOR; i++) glEnableVertexAttribArray((GLuint)i);
-    glBindVertexArray(0);
-}
-
-static void meshes_3d_start(void)
-{
-    if (mesh_3d_gpu.program) return;
-    mesh_3d_gpu.program = make_program("3D meshes", mesh_3d_vertex_shader, mesh_fragment_shader);
-    mesh_3d_gpu.camera = glGetUniformLocation(mesh_3d_gpu.program, "camera");
-    mesh_3d_gpu.pixels = glGetUniformLocation(mesh_3d_gpu.program, "pixels");
-    glGenVertexArrays(1, &mesh_3d_gpu.vao);
-    glBindVertexArray(mesh_3d_gpu.vao);
-    for (int i = MESH_3D_POSITION; i < MESH_3D_MODEL + 4; i++) glEnableVertexAttribArray((GLuint)i);
-    for (int i = 0; i < 4; i++) glVertexAttribDivisor((GLuint)(MESH_3D_MODEL + i), 1);
-    glBindVertexArray(0);
+    gpu_state.corners = gpu->buffer(TIDE_GPU_VERTICES, sizeof corners, corners);
+    gpu_state.white = gpu->texture(TIDE_GPU_RGBA8, 1, 1, (const uint8_t[4]){255, 255, 255, 255});
 }
 
 // The GPU's copy of the list's 3D mesh `mesh`, uploaded if it hasn't got it.
-// Its index buffer goes with the 3D meshes' vertex array, which is bound.
 static gpu_mesh *mesh_for(const tide_draw_list *list, const uint32_t mesh)
 {
     if (list->mesh_count > gpu_mesh_count) {
@@ -811,37 +669,36 @@ static gpu_mesh *mesh_for(const tide_draw_list *list, const uint32_t mesh)
         return g;
     }
     // Its corners, each once
-    mesh_3d_vertex *corners = upload_room((size_t)m->vertex_count * sizeof(mesh_3d_vertex));
+    const size_t vertex_bytes = (size_t)m->vertex_count * sizeof(mesh_3d_vertex);
+    mesh_3d_vertex *corners = upload_room(vertex_bytes);
     for (uint32_t i = 0; i < m->vertex_count; i++) {
         const tide_vertex3 *v = &m->vertices[i];
         const rgba color = to_rgba(v->color);
         corners[i] = (mesh_3d_vertex){{v->position.x, v->position.y, v->position.z}, {v->uv.x, v->uv.y},
                                       {color.r, color.g, color.b, color.a}};
     }
-    const size_t vertex_bytes = (size_t)m->vertex_count * sizeof(mesh_3d_vertex);
     if (g->vertices && m->vertex_count <= g->vertex_capacity) {
-        glBindBuffer(GL_ARRAY_BUFFER, g->vertices);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vertex_bytes, corners);
+        gpu->buffer_write(g->vertices, 0, corners, vertex_bytes);
     } else {
-        if (g->vertices) glDeleteBuffers(1, &g->vertices);
-        g->vertices = make_buffer(GL_ARRAY_BUFFER, corners, vertex_bytes, false);
+        if (g->vertices) gpu->buffer_free(g->vertices);
+        g->vertices = gpu->buffer(TIDE_GPU_VERTICES, vertex_bytes, corners);
         g->vertex_capacity = m->vertex_count;
     }
-    // ...and its triangles, in 16 bits where they fit
-    const bool small = m->vertex_count <= 65536u;
-    const size_t index_bytes = (size_t)m->index_count * (small ? sizeof(uint16_t) : sizeof(uint32_t));
+    // ...and its triangles, in 16 bits where they fit, to a multiple of 4 bytes, as buffers take them
+    const bool wide = m->vertex_count > 65536u;
+    const size_t index_bytes = ((size_t)m->index_count * (wide ? sizeof(uint32_t) : sizeof(uint16_t)) + 3u) & ~(size_t)3u;
     const void *indices = m->indices;
-    if (small) {
+    if (!wide) {
         uint16_t *narrow = upload_room(index_bytes);
+        memset(narrow, 0, index_bytes);
         for (uint32_t i = 0; i < m->index_count; i++) narrow[i] = (uint16_t)m->indices[i];
         indices = narrow;
     }
     if (g->indices && index_bytes <= g->index_capacity) {
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g->indices);
-        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)index_bytes, indices);
+        gpu->buffer_write(g->indices, 0, indices, index_bytes);
     } else {
-        if (g->indices) glDeleteBuffers(1, &g->indices);
-        g->indices = make_buffer(GL_ELEMENT_ARRAY_BUFFER, indices, index_bytes, false);
+        if (g->indices) gpu->buffer_free(g->indices);
+        g->indices = gpu->buffer(TIDE_GPU_INDICES, index_bytes, indices);
         g->index_capacity = (uint32_t)index_bytes;
     }
     g->id = m->id;
@@ -850,8 +707,21 @@ static gpu_mesh *mesh_for(const tide_draw_list *list, const uint32_t mesh)
     g->space = m->space;
     g->epoch = m->epoch;
     g->index_count = m->index_count;
-    g->index_type = small ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+    g->wide = wide;
     return g;
+}
+
+// A buffer for `count` elements of `size` bytes, in place of `*buffer` when
+// it has no room for them: its capacity doubles until it does.
+static void buffer_room(tide_gpu_id *buffer, uint32_t *capacity, const uint32_t count, const size_t size,
+                        const uint32_t at_least)
+{
+    if (count <= *capacity) return;
+    uint32_t grown = *capacity ? *capacity : at_least;
+    while (grown < count) grown *= 2u;
+    if (*buffer) gpu->buffer_free(*buffer);
+    *buffer = gpu->buffer(TIDE_GPU_VERTICES, (size_t)grown * size, NULL);
+    *capacity = grown;
 }
 
 // The list's matrices into the instance buffer, which grows as they need,
@@ -861,24 +731,12 @@ static void upload_meshes_3d(const tide_draw_list *list)
     bool any = false;
     for (uint32_t i = 0; i < step_count; i++) {
         if (steps[i].kind != STEP_MESH_3D) continue;
-        if (!any) {
-            meshes_3d_start();
-            glBindVertexArray(mesh_3d_gpu.vao);
-        }
         any = true;
         mesh_for(list, steps[i].mesh);
     }
     if (!any) return;
-    glBindVertexArray(0);
-    if (list->matrix_count > mesh_3d_gpu.capacity) {
-        uint32_t capacity = mesh_3d_gpu.capacity ? mesh_3d_gpu.capacity : 1024u;
-        while (capacity < list->matrix_count) capacity *= 2u;
-        if (mesh_3d_gpu.instances) glDeleteBuffers(1, &mesh_3d_gpu.instances);
-        mesh_3d_gpu.instances = make_buffer(GL_ARRAY_BUFFER, NULL, (size_t)capacity * sizeof(tide_float4x4), true);
-        mesh_3d_gpu.capacity = capacity;
-    }
-    glBindBuffer(GL_ARRAY_BUFFER, mesh_3d_gpu.instances);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)list->matrix_count * sizeof(tide_float4x4)), list->matrices);
+    buffer_room(&gpu_state.matrices, &gpu_state.matrix_capacity, list->matrix_count, sizeof(tide_float4x4), 1024u);
+    gpu->buffer_write(gpu_state.matrices, 0, list->matrices, (size_t)list->matrix_count * sizeof(tide_float4x4));
 }
 
 // Lets go of the 3D meshes the frame didn't draw.
@@ -886,32 +744,25 @@ static void forget_meshes_3d(void)
 {
     for (uint32_t i = 0; i < gpu_mesh_count; i++) {
         if (gpu_meshes[i].vertices && gpu_meshes[i].frame != gpu_frame) {
-            glDeleteBuffers(1, &gpu_meshes[i].vertices);
-            glDeleteBuffers(1, &gpu_meshes[i].indices);
+            gpu->buffer_free(gpu_meshes[i].vertices);
+            gpu->buffer_free(gpu_meshes[i].indices);
             gpu_meshes[i] = (gpu_mesh){0};
         }
     }
 }
 
-// This list's triangles, text's too, into their buffer, which grows as they need.
-static void upload_meshes(void)
+// This list's shapes into the instance buffer, and its triangles, text's too,
+// into theirs: both grow as they need.
+static void upload_shapes_and_meshes(void)
 {
-    if (mesh_vertex_count == 0) return;
-    meshes_start();
-    if (mesh_vertex_count > mesh_gpu.capacity) {
-        uint32_t capacity = mesh_gpu.capacity ? mesh_gpu.capacity : 4096u;
-        while (capacity < mesh_vertex_count) capacity *= 2u;
-        glBindVertexArray(mesh_gpu.vao);
-        if (mesh_gpu.vertices) glDeleteBuffers(1, &mesh_gpu.vertices);
-        mesh_gpu.vertices = make_buffer(GL_ARRAY_BUFFER, NULL, (size_t)capacity * sizeof(mesh_vertex), true);
-        mesh_gpu.capacity = capacity;
-        attribute(MESH_POSITION, 2, false, sizeof(mesh_vertex), offsetof(mesh_vertex, position));
-        attribute(MESH_UV, 2, false, sizeof(mesh_vertex), offsetof(mesh_vertex, uv));
-        attribute(MESH_COLOR, 4, true, sizeof(mesh_vertex), offsetof(mesh_vertex, color));
-        glBindVertexArray(0);
+    if (shape_count) {
+        buffer_room(&gpu_state.shape_instances, &gpu_state.shape_capacity, shape_count, sizeof(shape), 1024u);
+        gpu->buffer_write(gpu_state.shape_instances, 0, shapes, (size_t)shape_count * sizeof(shape));
     }
-    glBindBuffer(GL_ARRAY_BUFFER, mesh_gpu.vertices);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)mesh_vertex_count * sizeof(mesh_vertex)), mesh_vertices);
+    if (mesh_vertex_count) {
+        buffer_room(&gpu_state.mesh_vertices, &gpu_state.mesh_capacity, mesh_vertex_count, sizeof(mesh_vertex), 4096u);
+        gpu->buffer_write(gpu_state.mesh_vertices, 0, mesh_vertices, (size_t)mesh_vertex_count * sizeof(mesh_vertex));
+    }
 }
 
 // The font atlas onto the GPU, as the list's text left it.
@@ -920,38 +771,16 @@ static void upload_atlas(void)
     int width = 0, height = 0;
     uint32_t version = 0;
     const uint8_t *pixels = tide_font_atlas(&width, &height, &version);
-    if (!pixels || (text_gpu.atlas && text_gpu.version == version)) return;
-    if (!text_gpu.atlas) {
-        glGenTextures(1, &text_gpu.atlas);
-        glBindTexture(GL_TEXTURE_2D, text_gpu.atlas);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        // Stretched glyphs blend; the others land on the target's pixels
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    }
-    glBindTexture(GL_TEXTURE_2D, text_gpu.atlas);
-    if (width == text_gpu.width && height == text_gpu.height) {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED, GL_UNSIGNED_BYTE, pixels);
+    if (!pixels || (gpu_state.atlas && gpu_state.atlas_version == version)) return;
+    if (gpu_state.atlas && width == gpu_state.atlas_width && height == gpu_state.atlas_height) {
+        gpu->texture_write(gpu_state.atlas, pixels);
     } else {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, pixels);
+        if (gpu_state.atlas) gpu->texture_free(gpu_state.atlas);
+        gpu_state.atlas = gpu->texture(TIDE_GPU_R8, width, height, pixels);
     }
-    text_gpu.width = width;
-    text_gpu.height = height;
-    text_gpu.version = version;
-}
-
-static GLuint make_texture(const void *pixels, const int width, const int height)
-{
-    GLuint texture = 0;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    return texture;
+    gpu_state.atlas_width = width;
+    gpu_state.atlas_height = height;
+    gpu_state.atlas_version = version;
 }
 
 // The GPU's copy of a list's texture, uploaded if it hasn't got these pixels.
@@ -972,16 +801,15 @@ static gpu_texture *texture_for(const tide_draw_texture *t)
         *g = (gpu_texture){.id = t->id, .space = t->space};
     }
     g->frame = gpu_frame;
-    if (g->gl && g->version == t->version && g->width == t->width && g->height == t->height && g->epoch == t->epoch) {
+    if (g->texture && g->version == t->version && g->width == t->width && g->height == t->height
+        && g->epoch == t->epoch) {
         return g;
     }
-    if (g->gl && g->width == t->width && g->height == t->height) {
-        glBindTexture(GL_TEXTURE_2D, g->gl);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t->width, t->height, GL_RGBA, GL_UNSIGNED_BYTE, t->pixels);
+    if (g->texture && g->width == t->width && g->height == t->height) {
+        gpu->texture_write(g->texture, t->pixels);
     } else {
-        if (g->gl) glDeleteTextures(1, &g->gl);
-        g->gl = make_texture(t->pixels, t->width, t->height);
-        g->filter = -1;
+        if (g->texture) gpu->texture_free(g->texture);
+        g->texture = gpu->texture(TIDE_GPU_RGBA8, t->width, t->height, t->pixels);
     }
     g->version = t->version;
     g->width = t->width;
@@ -996,7 +824,7 @@ static void forget_textures(void)
     uint32_t kept = 0;
     for (uint32_t i = 0; i < gpu_texture_count; i++) {
         if (gpu_textures[i].frame != gpu_frame) {
-            if (gpu_textures[i].gl) glDeleteTextures(1, &gpu_textures[i].gl);
+            if (gpu_textures[i].texture) gpu->texture_free(gpu_textures[i].texture);
             continue;
         }
         gpu_textures[kept++] = gpu_textures[i];
@@ -1005,37 +833,15 @@ static void forget_textures(void)
     gpu_frame++;
 }
 
-// Binds the GPU's texture a mesh step samples, set to sample it as the step does.
-static void bind_step_texture(const tide_draw_list *list, const draw_step *s)
+// The texture a mesh step samples, sampled as the step says.
+static void sample_step_texture(const tide_draw_list *list, const draw_step *s)
 {
-    GLuint texture = white_texture;
+    tide_gpu_id texture = gpu_state.white;
     if (s->texture) {
-        gpu_texture *g = texture_for(&list->textures[s->texture - 1u]);
-        if (g->gl) {
-            glBindTexture(GL_TEXTURE_2D, g->gl);
-            if (g->filter != (int)s->filter) {
-                const GLint filter = s->filter == TIDE_FILTER_POINT ? GL_NEAREST : GL_LINEAR;
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-                g->filter = (int)s->filter;
-            }
-            texture = g->gl;
-        }
+        const gpu_texture *g = texture_for(&list->textures[s->texture - 1u]);
+        if (g->texture) texture = g->texture;
     }
-    glBindTexture(GL_TEXTURE_2D, texture);
-}
-
-// From the target's logical pixels, from its top left with y down, to clip
-// space, as OpenGL's matrices go: column by column.
-static void screen_matrix(float m[16])
-{
-    memset(m, 0, 16 * sizeof(float));
-    m[0] = 2.0f / (float)screen_width;
-    m[5] = -2.0f / (float)screen_height;
-    m[10] = 1.0f;
-    m[12] = -1.0f;
-    m[13] = 1.0f;
-    m[15] = 1.0f;
+    gpu->sample(texture, s->filter != TIDE_FILTER_POINT);
 }
 
 static void draw_mesh_3d(const tide_draw_list *list, const draw_step *s)
@@ -1049,50 +855,13 @@ static void draw_mesh_3d(const tide_draw_list *list, const draw_step *s)
         world_to_clip.c0.x *= across, world_to_clip.c1.x *= across;
         world_to_clip.c2.x *= across, world_to_clip.c3.x *= across;
     }
-    glEnable(GL_DEPTH_TEST);
-    glUseProgram(mesh_3d_gpu.program);
-    glUniformMatrix4fv(mesh_3d_gpu.camera, 1, GL_FALSE, &world_to_clip.c0.x);
-    glUniform1i(mesh_3d_gpu.pixels, 0);
-    bind_step_texture(list, s);
-    glBindVertexArray(mesh_3d_gpu.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g->vertices);
-    attribute(MESH_3D_POSITION, 3, false, sizeof(mesh_3d_vertex), offsetof(mesh_3d_vertex, position));
-    attribute(MESH_3D_UV, 2, false, sizeof(mesh_3d_vertex), offsetof(mesh_3d_vertex, uv));
-    attribute(MESH_3D_COLOR, 4, true, sizeof(mesh_3d_vertex), offsetof(mesh_3d_vertex, color));
-    glBindBuffer(GL_ARRAY_BUFFER, mesh_3d_gpu.instances);
-    for (int i = 0; i < 4; i++) {
-        attribute(MESH_3D_MODEL + i, 4, false, sizeof(tide_float4x4),
-                  (size_t)s->first * sizeof(tide_float4x4) + (size_t)i * sizeof(tide_float4));
-    }
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g->indices);
-    glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)g->index_count, g->index_type, NULL, (GLsizei)s->count);
-    glBindVertexArray(0);
-    glDisable(GL_DEPTH_TEST); // Nothing else tests depth
-}
-
-static void draw_mesh(const tide_draw_list *list, const draw_step *s, const float *screen)
-{
-    if (s->count == 0) return;
-    glUseProgram(mesh_gpu.program);
-    glUniformMatrix4fv(mesh_gpu.screen, 1, GL_FALSE, screen);
-    glUniform1i(mesh_gpu.pixels, 0);
-    bind_step_texture(list, s);
-    glBindVertexArray(mesh_gpu.vao);
-    glDrawArrays(GL_TRIANGLES, (GLint)s->first, (GLsizei)s->count);
-    glBindVertexArray(0);
-}
-
-static void draw_text(const draw_step *s, const float *screen)
-{
-    if (s->count == 0 || !text_gpu.atlas) return;
-    glUseProgram(text_gpu.program);
-    glUniformMatrix4fv(text_gpu.screen, 1, GL_FALSE, screen);
-    glUniform1i(text_gpu.pixels, 0);
-    glUniform2f(text_gpu.texel, 1.0f / (float)text_gpu.width, 1.0f / (float)text_gpu.height);
-    glBindTexture(GL_TEXTURE_2D, text_gpu.atlas);
-    glBindVertexArray(mesh_gpu.vao);
-    glDrawArrays(GL_TRIANGLES, (GLint)s->first, (GLsizei)s->count);
-    glBindVertexArray(0);
+    gpu->use(gpu_state.meshes_3d);
+    gpu->uniforms(&world_to_clip, sizeof world_to_clip);
+    sample_step_texture(list, s);
+    gpu->vertices(0, g->vertices, 0);
+    gpu->vertices(1, gpu_state.matrices, (size_t)s->first * sizeof(tide_float4x4));
+    gpu->indices(g->indices, g->wide);
+    gpu->draw_indexed(g->index_count, s->count);
 }
 
 static int nearest_pixel(const float v)
@@ -1100,69 +869,34 @@ static int nearest_pixel(const float v)
     return (int)floorf(v + 0.5f);
 }
 
+static int clamp_pixel(const int v, const int most)
+{
+    return v < 0 ? 0 : v > most ? most : v;
+}
+
 // Only what's inside the step's rect draws from here on, or everything again.
 static void clip(const draw_step *s)
 {
+    const int width = offscreen ? screen_width : pixel_width, height = offscreen ? screen_height : pixel_height;
     if (s->kind == STEP_NO_CLIP) {
-        glDisable(GL_SCISSOR_TEST);
+        gpu->scissor(0, 0, width, height);
         return;
     }
-    // OpenGL's are the target's pixels, from the bottom left
+    // In the target's pixels, and inside it
     const tide_float2 scale = pixel_scale();
-    const int height = offscreen ? screen_height : pixel_height;
-    const int left = nearest_pixel(s->at.x * scale.x), right = nearest_pixel(s->to.x * scale.x);
-    const int top = nearest_pixel(s->at.y * scale.y), bottom = nearest_pixel(s->to.y * scale.y);
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(left, height - bottom, right > left ? right - left : 0, bottom > top ? bottom - top : 0);
+    const int left = clamp_pixel(nearest_pixel(s->at.x * scale.x), width);
+    const int right = clamp_pixel(nearest_pixel(s->to.x * scale.x), width);
+    const int top = clamp_pixel(nearest_pixel(s->at.y * scale.y), height);
+    const int bottom = clamp_pixel(nearest_pixel(s->to.y * scale.y), height);
+    gpu->scissor(left, top, right > left ? right - left : 0, bottom > top ? bottom - top : 0);
 }
 
-// The instance buffer's attributes, from shape `first` on.
-static void point_at(const uint32_t first)
+// Draws the list into `target`: the window for 0, or tide_platform_read_pixels'
+// own pixels. With `over`, it goes over what's there (the overlay), and leaves
+// the frame's camera, textures and meshes as they are.
+static void draw_list(const tide_draw_list *list, const tide_gpu_id target, const bool over)
 {
-    const size_t at = (size_t)first * sizeof(shape);
-    glBindBuffer(GL_ARRAY_BUFFER, shape_gpu.instances);
-    attribute(SHAPE_SHAPE, 4, false, sizeof(shape), at + offsetof(shape, a));
-    attribute(SHAPE_COLOR, 4, true, sizeof(shape), at + offsetof(shape, color));
-    attribute(SHAPE_KIND, 1, false, sizeof(shape), at + offsetof(shape, kind));
-}
-
-// This list's shapes into the instance buffer, which grows as they need.
-static void upload_shapes(void)
-{
-    if (shape_count == 0) return;
-    shapes_start();
-    if (shape_count > shape_gpu.capacity) {
-        uint32_t capacity = shape_gpu.capacity ? shape_gpu.capacity : 1024u;
-        while (capacity < shape_count) capacity *= 2u;
-        if (shape_gpu.instances) glDeleteBuffers(1, &shape_gpu.instances);
-        shape_gpu.instances = make_buffer(GL_ARRAY_BUFFER, NULL, (size_t)capacity * sizeof(shape), true);
-        shape_gpu.capacity = capacity;
-    }
-    glBindBuffer(GL_ARRAY_BUFFER, shape_gpu.instances);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)shape_count * sizeof(shape)), shapes);
-}
-
-static void draw_shapes(const uint32_t first, const uint32_t count, const float *screen)
-{
-    glUseProgram(shape_gpu.program);
-    glUniformMatrix4fv(shape_gpu.screen, 1, GL_FALSE, screen);
-    glBindVertexArray(shape_gpu.vao);
-    point_at(first);
-    glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)count);
-    glBindVertexArray(0);
-}
-
-static void clear(const rgba color)
-{
-    glClearColor((float)color.r / 255.0f, (float)color.g / 255.0f, (float)color.b / 255.0f, (float)color.a / 255.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-}
-
-// Draws the list into the target that's bound: the window, or with
-// `offscreen` set, pixels of its own. With `over`, it goes over what's there
-// (the overlay), and leaves the frame's camera, textures and meshes as they are.
-static void draw_list(const tide_draw_list *list, const bool over)
-{
+    offscreen = target != 0;
     tide_font_frame();
     shape_count = 0;
     mesh_vertex_count = 0;
@@ -1247,38 +981,45 @@ static void draw_list(const tide_draw_list *list, const bool over)
     }
     if (!over) last_camera = world;
 
-    // What the steps draw with is set here, whatever drew before: a list of
-    // another target, or on the web, the program this one took over from.
-    glViewport(0, 0, offscreen ? screen_width : pixel_width, offscreen ? screen_height : pixel_height);
-    glDisable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
-    glDisable(GL_CULL_FACE); // Either side of a triangle draws
-    glDisable(GL_SCISSOR_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glActiveTexture(GL_TEXTURE0);
-    if (!white_texture) white_texture = make_texture((const uint8_t[4]){255, 255, 255, 255}, 1, 1);
-
-    upload_shapes();
-    upload_meshes();
+    // What the steps draw from goes to the GPU first
+    renderer_start();
+    upload_shapes_and_meshes();
     upload_meshes_3d(list);
     upload_atlas();
-    float screen[16];
-    screen_matrix(screen);
-    if (!over) clear((rgba){0, 0, 0, 255}); // Every frame starts black; Draw.Clear picks another color
-    bool clipped = false;
+    screen_uniforms uniforms = {.screen = {[0] = 2.0f / (float)screen_width, [5] = -2.0f / (float)screen_height,
+                                           [10] = 1.0f, [12] = -1.0f, [13] = 1.0f, [15] = 1.0f}};
+    if (gpu_state.atlas) {
+        uniforms.texel[0] = 1.0f / (float)gpu_state.atlas_width;
+        uniforms.texel[1] = 1.0f / (float)gpu_state.atlas_height;
+    }
+
+    gpu->begin(target, !over); // Every frame starts black; Draw.Clear picks another color
     for (uint32_t i = 0; i < step_count; i++) {
         const draw_step *s = &steps[i];
         switch (s->kind) {
         case STEP_SHAPES:
-            draw_shapes(s->first, s->count, screen);
+            gpu->use(gpu_state.shapes);
+            gpu->uniforms(uniforms.screen, sizeof uniforms.screen);
+            gpu->vertices(0, gpu_state.corners, 0);
+            gpu->vertices(1, gpu_state.shape_instances, (size_t)s->first * sizeof(shape));
+            gpu->draw(0, 6, s->count);
             break;
-        case STEP_CLEAR:
-            clear(s->color);
+        case STEP_CLEAR: {
+            // A triangle over the target, which the clip cuts, and which sets depth back too
+            const float color[4] = {(float)s->color.r / 255.0f, (float)s->color.g / 255.0f, (float)s->color.b / 255.0f,
+                                    (float)s->color.a / 255.0f};
+            gpu->use(gpu_state.clear);
+            gpu->uniforms(color, sizeof color);
+            gpu->draw(0, 3, 1);
             break;
+        }
         case STEP_MESH:
-            draw_mesh(list, s, screen);
+            if (s->count == 0) break;
+            gpu->use(gpu_state.meshes);
+            gpu->uniforms(&uniforms, sizeof uniforms);
+            sample_step_texture(list, s);
+            gpu->vertices(0, gpu_state.mesh_vertices, 0);
+            gpu->draw(s->first, s->count, 1);
             break;
         case STEP_MESH_3D:
             draw_mesh_3d(list, s);
@@ -1286,14 +1027,19 @@ static void draw_list(const tide_draw_list *list, const bool over)
         case STEP_CLIP:
         case STEP_NO_CLIP:
             clip(s);
-            clipped = s->kind == STEP_CLIP;
             break;
-        default:
-            draw_text(s, screen);
+        default: // Text
+            if (s->count == 0 || !gpu_state.atlas) break;
+            gpu->use(gpu_state.text);
+            gpu->uniforms(&uniforms, sizeof uniforms);
+            gpu->sample(gpu_state.atlas, true); // Stretched glyphs blend; the others land on the target's pixels
+            gpu->vertices(0, gpu_state.mesh_vertices, 0);
+            gpu->draw(s->first, s->count, 1);
             break;
         }
     }
-    if (clipped) clip(&(draw_step){.kind = STEP_NO_CLIP}); // What's drawn after the list isn't the list's to clip
+    gpu->end();
+    offscreen = false;
     if (!over) {
         forget_meshes_3d();
         forget_textures();
@@ -1304,7 +1050,7 @@ void tide_platform_draw(const tide_draw_list *list)
 {
     // Nobody sees it while the window is minimized or, on the web, the page
     // is hidden, and frames go on meanwhile.
-    if (!tide_window_unseen()) draw_list(list, false);
+    if (!tide_window_unseen()) draw_list(list, 0, false);
 }
 
 tide_float2 tide_platform_world_to_screen(const tide_float2 world)
@@ -1320,6 +1066,11 @@ tide_float2 tide_platform_screen_size(void)
 float tide_platform_measure_text(const char *text, const float size)
 {
     return tide_font_measure(text, size);
+}
+
+const char *tide_platform_renderer(void)
+{
+    return gpu ? gpu->name : "";
 }
 
 void tide_platform_draw_overlay(const char *text)
@@ -1354,57 +1105,28 @@ void tide_platform_draw_overlay(const char *text)
         tide_draw_text(&overlay, lines[i], tide_f2(right - widths[i], top + (float)i * pitch), size,
                        (tide_color){200.0f / 255.0f, 200.0f / 255.0f, 200.0f / 255.0f, 1.0f});
     }
-    draw_list(&overlay, true);
+    draw_list(&overlay, 0, true);
 }
-
-// What tide_platform_read_pixels draws into: pixels of its own, as many as
-// the window's logical ones, with depth. Kept while the window keeps its size.
-static struct {
-    GLuint framebuffer, color, depth;
-    int width, height;
-    uint8_t *pixels; // Read back: RGBA, rows from the bottom
-} target;
 
 void tide_platform_read_pixels(const tide_draw_list *list, const tide_float2 *points, const int count, uint32_t *out)
 {
     const int width = screen_width, height = screen_height;
-    if (!target.framebuffer || target.width != width || target.height != height) {
-        if (target.framebuffer) {
-            glDeleteFramebuffers(1, &target.framebuffer);
-            glDeleteRenderbuffers(1, &target.color);
-            glDeleteRenderbuffers(1, &target.depth);
-        }
-        glGenFramebuffers(1, &target.framebuffer);
-        glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
-        glGenRenderbuffers(1, &target.color);
-        glBindRenderbuffer(GL_RENDERBUFFER, target.color);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, target.color);
-        glGenRenderbuffers(1, &target.depth);
-        glBindRenderbuffer(GL_RENDERBUFFER, target.depth);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, target.depth);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            fprintf(stderr, "tide: no framebuffer to render offscreen in\n");
-            abort();
-        }
-        target.pixels = tide_realloc(target.pixels, (size_t)target.width * (size_t)target.height * 4u,
-                                     (size_t)width * (size_t)height * 4u);
-        target.width = width;
-        target.height = height;
+    if (!gpu_state.target || gpu_state.target_width != width || gpu_state.target_height != height) {
+        if (gpu_state.target) gpu->target_free(gpu_state.target);
+        gpu_state.target = gpu->target(width, height);
+        gpu_state.target_pixels =
+            tide_realloc(gpu_state.target_pixels, (size_t)gpu_state.target_width * (size_t)gpu_state.target_height * 4u,
+                         (size_t)width * (size_t)height * 4u);
+        gpu_state.target_width = width;
+        gpu_state.target_height = height;
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
-    offscreen = true;
-    draw_list(list, false);
-    offscreen = false;
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, target.pixels);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    draw_list(list, gpu_state.target, false);
+    gpu->target_read(gpu_state.target, gpu_state.target_pixels);
     for (int i = 0; i < count; i++) {
-        const int x = (int)points[i].x, y = height - 1 - (int)points[i].y;
+        const int x = (int)points[i].x, y = (int)points[i].y;
         uint32_t pixel = 0;
         if (x >= 0 && x < width && y >= 0 && y < height) {
-            const uint8_t *p = target.pixels + ((size_t)y * (size_t)width + (size_t)x) * 4u;
+            const uint8_t *p = gpu_state.target_pixels + ((size_t)y * (size_t)width + (size_t)x) * 4u;
             pixel = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
         }
         out[i] = pixel;

@@ -156,7 +156,7 @@ Use the host's address instead of `localhost` from another machine, like `tide r
 tide run --web
 ```
 
-This builds the game as a web page, using WebGL 2, and opens it in your browser. `tide` serves the page on your machine and keeps running, so saving reloads the game in the page too, until you stop `tide` with Ctrl+C. For a page to put online:
+This builds the game as a web page, which draws with WebGPU (or WebGL 2 where the browser has none), and opens it in your browser. `tide` serves the page on your machine and keeps running, so saving reloads the game in the page too, until you stop `tide` with Ctrl+C. For a page to put online:
 
 ```sh
 tide build --release --web
