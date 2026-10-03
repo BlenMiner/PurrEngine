@@ -384,6 +384,24 @@ static void build_signatures(void)
     add_gui("GUI", "Disabled", T_NONE, "tide_gui_begin_disabled", "bool disabled", GUI_CONTAINER,
             "Grays out the widgets in its block while `disabled` is true: they're drawn faded and can't be "
             "clicked, focused or typed into. They stay where they are, laid out as usual.");
+    // Widgets a view draws itself, or a library's: what they use of the devices
+    add_gui("GUI", "ClaimPointer", T_NONE, "tide_gui_claim_pointer_at", "Rect rect", 0,
+            "This view has a widget of its own at `rect`: while the pointer is on it, the mouse's buttons and "
+            "scroll, the pointer's press and the primary touch are hidden from the input's `Sample` and from the "
+            "other views, as on a button, and this view goes on reading them. Call it every frame the widget is "
+            "there: a press on it is the view's from the frame it lands in, a finger's too.");
+    add_gui("GUI", "ClaimPointer", T_NONE, "tide_gui_claim_pointer", "", 0,
+            "This view is using the pointer, wherever it is, like a widget of its own that's being dragged: the "
+            "mouse's buttons and scroll, the pointer's press and the primary touch are hidden from the input's "
+            "`Sample` and from the other views, and this view goes on reading them. Call it every frame it "
+            "does: a claim hides from the next frame on. For a widget at a rect, give the rect.");
+    add_gui("GUI", "ClaimKeyboard", T_NONE, "tide_gui_claim_keyboard", "", 0,
+            "This view is using the keyboard, for a widget of its own: the keys and what's typed are hidden from "
+            "the input's `Sample` and from the other views, as typing in a field is. This view goes on reading "
+            "them. Call it every frame the widget has the keyboard: a claim hides from the next frame on.");
+    add_gui("GUI", "ShowKeyboard", T_NONE, "tide_gui_show_keyboard", "", 0,
+            "The player is typing into a widget of this view's own: phones show their keyboard, as they do for a "
+            "text field. Call it every frame they are.");
 }
 
 // ---------------------------------------------------------------------------

@@ -114,6 +114,47 @@ int32_t tide_utf8_chars(const char *bytes, const int32_t count)
     return chars;
 }
 
+int tide_utf8_encode(const uint32_t c, char *out)
+{
+    if (c < 0x80u) {
+        out[0] = (char)c;
+        return 1;
+    }
+    if (c < 0x800u) {
+        out[0] = (char)(0xC0u | c >> 6);
+        out[1] = (char)(0x80u | (c & 0x3Fu));
+        return 2;
+    }
+    if (c < 0x10000u) {
+        if (c >= 0xD800u && c < 0xE000u) return 0; // Half of a UTF-16 pair: not a character
+        out[0] = (char)(0xE0u | c >> 12);
+        out[1] = (char)(0x80u | (c >> 6 & 0x3Fu));
+        out[2] = (char)(0x80u | (c & 0x3Fu));
+        return 3;
+    }
+    if (c < 0x110000u) {
+        out[0] = (char)(0xF0u | c >> 18);
+        out[1] = (char)(0x80u | (c >> 12 & 0x3Fu));
+        out[2] = (char)(0x80u | (c >> 6 & 0x3Fu));
+        out[3] = (char)(0x80u | (c & 0x3Fu));
+        return 4;
+    }
+    return 0;
+}
+
+tide_str tide_str_typed(const tide_typed *typed)
+{
+    char bytes[4 * TIDE_TEXT_MAX];
+    int32_t count = 0;
+    int32_t chars = 0;
+    for (uint32_t i = 0; i < typed->count && i < TIDE_TEXT_MAX; i++) {
+        const int n = tide_utf8_encode(typed->chars[i], bytes + count);
+        count += n;
+        chars += n > 0;
+    }
+    return append(TIDE_STR_EMPTY, bytes, count, chars);
+}
+
 tide_str tide_str_from_cstr(const char *s)
 {
     const int32_t bytes = (int32_t)strlen(s);

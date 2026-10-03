@@ -48,7 +48,7 @@ TIDE_TEST(devices_are_repaired)
     in.tide_dev.keyboard.a.pressed = true;
     in.tide_dev.keyboard.space.held = true;
     in.tide_dev.mouse.position = tide_f2(3.0f, 4.0f);
-    in.tide_dev.text.count = 5;
+    in.tide_dev.keyboard.text.count = 5;
     in.tide_dev.gamepad.leftStick = tide_f2(INFINITY, -2.0f);
     in.tide_dev.gamepad.rightTrigger = NAN;
     tide_world_init(&world, 1.0f);
@@ -57,7 +57,7 @@ TIDE_TEST(devices_are_repaired)
     TIDE_CHECK(got->gamepad.leftStick.x == 1.0f && got->gamepad.leftStick.y == -1.0f);
     TIDE_CHECK(got->gamepad.rightTrigger == 0.0f);
     TIDE_CHECK(!got->keyboard.a.pressed && !got->keyboard.space.held);
-    TIDE_CHECK(got->mouse.position.x == 0.0f && got->text.count == 0);
+    TIDE_CHECK(got->mouse.position.x == 0.0f && got->keyboard.text.count == 0);
 }
 
 TIDE_TEST(devices_are_the_owners)

@@ -144,3 +144,67 @@ It copies up to 255 bytes for now. In a browser, it works shortly after a click 
 Widgets follow the pointer: the mouse, or a finger on a touchscreen (see [Input](./input.md#touch)). A finger that lifted is nowhere, so nothing stays hovered where it was.
 
 Whatever the GUI is using, such as a click on a button, a finger on one, or typing in a field, is hidden from the input's `Sample` and from views' `Devices`. So clicking a button never fires a weapon, and typing a name never moves the player.
+
+The pointer is the GUI's wherever it's on a widget or an area, from the moment it's there: a finger that touches a button never reaches the game, not even for the frame it lands in. The engine goes by where the last frame drew its widgets, so the one thing that gets through is a press on a widget in the very frame it first appears.
+
+## Widgets of your own
+
+A view can draw widgets itself with `Draw`, or hand the devices to a UI library through [C functions](./c-functions.md). The engine doesn't know those widgets are there, so the view says what they're using:
+
+| Call | What it does |
+|---|---|
+| `GUI.ClaimPointer(rect)` | This view has a widget at `rect`: the pointer on it is this view's |
+| `GUI.ClaimPointer()` | This view is using the pointer wherever it is, as while it drags something |
+| `GUI.ClaimKeyboard()` | This view is using the keyboard: the keys and [what's typed](./input.md#typed-text) |
+| `GUI.ShowKeyboard()` | The player is typing: phones show their keyboard, as they do for a text field |
+
+What a view claims is hidden from the input's `Sample` and from the other views, as what the GUI uses is, and the view that claimed it goes on reading it. The pointer's claim covers the mouse's buttons and scroll, the pointer's press and the primary touch. A camera view that drags with the mouse needs no changes to stay still while a toolbox is dragged.
+
+```csharp
+local singleton Toolbox
+{
+    bool dragging;
+    bool renaming;
+    string name;
+}
+
+// A toolbox in the window's lower left corner
+view Tools(mut Toolbox box)
+{
+    GUI.ClaimPointer(Rect(0, Screen.height - 200, 200, 200));
+    if (box.dragging) GUI.ClaimPointer();
+
+    var pointer = Devices.pointer;
+    var over = pointer.position.x < 200 && pointer.position.y < 200;
+    if (over && pointer.press.down) box.dragging = true;
+    if (!pointer.press.pressed) box.dragging = false;
+
+    if (box.renaming)
+    {
+        GUI.ClaimKeyboard();
+        GUI.ShowKeyboard();
+        box.name += Devices.keyboard.text;
+        if (Devices.keyboard.enter.down) box.renaming = false;
+    }
+}
+```
+
+A claim lasts one frame: make it every frame, as you draw the widget every frame. A view that stops running leaves nothing claimed. A function's claim is the view's that called it.
+
+`GUI.ClaimPointer(rect)` says where a widget is, in the GUI's pixels, from the top left like every `Rect`. Call it every frame the widget is there, whether the pointer is on it or not. A press on it is then the view's from the frame it lands in, as on the GUI's own widgets: a finger that touches it never reaches the game.
+
+`GUI.ClaimPointer()`, with no rect, claims the pointer wherever it is: for a widget dragged off its rect, as in the example, or a library that only says it wants the mouse.
+
+::: tip Give the rect where you can
+A claim with no rect hides from the next frame on, since the engine doesn't know where your widget is. With a mouse, claiming while it's over the widget is enough: the click comes later. A finger hovers over nothing, so its touch reaches the game and the other views for the frame it lands in. On a phone, only a rect keeps it from them.
+:::
+
+The rest follows from the GUI being drawn on top:
+
+- The GUI's own use comes first. A view never reads what the GUI is using, whatever it claimed, so a button of the GUI's over your widget takes the click.
+- While a view has the keyboard, Tab and the arrows don't move the GUI's focus onto its widgets.
+- The gamepad isn't the keyboard's: a claim leaves it to the game.
+- Where the pointer is stays everyone's, as it does over the GUI.
+- Two views that claim the same device both go on reading it. Which of their widgets is on top is theirs to know.
+
+`GUI.ShowKeyboard()` is apart from the keyboard's claim, since a widget that only takes shortcuts doesn't want a phone's keyboard over half the screen. Call it every frame the player is typing into your widget.

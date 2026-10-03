@@ -72,8 +72,24 @@ typedef struct tide_button {
 #define TIDE_DEVICES_MEMBER_FLOAT2(name) tide_float2 name;
 #define TIDE_DEVICES_MEMBER_FLOAT(name) float name;
 
+#ifndef TIDE_TEXT_MAX
+#define TIDE_TEXT_MAX 32u
+#endif
+
+// Characters typed since the last poll, as Unicode code points. Unlike keys,
+// they follow the keyboard layout: what's printed on the key, with Shift and
+// friends applied. A poll takes as many as fit, and the platform keeps the rest
+// for the next, so a long paste comes over a few. The GUI types them into
+// fields, and views read them as text (`Devices.keyboard.text`); the input
+// never sees them.
+typedef struct tide_typed {
+    uint32_t count;
+    uint32_t chars[TIDE_TEXT_MAX];
+} tide_typed;
+
 typedef struct tide_keyboard {
     TIDE_KEYBOARD_KEYS(TIDE_DEVICES_MEMBER_BUTTON)
+    tide_typed text; // This frame's, for views: never in a sample or the input
 } tide_keyboard;
 
 typedef struct tide_mouse {
@@ -139,25 +155,12 @@ typedef struct tide_pointer {
     uint8_t tide_pad[3];
 } tide_pointer;
 
-#ifndef TIDE_TEXT_MAX
-#define TIDE_TEXT_MAX 32u
-#endif
-
-// Characters typed since the last poll, as Unicode code points. Unlike keys,
-// they follow the keyboard layout: what's printed on the key, with Shift and
-// friends applied. The GUI types them into fields; the input never sees them.
-typedef struct tide_typed {
-    uint32_t count;
-    uint32_t chars[TIDE_TEXT_MAX];
-} tide_typed;
-
 typedef struct tide_devices {
     tide_keyboard keyboard;
     tide_mouse mouse;
     tide_gamepad gamepad;
     tide_touchscreen touchscreen;
     tide_pointer pointer;
-    tide_typed text; // Platform state, not visible to Tide
 } tide_devices;
 
 #undef TIDE_DEVICES_MEMBER_BUTTON

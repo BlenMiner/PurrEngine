@@ -258,6 +258,7 @@ static void frame_devices(tide_gui *g, const tide_devices *now)
 #undef FRAME_MOUSE
 #undef FRAME_PAD
 #undef FRAME_DPAD
+    d->keyboard.text = now->keyboard.text;
     d->mouse.position = now->mouse.position;
     d->mouse.delta = now->mouse.poll_delta;
     d->mouse.scroll = now->mouse.poll_scroll;
@@ -278,58 +279,134 @@ static void frame_devices(tide_gui *g, const tide_devices *now)
     g->last = *now;
 }
 
+#define RELEASE(b) (b) = (tide_button){0};
+
+// The keys, and what's typed.
+static void hide_keyboard(tide_devices *d)
+{
+#define RELEASE_KEY(name) RELEASE(d->keyboard.name)
+    TIDE_KEYBOARD_KEYS(RELEASE_KEY)
+#undef RELEASE_KEY
+    d->keyboard.text = (tide_typed){0};
+}
+
+static void hide_gamepad(tide_devices *d)
+{
+#define RELEASE_PAD(name) RELEASE(d->gamepad.name)
+#define RELEASE_DPAD(name) RELEASE(d->gamepad.dpad.name)
+    TIDE_GAMEPAD_BUTTONS(RELEASE_PAD)
+    TIDE_DPAD_BUTTONS(RELEASE_DPAD)
+#undef RELEASE_PAD
+#undef RELEASE_DPAD
+    d->gamepad.leftStick = d->gamepad.rightStick = tide_f2(0.0f, 0.0f);
+    d->gamepad.leftTrigger = d->gamepad.rightTrigger = 0.0f;
+}
+
+// The mouse's buttons and scroll, and the pointer's press.
+static void hide_pointer(tide_devices *d)
+{
+#define RELEASE_MOUSE(name) RELEASE(d->mouse.name)
+    TIDE_MOUSE_BUTTONS(RELEASE_MOUSE)
+#undef RELEASE_MOUSE
+    d->mouse.scroll = tide_f2(0.0f, 0.0f);
+    // The finger that's the pointer: the primary touch, in its slot too.
+    RELEASE(d->pointer.press)
+    tide_touchscreen *s = &d->touchscreen;
+    if (d->pointer.touch && s->primaryTouch.id != 0) {
+        for (int i = 0; i < TIDE_TOUCHES; i++) {
+            if (s->touches.at[i].id == s->primaryTouch.id) RELEASE(s->touches.at[i].press)
+        }
+        RELEASE(s->primaryTouch.press)
+    }
+}
+
+#undef RELEASE
+
+// Where the pointer in `d` is, in the GUI's pixels: false for a finger that's
+// off the screen, which is nowhere.
+static bool pointer_place(const tide_gui *g, const tide_devices *d, tide_float2 *at)
+{
+    const tide_pointer *p = &d->pointer;
+    if (p->touch && !p->press.held && !p->press.pressed && !p->press.up) return false;
+    *at = tide_f2(p->position.x, g->height - p->position.y);
+    return true;
+}
+
+// Whether the pointer in `d` is on the GUI: on a widget or an area, where the
+// last frame drew them. The game's samples and the views read a press before
+// the frame's GUI sees it, so where the pointer is now says whose it is, not
+// where the GUI last saw it: a finger that touches a button is the GUI's from
+// the frame it lands in, and so is a click the mouse made as it came.
+static bool on_gui(const tide_gui *g, const tide_devices *d)
+{
+    tide_float2 at;
+    if (!pointer_place(g, d, &at)) return false;
+    for (uint32_t i = 0; i < g->rect_count; i++) {
+        if (contains(g->rects[i], at)) return true;
+    }
+    return g->rects_full && g->over; // More widgets than fit: as the frame saw it
+}
+
 // Hides what the GUI uses from devices the game or views read. The GUI works
 // out the next frame's from the platform's, so nothing is lost.
 static void hide(const tide_gui *g, tide_devices *d)
 {
     if (g->focus || g->editing || g->modal) {
-#define RELEASE(b) (b) = (tide_button){0};
-#define RELEASE_KEY(name) RELEASE(d->keyboard.name)
-#define RELEASE_PAD(name) RELEASE(d->gamepad.name)
-#define RELEASE_DPAD(name) RELEASE(d->gamepad.dpad.name)
-        TIDE_KEYBOARD_KEYS(RELEASE_KEY)
-        TIDE_GAMEPAD_BUTTONS(RELEASE_PAD)
-        TIDE_DPAD_BUTTONS(RELEASE_DPAD)
-#undef RELEASE_KEY
-#undef RELEASE_PAD
-#undef RELEASE_DPAD
-        d->gamepad.leftStick = d->gamepad.rightStick = tide_f2(0.0f, 0.0f);
-        d->gamepad.leftTrigger = d->gamepad.rightTrigger = 0.0f;
+        hide_keyboard(d);
+        hide_gamepad(d);
     }
-    if (g->over || g->active || g->modal) {
-#define RELEASE_MOUSE(name) RELEASE(d->mouse.name)
-        TIDE_MOUSE_BUTTONS(RELEASE_MOUSE)
-#undef RELEASE_MOUSE
-        d->mouse.scroll = tide_f2(0.0f, 0.0f);
-        // The finger on the GUI: the primary touch, in its slot too.
-        RELEASE(d->pointer.press)
-        tide_touchscreen *s = &d->touchscreen;
-        if (d->pointer.touch && s->primaryTouch.id != 0) {
-            for (int i = 0; i < TIDE_TOUCHES; i++) {
-                if (s->touches.at[i].id == s->primaryTouch.id) RELEASE(s->touches.at[i].press)
-            }
-            RELEASE(s->primaryTouch.press)
-        }
-#undef RELEASE
-    }
+    if (g->active || g->modal || on_gui(g, d)) hide_pointer(d);
     if (g->modal) {
         d->mouse.delta = tide_f2(0.0f, 0.0f);
         d->pointer.delta = tide_f2(0.0f, 0.0f);
     }
 }
 
+// Hides what views claimed (`what`), as the GUI's own use is.
+static void hide_claimed(tide_devices *d, const uint32_t what)
+{
+    if (what & TIDE_GUI_KEYBOARD) hide_keyboard(d);
+    if (what & TIDE_GUI_POINTER) hide_pointer(d);
+}
+
+// What views claimed that `view` doesn't read, or the game for 0, with the
+// pointer where `d` has it: what any view claimed last frame, and the pointer
+// where it's on a widget of a view's own now, as with the GUI's (see on_gui);
+// less what `view` claimed itself.
+static uint32_t claimed_from(const tide_gui *g, const tide_devices *d, const uint32_t view)
+{
+    uint32_t taken = g->taken;
+    uint32_t own = 0;
+    for (uint32_t i = 0; view && i < g->claim_count; i++) {
+        if (g->claims[i].view == view) own = g->claims[i].what;
+    }
+    tide_float2 at;
+    if (g->claim_rect_count && pointer_place(g, d, &at)) {
+        for (uint32_t i = 0; i < g->claim_rect_count; i++) {
+            if (!contains(g->claim_rects[i].rect, at)) continue;
+            taken |= TIDE_GUI_POINTER;
+            if (view && g->claim_rects[i].view == view) own |= TIDE_GUI_POINTER;
+        }
+    }
+    return taken & ~own;
+}
+
 // Moves the focus with Tab, the arrows and the d-pad, in last frame's order.
 static void navigate(tide_gui *g)
 {
-    const bool tab = pressed(g, KEY_TAB);
+    // A view that claimed the keyboard has its keys until a widget has the
+    // focus: Tab and the arrows don't start moving it.
+    const bool keyboard = g->focus || !(g->taken & TIDE_GUI_KEYBOARD);
+    const bool tab = keyboard && pressed(g, KEY_TAB);
     bool next = tab && !(g->keys & KEY_SHIFT);
     bool back = tab && (g->keys & KEY_SHIFT);
     // The arrows and d-pad move the focus once a widget has it. They only
     // start moving it while the game isn't reading the devices, so they never
     // take a HUD's button away from the game.
     if (g->focus || g->nav_arrows) {
-        if (pressed(g, KEY_DOWN | PAD_DOWN)) next = true;
-        if (pressed(g, KEY_UP | PAD_UP)) back = true;
+        const uint32_t usable = keyboard ? ~0u : ~(uint32_t)(KEY_DOWN | KEY_UP);
+        if (pressed(g, (KEY_DOWN | PAD_DOWN) & usable)) next = true;
+        if (pressed(g, (KEY_UP | PAD_UP) & usable)) back = true;
     }
     const int n = (int)g->nav_last_count;
     if ((next || back) && n > 0) {
@@ -367,13 +444,17 @@ void tide_gui_begin(tide_gui *g, const tide_devices *devices, const tide_float2 
     const uint32_t keys = nav_keys(devices);
     g->keys_pressed = keys & ~g->keys;
     g->keys = keys;
-    g->text = devices->text;
+    g->text = devices->keyboard.text;
     g->nav_arrows = !g->game_input;
     g->game_input = false;
     g->back = pressed(g, KEY_CANCEL | PAD_CANCEL) && !g->editing;
     // With what the GUI used last frame, before this frame's keys move the focus.
     frame_devices(g, devices);
     hide(g, &g->devices);
+    // ...and what views claimed then, until a view runs (tide_gui_view).
+    g->unclaimed = g->devices;
+    hide_claimed(&g->devices, claimed_from(g, &g->unclaimed, 0));
+    g->view = 0;
 
     g->claimed = false;
     g->active_seen = false;
@@ -407,12 +488,29 @@ void tide_gui_end(tide_gui *g, tide_draw_list *draw)
     g->hot_next = 0;
     g->over = g->over_next;
     g->over_next = false;
+    memcpy(g->rects, g->rects_next, g->rect_count_next * sizeof g->rects[0]);
+    g->rect_count = g->rect_count_next;
+    g->rect_count_next = 0;
+    g->rects_full = g->rects_full_next;
+    g->rects_full_next = false;
     // A modal that just came on top takes the focus next frame.
     g->grab = g->modal_next != g->modal ? g->modal_next : 0;
     g->modal = g->modal_next;
     g->modal_next = 0;
     memcpy(g->nav_last, g->nav, g->nav_count * sizeof g->nav[0]);
     g->nav_last_count = g->nav_count;
+    // This frame's claims stand until the next frame ends.
+    g->taken = g->taken_next;
+    g->taken_next = 0;
+    memcpy(g->claims, g->claims_next, g->claim_count_next * sizeof g->claims[0]);
+    g->claim_count = g->claim_count_next;
+    g->claim_count_next = 0;
+    memcpy(g->claim_rects, g->claim_rects_next, g->claim_rect_count_next * sizeof g->claim_rects[0]);
+    g->claim_rect_count = g->claim_rect_count_next;
+    g->claim_rect_count_next = 0;
+    g->keyboard_shown = g->keyboard_shown_next;
+    g->keyboard_shown_next = false;
+    g->view = 0;
 
     if (g->list.count > 0) {
         if (draw->clipped) tide_draw_no_clip(draw); // Whatever the views clipped, the GUI isn't
@@ -423,13 +521,66 @@ void tide_gui_end(tide_gui *g, tide_draw_list *draw)
 
 bool tide_gui_typing(const tide_gui *g)
 {
-    return g->editing != 0;
+    return g->editing != 0 || g->keyboard_shown;
 }
 
 void tide_gui_hide(tide_gui *g, tide_devices *d)
 {
     g->game_input = true;
+    const uint32_t claimed = claimed_from(g, d, 0);
     hide(g, d);
+    hide_claimed(d, claimed);
+    d->keyboard.text = (tide_typed){0}; // What's typed is a frame's: views read it
+}
+
+// ---------------------------------------------------------------------------
+// Claims
+
+void tide_gui_view(tide_gui *g, const uint32_t view)
+{
+    g->view = view;
+    if (!g->taken && !g->claim_rect_count) return; // Nothing's claimed: every view reads the same devices
+    g->devices = g->unclaimed;
+    hide_claimed(&g->devices, claimed_from(g, &g->unclaimed, view));
+}
+
+// The view that's running claims `what`. Past TIDE_GUI_MAX_CLAIMS views, a
+// claim still hides it from the game and the other views, and from the view
+// itself.
+static void claim(tide_gui *g, const uint32_t what)
+{
+    g->taken_next |= what;
+    for (uint32_t i = 0; i < g->claim_count_next; i++) {
+        if (g->claims_next[i].view != g->view) continue;
+        g->claims_next[i].what |= what;
+        return;
+    }
+    if (g->claim_count_next < TIDE_GUI_MAX_CLAIMS) g->claims_next[g->claim_count_next++] = (tide_gui_claim){g->view, what};
+}
+
+void tide_gui_claim_pointer(tide_gui *g)
+{
+    claim(g, TIDE_GUI_POINTER);
+}
+
+void tide_gui_claim_keyboard(tide_gui *g)
+{
+    claim(g, TIDE_GUI_KEYBOARD);
+}
+
+void tide_gui_claim_pointer_at(tide_gui *g, const tide_rect rect)
+{
+    if (g->claim_rect_count_next < TIDE_GUI_MAX_CLAIM_RECTS) {
+        g->claim_rects_next[g->claim_rect_count_next++] = (tide_gui_claim_rect){rect, g->view};
+        return;
+    }
+    // More places than a frame remembers: the pointer on it, as this frame sees it
+    if (contains(rect, g->mouse)) claim(g, TIDE_GUI_POINTER);
+}
+
+void tide_gui_show_keyboard(tide_gui *g)
+{
+    g->keyboard_shown_next = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,13 +599,23 @@ static bool live(const tide_gui *g)
     return !under_modal(g) && !grayed(g);
 }
 
+// Remembers where a widget or an area is: the pointer there is the GUI's, for
+// the game and views that read it before the next frame's GUI (see on_gui).
+static void remember_place(tide_gui *g, const tide_rect r)
+{
+    if (g->rect_count_next < TIDE_GUI_MAX_RECTS) g->rects_next[g->rect_count_next++] = r;
+    else g->rects_full_next = true;
+}
+
 // Whether the mouse is on the widget. Where widgets overlap, the one drawn
 // last is on top: it was under the mouse last frame, and hides the others
 // while the mouse stays on it. A disabled widget does too, and keeps clicks on
 // it from the game, but it's never hovered itself.
 static bool hovered(tide_gui *g, const uint32_t id, const tide_rect r)
 {
-    if (under_modal(g) || !contains(r, g->mouse)) return false;
+    if (under_modal(g)) return false;
+    remember_place(g, r);
+    if (!contains(r, g->mouse)) return false;
     g->hot_next = id;
     g->hot_rect_next = r;
     g->over_next = true;
@@ -623,6 +784,7 @@ int tide_gui_begin_area(tide_gui *g, const uint32_t id, const tide_rect rect)
     top(g)->rect = rect;
     top(g)->panel = background;
     top(g)->hot_before = g->hot_next;
+    top(g)->rects_before = g->rect_count_next;
     return before;
 }
 
@@ -641,6 +803,7 @@ int tide_gui_begin_area_at(tide_gui *g, const uint32_t id, const int32_t anchor)
     top(g)->anchor = anchor;
     top(g)->panel = background;
     top(g)->hot_before = g->hot_next;
+    top(g)->rects_before = g->rect_count_next;
     return before;
 }
 
@@ -693,6 +856,11 @@ static void close_area(tide_gui *g, const tide_gui_group *grp)
                 if (c->kind == TIDE_DRAW_LINE) c->b = tide_f2(c->b.x + dx, c->b.y + dy);
             }
         }
+        // Its widgets are remembered where they're drawn, too.
+        for (uint32_t i = grp->rects_before; i < g->rect_count_next; i++) {
+            g->rects_next[i].x += dx;
+            g->rects_next[i].y += dy;
+        }
         r = (tide_rect){at.x, at.y, size.x, size.y};
     }
     if (grp->panel != UINT32_MAX) {
@@ -701,6 +869,7 @@ static void close_area(tide_gui *g, const tide_gui_group *grp)
         c->b = tide_f2(r.width, r.height);
     }
     remember(g, grp->id, size, grp->natural, grp->least);
+    remember_place(g, r);
     if (!contains(r, g->mouse)) return;
     g->over_next = true;
     // Under the mouse, but none of its widgets is: the panel hides what's below it.
@@ -1132,35 +1301,6 @@ bool tide_gui_color_field(tide_gui *g, const uint32_t id, const tide_rect rect, 
 // Text fields: click, or press Enter or type with the focus, to type; the
 // value changes as you type. Enter or Escape stop typing.
 
-// A code point as UTF-8, into `out`; returns how many bytes.
-static int utf8(const uint32_t c, char *out)
-{
-    if (c < 0x80u) {
-        out[0] = (char)c;
-        return 1;
-    }
-    if (c < 0x800u) {
-        out[0] = (char)(0xC0u | c >> 6);
-        out[1] = (char)(0x80u | (c & 0x3Fu));
-        return 2;
-    }
-    if (c < 0x10000u) {
-        if (c >= 0xD800u && c < 0xE000u) return 0; // Half of a UTF-16 pair: not a character
-        out[0] = (char)(0xE0u | c >> 12);
-        out[1] = (char)(0x80u | (c >> 6 & 0x3Fu));
-        out[2] = (char)(0x80u | (c & 0x3Fu));
-        return 3;
-    }
-    if (c < 0x110000u) {
-        out[0] = (char)(0xF0u | c >> 18);
-        out[1] = (char)(0x80u | (c >> 12 & 0x3Fu));
-        out[2] = (char)(0x80u | (c >> 6 & 0x3Fu));
-        out[3] = (char)(0x80u | (c & 0x3Fu));
-        return 4;
-    }
-    return 0;
-}
-
 static void start_text(tide_gui *g, const uint32_t id, const tide_str value)
 {
     g->editing = id;
@@ -1184,7 +1324,7 @@ static bool type_text(tide_gui *g)
     }
     for (uint32_t i = 0; i < g->text.count && i < TIDE_TEXT_MAX; i++) {
         char bytes[4];
-        const int n = utf8(g->text.chars[i], bytes);
+        const int n = tide_utf8_encode(g->text.chars[i], bytes);
         if (n == 0 || g->edit_len + (uint32_t)n + 1 > sizeof g->edit) continue;
         memcpy(g->edit + g->edit_len, bytes, (size_t)n);
         g->edit_len += (uint32_t)n;

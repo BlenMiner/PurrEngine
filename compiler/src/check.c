@@ -579,7 +579,7 @@ static type list_of(program *prog, const type element)
     sb name = {0};
     sb_printf(&name, "List<%s>", type_name(element));
     d->name = (str){name.data, (int)name.len};
-    const field item = {str_from("item"), str_from(""), {0, 0, 0}, element, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
+    const field item = {str_from("item"), str_from(""), {0, 0, 0}, element, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false, false};
     vec_push(d->fields, item);
     d->index = prog->lists.count;
     vec_push(prog->lists, d);
@@ -809,7 +809,7 @@ static type grid_of(program *prog, const type cell, const int dims)
     sb name = {0};
     sb_printf(&name, "Grid%d<%s>", dims, type_name(cell));
     d->name = (str){name.data, (int)name.len};
-    const field item = {str_from("cell"), str_from(""), {0, 0, 0}, cell, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
+    const field item = {str_from("cell"), str_from(""), {0, 0, 0}, cell, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false, false};
     vec_push(d->fields, item);
     d->index = prog->grids.count;
     vec_push(prog->grids, d);
@@ -1345,6 +1345,26 @@ static bool check_frame_use(checker *c, const loc at, const char *what)
     else if (c->in_input) diag_note("%s reads the devices; views draw, once per frame", input_code(c));
     else diag_note("views run once per frame and only read the world: 'view Name(...) { ... }'");
     return false;
+}
+
+// `Devices.keyboard.text`: what was typed since the last frame. It's a
+// frame's, as this frame's Devices are, so views read it, and the functions
+// they call. The input never sends it: Sample runs once per tick, not once per
+// frame, and the match can't read it.
+static bool check_typed_use(checker *c, const loc at)
+{
+    if (c->in_input && !c->method) {
+        diag_error(at, "%s can't read what's typed: it's a frame's, and %s runs once per tick", input_code(c), input_code(c));
+        diag_note("views read 'Devices.keyboard.text' once per frame, and keep what they need in local state");
+        return false;
+    }
+    const decl *code = c->method ? NULL : c->system;
+    if (code && code->kind == DECL_SYSTEM && !code->is_view && !code->is_local) {
+        diag_error(at, "the match can't read what's typed: it stays on this machine, and the input never sends it");
+        diag_note("views read 'Devices.keyboard.text' once per frame, and keep what they need in local state");
+        return false;
+    }
+    return check_frame_use(c, at, "Devices");
 }
 
 // The event Send takes: `RoundOver` with its defaults, `Hit { ... }`, or any
@@ -2910,6 +2930,10 @@ static type check_member(checker *c, expr *e)
         for (int i = 0; i < obj.decl->fields.count; i++) {
             field *f = &obj.decl->fields.items[i];
             if (str_eq(f->name, e->member) && !f->hidden) {
+                if (f->typed) { // keyboard.text: made into text where it's read, so no field of text
+                    e->typed_text = true;
+                    return check_typed_use(c, e->at) ? f->type : T_ERR;
+                }
                 e->field = f;
                 if (f->leaf && !device_group_type(f->type)) note_device_member(c, e);
                 return f->type;
@@ -6470,8 +6494,8 @@ static void add_builtins(program *prog)
     time->kind = DECL_SINGLETON;
     time->name = str_from("Time");
     time->builtin = true;
-    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
-    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
+    const field dt = {str_from("dt"), str_from("float"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false, false};
+    const field tick = {str_from("tick"), str_from("int"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false, false};
     vec_push(time->fields, dt);
     vec_push(time->fields, tick);
 
@@ -6480,7 +6504,7 @@ static void add_builtins(program *prog)
     owner->kind = DECL_COMPONENT;
     owner->name = str_from("Owner");
     owner->builtin = true;
-    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
+    const field player = {str_from("player"), str_from("PlayerID"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false, false};
     vec_push(owner->fields, player);
     prog->owner = owner;
 
@@ -6583,7 +6607,7 @@ static void add_builtins(program *prog)
         {"state", "SessionState"}, {"player", "PlayerID"}, {"ping", "int"}, {"server", "bool"}, {"open", "bool"}};
     for (int i = 0; i < (int)(sizeof session_fields / sizeof session_fields[0]); i++) {
         const field f = {str_from(session_fields[i][0]), str_from(session_fields[i][1]), {0, 0, 0}, {0}, NULL, {0, 0, 0},
-                         {0}, {0, 0, 0}, false, 0, false};
+                         {0}, {0, 0, 0}, false, 0, false, false};
         vec_push(session->fields, f);
     }
     prog->session = session;
@@ -6592,7 +6616,7 @@ static void add_builtins(program *prog)
     prog->connected->is_local = true;
     prog->disconnected->is_local = true;
     const field reason_field = {str_from("reason"), str_from("DisconnectReason"), {0, 0, 0}, {0}, NULL, {0, 0, 0}, {0},
-                                {0, 0, 0}, false, 0, false};
+                                {0, 0, 0}, false, 0, false, false};
     vec_push(prog->disconnected->fields, reason_field);
 
     VEC(decl *) decls = {0};
@@ -6630,7 +6654,7 @@ static decl *new_record(program *prog, const char *name, const char *c_name)
 
 static void record_field(decl *d, const char *name, const type t)
 {
-    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false};
+    const field f = {str_from(name), str_from(""), {0, 0, 0}, t, NULL, {0, 0, 0}, {0}, {0, 0, 0}, false, 0, false, false};
     vec_push(d->fields, f);
 }
 
@@ -6657,7 +6681,7 @@ static void layout_leaves(decl *d)
         for (int i = 0; i < d->fields.count; i++) {
             field *f = &d->fields.items[i];
             const bool group = device_group_field(f);
-            if (group != (pass == 1)) continue;
+            if (group != (pass == 1) || f->typed) continue;
             f->leaf = 1 + at;
             if (group) layout_leaves(f->type.decl);
             at += group ? f->type.decl->leaves_count : 1;
@@ -6684,7 +6708,7 @@ static void list_leaves(program *prog, decl *d, const char *path)
         for (int i = 0; i < d->fields.count; i++) {
             field *f = &d->fields.items[i];
             const bool group = device_group_field(f);
-            if (group != (pass == 1)) continue;
+            if (group != (pass == 1) || f->typed) continue;
             sb at = {0};
             sb_printf(&at, "%s%s" STR_FMT, path, path[0] ? "." : "", STR_ARG(f->name));
             if (group) {
@@ -6737,6 +6761,10 @@ static void add_device_records(program *prog)
 #define TRIGGER(name) record_field(gamepad, #name, t_float);
 #define GAMEPAD_BUTTON(name) record_field(gamepad, #name, t_button);
     TIDE_KEYBOARD_KEYS(KEY)
+    // What was typed since the last frame: text, which views read. It's no
+    // device value: the input never sends it.
+    record_field(keyboard, "text", (type){TY_STRING, NULL});
+    keyboard->fields.items[keyboard->fields.count - 1].typed = true;
     TIDE_MOUSE_AXES(MOUSE_AXIS)
     TIDE_MOUSE_BUTTONS(MOUSE_BUTTON)
     TIDE_DPAD_BUTTONS(DPAD_BUTTON)

@@ -100,6 +100,13 @@ tide_str tide_str_replace(tide_str a, tide_str from, tide_str to);
 // Counts the characters of UTF-8 text.
 int32_t tide_utf8_chars(const char *bytes, int32_t count);
 
+// A code point as UTF-8, into `out` (4 bytes at most); returns how many bytes,
+// or 0 for what isn't a character.
+int tide_utf8_encode(uint32_t c, char *out);
+
+// What was typed, as text (`Devices.keyboard.text`): in the scratch area.
+tide_str tide_str_typed(const tide_typed *typed);
+
 // ---------------------------------------------------------------------------
 // Text in fields: of components, singletons, structs and events.
 //

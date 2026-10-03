@@ -427,7 +427,7 @@ void tide_platform_poll(tide_devices *devices)
     poll_gamepad(&devices->gamepad);
     poll_touches(&devices->touchscreen);
     tide_pointer_poll(devices, mouse_used);
-    poll_text(&devices->text);
+    poll_text(&devices->keyboard.text);
 }
 
 // The camera maps world units (y up) to window pixels (y down). Each frame's

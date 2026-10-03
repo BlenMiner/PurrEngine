@@ -1860,6 +1860,10 @@ static void gen_expr(gen *g, sb *o, const expr *e)
             sb_put(o, e->c_constant); // quaternion.identity, Math.PI
             break;
         }
+        if (e->typed_text) { // Devices.keyboard.text: the characters typed, as text
+            sb_printf(o, "tide_str_typed(&%stext)", object_access(g, e->object));
+            break;
+        }
         if (e->edge != EDGE_NONE) {
             // input.jump.down: this tick's value against last tick's.
             const char *now = expr_text(g, e->object);
@@ -7071,6 +7075,8 @@ static void gen_system_run(gen *g, const decl *sys)
                      "tide_local *tide_l, tide_draw_list *tide_draw, tide_gui *tide_ui)\n{\n",
                   name);
         if (reads_match(sys)) sb_put(o, "    if (!tide_w) return; // It reads the match, and there's none.\n");
+        // The devices it reads keep what it claimed last frame, and its claims are its own
+        sb_printf(o, "    tide_gui_view(tide_ui, %du);\n", view_number + 1);
         // What it reads of the match, between last tick and this one
         sb_put(o, "    const bool tide_blend = tide_prev && tide_alpha < 1.0f;\n    (void)tide_blend;\n");
         for (int i = 0; i < sys->params.count; i++) {

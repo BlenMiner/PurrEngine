@@ -1179,6 +1179,16 @@ static const char *button_field_doc(const decl *d, const str name)
     return NULL;
 }
 
+#define KEYBOARD_TEXT_DOC \
+    "What was typed since the last frame, as text. Unlike keys, it follows the keyboard's layout, and what's " \
+    "pasted comes through it too. Views read it, and the functions they call: it's never in the input. It's " \
+    "empty while the GUI or another view has the keyboard."
+
+static bool keyboard_text(const type object, const str name)
+{
+    return object.kind == TY_RECORD && object.decl && str_eq_c(object.decl->name, "Keyboard") && str_eq_c(name, "text");
+}
+
 // A built-in call the checker takes by name, for hovers, completion, signature
 // help and inlay hints: its form and what it does.
 typedef struct method_form {
@@ -1488,13 +1498,17 @@ static void describe(const occurrence *o, sb *out)
             sb_put(out, ", the match's ticks, this machine's frames, or seconds.");
         } else {
             sb_put(out, str_eq_c(o->name, "Draw")        ? "\n\nImmediate-mode drawing, in views and the functions they call."
-                      : str_eq_c(o->name, "GUI")       ? "\n\nThe GUI's widgets, each at a Rect. In views and the functions they call."
+                      : str_eq_c(o->name, "GUI")       ? "\n\nThe GUI's widgets, each at a Rect, and claims of the pointer and "
+                                                         "the keyboard for widgets a view draws itself. In views and the "
+                                                         "functions they call."
                       : str_eq_c(o->name, "GUILayout") ? "\n\nThe GUI's widgets, laid out one after another, and containers "
                                                          "that arrange them. In views and the functions they call."
                       : str_eq_c(o->name, "Screen")    ? "\n\nThe window's size, in pixels."
-                      : str_eq_c(o->name, "Devices")   ? "\n\nThis machine's keyboard, mouse and gamepad. Views read them once "
-                                                         "per frame, and the input's Sample once per tick. Systems take a "
-                                                         "`Devices` parameter instead: the devices of the entity's owner."
+                      : str_eq_c(o->name, "Devices")   ? "\n\nThis machine's keyboard, mouse, gamepad, touchscreen and "
+                                                         "pointer. Views read them once per frame, less what the GUI is "
+                                                         "using and what other views claimed, and the input's Sample once "
+                                                         "per tick. Systems take a `Devices` parameter instead: the devices "
+                                                         "of the entity's owner."
                       : str_eq_c(o->name, "Clipboard") ? "\n\nThis machine's clipboard: Copy, from views and local handlers. "
                                                          "Ctrl+V pastes into text fields by itself."
                                                        : "\n\nMath functions and constants, deterministic on every platform.");
@@ -1594,6 +1608,7 @@ static void describe(const occurrence *o, sb *out)
         if (str_eq_c(o->name, "down")) sb_put(out, "\n\nTrue on the tick it became true.");
         if (str_eq_c(o->name, "up")) sb_put(out, "\n\nTrue on the tick it became false.");
         if (o->object_type.kind == TY_STRING && str_eq_c(o->name, "length")) sb_put(out, "\n\n" TEXT_LENGTH_DOC);
+        if (keyboard_text(o->object_type, o->name)) sb_put(out, "\n\n" KEYBOARD_TEXT_DOC);
         if (o->object_type.kind == TY_LIST && str_eq_c(o->name, "count")) sb_put(out, "\n\n" LIST_COUNT_DOC);
         if (o->object_type.kind == TY_RECORD && o->object_type.decl && o->object_type.decl->array_of
             && str_eq_c(o->name, "count")) {
@@ -3602,6 +3617,11 @@ static void list_members(completion *c, const type t, const bool edges, const sc
         for (int i = 0; i < t.decl->fields.count; i++) {
             const field *f = &t.decl->fields.items[i];
             if (f->hidden) continue;
+            if (f->typed) { // What's typed is a frame's: views read it, and the functions they call
+                if (!sc->decl || !(sc->decl->is_view || sc->decl->kind == DECL_FUNCTION)) continue;
+                item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), KEYBOARD_TEXT_DOC, NULL);
+                continue;
+            }
             item(c, str_to_cstr(f->name), CK_FIELD, type_name(f->type), button_field_doc(t.decl, f->name), NULL);
         }
         if (t.kind == TY_SINGLETON && t.decl->builtin && str_eq_c(t.decl->name, "Session")) {
