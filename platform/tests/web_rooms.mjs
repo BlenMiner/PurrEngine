@@ -7,8 +7,9 @@
 //
 //   node web_rooms.mjs <browser> <tide_platform_web_rooms.html> <scratch folder> [handover]
 //
-// With `handover`, three frames check host migration: the host leaves once
-// both players joined, and passes once both say "ok after", each the same
+// With `handover`, three frames check host migration: the page tells the host
+// to leave once both players say they're in, however long that took, and
+// passes once both say "ok after", each the same
 // player as before, one of them hosting the room now. With `ended`, a host
 // ends its match as soon as it has a room, which the relay may not know yet,
 // and a frame that goes to its room again once the relay heard, as a player
@@ -52,10 +53,12 @@ const page = `<!doctype html>
   const ended = ${JSON.stringify(ended)};
   let hosted = null; // Its code and key, with \`ended\`
   const policy = ${JSON.stringify(process.env.TIDE_ICE_POLICY || 'all')};
+  const playing = {}; // Each player's frame
   function player(who, args) {
     const frame = document.createElement('iframe');
     frame.src = 'game.html?who=' + who + '&relay=' + encodeURIComponent(relay) + '&policy=' + policy + '&args=' + args;
     document.body.append(frame);
+    playing[who] = frame;
   }
   const log = [];
   const ok = new Set();
@@ -88,7 +91,10 @@ const page = `<!doctype html>
       player('b', 'handover-join,' + room[1] + ',3');
     }
     const number = /player ([0-9]+)/.exec(data.line);
-    if (handover && data.line.startsWith('ok before')) before[data.who] = number[1];
+    if (handover && data.line.startsWith('ok before')) {
+      before[data.who] = number[1];
+      if (Object.keys(before).length === 2) playing.host.contentWindow.postMessage({ tell: 'leave' }, '*');
+    }
     if (handover && data.line.startsWith('ok after')) {
       after[data.who] = { player: number[1], hosting: data.line.endsWith('hosting') };
       const done = Object.keys(after);

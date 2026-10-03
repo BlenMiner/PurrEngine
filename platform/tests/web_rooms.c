@@ -6,7 +6,8 @@
 // the match has to go on: the joiner's verified tick keeps up. Each prints
 // "ok" then, and keeps playing so the other can finish; anything else ends it
 // with "FAIL". With `handover-host` and `handover-join <code> <n>`, three of
-// them check host migration instead; with `end-host`, a host says its room's
+// them check host migration instead, the host leaving when the page tells it
+// (web_rooms.html); with `end-host`, a host says its room's
 // code and key and ends its match at once, and `migrate <code> <key>` goes to
 // that room again and says what the relay answered.
 
@@ -174,14 +175,14 @@ static void set_hidden(const bool hidden)
                          : "window.show()");
 }
 
-// Host migration (see handover in rooms_native.c): the host leaves a second
-// after both players joined; they say "ok before" once in, and "ok after"
-// once the match changed hands, with their player both times.
+// Host migration (see handover in rooms_native.c): the players say "ok
+// before" once in, and "ok after" once the match changed hands, with their
+// player both times. The host leaves when the page tells it, once both said
+// they're in, as no wait could: on a busy machine, they can take any time.
 static tide_game played;
 static bool handover;
 static bool before;
 static bool moved;
-static double all_in;
 static double migrating_since;
 
 static int fail(const char *why)
@@ -263,7 +264,7 @@ static int frame_ended(void)
     return TIDE_KEEP_RUNNING;
 }
 
-// Three players: the host leaves once both others are in, and they go on.
+// Three players: the host leaves once told both others are in, and they go on.
 static int frame_handover(void)
 {
     if (now > 45.0 && !done) return fail("the match didn't change hands within 45 seconds");
@@ -293,8 +294,7 @@ static int frame_handover(void)
     const world *w = tide_session_world(session);
     const tide_session_status status = tide_session_status_of(session);
     const bool in = status.client.state == TIDE_SESSION_CONNECTED;
-    if (me == 1 && in && w && w->joined == 3 && all_in == 0.0) all_in = now;
-    if (me == 1 && all_in > 0.0 && now - all_in > 1.0 && !done) {
+    if (me == 1 && !done && tide_web_eval("told.delete('leave')")) {
         tide_session_leave(session); // The others carry on without this machine
         done = true;
     }

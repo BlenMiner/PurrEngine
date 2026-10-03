@@ -289,6 +289,7 @@ static void on_relay(native_room *r, const char *text)
         relay_send(r, json);
         r->announced = true;
     } else if (rtc_json_get(m, "hosting").text) {
+        rtc_debug("room %s: the relay has it", r->code);
         r->reachable = true;
         if (r->moving) { // The room's host was gone: this machine is now
             r->moving = false;
@@ -388,9 +389,10 @@ static void pump(native_room *r)
 }
 
 // A room whose match ended, telling the relay (see backend_end), on the
-// connection it had or a new one, which it keeps until what it said has gone,
-// or the relay can't be reached. Every call on a room moves them along, and
-// tide/host.h makes one each frame (tide_platform_room_failed).
+// connection it had or a new one, which it keeps until the relay read what it
+// said (it answers the close that goes after: rtc_ws_finish), or can't be
+// reached. Every call on a room moves them along, and tide/host.h makes one
+// each frame (tide_platform_room_failed).
 typedef struct goodbye {
     struct goodbye *next;
     rtc_ws ws;
@@ -419,10 +421,11 @@ static void goodbyes_update(void)
             snprintf(json, sizeof json, "{\"end\":\"%s\"}", g->code);
             rtc_ws_send(&g->ws, json, strlen(json));
             g->said = true;
+            rtc_ws_finish(&g->ws, now);
             rtc_ws_update(&g->ws, now); // On its way at once
         }
-        const bool told = g->said && g->ws.out_size == 0;
-        if (told || g->ws.state == RTC_WS_CLOSED) {
+        if (g->ws.state == RTC_WS_CLOSED) {
+            const bool told = g->said && g->ws.answered;
             rtc_debug("room %s: %s the relay its match ended", g->code, told ? "told" : "couldn't tell");
             rtc_ws_close(&g->ws);
             *at = g->next;

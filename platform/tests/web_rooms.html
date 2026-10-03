@@ -9,12 +9,16 @@
 <script>
   // One of the two players web_rooms.mjs runs in a page: the query says which
   // (who), its arguments (args=host, or args=join,K7QF2M) and where the relay
-  // is. Every line it prints goes to the page around it.
+  // is. Every line it prints goes to the page around it, and what the page
+  // tells it once it happened (like 'leave'), the program asks for:
+  // tide_web_eval("told.delete('leave')").
   const query = new URLSearchParams(location.search);
   const tell = line => {
     console.log(line);
     parent.postMessage({ who: query.get('who'), line: String(line) }, '*');
   };
+  const told = new Set();
+  addEventListener('message', ({ data }) => { if (data && data.tell) told.add(data.tell); });
   var Tide = {
     canvas: document.getElementById('canvas'),
     arguments: (query.get('args') || '').split(',').filter(Boolean),

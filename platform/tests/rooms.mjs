@@ -38,9 +38,11 @@ const local = !process.env.TIDE_RELAY;
 const env = { ...process.env, TIDE_RELAY: relayUrl, ...(relayOnly ? { TIDE_RTC_RELAY_ONLY: '1' } : {}) };
 const loopback = { ...env, ...(local ? { TIDE_RTC_LOCAL: '1' } : {}) };
 
-// A desktop player: its lines, as they come
+// A desktop player: its lines, as they come, and what it's told to do once
+// what it waits for happened (see rooms_native.c)
 function player(args, name, anywhere = false, more = {}) {
-    const child = spawn(program, args, { env: { ...(anywhere ? env : loopback), ...more }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(program, args, { env: { ...(anywhere ? env : loopback), ...more }, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => {}); // Gone already
     const lines = [];
     const waiting = [];
     let buffer = '';
@@ -68,7 +70,8 @@ function player(args, name, anywhere = false, more = {}) {
         if (found) return Promise.resolve(found);
         return new Promise(resolve => waiting.push({ test: l => test.test(l), resolve }));
     };
-    return { child, line, exited };
+    const tell = what => child.stdin.write(`${what}\n`);
+    return { child, line, exited, tell };
 }
 
 const within = (promise, seconds, what) => Promise.race([
@@ -218,9 +221,12 @@ function openBrowser(which, query) {
 `;
         writeFileSync(`${profile}/user.js`, FIREFOX_PREFS + hiding);
         // --wait-for-browser: on Windows, the process started is only a
-        // launcher, and without it, stopping it would leave the browser
+        // launcher, and without it, stopping it would leave the browser.
+        // MOZ_DISABLE_SAFE_MODE_KEY: Shift held as Firefox starts (someone
+        // typing on this machine) puts it in safe mode, whose prompt nobody
+        // answers headless, so it would never open the page.
         child = spawn(which.path, ['--headless', '--no-remote', '--wait-for-browser', '--profile', profile, url],
-            { stdio: 'ignore' });
+            { stdio: 'ignore', env: { ...process.env, MOZ_DISABLE_SAFE_MODE_KEY: '1' } });
     } else {
         // --remote-debugging-pipe: DevTools on fds 3 and 4, which stopBrowser
         // asks to close the browser
@@ -299,7 +305,8 @@ await test('two desktop players in a match', async () => {
 });
 
 // Host migration: the host leaves, and its two players carry on, one of them
-// hosting the room now, each the same player as before.
+// hosting the room now, each the same player as before. It leaves once both
+// said they're in, however long that took.
 await test('a desktop match changes hands when its host leaves', async () => {
     const host = player(['handover-host'], 'host');
     players.push(host);
@@ -308,6 +315,7 @@ await test('a desktop match changes hands when its host leaves', async () => {
     const b = player(['handover-join', code, '3'], 'b');
     players.push(a, b);
     const before = await within(Promise.all([a.line(/^ok before/), b.line(/^ok before/)]), 45, 'meeting');
+    host.tell('leave');
     if ((await within(host.exited, 15, 'the host leaving')) !== 0) throw new Error('the host failed');
     const after = await within(Promise.all([a.line(/^ok after/), b.line(/^ok after/)]), 45, 'the match changing hands');
     const player_of = line => line.match(/player (\d+)/)[1];
@@ -319,19 +327,22 @@ await test('a desktop match changes hands when its host leaves', async () => {
 
 // A match its host ended stays ended, even for a player who missed the
 // goodbye: the relay tells them so, rather than let them take the room over.
-// The host ends it with its room at the relay and quits at once, or, early,
+// The host ends it once the relay has its room, and quits at once, or, early,
 // as soon as it has a room, which the relay may not know yet: then it goes on
-// until it told the relay (TIDE_RTC_DEBUG has it say so).
+// until it told the relay. TIDE_RTC_DEBUG has it say both: what the relay
+// answered it, and what it told the relay.
 for (const early of [false, true]) {
     await test(`a match its host ended${early ? ' before the relay knew its room' : ''} isn't taken over`, async () => {
-        const host = player([early ? 'end-host-early' : 'end-host'], 'host', false, early ? { TIDE_RTC_DEBUG: '1' } : {});
+        const host = player([early ? 'end-host-early' : 'end-host'], 'host', false, { TIDE_RTC_DEBUG: '1' });
         players.push(host);
         const [, code, , key] = (await within(host.line(/^room /), 15, 'hosting')).split(' ');
         if (early) {
             const told = await within(host.line(/the relay its match ended$/), 15, 'the host telling the relay');
             if (!told.includes(': told the relay')) throw new Error('the host couldn\'t tell the relay its match ended');
-        } else if ((await within(host.exited, 15, 'the host ending the match')) !== 0) {
-            throw new Error('the host failed');
+        } else {
+            await within(host.line(new RegExp(`room ${code}: the relay has it$`)), 15, 'the relay opening the room');
+            host.tell('end');
+            if ((await within(host.exited, 15, 'the host ending the match')) !== 0) throw new Error('the host failed');
         }
         // Once the relay heard (one here: another can't be asked), so the late player can't get there first
         const heard = async () => { while (local && !relay.ended.has(code)) await new Promise(r => setTimeout(r, 20)); };
