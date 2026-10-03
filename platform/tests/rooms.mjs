@@ -221,9 +221,12 @@ function openBrowser(which, query) {
 `;
         writeFileSync(`${profile}/user.js`, FIREFOX_PREFS + hiding);
         // --wait-for-browser: on Windows, the process started is only a
-        // launcher, and without it, stopping it would leave the browser
+        // launcher, and without it, stopping it would leave the browser.
+        // MOZ_DISABLE_SAFE_MODE_KEY: Shift held as Firefox starts (someone
+        // typing on this machine) puts it in safe mode, whose prompt nobody
+        // answers headless, so it would never open the page.
         child = spawn(which.path, ['--headless', '--no-remote', '--wait-for-browser', '--profile', profile, url],
-            { stdio: 'ignore' });
+            { stdio: 'ignore', env: { ...process.env, MOZ_DISABLE_SAFE_MODE_KEY: '1' } });
     } else {
         // --remote-debugging-pipe: DevTools on fds 3 and 4, which stopBrowser
         // asks to close the browser
