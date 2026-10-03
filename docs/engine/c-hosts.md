@@ -5,11 +5,11 @@ A game needs no C: `tide` runs it in a window. This page is for working inside T
 ## tide_add_game
 
 ```cmake
-tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])
+tide_add_game(<target> [SOURCES <file.tide|file.c|file.cpp>...] [HOST <file.c>...] [NAME <name>] [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])
 ```
 
 - The game is every `.tide` file in the current source folder and its subfolders. `SOURCES` lists the files instead.
-- The game's C, which defines its `extern` functions (see [Calling C](../language/c-functions.md)), is every `.c` file there but the `HOST` ones, or the `.c` files listed in `SOURCES`. Unlike `tide`, CMake doesn't pick up prebuilt libraries: link them to the target yourself.
+- The game's C, which defines its `extern` functions (see [Calling C](../language/c-functions.md)), is every `.c` file there but the `HOST` ones, or the `.c` files listed in `SOURCES`, and its `.cpp` files the same way, built as `tide` builds them (see [C++](../language/c-functions.md#c)). Unlike `tide`, CMake doesn't pick up prebuilt libraries: link them to the target yourself.
 - Without `HOST`, the game is the whole program: a generated `main` runs it in a window, titled `TITLE`, or the game's `title` setting, or `<target>`. `STATS` shows the frame rate, ping, bandwidth, tick, entity count and threads in a corner, as `tide run --stats` does. On the web, it's `<target>.html`.
 - With `HOST`, those C files are the program. They include `<name>.h`, the generated header, where `NAME` defaults to `<target>`. `LAYOUT` also describes the game's data layout, as `tide run` does for hot reloading (`tide_game_layout`, in `tide/layout.h`).
 - Warnings are errors in the repo's build: a warning from tidec fails it, unless part of its text is listed after `WARNINGS`, and each of those has to be there. Tests use it for programs tidec warns about on purpose.

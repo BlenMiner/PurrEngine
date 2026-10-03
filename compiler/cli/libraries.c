@@ -271,3 +271,32 @@ bool wasm_function_imports(const unsigned char *wasm, const size_t size, const c
     }
     return r.ok;
 }
+
+bool wasm_archive_imports(const unsigned char *archive, const size_t size, const char *module,
+                          const wasm_import_fn found, void *user)
+{
+    if (size < 8 || memcmp(archive, "!<arch>\n", 8) != 0) return false;
+    for (size_t at = 8; size - at >= 60;) {
+        const unsigned char *header = archive + at;
+        if (header[58] != '`' || header[59] != '\n') return false;
+        char size_text[11] = {0};
+        memcpy(size_text, header + 48, 10);
+        const uint64_t member = strtoull(size_text, NULL, 10);
+        if (member > size - at - 60) return false;
+        const unsigned char *data = header + 60;
+        uint64_t data_size = member;
+        if (memcmp(header, "#1/", 3) == 0) {
+            // BSD: the name comes first in the data, "#1/<its length>"
+            char length_text[14] = {0};
+            memcpy(length_text, header + 3, 13);
+            const uint64_t name_length = strtoull(length_text, NULL, 10);
+            if (name_length > data_size) return false;
+            data += name_length;
+            data_size -= name_length;
+        }
+        // Symbol tables and long names aren't WebAssembly, like whatever else it skips
+        wasm_function_imports(data, (size_t)data_size, module, found, user);
+        at += 60 + (size_t)member + (size_t)(member & 1); // Members are padded to an even size
+    }
+    return true;
+}

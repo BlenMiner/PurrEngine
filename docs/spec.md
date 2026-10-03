@@ -9,7 +9,7 @@ The language Tide games and the engine's built-in systems are written in. It tra
 - Source files use the `.tide` extension.
 - The compiler (transpiler) is `tidec`.
 - A game is one or more `.tide` files: by default, every `.tide` file in the game's folder and its subfolders, and those of the packages it lists (see Packages). Every declaration is visible from every file of the game; there are no imports between files.
-- A game needs no C: the engine runs it. A custom C host is optional, for tests or special hosts. A game can call C of its own, from `.c` files and libraries in its folder (see C functions).
+- A game needs no C: the engine runs it. A custom C host is optional, for tests or special hosts. A game can call C of its own, from `.c` files, `.cpp` files and libraries in its folder (see C functions).
 
 ### Namespaces
 
@@ -1377,6 +1377,7 @@ Implemented, awaiting approval:
 - Any code that can call a function can call an extern one, match code and local code alike. The language doesn't mark or check what C does: its determinism, the state it keeps and its thread safety are the game's to get right, and the compiler takes a C call as touching nothing it tracks, so C never makes systems wait for each other, and a system that calls C splits its entities across threads like any other. An `Entity` a system that splits its entities passes C may be one it just spawned, whose ID comes once the system is done: `tide_entity_is_temporary` (`tide/entity.h`) tells, and a handle C keeps stays temporary.
 - The C function's name is the extern's own name as written, or the one `[NativeName("...")]` gives, so the Tide name can follow Tide's style: `[NativeName("stb_perlin_noise3")] extern float Noise(...);`. A namespace doesn't change the C name.
 - A game's C is in its folder, with nothing to set up: every `.c` file there compiles with the game, with the engine's determinism flags, and every prebuilt library there (`.a`, `.lib`, `.so`, `.dll`, `.dylib`) links with it when it was built for the platform being built for. tide tells which platform a library is for from its contents, not its name or folder, so one folder holds every platform's libraries. C for one platform only uses `#ifdef`, as any C does.
+- A game's C++ files (`.cpp`) compile with it too, as C++ with no runtime: tide brings no C++ standard library, exceptions or RTTI. What Tide calls is `extern "C"`. C++ that needs the runtime comes as a prebuilt library behind a C API: a shared one, which has its runtime inside, or a static one built to need none, which is the only kind the web has.
 - Writing `external` gets an error that points to `extern`.
 - C takes pointers without Tide having pointer arithmetic: the parameter says how a value is passed, and the call takes its address. `mut T` is `T *`, `in T` is `const T *`, a `List<T>` is a pointer to its elements (`T *` with `mut`), with the count passed separately, and a `string` is a zero-terminated UTF-8 copy. Each is only valid during the call. A `const char *` that C returns is copied into text.
 - C calls keep the order of evaluation: calls to C, and to functions that call it, run left to right like the rest of Tide, whatever order C would pick.
@@ -1412,9 +1413,12 @@ Implemented, awaiting approval:
 - The C name must be a C identifier, not a C keyword. `[NativeName]` can't name the engine's functions (`tide_...`), and two externs can't name the same C function.
 - tidec declares each extern function itself in the generated C, from its Tide signature, rather than including the library's header, whose names could clash with the game's. If the signature doesn't match C's, the game is wrong the way C would be.
 - Libraries: static libraries and Windows import libraries link in; `.so` and `.dylib` files link and are copied next to the game, which finds them there; a `.dll` is copied next to the game, and links through its import library (`.lib`). Windows games build for MinGW, so a static library built with Microsoft's compiler may need its C runtime and fail to link; rebuild it with clang or MinGW. A library tide can't read (LLVM bitcode, text) is left out, saying so.
-- On the web, only C files and WebAssembly libraries define functions. A web build fails when an extern function has no definition there, rather than when the page calls it.
-- `tide run` builds again when a C file, header or library changes. C code is part of the game's library, which each build replaces, so the state C keeps starts over at each reload.
-- tide's own CMake (`tide_add_game`) compiles the `.c` files in the game's folder but the host's, or those listed after `SOURCES`. It doesn't pick up libraries.
+- On the web, only C files and WebAssembly libraries define functions. A web build fails when a function has no definition there (an extern function, or one the game's C calls), rather than when the page calls it: a web program may only leave undefined what the platform layer does, which the page defines.
+- `tide run` builds again when a C or C++ file, header or library changes. C code is part of the game's library, which each build replaces, so the state C keeps starts over at each reload.
+- tide's own CMake (`tide_add_game`) compiles the `.c` and `.cpp` files in the game's folder but the host's, or those listed after `SOURCES`. It doesn't pick up libraries.
+- C++ files are `.cpp`, `.cc` and `.cxx`. They build as C++20 with `-nostdinc++ -fno-exceptions -fno-rtti -fno-threadsafe-statics` on every platform: the standard library's headers aren't found even where the system has them, so the same code builds everywhere. C's headers are there. `.hpp`, `.hh`, `.hxx` and `.inl` files count as headers, like `.h`: a change to one builds the folder's files again.
+- tide defines nothing of the runtime's: code that uses `new`, `delete` or a pure virtual function defines `operator new`, `operator delete` and `__cxa_pure_virtual` itself. A global's constructor runs before the game does (at each reload under `tide run`). A function's static with a constructor is made the first time through, with no lock.
+- A build that fails for want of the runtime says so after the compiler's or the linker's errors, with what to write instead: a standard header that isn't there (`<cstdint>` gets C's `<stdint.h>`), `throw`, `try`, `typeid`, `dynamic_cast`, `new`, `delete`, `__cxa_pure_virtual`, and a prebuilt library built to need the runtime.
 
 ### Open
 

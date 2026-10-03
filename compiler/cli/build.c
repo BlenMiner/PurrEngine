@@ -142,12 +142,23 @@ static file_list own_files_of(const char *folder, const char *const *extensions)
     return o.list;
 }
 
-static const char *const c_extensions[] = {".c", NULL};
-static const char *const header_extensions[] = {".h", NULL};
+// The game's C, and its C++, which builds with no C++ runtime (cpp_flags).
+static const char *const cpp_extensions[] = {".cpp", ".cc", ".cxx", NULL};
+static const char *const source_extensions[] = {".c", ".cpp", ".cc", ".cxx", NULL};
+static const char *const header_extensions[] = {".h", ".hpp", ".hh", ".hxx", ".inl", NULL};
 static const char *const library_extensions[] = {".a", ".lib", ".so", ".dll", ".dylib", NULL};
 // Whatever a build of the game reads, besides its .tide files: tide run builds
 // again when one changes.
-static const char *const c_side_extensions[] = {".c", ".h", ".a", ".lib", ".so", ".dll", ".dylib", NULL};
+static const char *const c_side_extensions[] = {".c",   ".cpp", ".cc", ".cxx", ".h",  ".hpp", ".hh",
+                                                ".hxx", ".inl", ".a",  ".lib", ".so", ".dll", ".dylib", NULL};
+
+static bool is_cpp(const char *path)
+{
+    for (int i = 0; cpp_extensions[i]; i++) {
+        if (has_extension(path, cpp_extensions[i])) return true;
+    }
+    return false;
+}
 
 // ---------------------------------------------------------------------------
 // Packages (packages.h): those from git are downloaded the first time a build
@@ -265,7 +276,15 @@ static bool write_main(const char *path, const build_options *opts, const char *
 // Compiler flags
 
 // Determinism (see AGENTS.md): no fast-math and no contraction, in this order.
-static const char *const common_flags[] = {"-std=c17", "-fno-fast-math", "-ffp-contract=off", "-w", NULL};
+static const char *const common_flags[] = {"-fno-fast-math", "-ffp-contract=off", "-w", NULL};
+static const char *const c_flags[] = {"-std=c17", NULL};
+// C++ is the language alone: tide brings no C++ runtime (see AGENTS.md,
+// Language), so no standard library (its headers aren't looked for, the
+// system's neither, so the same code builds on every platform), no exceptions
+// and no RTTI. A function's static with a constructor is made without the
+// runtime's lock (__cxa_guard_acquire).
+static const char *const cpp_flags[] = {"-std=c++20",      "-nostdinc++",             "-fno-exceptions",
+                                        "-fno-rtti",       "-fno-threadsafe-statics", NULL};
 static const char *const debug_flags[] = {"-O0", "-g", NULL};
 static const char *const release_flags[] = {"-O2", "-DNDEBUG", NULL};
 
@@ -299,13 +318,15 @@ static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-
 
 // Web builds: clang's own wasm target, with threads, and the package's
 // wasi-libc (as in cmake/wasi-toolchain.cmake and TideFlags.cmake). The page's
-// JavaScript implements the GL functions the platform imports, allocates with
-// malloc, and makes the memory, which it shares with workers when it can.
+// JavaScript implements the GL functions the platform imports (the only
+// functions a program may leave undefined: see page_imports_flag), allocates
+// with malloc, and makes the memory, which it shares with workers when it can.
 // Threads are spelled out (-pthread, --shared-memory) for an installed clang
 // older than tide's, which doesn't take them from the target's name.
-static const char *const web_link_flags[] = {"-Wl,--allow-undefined", "-Wl,--export=malloc", "-Wl,--export=free",
-                                             "-Wl,-z,stack-size=1048576", "-Wl,--import-memory", "-Wl,--export-memory",
-                                             "-Wl,--shared-memory", "-Wl,--max-memory=4294967296", NULL};
+static const char *const web_link_flags[] = {"-Wl,--export=malloc",       "-Wl,--export=free",
+                                             "-Wl,-z,stack-size=1048576", "-Wl,--import-memory",
+                                             "-Wl,--export-memory",       "-Wl,--shared-memory",
+                                             "-Wl,--max-memory=4294967296", NULL};
 
 // The target, when it isn't the system's: its C library comes with tide, in
 // <root>/<runtime>/sysroot, and its compiler runtime is passed by path, since
@@ -363,11 +384,13 @@ typedef struct build {
     char *cache;   // <folder>/.tide/<configuration>
     bool engine_built;
     game_info info; // Its settings, from its last generate
+    sb externs;     // ...and the C function of each of its extern functions, a line each
     file_list engine;       // The engine's objects
     game_packages packages; // Found again by each build of the game
 } build;
 
-static void config_flags(args *a, const build *b)
+// The flags a C file compiles with, or a C++ one (`cpp`).
+static void config_flags(args *a, const build *b, const bool cpp)
 {
     if (build_target.flag) {
         arg(a, build_target.flag);
@@ -377,6 +400,7 @@ static void config_flags(args *a, const build *b)
         arg(a, "-pthread");
         arg(a, "-msimd128"); // WebAssembly's SIMD, the same on every machine (not relaxed SIMD)
     }
+    arg_list(a, cpp ? cpp_flags : c_flags);
     arg_list(a, common_flags);
     arg_list(a, b->opts->release ? release_flags : debug_flags);
     // A library's code works wherever it's loaded, and Android's games are libraries.
@@ -401,12 +425,13 @@ static void arg_compiler(args *a, const char *compiler)
 #endif
 }
 
-// One line with everything that decides the engine objects, so a change in
-// any of it rebuilds them.
+// One line with everything that decides the engine objects, and the game's
+// C and C++ ones, so a change in any of it rebuilds them.
 static char *stamp_of(const build *b)
 {
     args a = {0};
-    config_flags(&a, b);
+    config_flags(&a, b, false);
+    arg_list(&a, cpp_flags);
     size_t n = strlen(b->compiler) + strlen(TIDE_VERSION) + 4;
     for (int i = 0; i < a.count; i++) n += strlen(a.items[i]) + 1;
     char *stamp = malloc(n);
@@ -420,9 +445,114 @@ static char *stamp_of(const build *b)
     return stamp;
 }
 
-// Compiles one C file; `gen`, the generated files' folder, may be NULL.
+// ---------------------------------------------------------------------------
+// C++ with no runtime: what the compiler or the linker said for want of one,
+// explained. clang's own words go to the terminal as they are; a build that
+// failed runs once more for them as text.
+
+// What the program `argv` says, errors too. To free().
+static char *said(const char *const *argv)
+{
+    const size_t size = 1u << 16;
+    char *text = malloc(size);
+    if (!text) abort();
+    if (sys_capture_all(argv, text, size) == -1) text[0] = '\0';
+    return text;
+}
+
+static bool says_any(const char *text, const char *const *words)
+{
+    for (int i = 0; words[i]; i++) {
+        if (strstr(text, words[i])) return true;
+    }
+    return false;
+}
+
+#define NO_RUNTIME                                                                                                     \
+    "a game's C++ builds with no C++ runtime: no standard library, exceptions or RTTI. Code that needs them comes "   \
+    "as a prebuilt library behind a C API"
+
+// C's headers, which C++ also has under names of its own: <cstdint> is <stdint.h>.
+static const char *const c_headers[] = {"assert", "ctype",  "errno",  "fenv",   "float",  "inttypes", "limits", "locale",
+                                        "math",   "setjmp", "signal", "stdarg", "stddef", "stdint",   "stdio",  "stdlib",
+                                        "string", "time",   "uchar",  "wchar",  "wctype", NULL};
+
+// Whether a header that wasn't found is the C++ standard library's: those
+// have no extension and no folder, like <vector>.
+static bool standard_header(const char *name, const size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (!islower((unsigned char)name[i]) && !isdigit((unsigned char)name[i]) && name[i] != '_') return false;
+    }
+    return len > 0;
+}
+
+// A C++ file that didn't compile: a header of the standard library, which
+// isn't there, or exceptions or RTTI, which are off.
+static void explain_cpp_compile(const char *const *argv)
+{
+    char *text = said(argv);
+    bool note = false;
+    static const char not_found[] = "' file not found";
+    for (const char *at = text; (at = strstr(at, not_found)); at += sizeof not_found - 1) {
+        const char *name = at;
+        while (name > text && name[-1] != '\'') name--;
+        const size_t len = (size_t)(at - name);
+        if (name == text || !standard_header(name, len)) continue;
+        const char *c_header = NULL;
+        for (int i = 0; c_headers[i] && !c_header; i++) {
+            if (name[0] == 'c' && strlen(c_headers[i]) == len - 1 && memcmp(c_headers[i], name + 1, len - 1) == 0) {
+                c_header = c_headers[i];
+            }
+        }
+        fprintf(stderr, "tide: <%.*s> is the C++ standard library's, which tide doesn't have\n", (int)len, name);
+        if (c_header) fprintf(stderr, "  = note: include <%s.h>, C's header for the same\n", c_header);
+        else note = true;
+    }
+    if (strstr(text, "with exceptions disabled")) {
+        fprintf(stderr, "tide: a game's C++ builds without exceptions\n");
+        note = true;
+    }
+    if (strstr(text, "requires -frtti")) {
+        fprintf(stderr, "tide: a game's C++ builds without RTTI, so without typeid and dynamic_cast\n");
+        note = true;
+    }
+    if (note) fprintf(stderr, "  = note: " NO_RUNTIME "\n");
+    free(text);
+}
+
+// A link that failed for want of the C++ runtime: new and delete, which the
+// game's C++ can define itself, or what a prebuilt library was built to need.
+static void explain_cpp_link(const char *text)
+{
+    static const char *const allocation[] = {"operator new", "operator delete", "_Znw", "_Zna", "_Zdl", "_Zda", NULL};
+    static const char *const runtime[] = {"std::",       "__cxa_guard_", "__cxa_throw",   "__cxa_begin_catch",
+                                          "__cxa_allocate_exception",    "__gxx_personality", "_Unwind_",
+                                          "typeinfo for", "__dynamic_cast", "__cxxabiv1", NULL};
+    if (says_any(text, allocation)) {
+        fprintf(stderr, "tide: the game's C++ uses new or delete, which tide has no C++ runtime to define\n");
+        fprintf(stderr, "  = note: define the ones the linker names in one of the game's .cpp files, over malloc and "
+                        "free, like `void *operator new(size_t size) { return malloc(size); }` and `void operator "
+                        "delete(void *p) noexcept { free(p); }`. A class with a virtual destructor uses delete too\n");
+    }
+    if (strstr(text, "__cxa_pure_virtual")) {
+        fprintf(stderr, "tide: a class with a pure virtual function needs __cxa_pure_virtual, which tide has no C++ "
+                        "runtime to define\n");
+        fprintf(stderr, "  = note: define it in one of the game's .cpp files: `extern \"C\" void __cxa_pure_virtual() "
+                        "{ abort(); }`\n");
+    }
+    if (says_any(text, runtime)) {
+        fprintf(stderr, "tide: a library the game links needs the C++ runtime, which tide doesn't have\n");
+        fprintf(stderr, "  = note: " NO_RUNTIME ": build the library without them (-fno-exceptions, -fno-rtti, "
+                        "-fno-threadsafe-statics, and no standard library), or bring it as a .dll, .so or .dylib, "
+                        "which has its runtime with it\n");
+    }
+}
+
+// Compiles one C or C++ file; `gen`, the generated files' folder, may be NULL.
 static bool compile_c(const build *b, const char *source, const char *object, const char *gen)
 {
+    const bool cpp = is_cpp(source);
     args a = {0};
     arg_compiler(&a, b->compiler);
     arg(&a, "-c");
@@ -433,8 +563,9 @@ static bool compile_c(const build *b, const char *source, const char *object, co
     char *gen_flag = gen ? format("-I%s", gen, NULL) : NULL;
     arg(&a, include_flag);
     if (gen_flag) arg(&a, gen_flag);
-    config_flags(&a, b);
+    config_flags(&a, b, cpp);
     const int code = sys_run(a.items, NULL, false);
+    if (cpp && code > 0) explain_cpp_compile(a.items);
     free(include_flag);
     free(gen_flag);
     free(a.items);
@@ -564,12 +695,12 @@ static bool build_engine(build *b)
 }
 
 // ---------------------------------------------------------------------------
-// The game's C: the .c files in its folder, which define its extern functions,
-// and the prebuilt libraries there that were built for the target (see
-// libraries.h).
+// The game's C: the .c and .cpp files in its folder, which define its extern
+// functions, and the prebuilt libraries there that were built for the target
+// (see libraries.h).
 
 typedef struct c_side {
-    file_list objects; // Its .c files, compiled
+    file_list objects; // Its .c and .cpp files, compiled
     file_list link;    // Its libraries for the target, as the linker takes them
     file_list dynamic; // ...those the program loads as it starts, which go next to it
 } c_side;
@@ -617,14 +748,14 @@ static uint64_t hash_file(const uint64_t h, const char *path)
     return (hash_text(h, path) ^ sys_file_stamp(path)) * 0x100000001B3ull;
 }
 
-// Compiles the .c files of the game, or of one of its packages (`package`,
-// its name), in `folder_path` into a folder of the cache, each one again only
-// when it, a header in that folder, or the flags changed: each object has a
-// stamp of what made it. Objects for a library are kept apart on Linux, as
-// the engine's are.
+// Compiles the .c and .cpp files of the game, or of one of its packages
+// (`package`, its name), in `folder_path` into a folder of the cache, each one
+// again only when it, a header in that folder, or the flags changed: each
+// object has a stamp of what made it. Objects for a library are kept apart on
+// Linux, as the engine's are.
 static bool compile_c_files(const build *b, const char *folder_path, const char *package, c_side *out)
 {
-    file_list sources = own_files_of(folder_path, c_extensions);
+    file_list sources = own_files_of(folder_path, source_extensions);
     if (sources.count == 0) return true;
 #if !defined(_WIN32) && !defined(__APPLE__)
     char *dir = path_join(b->cache, b->library ? "c-pic" : "c");
@@ -764,6 +895,69 @@ static void copy_dynamic(const c_side *c, const char *dir)
     }
 }
 
+static void write_import(void *user, const char *name, const size_t len)
+{
+    fprintf(user, "%.*s\n", (int)len, name);
+}
+
+// What a web program may leave for the page to define: the functions the
+// prebuilt platform layer and raylib call and don't define, which are GL's,
+// from tide.js. Any other function nothing defines stops the link; allowing
+// them all would leave it to fail when it's called. Lists them in a file next
+// to `output`, and returns the linker's flag for it, to free().
+static char *page_imports_flag(const char *output, const char *platform_lib, const char *raylib_lib)
+{
+    char *dir = path_dir(output);
+    char *path = path_join(dir, "page-imports.txt");
+    FILE *f = fopen(path, "wb");
+    const char *const libraries[] = {platform_lib, raylib_lib};
+    for (size_t i = 0; f && i < sizeof libraries / sizeof libraries[0]; i++) {
+        size_t size = 0;
+        char *archive = sys_read_file(libraries[i], &size);
+        if (archive) wasm_archive_imports((const unsigned char *)archive, size, "env", write_import, f);
+        free(archive);
+    }
+    if (f) fclose(f);
+    char *flag = format("--allow-undefined-file=%s", path, NULL);
+    free(dir);
+    free(path);
+    return flag;
+}
+
+// On the web, a C function of the game's that nothing defines: natively a
+// library did, of a kind the web doesn't have.
+static void explain_web_externs(const char *text, const sb *externs)
+{
+    if (!externs->data) return;
+    static const char undefined[] = "undefined symbol: ";
+    bool missing = false;
+    for (const char *line = externs->data; *line;) {
+        const char *end = strchr(line, '\n');
+        const size_t len = (size_t)(end - line);
+        for (const char *at = text; (at = strstr(at, undefined));) {
+            at += sizeof undefined - 1;
+            if (strncmp(at, line, len) != 0 || (at[len] != '\n' && at[len] != '\r' && at[len] != '\0')) continue;
+            fprintf(stderr, "tide: nothing defines the C function %.*s for the web\n", (int)len, line);
+            missing = true;
+            break;
+        }
+        line = end + 1;
+    }
+    if (missing) {
+        fprintf(stderr, "  = note: the game's C files and WebAssembly libraries (.a) define its C functions on the web; "
+                        "for one that only exists natively, write a stand-in inside '#ifdef __wasm__'\n");
+    }
+}
+
+// A link that failed, explained where tide knows more than the linker says.
+static void explain_link(const build *b, const char *const *argv)
+{
+    char *text = said(argv);
+    explain_cpp_link(text);
+    if (b->opts->web) explain_web_externs(text, &b->externs);
+    free(text);
+}
+
 // Links `objects`, the game's C (`c`, NULL for tide run's host) and the
 // engine's objects into `output`: a program, with the platform layer, or with
 // `shared`, a library of the game for a host to load (see tide/host.h), whose
@@ -796,8 +990,12 @@ static bool link_objects(const build *b, const file_list *objects, const c_side 
     arg_list(&a, opts->release ? release_flags : debug_flags);
     char *pdb_flag = NULL;
     char *ld_flag = NULL;
+    char *imports_flag = NULL;
     if (opts->web) {
         arg_list(&a, web_link_flags);
+        imports_flag = page_imports_flag(output, platform_lib, raylib_lib);
+        arg(&a, "-Xlinker"); // Not -Wl, which would split a path at its commas
+        arg(&a, imports_flag);
 #ifndef TIDE_EMBEDDED_CLANG
         ld_flag = format("-fuse-ld=%s", b->wasm_ld, NULL); // It may be elsewhere than clang, as with Homebrew
         arg(&a, ld_flag);
@@ -833,12 +1031,14 @@ static bool link_objects(const build *b, const file_list *objects, const c_side 
         arg(&a, build_target.builtins);
     }
     const int code = sys_run(a.items, NULL, false);
+    if (code > 0) explain_link(b, a.items);
     free(a.items);
     free(lib_dir);
     free(platform_lib);
     free(raylib_lib);
     free(pdb_flag);
     free(ld_flag);
+    free(imports_flag);
     if (code == -1) fprintf(stderr, "tide: couldn't start %s\n", b->compiler);
     return code == 0;
 }
@@ -929,9 +1129,8 @@ static bool make_page(const char *root, const char *program, const char *page)
 // ---------------------------------------------------------------------------
 
 // Finds the game's packages and generates its C. With `layout`, the generated
-// code describes the data layout too, for hot reloading. `externs` gets the C
-// function of each extern function, a line each, until the next build.
-static bool generate(build *b, const char *gen, const bool layout, sb *externs)
+// code describes the data layout too, for hot reloading.
+static bool generate(build *b, const char *gen, const bool layout)
 {
     if (!find_packages(b->folder, &b->packages)) return false;
     file_list paths;
@@ -939,48 +1138,12 @@ static bool generate(build *b, const char *gen, const bool layout, sb *externs)
     compile_input *inputs = game_inputs(b->folder, &b->packages, &paths, &count);
     if (!inputs) return false;
     arena_reset(); // What an earlier build compiled, when a run rebuilds the game
-    *externs = (sb){0};
-    const codegen_options codegen = {"game", gen, true, layout, externs, &b->info};
+    b->externs = (sb){0};
+    const codegen_options codegen = {"game", gen, true, layout, &b->externs, &b->info};
     const bool ok = compile_inputs(inputs, count, &codegen, NULL);
     free(inputs);
     free_files(&paths);
     return ok;
-}
-
-typedef struct web_imports {
-    const char *externs; // A C function a line
-    int missing;
-} web_imports;
-
-static void check_import(void *user, const char *name, const size_t len)
-{
-    web_imports *w = user;
-    for (const char *line = w->externs; *line;) {
-        const char *end = strchr(line, '\n');
-        if ((size_t)(end - line) == len && memcmp(line, name, len) == 0) {
-            fprintf(stderr, "tide: nothing defines the C function %.*s for the web\n", (int)len, name);
-            w->missing++;
-        }
-        line = end + 1;
-    }
-}
-
-// On the web, a C function nothing defines isn't a link error: the program
-// imports it from the page, which fails when it's called. So the game's extern
-// functions among its imports are errors. False after saying so.
-static bool check_web_externs(const char *program, const sb *externs)
-{
-    if (!externs->data || externs->len == 0) return true;
-    size_t size = 0;
-    char *wasm = sys_read_file(program, &size);
-    web_imports w = {externs->data, 0};
-    if (wasm) wasm_function_imports((const unsigned char *)wasm, size, "env", check_import, &w);
-    free(wasm);
-    if (w.missing > 0) {
-        fprintf(stderr, "  = note: the game's C files and WebAssembly libraries (.a) define its C functions on the web; "
-                        "for one that only exists natively, write a stand-in inside '#ifdef __wasm__'\n");
-    }
-    return w.missing == 0;
 }
 
 static char *build_android(const char *root, const build_options *opts, char *package, size_t package_size);
@@ -993,8 +1156,7 @@ char *tide_build(const char *root, const build_options *opts)
     char *gen = path_join(b.cache, "gen");
     sys_mkdirs(gen);
 
-    sb externs;
-    if (!generate(&b, gen, false, &externs)) return NULL;
+    if (!generate(&b, gen, false)) return NULL;
     char *main_c = path_join(gen, "main.c");
     write_main(main_c, opts, b.name);
     if (!build_engine(&b)) return NULL;
@@ -1030,7 +1192,7 @@ char *tide_build(const char *root, const build_options *opts)
         program = path_join(b.cache, file);
     }
     if (!link_objects(&b, &objects, &c, program, false, NULL)) return NULL;
-    if (opts->web && (!check_web_externs(program, &externs) || !make_page(root, program, output))) return NULL;
+    if (opts->web && !make_page(root, program, output)) return NULL;
     copy_dynamic(&c, output_dir);
     free_game_c(&c);
     return output;
@@ -1064,8 +1226,7 @@ static char *build_path(const run *r, const uint32_t n, const char *suffix)
 // what's wrong.
 static bool build_library(run *r)
 {
-    sb externs;
-    if (!generate(&r->b, r->gen, true, &externs) || !build_engine(&r->b)) return false;
+    if (!generate(&r->b, r->gen, true) || !build_engine(&r->b)) return false;
     const char *suffix = r->web ? ".wasm" : LIBRARY_SUFFIX;
     char *game_c = path_join(r->gen, "game.c");
     char *library_c = path_join(r->gen, r->web ? "main.c" : "library.c");
@@ -1084,7 +1245,6 @@ static bool build_library(run *r)
     char *pdb = build_path(r, n, ".pdb");
     char *library = build_path(r, n, suffix);
     ok = ok && link_objects(&r->b, &objects, &c, linked, !r->web, r->b.opts->release || r->web ? NULL : pdb);
-    ok = ok && (!r->web || check_web_externs(linked, &externs));
     free_game_c(&c);
     if (ok && !sys_rename(linked, library)) {
         fprintf(stderr, "tide: can't write %s\n", library);
@@ -1519,6 +1679,7 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     arg_list(&a, flags);
     arg(&a, build_target.builtins);
     const int code = sys_run(a.items, NULL, false);
+    if (code > 0) explain_link(b, a.items);
     free(a.items);
     free(abi_dir);
     free(platform_lib);
@@ -1537,8 +1698,7 @@ static char *build_android(const char *root, const build_options *opts, char *pa
     if (!android_find_ndk(root, &ndk)) return NULL;
     char *gen = path_join(b.cache, "gen");
     sys_mkdirs(gen);
-    sb externs;
-    if (!generate(&b, gen, false, &externs)) return NULL;
+    if (!generate(&b, gen, false)) return NULL;
     char id[256];
     if (!app_id(&b, id, sizeof id)) return NULL;
     char *main_c = path_join(gen, "main.c");

@@ -1,0 +1,48 @@
+// Functions written in C++ (cpp_code.cpp), behind extern "C". A game's C++
+// builds with no C++ runtime (no standard library, exceptions or RTTI), so
+// it's the language alone: classes, virtual functions, templates, lambdas,
+// new and delete the code defines itself, and the constructors of globals and
+// of functions' statics.
+
+struct Totals
+{
+    int count;
+    float sum;
+}
+
+extern int cpp_started();
+extern float cpp_area(float side);
+extern int cpp_largest(int a, int b);
+extern void cpp_add(mut Totals totals, float value);
+extern int cpp_made();
+extern int cpp_calls();
+
+component Result
+{
+    int started;
+    float area;
+    int largest;
+    Totals totals;
+    int made;
+    int firstCall;
+    int secondCall;
+}
+
+scene Main { }
+
+event(Spawned) Setup(with Main)
+{
+    Spawn(Result);
+}
+
+system Run(mut Result r)
+{
+    r.started = cpp_started();
+    r.area = cpp_area(3);
+    r.largest = cpp_largest(7, 12);
+    cpp_add(r.totals, 1.5);
+    cpp_add(r.totals, 2.5);
+    r.made = cpp_made();
+    r.firstCall = cpp_calls();
+    r.secondCall = cpp_calls();
+}

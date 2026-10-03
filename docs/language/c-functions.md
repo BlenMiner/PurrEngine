@@ -31,6 +31,7 @@ A namespace doesn't change the C name: in `namespace Terrain;`, that's `Terrain.
 In the game's folder, with nothing to set up:
 
 - Every `.c` file in the folder and its subfolders compiles with the game, with the same determinism flags as the engine. Headers next to them are found as C finds them.
+- Every `.cpp` file does too, as C++ with no runtime behind it: see [C++](#c).
 - Every prebuilt library there links with the game when it was built for the platform being built for: `.a` and `.lib` files, and `.so`, `.dll` and `.dylib` ones. tide reads each library to tell which platform and CPU it's for, so one folder holds them all, named and placed however you like.
 - Code for one platform only goes in `#ifdef`, as in any C.
 
@@ -51,9 +52,60 @@ MyGame/
 
 Windows games build for MinGW, so a static library built with Microsoft's compiler may need Microsoft's C runtime and fail to link: rebuild it with clang or MinGW.
 
-On the web, only C files and WebAssembly libraries define functions. When an extern function has no definition there, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`. Web games build for `wasm32-wasip1-threads`, which shares memory between threads, so a WebAssembly library needs building for that target too (clang's `--target=wasm32-wasip1-threads`), or at least with `-matomics -mbulk-memory`. tide's own clang can build it, as `tide cc`, with the C library tide brings: `tide cc --target=wasm32-wasip1-threads --sysroot=<tide>/wasi/sysroot`, where `<tide>` is the folder `tide version` says it's installed in.
+On the web, only C files and WebAssembly libraries define functions. When a function has no definition there, an extern function or one the game's C calls, the web build fails and names it; give it a stand-in inside `#ifdef __wasm__`. Web games build for `wasm32-wasip1-threads`, which shares memory between threads, so a WebAssembly library needs building for that target too (clang's `--target=wasm32-wasip1-threads`), or at least with `-matomics -mbulk-memory`. tide's own clang can build it, as `tide cc`, with the C library tide brings: `tide cc --target=wasm32-wasip1-threads --sysroot=<tide>/wasi/sysroot`, where `<tide>` is the folder `tide version` says it's installed in.
 
-`tide run` builds again when a C file, header or library changes. The C is part of the game's library, which each build replaces, so whatever C keeps in its own variables starts over at each reload.
+`tide run` builds again when a C or C++ file, header or library changes. The C is part of the game's library, which each build replaces, so whatever C keeps in its own variables starts over at each reload.
+
+## C++
+
+`.cpp` files in the game's folder compile with it as `.c` files do (`.cc` and `.cxx` too), so a library written in C++ can go in as source. Tide still calls C: what the game calls is `extern "C"`.
+
+```cpp
+// counter.cpp
+struct Counter
+{
+    int count = 0;
+    int Next() { return ++count; }
+};
+
+static Counter counter;
+
+extern "C" int NextId(void)
+{
+    return counter.Next();
+}
+```
+
+```csharp
+extern int NextId();
+```
+
+Tide brings no C++ runtime, so this is C++ the language, with nothing behind it:
+
+- **No standard library.** `<vector>`, `<string>` and the rest aren't there, on any platform. C's headers are, under their C names: `<stdint.h>`, not `<cstdint>`.
+- **No exceptions and no RTTI**: no `throw` and `try`, no `typeid` and `dynamic_cast`.
+- **`new` and `delete` are the code's to define.** A runtime is what defines them, so code that uses them does it itself, over `malloc` and `free`. A class with a virtual destructor uses `delete`, and one with a pure virtual function needs `__cxa_pure_virtual`:
+
+  ```cpp
+  #include <stddef.h>
+  #include <stdlib.h>
+
+  void *operator new(size_t size) { return malloc(size); }
+  void *operator new[](size_t size) { return malloc(size); }
+  void operator delete(void *p) noexcept { free(p); }
+  void operator delete[](void *p) noexcept { free(p); }
+  void operator delete(void *p, size_t) noexcept { free(p); }
+  void operator delete[](void *p, size_t) noexcept { free(p); }
+  extern "C" void __cxa_pure_virtual() { abort(); }
+  ```
+
+  Placement new, which `<new>` would declare, is one line in a header of the code's own: `inline void *operator new(size_t, void *place) noexcept { return place; }`.
+
+The rest of the language is there, as C++20: classes, templates, lambdas, virtual functions. A global's constructor runs before the game starts, and again at each reload under `tide run`, like everything C keeps. A function's `static` is made the first time through, without the lock a runtime would take: two systems on different threads getting there at once is the game's to get right, like the rest of what C does on threads.
+
+When a build fails for want of the runtime, tide says so after the compiler's error, and what to write instead.
+
+Libraries written to need no runtime, as Dear ImGui is, go in as source. One that needs it comes prebuilt instead: a `.dll`, `.so` or `.dylib` behind a C API has its runtime inside. A static library (`.a`, `.lib`) has to be built to need none, as the game's own C++ is (`-fno-exceptions -fno-rtti -fno-threadsafe-statics`, and nothing of the standard library), and the web only has static ones, so a library that needs the runtime can't be used there.
 
 ## Values across
 
@@ -138,7 +190,7 @@ C can keep state, so calling it is a side effect, and Tide keeps its order: in `
 
 The compiler doesn't look inside C. It takes each call as touching nothing it tracks, so C never makes systems wait for each other, and anything C does is the game's to get right:
 
-- **Determinism.** Match code runs the same on every machine only if its C does too: no platform math library (`sinf`, `powf`), and nothing that depends on the machine. The game's own C files get the engine's flags, which keep float math exact; a prebuilt library's flags are whatever it was built with.
+- **Determinism.** Match code runs the same on every machine only if its C does too: no platform math library (`sinf`, `powf`), and nothing that depends on the machine. The game's own C and C++ files get the engine's flags, which keep float math exact; a prebuilt library's flags are whatever it was built with.
 - **State.** Variables C keeps aren't in the world, so they aren't sent, rolled back or hashed. Keep what the match depends on in components and singletons.
 - **Threads.** Once systems run in parallel, two that call the same C function can run at the same time.
 

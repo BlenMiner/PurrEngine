@@ -479,7 +479,8 @@ void sys_kill(sys_process *p)
     free(p);
 }
 
-int sys_capture(const char *const *argv, char *out, const size_t size)
+// What a program prints into `out`, with its errors too when `errors`.
+static int capture(const char *const *argv, char *out, const size_t size, const bool errors)
 {
     char *line = NULL;
     size_t len = 0;
@@ -499,7 +500,7 @@ int sys_capture(const char *const *argv, char *out, const size_t size)
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     startup.hStdOutput = write_end;
-    startup.hStdError = null_file;
+    startup.hStdError = errors ? write_end : null_file;
     PROCESS_INFORMATION process;
     const BOOL started = CreateProcessA(NULL, line, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &process);
     free(line);
@@ -526,6 +527,16 @@ int sys_capture(const char *const *argv, char *out, const size_t size)
     CloseHandle(process.hProcess);
     CloseHandle(process.hThread);
     return (int)code;
+}
+
+int sys_capture(const char *const *argv, char *out, const size_t size)
+{
+    return capture(argv, out, size, false);
+}
+
+int sys_capture_all(const char *const *argv, char *out, const size_t size)
+{
+    return capture(argv, out, size, true);
 }
 
 uint32_t sys_pid(void)
@@ -610,7 +621,8 @@ void sys_kill(sys_process *p)
     free(p);
 }
 
-int sys_capture(const char *const *argv, char *out, const size_t size)
+// What a program prints into `out`, with its errors too when `errors`.
+static int capture(const char *const *argv, char *out, const size_t size, const bool errors)
 {
     int fds[2];
     if (pipe(fds) != 0) return -1;
@@ -622,8 +634,12 @@ int sys_capture(const char *const *argv, char *out, const size_t size)
     }
     if (pid == 0) {
         dup2(fds[1], 1);
-        const int null_file = open("/dev/null", O_WRONLY);
-        if (null_file >= 0) dup2(null_file, 2);
+        if (errors) {
+            dup2(fds[1], 2);
+        } else {
+            const int null_file = open("/dev/null", O_WRONLY);
+            if (null_file >= 0) dup2(null_file, 2);
+        }
         close(fds[0]);
         close(fds[1]);
         execvp(argv[0], (char *const *)argv);
@@ -645,6 +661,16 @@ int sys_capture(const char *const *argv, char *out, const size_t size)
     if (waitpid(pid, &status, 0) < 0) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
     return 1;
+}
+
+int sys_capture(const char *const *argv, char *out, const size_t size)
+{
+    return capture(argv, out, size, false);
+}
+
+int sys_capture_all(const char *const *argv, char *out, const size_t size)
+{
+    return capture(argv, out, size, true);
 }
 
 uint32_t sys_pid(void)

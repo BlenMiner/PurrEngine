@@ -36,9 +36,15 @@ typedef size_t (*lib_read_fn)(void *user, uint64_t offset, void *buf, size_t n);
 lib_info lib_identify(lib_read_fn read, void *user);
 lib_info lib_identify_file(const char *path);
 
-// Calls `found` with the name of every function a WebAssembly program imports
-// from `module`. Web programs link with undefined functions allowed, which
-// the page provides (the GL functions, from "env"), so a C function nothing
-// defines turns up here. False if `wasm` isn't a program it can read.
+// Calls `found` with the name of every function a WebAssembly program or
+// object imports from `module`. An object imports from "env" the functions it
+// calls and doesn't define. False if `wasm` isn't one it can read.
 typedef void (*wasm_import_fn)(void *user, const char *name, size_t len);
 bool wasm_function_imports(const unsigned char *wasm, size_t size, const char *module, wasm_import_fn found, void *user);
+
+// The same for every WebAssembly object of a static library (.a): what the
+// library leaves for others to define. Web programs may leave undefined what
+// the platform layer's libraries do, which the page defines (GL's functions).
+// False if `archive` isn't an archive.
+bool wasm_archive_imports(const unsigned char *archive, size_t size, const char *module, wasm_import_fn found,
+                          void *user);

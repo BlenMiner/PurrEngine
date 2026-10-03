@@ -282,3 +282,34 @@ TIDE_TEST(cli_wasm_function_imports_of_a_module)
     wasm.data[wasm.len - 1] = 0x80; // Cut short: a type index that never ends
     TIDE_CHECK(!wasm_function_imports(wasm.data, wasm.len, "env", found_import, names));
 }
+
+// A WebAssembly object that calls `function` without defining it: an import
+// from env.
+static void put_object(bytes *b, const char *name, const char *function)
+{
+    bytes wasm = {0};
+    put(&wasm, "\0asm\x01\0\0\0", 8);
+    const unsigned char header[3] = {2, (unsigned char)(strlen(function) + 8), 1}; // The imports: their size, and one
+    put(&wasm, header, 3);
+    put_name(&wasm, "env");
+    put_name(&wasm, function);
+    put(&wasm, "\x00\x00", 2);
+    member(b, name, wasm.data, wasm.len);
+}
+
+TIDE_TEST(cli_wasm_function_imports_of_a_library)
+{
+    bytes b = {0};
+    put(&b, "!<arch>\n", 8);
+    member(&b, "/", "\0\0\0\0", 4);
+    put_object(&b, "rlgl.o/", "glClear");
+    member(&b, "notes.txt/", "odd", 3); // Not an object, and padded
+    put_object(&b, "rcore.o/", "glViewport");
+
+    char names[256] = "";
+    TIDE_REQUIRE(wasm_archive_imports(b.data, b.len, "env", found_import, names));
+    TIDE_CHECK(strcmp(names, "glClear glViewport ") == 0);
+    TIDE_CHECK(!wasm_archive_imports((const unsigned char *)"\0asm\x01\0\0\0", 8, "env", found_import, names));
+    b.len -= 4; // Cut short: a member that says it's longer than the file
+    TIDE_CHECK(!wasm_archive_imports(b.data, b.len, "env", found_import, names));
+}

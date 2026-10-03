@@ -211,6 +211,11 @@ jobs:
           build/dist/tide/bin/tide build build/try
           build/dist/tide/bin/tide build build/try --release --web
           build/dist/tide/bin/tide build build/try --android
+      # A game's C++, which builds with no C++ runtime: that it builds for each
+      # target with the package's own compiler and headers, and what tide says
+      # when it can't.
+      - name: Try the package (C++)
+        run: cmake -DTIDE=build/dist/tide/bin/tide -DWORK=build/try-cpp -DANDROID=ON -P compiler/cli/tests/cpp_test.cmake
       # Its app and bundle made to ship, checked with Google's tools: apksigner,
       # Java's JAR signatures, and bundletool (pinned), which Play runs on what
       # it's given. Then the APKs bundletool makes of the bundle, signed with

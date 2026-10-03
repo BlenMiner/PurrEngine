@@ -49,6 +49,8 @@ void sys_kill(sys_process *p);
 // Runs a program like sys_run, and puts what it prints (not its errors) in
 // `out`, `size` bytes with the zero that ends it, cut there if it's longer.
 int sys_capture(const char *const *argv, char *out, size_t size);
+// The same, with its errors too, in the order it said both.
+int sys_capture_all(const char *const *argv, char *out, size_t size);
 
 uint32_t sys_pid(void);                // This process's
 bool sys_process_alive(uint32_t pid); // Whether a process with that ID is running

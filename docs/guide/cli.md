@@ -1,6 +1,6 @@
 # The tide command
 
-`tide` builds and runs games. A game is every `.tide` file in a folder and its subfolders, with the `.c` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)), and the packages its `tide.packages` lists (see [Packages](packages.md)). Commands take the game's folder, or use the current one.
+`tide` builds and runs games. A game is every `.tide` file in a folder and its subfolders, with the `.c` and `.cpp` files and libraries there when it calls C (see [Calling C](../language/c-functions.md)), and the packages its `tide.packages` lists (see [Packages](packages.md)). Commands take the game's folder, or use the current one.
 
 ```
 tide <command> [folder] [options]
@@ -74,7 +74,7 @@ Play's other requirements, like the version of Android an app is made for (Andro
 
 ## Hot reload
 
-While `tide run` plays a game, saving a `.tide` file rebuilds it, and so does saving one of its C files, headers or libraries. The game carries on with the new code in the same window:
+While `tide run` plays a game, saving a `.tide` file rebuilds it, and so does saving one of its C or C++ files, headers or libraries. The game carries on with the new code in the same window:
 
 - If you changed only code (systems, views, event handlers, methods), the match and everything local, like menus, carry on where they are.
 - If you changed data (components, fields, singletons, the input), the game is carried over to it by name, and goes on from where it was.

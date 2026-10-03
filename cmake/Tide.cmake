@@ -1,11 +1,12 @@
-# tide_add_game(<target> [SOURCES <file.tide|file.c>...] [HOST <file.c>...] [WINDOW] [NAME <name>]
+# tide_add_game(<target> [SOURCES <file.tide|file.c|file.cpp>...] [HOST <file.c>...] [WINDOW] [NAME <name>]
 #               [TITLE <title>] [STATS] [LAYOUT] [WARNINGS <text>...])
 #
 # Builds a Tide game as the program <target>. The game is every .tide file
 # in the current source folder and its subfolders (new ones are picked up by
 # the next build), or only the files listed after SOURCES. Its C files, which
 # define its extern functions, compile with it: every .c file in the folder
-# but the HOST ones, or the .c files listed after SOURCES.
+# but the HOST ones, or the .c files listed after SOURCES. So do its C++
+# files (.cpp, .cc and .cxx), with no C++ runtime (TIDE_CPP_FLAGS).
 #
 # Without HOST, the game is the whole program: it opens a window titled TITLE,
 # or the game's title setting, or <target>, and runs (see
@@ -34,6 +35,13 @@
 set(TIDE_GAMES_MANIFEST "${PROJECT_SOURCE_DIR}/build/tools/games.txt")
 set(TIDE_RUN_TIDEC "${CMAKE_CURRENT_LIST_DIR}/run_tidec.cmake")
 
+# A game's C++ is the language alone, as tide builds it (cpp_flags in
+# compiler/cli/build.c): no standard library, exceptions or RTTI, since tide
+# brings no C++ runtime (see AGENTS.md, Language). This project is C, so the C
+# compiler compiles those files, and programs link as C: -x c++ and -std=c++20
+# go over what CMake says for a C file, which comes before them.
+set(TIDE_CPP_FLAGS -x c++ -std=c++20 -nostdinc++ -fno-exceptions -fno-rtti -fno-threadsafe-statics)
+
 function(tide_add_game target)
     cmake_parse_arguments(ARG "STATS;LAYOUT;WINDOW" "NAME;TITLE" "SOURCES;HOST;WARNINGS" ${ARGN})
     if("SOURCES" IN_LIST ARG_KEYWORDS_MISSING_VALUES)
@@ -57,7 +65,7 @@ function(tide_add_game target)
     if(ARG_SOURCES)
         foreach(file IN LISTS ARG_SOURCES)
             get_filename_component(path "${file}" ABSOLUTE)
-            if(path MATCHES "\\.c$")
+            if(path MATCHES "\\.(c|cpp|cc|cxx)$")
                 list(APPEND c_sources "${path}")
             else()
                 list(APPEND sources "${path}")
@@ -73,7 +81,8 @@ function(tide_add_game target)
         endif()
         # Not in hidden folders or build/, where tide keeps what it makes (.tide/),
         # generated C included.
-        file(GLOB_RECURSE found CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.c")
+        file(GLOB_RECURSE found CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/*.cc" "${CMAKE_CURRENT_SOURCE_DIR}/*.cxx")
         foreach(path IN LISTS found)
             file(RELATIVE_PATH relative "${CMAKE_CURRENT_SOURCE_DIR}" "${path}")
             if(NOT relative MATCHES "(^|/)\\." AND NOT relative MATCHES "^build/")
@@ -87,6 +96,12 @@ function(tide_add_game target)
         # The folder rather than its files, so editors see new files before the next build.
         set(manifest_paths "${CMAKE_CURRENT_SOURCE_DIR}/")
     endif()
+
+    foreach(path IN LISTS c_sources)
+        if(path MATCHES "\\.(cpp|cc|cxx)$")
+            set_source_files_properties("${path}" PROPERTIES LANGUAGE C COMPILE_OPTIONS "${TIDE_CPP_FLAGS}")
+        endif()
+    endforeach()
 
     set(layout "")
     if(ARG_LAYOUT)
