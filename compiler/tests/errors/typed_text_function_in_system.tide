@@ -1,0 +1,11 @@
+// expect: 'Typed' reads this frame's Devices, so only views and the functions they call can call it
+int Typed(Keyboard keys)
+{
+    return keys.text.length;
+}
+component Chat { int typed; }
+scene Main { }
+system Type(Devices devices, mut Chat chat)
+{
+    chat.typed += Typed(devices.keyboard);
+}

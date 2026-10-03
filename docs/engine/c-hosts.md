@@ -70,7 +70,7 @@ The generated header is the API between the game and its host. Namespaced declar
 **Input**
 
 - `TIDE_HAS_INPUT` is defined when the game has an input, and `tide_input` names its type.
-- `tide_input_sample(devices, local)` runs the input's `Sample` with this machine's devices. Give it a copy of the devices that the GUI's own use is taken out of, so a click on a button isn't the game's too, then mark the real ones read, so a press counts once:
+- `tide_input_sample(devices, local)` runs the input's `Sample` with this machine's devices. Give it a copy of the devices that the GUI's own use is taken out of, so a click on a button isn't the game's too, then mark the real ones read, so a press counts once. `tide_gui_hide` takes out what views claimed in the last frame too (`GUI.ClaimPointer`, `GUI.ClaimKeyboard`), and what was typed, which is only ever a frame's:
 
   ```c
   tide_devices sampled = devices;
@@ -97,7 +97,7 @@ tide_gui_begin(&gui, &devices, tide_platform_screen_size(), tide_platform_measur
 tide_local_frame_time(&local, seconds);
 tide_frame(w, previous, alpha, &local, &draw, &gui);
 tide_gui_end(&gui, &draw);
-tide_platform_typing(tide_gui_typing(&gui)); // Phones show their keyboard while the player types
+tide_platform_typing(tide_gui_typing(&gui)); // Phones show their keyboard while the player types, or a view asks
 tide_platform_draw(&draw);
 ```
 

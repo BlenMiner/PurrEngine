@@ -94,6 +94,7 @@ typedef struct field {
     bool hidden; // The engine's own, in generated C only: a scene's visibility and players
     int leaf;    // In the device records: 1 + where its values start among its record's (a value is one)
     bool window; // ...a position in this machine's window, which the match can't read
+    bool typed;  // ...what the keyboard typed, as text: a frame's, which only views read, and no device value
 } field;
 
 typedef enum param_mode {
@@ -432,6 +433,8 @@ struct expr {
     int swizzle[4];        // Component indices: 0..3 for x, y, z, w.
     const char *c_constant; // Static member such as quaternion.identity, as C.
     const enum_member *enum_member; // Page.Title: the member (type_decl is its enum)
+    bool typed_text;       // keyboard.text: what was typed, which C keeps as code points
+
 
     // E_CALL, E_METHOD
     VEC(expr *) args;

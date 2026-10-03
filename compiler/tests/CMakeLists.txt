@@ -52,6 +52,7 @@ tide_e2e_test(parallel) # Parallel loops over grids and lists
 tide_e2e_test(crossplatform_text)
 tide_e2e_test(devices)
 tide_e2e_test(pause)
+tide_e2e_test(claims) # Widgets a view draws itself: what's typed, and claiming the pointer and the keyboard
 tide_e2e_test(net)
 tide_e2e_test(net_no_input)
 tide_e2e_test(net_ended)

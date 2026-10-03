@@ -335,6 +335,19 @@ static void build_signatures(void)
     add_gui("GUI", "Disabled", T_NONE, "tide_gui_begin_disabled", "bool disabled", GUI_CONTAINER,
             "Grays out the widgets in its block while `disabled` is true: they're drawn faded and can't be "
             "clicked, focused or typed into. They stay where they are, laid out as usual.");
+    // Widgets a view draws itself, or a library's: what they use of the devices
+    add_gui("GUI", "ClaimPointer", T_NONE, "tide_gui_claim_pointer", "", 0,
+            "This view is using the pointer, for a widget of its own: the mouse's buttons and scroll, the "
+            "pointer's press and the primary touch are hidden from the input's `Sample` and from the other views, "
+            "as a click on a button is. This view goes on reading them. Call it every frame the pointer is on "
+            "the widget or pressing it: a claim hides from the next frame on.");
+    add_gui("GUI", "ClaimKeyboard", T_NONE, "tide_gui_claim_keyboard", "", 0,
+            "This view is using the keyboard, for a widget of its own: the keys and what's typed are hidden from "
+            "the input's `Sample` and from the other views, as typing in a field is. This view goes on reading "
+            "them. Call it every frame the widget has the keyboard: a claim hides from the next frame on.");
+    add_gui("GUI", "ShowKeyboard", T_NONE, "tide_gui_show_keyboard", "", 0,
+            "The player is typing into a widget of this view's own: phones show their keyboard, as they do for a "
+            "text field. Call it every frame they are.");
 }
 
 // ---------------------------------------------------------------------------

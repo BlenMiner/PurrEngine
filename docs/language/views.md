@@ -100,4 +100,4 @@ component Body
 
 ## Reading this machine's devices
 
-Views can read `Devices`, this machine's input devices, for the frame: `.down` and `.up` since the last frame, and the `delta` of the mouse, touches and the pointer, and the mouse's `scroll`, too. What the GUI is using is hidden from them. A function that reads `Devices` needs the frame, like one that draws, so only views and the functions they call can call it.
+Views can read `Devices`, this machine's input devices, for the frame: `.down` and `.up` since the last frame, and the `delta` of the mouse, touches and the pointer, and the mouse's `scroll`, too. What the GUI is using is hidden from them, and so is what another view [claimed](./gui.md#widgets-of-your-own) for widgets of its own. They read [what's typed](./input.md#typed-text) too, as `Devices.keyboard.text`. A function that reads `Devices` needs the frame, like one that draws, so only views and the functions they call can call it.

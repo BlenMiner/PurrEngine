@@ -880,7 +880,7 @@ Implemented, awaiting approval:
 - Input fields can declare bounds: `[Clamp(lo, hi)]`, `[Min(x)]` and `[Max(x)]`, and so can the fields of structs an input holds. The engine applies them to every input before `Sanitize`, so `Sanitize` only handles what they can't express. Bounds are constants; a number bounds every component of a vector. They go on input and struct fields only, for now: on a component's or singleton's field, they're an error.
 - **Input is an attack point,** so the engine is forgiving with it. Before `Sanitize` runs, NaN and infinite floats become the field's default. Nothing a client sends can put NaN in the simulation, and `Sanitize` only deals with values that are merely out of range.
 - `Devices` has a keyboard, a mouse, a gamepad, a touchscreen and the pointer; pen, joysticks and sensors come later. Every button has `.pressed` (held), `.down` (went down since the last sample) and `.up` (went up), named as in Unity: the Input System's `isPressed`, and the old `GetKeyDown` and `GetKeyUp`.
-  - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY.
+  - **Keyboard:** every key by physical position, named after the US layout (`keys.w`, `keys.space`, `keys.leftShift`, `keys.digit1`, `keys.upArrow`, `keys.f1`). WASD works on AZERTY. `text` is what was typed since the last frame, a `string`, which follows the keyboard's layout as keys don't. It's a frame's: views read it, and the functions they call. `Sample` and the match can't, and the input never sends it.
   - **Mouse:** `position`, `delta` and `scroll` (`float2`), and buttons `left`, `right` and `middle`.
   - **Gamepad:** `connected`; `leftStick` and `rightStick` (`float2`); `leftTrigger` and `rightTrigger` (`float`, 0 to 1); face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`); `dpad.up` and the other directions; `leftShoulder`, `rightShoulder`, `start` and `select`.
   - **Touchscreen:** `connected`, `primaryTouch`, and `touches`, a slot for each of 10 fingers, as Unity's. A `Touch` has `press` (a button: `.down` when the finger touched, Unity's Began, and `.up` when it lifted, Ended), `id` (Unity's `touchId`: the same while the finger touches, a new one for each touch), and `position`, `delta` and `startPosition` (`float2`). A finger keeps its slot while it touches. `primaryTouch` is the finger that touched while no other was the primary one, until it lifts. A finger that touches and lifts between two samples reads as held for one, so no tap is lost. A finger is never the mouse, as in Unity's Input System.
@@ -945,7 +945,8 @@ input PlayerInput
 - The types inside `Devices` are `Keyboard`, `Mouse`, `Gamepad`, `Dpad`, `Touchscreen`, `Touch`, `Pointer` and `Button`. Functions take them and `Devices` as parameters, read-only, passed without a copy: `float2 Steer(Gamepad pad)`.
 - `touches` is a fixed-size array, read-only: `touches[i]` (an empty touch past the last, as forgiving as a list), `touches.count` (10: every slot, touching or not) and `foreach`, which goes through every slot. Its type has no name in Tide yet: it's the first fixed-size array, and fixed-size arrays in components (see Lists, Open) will decide how one is written.
 - `Sample` takes local singletons, read-only: `Sample(Settings settings)`. Hosts pass the local state to `tide_input_sample`.
-- `Devices` in views is this frame's: `.down` and `.up` since the last frame, and the `delta` of the mouse, touches and the pointer, and the mouse's `scroll`, too. What the GUI is using is hidden from views, as from `Sample`. A function that reads `Devices` needs the frame, like one that draws: views and the functions they call can call it, and `Sample` can't (pass it `Devices` instead).
+- `Devices` in views is this frame's: `.down` and `.up` since the last frame, and the `delta` of the mouse, touches and the pointer, and the mouse's `scroll`, too. What the GUI is using is hidden from views, as from `Sample`, and so is what another view claimed (see GUI). A function that reads `Devices` needs the frame, like one that draws: views and the functions they call can call it, and `Sample` can't (pass it `Devices` instead).
+- `keyboard.text` is the characters typed since the last frame, with Shift, dead keys and a phone's keyboard applied, and what's pasted too, but for newlines and tabs. Backspace, Enter and the arrows are keys, not characters. It holds up to 32 characters a frame: the platform keeps the rest for the frames after, up to 1024, so a long paste comes over a few frames, as it does into the GUI's fields. It's empty while the GUI has the keyboard (a widget with the focus, a field being typed into, a modal). A function that reads it through a `Keyboard` or `Devices` parameter needs the frame, as one that reads `Devices` does, so `Sample` and systems can't call it. It can't be written, like the rest of the devices.
 - A `Devices` parameter goes in systems and match event handlers, one per system; views and local handlers read `Devices`. Match code can't read `Devices`: the error says to take the parameter.
 - What the input sends of the devices comes from the whole program: each value read through a `Devices` parameter, in systems and handlers and in the functions and methods they call, and every value of a part used whole, like `var pad = devices.gamepad;`, but its positions in the window, which count once they're read. A `Touch` read through a function's parameter or a copy (a `foreach` over `touches`, `touches[i]` at an index that isn't a number) is sent for every place it could be: the primary touch, every slot, or both. A game without an `input` declaration gets one that only sends the devices.
 - Buttons are sent as held (`.pressed`), like bool input fields: `.down` and `.up` in match code are against last tick's input, so a guessed input that repeats the last one doesn't press them again. A button let go and pressed again between two ticks is one press.
@@ -1063,6 +1064,9 @@ view DrawHud(Arena arena)
 - `Screen.width` and `Screen.height` are the window's size.
 - The widgets: `Label`, `Button`, `Toggle`, `Slider`, `IntSlider`, `TextField`, `IntField`, `FloatField`, `Float2Field`, `Float3Field`, `Float4Field`, `ColorField` and `Space`, and the containers `Horizontal`, `Vertical`, `Area` and `Modal`.
 - `GUILayout.Modal(anchor, mut bool open) { ... }` is a panel over the whole screen while `open` is true, like a pause menu. While it's up, it has the focus, the widgets outside it don't work, the game and views get nothing from the devices, and back (Escape or the east button) closes it.
+- **Claims:** a view with widgets of its own, drawn with `Draw` or a C library's, says what they're using: `GUI.ClaimPointer()` and `GUI.ClaimKeyboard()`. What's claimed is hidden from the input's `Sample` and from the other views, as what the GUI uses is, and the view that claimed it goes on reading it.
+- A claim lasts one frame. The view makes it again every frame its widget uses the device, as immediate-mode code draws every frame, so a view that stops running leaves nothing claimed.
+- `GUI.ShowKeyboard()` shows a phone's keyboard, as typing into a field does, each frame it's called. It's apart from the keyboard's claim, so a claim for a widget's shortcuts doesn't bring the keyboard up.
 
 ```csharp
 local singleton Settings
@@ -1081,6 +1085,31 @@ view Options(mut Settings settings)
     {
         GUILayout.Toggle("Fullscreen", settings.fullscreen);
         GUILayout.Slider("Volume", settings.volume, 0, 1);
+    }
+}
+
+local singleton Toolbox
+{
+    bool dragging;
+    bool renaming;
+    string name;
+}
+
+// A widget of the view's own, in the window's lower left corner
+view Tools(mut Toolbox box)
+{
+    var pointer = Devices.pointer;
+    var over = pointer.position.x < 200 && pointer.position.y < 200;
+    if (over && pointer.press.down) box.dragging = true;
+    if (!pointer.press.pressed) box.dragging = false;
+    if (over || box.dragging) GUI.ClaimPointer();
+
+    if (box.renaming)
+    {
+        GUI.ClaimKeyboard();
+        GUI.ShowKeyboard();
+        box.name += Devices.keyboard.text;
+        if (Devices.keyboard.enter.down) box.renaming = false;
     }
 }
 ```
@@ -1105,6 +1134,11 @@ Implemented, awaiting approval:
 - Typing: clicking a number field, or pressing Enter on it, starts typing into it with its value selected, so the first character replaces it; typing a number into a focused field starts too. Enter or leaving the field keeps a valid number; Escape keeps the old value.
 - Widgets follow the pointer: the mouse, or a finger. A finger that lifted is nowhere, so nothing stays hovered where it was.
 - Hidden from the input's `Sample` and from views' `Devices`: the keyboard and gamepad while a widget has the focus, and the mouse's buttons and scroll, the pointer's press and the primary touch while the pointer is over a widget or an area, or pressing a widget. While a modal is up, everything is, the movement of the mouse and the pointer too.
+- What a claim hides: `GUI.ClaimPointer()` the mouse's buttons and scroll, the pointer's press and the primary touch, which is what the pointer over a widget hides; `GUI.ClaimKeyboard()` the keys and what's typed, and not the gamepad (the GUI's focus hides both, as both move it). Where the pointer is stays everyone's.
+- Claims are statements of views and the functions they call, like widgets; a function's claim is the view's that called it. A view that runs once per entity is one view.
+- A claim stands from the end of its frame to the end of the next: it hides from the samples taken after it, and from the next frame's views. So a widget claims the pointer while the pointer is over it, before any press, as the GUI's widgets do, and a click on it never reaches the game. A press with nothing before it (a finger that touches, a widget that appears under the pointer) reaches the game and the other views for the frame it lands in.
+- The GUI's own use comes first: a view never reads what the GUI is using, whatever it claimed, and the GUI's widgets work under a claim, as they're drawn on top. While a view has the keyboard, Tab and the arrows don't start moving the GUI's focus.
+- Views that claim the same device all go on reading it: which of their widgets is on top is theirs to know. Up to 16 views claim in one frame and go on reading; past that, a claim still hides.
 - A modal is an anchored area over the screen, dimmed. The one drawn last is on top, and only its widgets work. Its first widget takes the focus the frame after it comes up, and back doesn't close it on the frame it came up, so the press that opened it doesn't. `GUI` has no modal at a rect yet.
 - The drawing: a dark panel behind each area and the engine's default font, with no style to change yet.
 - `GUI.Disabled(bool disabled) { ... }` grays out the widgets in its block while `disabled` is true, as Unity's `GUI.enabled = false` and `EditorGUI.DisabledScope` do: they're drawn at half opacity, and can't be hovered, pressed, focused or typed into, so Tab skips them. A widget disabled while it's pressed lets go, and a field disabled while it's typed into keeps its old value. The block lays nothing out: its widgets go on in the container around it, `GUI`'s and `GUILayout`'s alike. The mouse on a disabled widget is still the GUI's, hidden from the input's `Sample`. Inside a disabled block, another stays disabled whatever its own `disabled` is. An area's panel doesn't fade, only its widgets.

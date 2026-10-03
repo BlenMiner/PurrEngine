@@ -144,3 +144,58 @@ It copies up to 255 bytes for now. In a browser, it works shortly after a click 
 Widgets follow the pointer: the mouse, or a finger on a touchscreen (see [Input](./input.md#touch)). A finger that lifted is nowhere, so nothing stays hovered where it was.
 
 Whatever the GUI is using, such as a click on a button, a finger on one, or typing in a field, is hidden from the input's `Sample` and from views' `Devices`. So clicking a button never fires a weapon, and typing a name never moves the player.
+
+## Widgets of your own
+
+A view can draw widgets itself with `Draw`, or hand the devices to a UI library through [C functions](./c-functions.md). The engine doesn't know those widgets are there, so the view says what they're using:
+
+| Call | What it does |
+|---|---|
+| `GUI.ClaimPointer()` | This view is using the pointer: the mouse's buttons and scroll, the pointer's press and the primary touch |
+| `GUI.ClaimKeyboard()` | This view is using the keyboard: the keys and [what's typed](./input.md#typed-text) |
+| `GUI.ShowKeyboard()` | The player is typing: phones show their keyboard, as they do for a text field |
+
+What a view claims is hidden from the input's `Sample` and from the other views, as what the GUI uses is, and the view that claimed it goes on reading it. A camera view that drags with the mouse needs no changes to stay still while a toolbox is dragged.
+
+```csharp
+local singleton Toolbox
+{
+    bool dragging;
+    bool renaming;
+    string name;
+}
+
+// A toolbox in the window's lower left corner
+view Tools(mut Toolbox box)
+{
+    var pointer = Devices.pointer;
+    var over = pointer.position.x < 200 && pointer.position.y < 200;
+    if (over && pointer.press.down) box.dragging = true;
+    if (!pointer.press.pressed) box.dragging = false;
+    if (over || box.dragging) GUI.ClaimPointer();
+
+    if (box.renaming)
+    {
+        GUI.ClaimKeyboard();
+        GUI.ShowKeyboard();
+        box.name += Devices.keyboard.text;
+        if (Devices.keyboard.enter.down) box.renaming = false;
+    }
+}
+```
+
+A claim lasts one frame: make it every frame the widget uses the device, as you draw the widget every frame. A view that stops running leaves nothing claimed. A function's claim is the view's that called it.
+
+::: tip Claim before the press
+A claim hides from the next frame on. So claim the pointer while it's over your widget, as the example does, not once it's pressed: then a click on it never reaches the game. A press with nothing before it, like a finger touching the widget, or a widget that appears under the pointer, reaches the game and the other views for that one frame.
+:::
+
+The rest follows from the GUI being drawn on top:
+
+- The GUI's own use comes first. A view never reads what the GUI is using, whatever it claimed, so a button of the GUI's over your widget takes the click.
+- While a view has the keyboard, Tab and the arrows don't move the GUI's focus onto its widgets.
+- The gamepad isn't the keyboard's: a claim leaves it to the game.
+- Where the pointer is stays everyone's, as it does over the GUI.
+- Two views that claim the same device both go on reading it. Which of their widgets is on top is theirs to know.
+
+`GUI.ShowKeyboard()` is apart from the keyboard's claim, since a widget that only takes shortcuts doesn't want a phone's keyboard over half the screen. Call it every frame the player is typing into your widget.

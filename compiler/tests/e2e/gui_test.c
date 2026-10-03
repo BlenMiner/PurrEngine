@@ -18,7 +18,7 @@ static void frame(void)
     tide_gui_begin(&gui, &devices, tide_f2(1920.0f, 1080.0f), NULL);
     tide_frame(NULL, NULL, 1.0f, &local, &draw, &gui);
     tide_gui_end(&gui, &draw);
-    devices.text.count = 0;
+    devices.keyboard.text.count = 0;
 }
 
 static void start(void)
@@ -149,10 +149,10 @@ TIDE_TEST(gui_typing_text)
     start();
     TIDE_CHECK(find("Hello, cat", 0) != NULL);
     TIDE_REQUIRE(click_at("Name", 0, 250.0f)); // Past the label, in the field
-    devices.text.count = 3;
-    devices.text.chars[0] = 's';
-    devices.text.chars[1] = 0xE9; // e with an acute accent: two bytes in UTF-8
-    devices.text.chars[2] = '!';
+    devices.keyboard.text.count = 3;
+    devices.keyboard.text.chars[0] = 's';
+    devices.keyboard.text.chars[1] = 0xE9; // e with an acute accent: two bytes in UTF-8
+    devices.keyboard.text.chars[2] = '!';
     frame();
     frame();
     const tide_str name = tide_text_read(&local.heap, local.Menu.player);
@@ -169,8 +169,8 @@ TIDE_TEST(gui_typing_into_fields)
     TIDE_REQUIRE(click("Play", 0));
     TIDE_REQUIRE(click("Audio", 0));
     TIDE_REQUIRE(click_at("Players", 0, 250.0f)); // Past the label, in the field
-    devices.text.count = 1;
-    devices.text.chars[0] = '7';
+    devices.keyboard.text.count = 1;
+    devices.keyboard.text.chars[0] = '7';
     frame();
     TIDE_CHECK(local.Menu.players == 2); // Kept on Enter
     press(&devices.keyboard.enter);
@@ -178,9 +178,9 @@ TIDE_TEST(gui_typing_into_fields)
 
     // A float2 field is two fields, showing 0 and 0: the second is y.
     TIDE_REQUIRE(click("0", 1));
-    devices.text.count = 2;
-    devices.text.chars[0] = '1';
-    devices.text.chars[1] = '5';
+    devices.keyboard.text.count = 2;
+    devices.keyboard.text.chars[0] = '1';
+    devices.keyboard.text.chars[1] = '5';
     frame();
     press(&devices.keyboard.enter);
     TIDE_CHECK(local.Menu.offset.x == 0.0f && local.Menu.offset.y == 15.0f);

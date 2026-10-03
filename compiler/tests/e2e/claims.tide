@@ -1,0 +1,91 @@
+// Widgets a view draws itself: it reads what's typed, and claims the pointer
+// and the keyboard, so the game and the other views don't act on them too.
+
+input PlayerInput
+{
+    bool fire;
+    bool forward;
+    float2 aim;
+
+    Sample()
+    {
+        fire = Devices.mouse.left.pressed || Devices.pointer.press.pressed;
+        forward = Devices.keyboard.w.pressed;
+        aim = Devices.pointer.position;
+    }
+}
+
+singleton Shots
+{
+    int fired;
+}
+
+scene Main { }
+
+system Fire(PlayerInput input, mut Shots shots)
+{
+    if (input.fire.down) shots.fired += 1;
+}
+
+local singleton Tools
+{
+    bool dragging;
+    bool renaming;
+    string name;
+    int clicks; // Presses on the toolbox
+    int keys;   // W, pressed while renaming
+}
+
+local singleton Camera
+{
+    int drags;    // Frames it read the mouse's left button
+    int keys;     // ...and the W key
+    string typed; // What it read typed
+    int count;    // ...and how many characters, through a function
+}
+
+// The toolbox: the window's lower left corner.
+bool Over(Pointer pointer)
+{
+    return pointer.position.x < 200 && pointer.position.y < 200;
+}
+
+// A function claims for the view that calls it, and reads what it claimed.
+void Rename(mut string name, mut bool renaming, mut int keys)
+{
+    GUI.ClaimKeyboard();
+    GUI.ShowKeyboard();
+    name += Devices.keyboard.text;
+    if (Devices.keyboard.w.down) keys += 1;
+    if (Devices.keyboard.enter.down) renaming = false;
+}
+
+view Toolbox(mut Tools tools)
+{
+    var pointer = Devices.pointer;
+    var over = Over(pointer);
+    if (over && pointer.press.down)
+    {
+        tools.dragging = true;
+        tools.renaming = true;
+        tools.clicks += 1;
+    }
+    if (!pointer.press.pressed) tools.dragging = false;
+    if (over || tools.dragging) GUI.ClaimPointer();
+    if (tools.renaming) Rename(tools.name, tools.renaming, tools.keys);
+}
+
+// What's typed, through a part of the devices passed on.
+int Typed(Keyboard keys)
+{
+    return keys.text.length;
+}
+
+view Look(mut Camera camera)
+{
+    var keys = Devices.keyboard;
+    if (Devices.mouse.left.pressed) camera.drags += 1;
+    if (keys.w.pressed) camera.keys += 1;
+    camera.typed += keys.text;
+    camera.count += Typed(Devices.keyboard);
+}

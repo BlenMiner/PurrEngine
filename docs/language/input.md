@@ -62,6 +62,7 @@ Input carries whether buttons are held, not whether they just went down: when a 
   - `f1` to `f12`
   - `minus`, `equals`, `leftBracket`, `rightBracket`, `backslash`, `semicolon`, `quote`, `comma`, `period`, `slash`, `backquote`
   - `numpad0` to `numpad9`, `numpadEnter`, `numpadPlus`, `numpadMinus`, `numpadMultiply`, `numpadDivide`, `numpadPeriod`
+  - `text`, a `string`: what was typed since the last frame, which views read (see [Typed text](#typed-text))
 - **Mouse:** `position`, `delta` and `scroll` (`float2`), and the buttons `left`, `right`, `middle`, `back` and `forward`. `position` is in window pixels from the bottom left.
 - **Gamepad:** `connected`, `leftStick` and `rightStick` (`float2`), `leftTrigger` and `rightTrigger` (0 to 1), the face buttons by position (`buttonSouth`, `buttonEast`, `buttonWest`, `buttonNorth`, which is A, B, X and Y on Xbox), `dpad.up` and the other directions, `leftShoulder`, `rightShoulder`, `leftStickButton`, `rightStickButton`, `start` and `select`.
 - **Touchscreen:** `connected`, `primaryTouch`, and `touches`, a slot for each of 10 fingers. Each `Touch` has:
@@ -116,6 +117,27 @@ input Brush
 ```
 
 Touches come from the web, on phones and desktops alike, and from touchscreens on Windows. Android and iOS come next. Elsewhere, `connected` is false and no finger ever touches.
+
+### Typed text
+
+`Devices.keyboard.text` is what the player typed since the last frame, as a `string`. Unlike keys, it follows the keyboard's layout: on AZERTY, the key in the `q` position types `a`, and `text` says `a`. Shift, accents and a phone's keyboard are applied, and what's pasted with Ctrl+V comes through it too. Backspace, Enter and the arrows are keys, not characters.
+
+A text field of the GUI's reads it for you. Views read it themselves, and so do the functions they call, for a text box of their own, or to pass on to a library:
+
+```csharp
+local singleton Chat
+{
+    string line;
+}
+
+view Typing(mut Chat chat)
+{
+    chat.line += Devices.keyboard.text;
+    if (Devices.keyboard.backspace.down) chat.line = chat.line.Substring(0, chat.line.length - 1);
+}
+```
+
+It's a frame's, so `Sample` can't read it, and neither can the match: an input holds no text, and what's typed is never sent. It's empty while the GUI has the keyboard, as when the player types into a `TextField`, and in every view but the one that [claimed the keyboard](./gui.md#widgets-of-your-own). A long paste comes over a few frames, 32 characters in each.
 
 ### Devices in the match
 
