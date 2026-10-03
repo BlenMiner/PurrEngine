@@ -1987,15 +1987,18 @@ static void gen_expr(gen *g, sb *o, const expr *e)
                 gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
             }
             sb_put(o, ")");
-        } else if (e->call == CALL_DRAW && strcmp(e->c_callee, "tide_draw_mesh_grid") == 0) {
-            // Draw.Mesh(vertices, indices, texture, filter): the grid with its shape, and the filter it has when left out
-            sb_put(o, "tide_draw_mesh_grid(tide_draw");
+        } else if (e->call == CALL_DRAW
+                   && (strcmp(e->c_callee, "tide_draw_mesh_grid") == 0 || strcmp(e->c_callee, "tide_draw_mesh3_grid") == 0)) {
+            // Draw.Mesh(vertices, indices, [transform,] texture, filter): the grid with its shape, and the filter
+            // it has when left out
+            const int texture = strcmp(e->c_callee, "tide_draw_mesh3_grid") == 0 ? 3 : 2;
+            sb_printf(o, "%s(tide_draw", e->c_callee);
             for (int i = 0; i < e->args.count; i++) {
                 sb_put(o, ", ");
                 gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
-                if (i == 2) sb_printf(o, ", &%s", grid_shape_name(e->args.items[2]->type.decl));
+                if (i == texture) sb_printf(o, ", &%s", grid_shape_name(e->args.items[texture]->type.decl));
             }
-            sb_put(o, e->args.count == 3 ? ", TIDE_FILTER_BILINEAR)" : ")");
+            sb_put(o, e->args.count == texture + 1 ? ", TIDE_FILTER_BILINEAR)" : ")");
         } else if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
             sb_printf(o, "%s(%s", e->c_callee, e->call == CALL_DRAW ? "tide_draw" : "");
             for (int i = 0; i < e->args.count; i++) {

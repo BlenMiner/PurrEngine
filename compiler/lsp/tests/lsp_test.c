@@ -634,6 +634,8 @@ TIDE_TEST(lsp_meshes)
     open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Screen();\n    Draw.Clip(Rect(0, 0, 4, 4));\n"
                              "    Draw.Mesh(art.corners, [0, 1, 2], art.pixels, Filter.Point);\n"
                              "    Draw.Mesh([Vertex { position = float2(1, 2) }], [0, 0, 0]);\n"
+                             "    Draw.Camera(float3(0, 0, -5), quaternion.identity, 60);\n"
+                             "    Draw.Mesh([Vertex3 { position = float3(1, 2, 3) }], [0, 0, 0], float4x4.identity);\n"
                              "    Draw.Clip();\n    DrawUI(Draw.list);\n}\n");
     TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
 
@@ -645,6 +647,8 @@ TIDE_TEST(lsp_meshes)
     TIDE_CHECK(offers(filter, "Point") && offers(filter, "Bilinear"));
     const char *corner = complete(MESH_TYPES "view V(Art art)\n{\n    var v = Vertex { $ };\n}\n");
     TIDE_CHECK(offers(corner, "position") && offers(corner, "uv") && offers(corner, "color"));
+    const char *corner3 = complete(MESH_TYPES "view V(Art art)\n{\n    var v = Vertex3 { $ };\n}\n");
+    TIDE_CHECK(offers(corner3, "position") && offers(corner3, "uv") && offers(corner3, "color"));
     const char *param = complete(MESH_TYPES "extern void Paint($);\n");
     TIDE_CHECK(offers(param, "DrawList") && offers(param, "Vertex"));
     const char *tide_param = complete(MESH_TYPES "void Paint($) { }\n"); // Only C takes one
@@ -654,6 +658,11 @@ TIDE_TEST(lsp_meshes)
     const char *mesh = request("textDocument/hover");
     TIDE_CHECK(has(mesh, "Draw.Mesh(List<Vertex> vertices, List<int> indices, Grid2<Color> texture, Filter filter)"));
     TIDE_CHECK(has(mesh, "Triangles: three of `indices` each"));
+    // Each version's doc, 2D and 3D
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Cam$era(float3(0, 0, 0), quaternion.identity, 60);\n}\n");
+    const char *camera = request("textDocument/hover");
+    TIDE_CHECK(has(camera, "Draw.Camera(float3 position, quaternion rotation, float fieldOfView)"));
+    TIDE_CHECK(has(camera, "Sets the 3D camera for the 3D meshes after it") && has(camera, "orthographic size"));
     open_document(MESH_TYPES "view V(Art art)\n{\n    DrawUI(Draw.li$st);\n}\n");
     TIDE_CHECK(has(request("textDocument/hover"), "Draw.list: DrawList"));
     open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Mesh(art.corners, $\n}\n");

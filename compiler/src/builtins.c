@@ -27,30 +27,40 @@ static const type T_BOOL = {TY_BOOL, NULL};
 static const type T_ANCHOR = {TY_ENUM, NULL};
 static const decl *anchor_decl;
 
-static const decl *vertices_decl, *indices_decl, *pixels_decl, *filter_decl;
+static const decl *vertices_decl, *vertices3_decl, *indices_decl, *pixels_decl, *filter_decl;
 
 void builtins_use(const decl *anchor)
 {
     anchor_decl = anchor;
     // Another program's: this one's come with its first Draw.Mesh
-    vertices_decl = indices_decl = pixels_decl = filter_decl = NULL;
+    vertices_decl = vertices3_decl = indices_decl = pixels_decl = filter_decl = NULL;
 }
 
 // What Draw.Mesh takes, the same way: these stand for the program's own
-// List<Vertex>, List<int>, Grid2<Color> and Filter.
-static decl mesh_vertices, mesh_indices, mesh_pixels, mesh_filter;
+// List<Vertex>, List<Vertex3>, List<int>, Grid2<Color> and Filter.
+static decl mesh_vertices, mesh_vertices3, mesh_indices, mesh_pixels, mesh_filter;
 static const type T_VERTICES = {TY_LIST, &mesh_vertices};
+static const type T_VERTICES3 = {TY_LIST, &mesh_vertices3};
 static const type T_INDICES = {TY_LIST, &mesh_indices};
 static const type T_PIXELS = {TY_GRID, &mesh_pixels};
 static const type T_FILTER = {TY_ENUM, &mesh_filter};
 static const type T_RECT = {TY_RECT, NULL};
 
-void builtins_use_mesh(const decl *vertices, const decl *indices, const decl *pixels, const decl *filter)
+void builtins_use_mesh(const decl *vertices, const decl *vertices3, const decl *indices, const decl *pixels,
+                       const decl *filter)
 {
     vertices_decl = vertices;
+    vertices3_decl = vertices3;
     indices_decl = indices;
     pixels_decl = pixels;
     filter_decl = filter;
+}
+
+// Whether `t` stands for one of the program's types Draw.Mesh takes.
+static bool mesh_type(const type t)
+{
+    return t.decl == &mesh_vertices || t.decl == &mesh_vertices3 || t.decl == &mesh_indices || t.decl == &mesh_pixels
+        || t.decl == &mesh_filter;
 }
 
 // A signature's type as a program sees it.
@@ -58,6 +68,7 @@ static type real_type(const type t)
 {
     if (t.kind == TY_ENUM && !t.decl) return (type){TY_ENUM, (decl *)anchor_decl};
     if (t.decl == &mesh_vertices && vertices_decl) return (type){TY_LIST, (decl *)vertices_decl};
+    if (t.decl == &mesh_vertices3 && vertices3_decl) return (type){TY_LIST, (decl *)vertices3_decl};
     if (t.decl == &mesh_indices && indices_decl) return (type){TY_LIST, (decl *)indices_decl};
     if (t.decl == &mesh_pixels && pixels_decl) return (type){TY_GRID, (decl *)pixels_decl};
     if (t.decl == &mesh_filter && filter_decl) return (type){TY_ENUM, (decl *)filter_decl};
@@ -67,6 +78,7 @@ static type real_type(const type t)
 static const char *signature_type_name(const type t)
 {
     if (t.decl == &mesh_vertices) return "List<Vertex>";
+    if (t.decl == &mesh_vertices3) return "List<Vertex3>";
     if (t.decl == &mesh_indices) return "List<int>";
     if (t.decl == &mesh_pixels) return "Grid2<Color>";
     if (t.decl == &mesh_filter) return "Filter";
@@ -275,6 +287,19 @@ static void build_signatures(void)
              "translation, rotation, scale", "A transform: scale, then rotate, then translate.");
     describe(add("float4x4", "Translate", T_F4X4, "tide_translate_f4x4", 1, T_F3, T_NONE, T_NONE),
              "translation", "A translation matrix.");
+    signature *perspective = add("float4x4", "PerspectiveFov", T_F4X4, "tide_perspectivefov_f4x4", 3, T_F, T_F, T_F);
+    perspective->argc = 4;
+    perspective->params[3] = T_F;
+    describe(perspective, "verticalFov, aspect, near, far",
+             "A perspective projection, for `Draw.Camera(transform, projection)`: `verticalFov` in radians, and "
+             "`aspect` the screen's width over its height. It takes what a camera sees, looking down -z as "
+             "OpenGL's and Unity's views do, to the screen, from `near` to `far`.");
+    signature *ortho = add("float4x4", "Ortho", T_F4X4, "tide_ortho_f4x4", 3, T_F, T_F, T_F);
+    ortho->argc = 4;
+    ortho->params[3] = T_F;
+    describe(ortho, "width, height, near, far",
+             "An orthographic projection, for `Draw.Camera(transform, projection)`: a box `width` by `height` "
+             "around the camera's axis, from `near` to `far`, with no perspective.");
 
     // Drawing, in views: tide/draw.h. Codegen passes the view's draw list first.
     describe(add("Draw", "Clear", T_NONE, "tide_draw_clear", 1, T_COLOR, T_NONE, T_NONE),
@@ -283,6 +308,16 @@ static void build_signatures(void)
              "center, size",
              "Sets the camera for the Draw calls after it. `center` is the world position at the middle of the "
              "screen and `size` is half the visible height, like Unity's orthographic size.");
+    describe(add("Draw", "Camera", T_NONE, "tide_draw_camera_3d", 3, T_F3, T_Q, T_F),
+             "position, rotation, fieldOfView",
+             "Sets the 3D camera for the 3D meshes after it: where it is, which way it looks (along its rotation's "
+             "+z), and how much it sees up and down, in degrees, like Unity's Camera.fieldOfView. It sees from 0.3 "
+             "units in front of it on, however far.");
+    describe(add("Draw", "Camera", T_NONE, "tide_draw_camera_matrices", 2, T_F4X4, T_F4X4, T_NONE),
+             "transform, projection",
+             "Sets the 3D camera with any projection: `transform` places the camera in the world, looking along "
+             "its +z, and `projection` (`float4x4.PerspectiveFov`, `float4x4.Ortho`) takes what it sees to the "
+             "screen, the screen's shape included.");
     describe(add("Draw", "Circle", T_NONE, "tide_draw_circle", 3, T_F2, T_F, T_COLOR),
              "center, radius, color", "A filled circle.");
     describe(add("Draw", "WireCircle", T_NONE, "tide_draw_wire_circle", 3, T_F2, T_F, T_COLOR),
@@ -309,6 +344,22 @@ static void build_signatures(void)
     sampled->argc = 4;
     sampled->params[3] = T_FILTER;
     describe(sampled, "vertices, indices, texture, filter", mesh_doc);
+    static const char mesh3_doc[] =
+        "A 3D mesh, placed in the world by `transform`, through the 3D camera: triangles, three of `indices` each, "
+        "places in `vertices`, the nearest in front. Each pixel is its corners' colors blended across the "
+        "triangle, times `texture`'s at their uvs. Lists that don't change aren't copied again, and a mesh drawn "
+        "again and again in a row is drawn at once.";
+    describe(add("Draw", "Mesh", T_NONE, "tide_draw_mesh3_lists", 3, T_VERTICES3, T_INDICES, T_F4X4),
+             "vertices, indices, transform", mesh3_doc);
+    signature *textured3 = add("Draw", "Mesh", T_NONE, "tide_draw_mesh3_grid", 3, T_VERTICES3, T_INDICES, T_F4X4);
+    textured3->argc = 4;
+    textured3->params[3] = T_PIXELS;
+    describe(textured3, "vertices, indices, transform, texture", mesh3_doc);
+    signature *sampled3 = add("Draw", "Mesh", T_NONE, "tide_draw_mesh3_grid", 3, T_VERTICES3, T_INDICES, T_F4X4);
+    sampled3->argc = 5;
+    sampled3->params[3] = T_PIXELS;
+    sampled3->params[4] = T_FILTER;
+    describe(sampled3, "vertices, indices, transform, texture, filter", mesh3_doc);
     static const char clip_doc[] =
         "Only what's inside `rect` draws, for the Draw calls after it: from (x, y) to (x + width, y + height), in "
         "the units they're in. `Draw.Clip()` with no rect draws everywhere again. Each frame starts with none.";
@@ -508,10 +559,7 @@ static bool fits(const signature *s, const expr *e)
         const expr *arg = e->args.items[a];
         const bool mut = s->mut & (1u << a);
         // A type the program doesn't have, like Grid2<Color> where no grid is one: nothing is it
-        if (want.decl == &mesh_vertices || want.decl == &mesh_indices || want.decl == &mesh_pixels
-            || want.decl == &mesh_filter) {
-            return false;
-        }
+        if (mesh_type(want)) return false;
         if (arg->kind == E_DEFAULT) {
             if (mut) return false;
             continue;
@@ -546,20 +594,29 @@ static bool default_ambiguous(const int first, const expr *e)
     return false;
 }
 
-bool builtin_list_param(const str owner, const str name, const int index, type *out)
+bool builtin_list_param(const str owner, const str name, const int index, const expr *list, type *out)
 {
     build_signatures();
-    bool found = false;
+    // The type its first element names, if it names one
+    const expr *first = list && list->args.count > 0 ? list->args.items[0] : NULL;
+    const bool named = first && first->kind == E_LITERAL;
+    bool found = false, several = false, picked = false;
     for (int i = 0; i < signature_count; i++) {
         const signature *s = &signatures[i];
         if (!str_eq_c(owner, s->owner) || !str_eq_c(name, s->name) || s->argc <= index) continue;
         const type t = real_type(s->params[index]);
-        if (t.kind != TY_LIST || t.decl == &mesh_vertices || t.decl == &mesh_indices) return false;
-        if (found && t.decl != out->decl) return false;
+        if (t.kind != TY_LIST || mesh_type(t)) return false;
+        const type element = t.decl->fields.items[0].type;
+        if (named && element.kind == TY_STRUCT && str_eq(element.decl->name, first->name)) {
+            *out = t;
+            picked = true;
+        }
+        if (picked) continue;
+        if (found && t.decl != out->decl) several = true;
         *out = t;
         found = true;
     }
-    return found;
+    return picked || (found && !several);
 }
 
 type resolve_builtin_call(const str owner, expr *e)
@@ -808,17 +865,21 @@ bool builtin_describe(const str owner, const str name, sb *out)
         return true;
     }
 
-    const char *doc = NULL;
+    // Each version's doc once, as versions share them (Draw.Mesh's in 2D and in 3D)
+    const char *docs[MAX_SIGNATURES];
+    int doc_count = 0;
     for (int i = 0; i < signature_count; i++) {
         const signature *s = &signatures[i];
         if (!str_eq_c(owner, s->owner) || !str_eq_c(name, s->name)) continue;
         format_signature(s, out);
         sb_put(out, "\n");
-        if (s->doc) doc = s->doc;
+        bool seen = !s->doc;
+        for (int j = 0; j < doc_count && !seen; j++) seen = docs[j] == s->doc;
+        if (!seen) docs[doc_count++] = s->doc;
         found = true;
     }
     if (found) {
-        if (doc) sb_printf(out, "\n%s", doc);
+        for (int j = 0; j < doc_count; j++) sb_printf(out, "\n%s\n", docs[j]);
         return true;
     }
 

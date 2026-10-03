@@ -807,3 +807,28 @@ static inline tide_float3 tide_rotate_f4x4(const tide_float4x4 m, const tide_flo
     const tide_float4 r = tide_mul_f4x4_f4(m, tide_f4(v.x, v.y, v.z, 0.0f));
     return tide_f3(r.x, r.y, r.z);
 }
+
+// Projections, as Unity.Mathematics' float4x4.PerspectiveFov and Ortho: from
+// a camera's view, which looks down -z (OpenGL's and Unity's view space), to
+// clip space, where z goes from -1 at `near_z` to 1 at `far_z`. The field of
+// view is vertical, in radians, and `aspect` is width over height.
+static inline tide_float4x4 tide_perspectivefov_f4x4(const float vertical_fov, const float aspect, const float near_z,
+                                                     const float far_z)
+{
+    const float cotangent = 1.0f / tide_tan_f(vertical_fov * 0.5f);
+    const float rcpdz = 1.0f / (near_z - far_z);
+    return (tide_float4x4){{cotangent / aspect, 0.0f, 0.0f, 0.0f},
+                           {0.0f, cotangent, 0.0f, 0.0f},
+                           {0.0f, 0.0f, (far_z + near_z) * rcpdz, -1.0f},
+                           {0.0f, 0.0f, 2.0f * near_z * far_z * rcpdz, 0.0f}};
+}
+
+// A box `width` by `height` around the camera's axis.
+static inline tide_float4x4 tide_ortho_f4x4(const float width, const float height, const float near_z, const float far_z)
+{
+    const float rcpdz = 1.0f / (far_z - near_z);
+    return (tide_float4x4){{2.0f / width, 0.0f, 0.0f, 0.0f},
+                           {0.0f, 2.0f / height, 0.0f, 0.0f},
+                           {0.0f, 0.0f, -2.0f * rcpdz, 0.0f},
+                           {0.0f, 0.0f, -(far_z + near_z) * rcpdz, 1.0f}};
+}

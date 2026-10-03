@@ -171,6 +171,7 @@ const cases = {
         ['int2x2 alsoWrong', [['int2x2', '!storage.type.primitive']]],
         ['Draw.Rect(', [['Draw', 'support.class'], ['Rect', '!storage.type'], ['Rect', 'entity.name.function.call'], ['Color', 'storage.type.primitive']]],
         ['Vertex corner', [['Vertex', 'support.class']]],
+        ['Vertex3 corner3', [['Vertex3', 'support.class']]],
         ['Draw.Mesh(', [['Mesh', 'entity.name.function.call'], ['Filter', 'support.class']]],
         ['extern void DrawUI(DrawList list);', [['DrawList', 'storage.type.primitive']]],
         ['if (GUI.Button("Copy")) Clipboard.Copy(', [['GUI', 'support.class'], ['Button', '!support.class'], ['Button', 'entity.name.function.call'], ['Clipboard', 'support.class']]],
