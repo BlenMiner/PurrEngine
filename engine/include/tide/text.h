@@ -27,7 +27,8 @@
 //
 // Everything here is deterministic: numbers become text through exact integer
 // arithmetic, never printf, so the same value gives the same bytes on every
-// platform. Nothing fails: when the scratch area is full, text stops growing.
+// platform. Nothing fails: the scratch area grows as it needs, so text of any
+// size can be made; only running out of memory ends the program.
 
 typedef struct tide_str {
     const char *ptr;
@@ -37,12 +38,17 @@ typedef struct tide_str {
 
 #define TIDE_STR_EMPTY ((tide_str){"", 0, 0})
 
-#ifndef TIDE_SCRATCH_BYTES
-#define TIDE_SCRATCH_BYTES (1u << 20)
-#endif
+// The scratch area is a stack of bytes, one per thread, in pieces it adds as
+// it needs (see tide_scratch_at). A piece is a whole number of slots of
+// TIDE_SCRATCH_BYTES, and the area starts with one; the first stays, and the
+// others go when the area goes back to a mark from before them.
+#define TIDE_SCRATCH_SHIFT 20u
+#define TIDE_SCRATCH_BYTES (1u << TIDE_SCRATCH_SHIFT)
+// As many slots as a tagged offset's 30 bits address: 1 GiB a thread.
+#define TIDE_SCRATCH_SLOTS (1u << (30u - TIDE_SCRATCH_SHIFT))
 
-// The scratch area, one per thread: where it is now, and going back there,
-// which frees everything made since.
+// The scratch area: where it is now, and going back there, which frees
+// everything made since.
 uint32_t tide_scratch_mark(void);
 void tide_scratch_reset(uint32_t mark);
 // Frees this thread's scratch area; the next text made allocates it again.
@@ -143,10 +149,20 @@ typedef struct tide_text {
 void tide_text_use(tide_heap *match_heap, tide_heap *local_heap);
 
 // This thread's: the heaps tide_text_use set, by `where`, and the scratch
-// area (NULL until it's first used). They're here for the functions below,
-// which run for every element code reads or writes, so they inline.
+// area, as the start of each of its slots (NULL where it has no piece). They're
+// here for the functions below, which run for every element code reads or
+// writes, so they inline.
 extern TIDE_THREAD_LOCAL tide_heap *tide_world_heaps[2];
-extern TIDE_THREAD_LOCAL char *tide_scratch_area;
+extern TIDE_THREAD_LOCAL char *tide_scratch_slots[TIDE_SCRATCH_SLOTS];
+
+// The byte at an offset into the scratch area: its slot's start and the rest.
+// A piece is a run of whole slots in one allocation, so an offset in it is as
+// far from its slot's start as from the piece's memory, and whatever is in one
+// piece (a list's elements, a text's bytes) is side by side.
+static inline char *tide_scratch_at(const uint32_t offset)
+{
+    return tide_scratch_slots[offset >> TIDE_SCRATCH_SHIFT] + (offset & (TIDE_SCRATCH_BYTES - 1u));
+}
 
 // The heap of TIDE_IN_MATCH or TIDE_IN_LOCAL, as tide_text_use set it; NULL
 // for TIDE_IN_SCRATCH.
@@ -179,15 +195,15 @@ tide_text tide_text_temp(tide_str value);
 
 // For tide/list.h, which keeps its blocks the way text does.
 
-// Memory for code as it runs, like the scratch area's but of any size,
-// 16-byte aligned: in the area when it has room, or else of its own, freed
-// once the area goes back to a mark from before it.
+// Memory for code as it runs, of any size, 16-byte aligned: in the scratch
+// area, freed once it goes back to a mark from before it.
 void *tide_scratch_memory(size_t bytes);
 
 // A block in the scratch area with room for `bytes` after its header, 16-byte
-// aligned: its header, or NULL when the area is full. `at` gets its tagged
-// offset.
-tide_block *tide_scratch_block(uint32_t bytes, uint32_t *at);
+// aligned: its header, and `at` gets its tagged offset. `what` ("a list") is
+// for the message when it can't be made: the area grows as it needs, so that's
+// only when memory, or the offsets' 30 bits, run out, which ends the program.
+tide_block *tide_scratch_block(uint32_t bytes, const char *what, uint32_t *at);
 
 // A tagged offset's block, or NULL for 0: to read, and to change (a world's
 // is made its own, apart from its snapshots: see tide/page.h).
@@ -195,7 +211,7 @@ static inline tide_block *tide_block_at(const uint32_t at)
 {
     if (!at) return NULL;
     const uint32_t offset = at & 0x3FFFFFFFu;
-    if (at >> 30 == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+    if (at >> 30 == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)tide_scratch_at(offset);
     const tide_heap *heap = tide_heap_of(at >> 30);
     return heap ? tide_heap_block(heap, offset) : NULL;
 }
@@ -204,7 +220,7 @@ static inline tide_block *tide_block_write(const uint32_t at)
 {
     if (!at) return NULL;
     const uint32_t offset = at & 0x3FFFFFFFu;
-    if (at >> 30 == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+    if (at >> 30 == TIDE_IN_SCRATCH) return (tide_block *)(uintptr_t)tide_scratch_at(offset);
     tide_heap *heap = tide_heap_of(at >> 30);
     return heap ? tide_heap_write(heap, offset) : NULL;
 }
