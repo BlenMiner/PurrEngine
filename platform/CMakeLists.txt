@@ -71,7 +71,7 @@ endfunction()
 # (build/android-debug.pem, made the first time), so a new build installs
 # over the last. Does nothing in other builds, so it can be called
 # unconditionally.
-set(TIDE_ANDROID_KEY "${PROJECT_SOURCE_DIR}/build/android-debug.pem")
+set(TIDE_ANDROID_KEY "${PROJECT_SOURCE_DIR}/build/android-debug.pem" CACHE INTERNAL "") # For every folder's apps
 if(TIDE_ANDROID)
     # Made once, before any app, so apps built at once share it.
     add_custom_target(tide_android_key COMMAND "${TIDE_APK_PATH}" --key "${TIDE_ANDROID_KEY}" VERBATIM)
