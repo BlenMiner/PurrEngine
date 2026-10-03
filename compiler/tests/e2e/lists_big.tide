@@ -25,6 +25,7 @@ component Results
 }
 
 const int N = 10000; // Ints: three chunks
+const int HUGE = 300000; // Ints: 1.2 MB, more than a piece of the scratch area
 
 extern float c_big_sum(List<float> values, int count);
 extern void c_big_double(mut List<float> values, int count);
@@ -92,6 +93,19 @@ system Use(mut Big big, mut Results t)
     List<int> small = [1, 2, 3];
     big.numbers = small;
     Expect(t, big.numbers.count == 3 && big.numbers[2] == 3 && big.numbers[3] == 0);
+
+    // Bigger than a piece of the scratch area (1 MiB, see tide/text.h): a
+    // list read as a value is whole, and so is text as it grows
+    big.numbers.Clear();
+    for (var i = 0; i < HUGE; i++) big.numbers.Add(i * 7);
+    var huge = big.numbers;
+    mut var right = 0;
+    for (var i = 0; i < HUGE; i++) if (huge[i] == i * 7) right += 1;
+    Expect(t, huge.count == HUGE && right == HUGE && huge[HUGE - 1] == (HUGE - 1) * 7 && big.numbers.count == HUGE);
+    mut var text = "";
+    for (var i = 0; i < 70000; i++) text += "0123456789abcdef";
+    Expect(t, text.length == 1120000 && text.Substring(1048570, 12) == "abcdef012345" && text.EndsWith("cdef"));
+    big.numbers = small;
 
     // Cleared, it keeps its chunks and fills again
     big.cells.Clear();

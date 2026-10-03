@@ -22,8 +22,9 @@
 // (tide_list_copy), so changing a list in place is safe.
 //
 // Nothing fails: past the end, reads find nothing and writes do nothing. A
-// world's lists grow with its heap; a list in the scratch area stops growing
-// when the area is full.
+// world's lists grow with its heap, and a list in the scratch area with the
+// area, which adds pieces as it needs (see tide/text.h); only running out of
+// memory ends the program.
 //
 // A list's block starts with a header: the count in `a`, and the capacity in
 // `b`. The elements follow it, side by side, unless the list is a world's and
@@ -75,7 +76,7 @@ static inline void *tide_list_at(const tide_list l, const int32_t i, const uint3
     if (!l.at) return NULL;
     const uint32_t offset = l.at & 0x3FFFFFFFu;
     if (l.at >> 30 == TIDE_IN_SCRATCH) {
-        tide_block *b = (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+        tide_block *b = (tide_block *)(uintptr_t)tide_scratch_at(offset);
         return i >= 0 && (uint32_t)i < b->a ? (char *)(b + 1) + (size_t)i * size : NULL;
     }
     const tide_heap *heap = tide_heap_of(l.at >> 30);
@@ -98,7 +99,7 @@ static inline void *tide_list_at_mut(const tide_list l, const int32_t i, const u
     if (!l.at) return NULL;
     const uint32_t offset = l.at & 0x3FFFFFFFu;
     if (l.at >> 30 == TIDE_IN_SCRATCH) {
-        tide_block *b = (tide_block *)(uintptr_t)(tide_scratch_area + offset);
+        tide_block *b = (tide_block *)(uintptr_t)tide_scratch_at(offset);
         return i >= 0 && (uint32_t)i < b->a ? (char *)(b + 1) + (size_t)i * size : NULL;
     }
     tide_heap *heap = tide_heap_of(l.at >> 30);
@@ -146,11 +147,12 @@ static inline const void *tide_list_cached_at(tide_list_cache *c, const tide_lis
 int32_t tide_list_read_count(const tide_heap *heap, tide_list l);
 const void *tide_list_read(const tide_heap *heap, tide_list l, int32_t i, uint32_t size);
 
-// A new element at the end, zeroed, or NULL when there's no room.
+// A new element at the end, zeroed, or NULL when the list is as big as one
+// gets (1 GiB of elements: what a block's offsets reach).
 void *tide_list_add(tide_list *l, uint32_t size, uint32_t where);
 
 // A new element at `i` (clamped to the list), zeroed, the ones after it moved
-// along; or NULL when there's no room.
+// along; or NULL when the list is as big as one gets.
 void *tide_list_insert(tide_list *l, int32_t i, uint32_t size, uint32_t where);
 
 // Removes the element at `i`, moving the ones after it back. Past the end, it

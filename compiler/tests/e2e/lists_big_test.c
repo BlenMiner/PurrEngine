@@ -42,7 +42,7 @@ TIDE_TEST(lists_big_all_checks_pass)
     Results r;
     TIDE_REQUIRE(results_in(&world, &r));
     if (r.firstFailure) printf("    check %d failed\n", (int)r.firstFailure);
-    TIDE_CHECK(r.checks == 20);
+    TIDE_CHECK(r.checks == 22);
     TIDE_CHECK(r.passed == r.checks);
     TIDE_CHECK(tide_scratch_mark() == 0);
     tide_world_free(&world);
