@@ -295,23 +295,23 @@ static const char *const release_flags[] = {"-O2", "-DNDEBUG", NULL};
 // The package holds exactly these libraries (platform/CMakeLists.txt).
 #define NATIVE_TARGET "--target=x86_64-w64-windows-gnu"
 #define NATIVE_RUNTIME "mingw"
+// GLFW, in the platform layer, loads OpenGL at run time.
 static const char *const native_libs[] = {"-lmingw32", "-lmingwex", "-lmoldname", "-lmsvcrt", "-lkernel32",
-                                          "-luser32", "-lgdi32", "-lshell32", "-ladvapi32", "-lopengl32",
-                                          "-lwinmm", "-lws2_32", "-lsecur32", NULL};
+                                          "-luser32", "-lgdi32", "-lshell32", "-ladvapi32", "-lws2_32",
+                                          "-lsecur32", NULL};
 #define EXE_SUFFIX ".exe"
 #define LIBRARY_SUFFIX ".dll"
 #elif defined(__APPLE__)
-// What raylib and its GLFW link on macOS, and Security, for TLS to the relay.
+// What GLFW, in the platform layer, links on macOS, and Security, for TLS to
+// the relay.
 static const char *const native_libs[] = {"-framework", "Cocoa", "-framework", "IOKit", "-framework", "CoreFoundation",
-                                          "-framework", "CoreVideo", "-framework", "OpenGL", "-framework", "CoreAudio",
-                                          "-framework", "AudioToolbox", "-framework", "Security", NULL};
+                                          "-framework", "Security", NULL};
 #define EXE_SUFFIX ""
 #define LIBRARY_SUFFIX ".dylib"
 #else
-// raylib calls Xlib directly (the rest of X11 and OpenGL it loads at run time).
-// The library itself, not -lX11: every desktop has it, but not every desktop
-// has the development package that provides libX11.so.
-static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-l:libX11.so.6", NULL};
+// GLFW, in the platform layer, loads X11 and OpenGL at run time, so games
+// link neither.
+static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", NULL};
 #define EXE_SUFFIX ""
 #define LIBRARY_SUFFIX ".so"
 #endif
@@ -319,12 +319,11 @@ static const char *const native_libs[] = {"-lm", "-lpthread", "-ldl", "-lrt", "-
 // Web builds: clang's own wasm target, with threads, and the package's
 // wasi-libc (as in cmake/wasi-toolchain.cmake and TideFlags.cmake). The page's
 // JavaScript implements the GL functions the platform imports (the only
-// functions a program may leave undefined: see page_imports_flag), allocates
-// with malloc, and makes the memory, which it shares with workers when it can.
+// functions a program may leave undefined: see page_imports_flag), and makes
+// the memory, which it shares with workers when it can.
 // Threads are spelled out (-pthread, --shared-memory) for an installed clang
 // older than tide's, which doesn't take them from the target's name.
-static const char *const web_link_flags[] = {"-Wl,--export=malloc",       "-Wl,--export=free",
-                                             "-Wl,-z,stack-size=1048576", "-Wl,--import-memory",
+static const char *const web_link_flags[] = {"-Wl,-z,stack-size=1048576", "-Wl,--import-memory",
                                              "-Wl,--export-memory",       "-Wl,--shared-memory",
                                              "-Wl,--max-memory=4294967296", NULL};
 
@@ -971,23 +970,22 @@ static void write_import(void *user, const char *name, const size_t len)
 }
 
 // What a web program may leave for the page to define: the functions the
-// prebuilt platform layer and raylib call and don't define, which are GL's,
-// from tide.js. Any other function nothing defines stops the link; allowing
-// them all would leave it to fail when it's called. Lists them in a file next
-// to `output`, and returns the linker's flag for it, to free().
-static char *page_imports_flag(const char *output, const char *platform_lib, const char *raylib_lib)
+// prebuilt platform layer calls and doesn't define, which are GL's, from
+// tide.js. Any other function nothing defines stops the link; allowing them
+// all would leave it to fail when it's called. Lists them in a file next to
+// `output`, and returns the linker's flag for it, to free().
+static char *page_imports_flag(const char *output, const char *platform_lib)
 {
     char *dir = path_dir(output);
     char *path = path_join(dir, "page-imports.txt");
     FILE *f = fopen(path, "wb");
-    const char *const libraries[] = {platform_lib, raylib_lib};
-    for (size_t i = 0; f && i < sizeof libraries / sizeof libraries[0]; i++) {
+    if (f) {
         size_t size = 0;
-        char *archive = sys_read_file(libraries[i], &size);
+        char *archive = sys_read_file(platform_lib, &size);
         if (archive) wasm_archive_imports((const unsigned char *)archive, size, "env", write_import, f);
         free(archive);
+        fclose(f);
     }
-    if (f) fclose(f);
     char *flag = format("--allow-undefined-file=%s", path, NULL);
     free(dir);
     free(path);
@@ -1047,14 +1045,10 @@ static bool link_objects(const build *b, const file_list *objects, const c_side 
     for (int i = 0; c && i < c->objects.count; i++) arg(&a, c->objects.items[i]);
     for (int i = 0; c && i < c->link.count; i++) arg(&a, c->link.items[i]);
     for (int i = 0; i < b->engine.count; i++) arg(&a, b->engine.items[i]);
-    // The prebuilt platform layer, raylib inside (see platform/CMakeLists.txt).
+    // The prebuilt platform layer (see platform/CMakeLists.txt).
     char *lib_dir = path_join(b->root, opts->web ? "lib/web" : "lib/native");
     char *platform_lib = format("%s/lib%s.a", lib_dir, "tide_platform");
-    char *raylib_lib = format("%s/lib%s.a", lib_dir, "raylib");
-    if (!shared) {
-        arg(&a, platform_lib);
-        arg(&a, raylib_lib);
-    }
+    if (!shared) arg(&a, platform_lib);
     arg(&a, "-o");
     arg(&a, output);
     arg_list(&a, opts->release ? release_flags : debug_flags);
@@ -1063,7 +1057,7 @@ static bool link_objects(const build *b, const file_list *objects, const c_side 
     char *imports_flag = NULL;
     if (opts->web) {
         arg_list(&a, web_link_flags);
-        imports_flag = page_imports_flag(output, platform_lib, raylib_lib);
+        imports_flag = page_imports_flag(output, platform_lib);
         arg(&a, "-Xlinker"); // Not -Wl, which would split a path at its commas
         arg(&a, imports_flag);
 #ifndef TIDE_EMBEDDED_CLANG
@@ -1105,7 +1099,6 @@ static bool link_objects(const build *b, const file_list *objects, const c_side 
     free(a.items);
     free(lib_dir);
     free(platform_lib);
-    free(raylib_lib);
     free(pdb_flag);
     free(ld_flag);
     free(imports_flag);
@@ -1715,14 +1708,12 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     char *lib_dir = path_join(b->root, "lib/android");
     char *abi_dir = path_join(lib_dir, android_abis[b->abi]);
     char *platform_lib = path_join(abi_dir, "libtide_platform.a");
-    char *raylib_lib = path_join(abi_dir, "libraylib.a");
     free(lib_dir);
-    if (!sys_exists(platform_lib) || !sys_exists(raylib_lib)) {
+    if (!sys_exists(platform_lib)) {
         fprintf(stderr, "tide: this installation can't build Android games: %s is missing\n", abi_dir);
         fprintf(stderr, "  = note: reinstall tide, or for a build of this repo package the android-package presets too\n");
         free(abi_dir);
         free(platform_lib);
-        free(raylib_lib);
         return false;
     }
     args a = {0};
@@ -1735,7 +1726,6 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     for (int i = 0; i < c->link.count; i++) arg(&a, c->link.items[i]);
     for (int i = 0; i < b->engine.count; i++) arg(&a, b->engine.items[i]);
     arg(&a, platform_lib);
-    arg(&a, raylib_lib);
     arg(&a, "-o");
     arg(&a, output);
     arg_list(&a, b->opts->release ? release_flags : debug_flags);
@@ -1750,7 +1740,6 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     const int code = sys_run(a.items, NULL, false);
     free(abi_dir);
     free(platform_lib);
-    free(raylib_lib);
     if (code == -1) fprintf(stderr, "tide: couldn't start %s\n", b->compiler);
     // What the link may have lacked: a library that doesn't say it's Android's
     for (int i = 0; code > 0 && i < c->unsure.count; i++) {

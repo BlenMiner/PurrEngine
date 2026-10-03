@@ -60,7 +60,7 @@ endif()
 include(cmake/WebTest.cmake)
 find_program(TIDE_NODE NAMES node) # Tests that run Node: web builds need it anyway
 
-option(TIDE_PLATFORM "Build the platform layer and the demo. Downloads raylib." ON)
+option(TIDE_PLATFORM "Build the platform layer and the demo. Desktop builds download GLFW." ON)
 option(TIDE_TOOLS_ONLY "Build only tidec, as web builds do for their host (cmake/HostTidec.cmake)" OFF)
 
 # What the tide command says it is, and where it looks for updates. Release

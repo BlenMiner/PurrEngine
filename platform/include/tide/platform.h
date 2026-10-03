@@ -9,11 +9,12 @@
 #include "tide/jobs.h"
 #include "tide/net.h"
 
-// The platform layer: a window, the frame loop and input devices, on raylib for
-// now. Hosts use it; the simulation never does (see AGENTS.md, Rendering and
-// platform). This header doesn't include raylib, and a file that includes a
-// game's generated header must not either: raylib's names (Transform, Camera,
-// Rectangle...) would clash with the game's components.
+// The platform layer: a window, the frame loop, input devices and a renderer
+// for draw lists, on OpenGL (3.3, ES 3 or WebGL 2). Hosts use it; the
+// simulation never does (see AGENTS.md, Rendering and platform). This header
+// includes no system header, nor GLFW's, and a file that includes a game's
+// generated header shouldn't either: their names would clash with the game's
+// components (Transform, Camera, Rectangle...).
 //
 // Temporary implementation written by Claude; the project owner takes it over
 // later.
@@ -39,7 +40,7 @@ void tide_platform_open(const tide_window_desc *desc);
 // with that exit code.
 #define TIDE_KEEP_RUNNING (-1)
 
-// Runs once per display frame, between raylib's BeginDrawing and EndDrawing.
+// Runs once per display frame; what it draws shows when it returns.
 // `seconds` is the time since the previous frame started.
 typedef int (*tide_frame_fn)(void *user, float seconds);
 
@@ -71,9 +72,9 @@ void tide_platform_poll(tide_devices *devices);
 // tide_frame fills. Call from the frame function.
 void tide_platform_draw(const tide_draw_list *list);
 
-// Where a world position lands on screen, in raylib's window pixels (from the
-// top left), through the camera the last tide_platform_draw ended with. For
-// tools and tests.
+// Where a world position lands on screen, in window pixels from the top left,
+// through the camera the last tide_platform_draw ended with. For tools and
+// tests.
 tide_float2 tide_platform_world_to_screen(tide_float2 world);
 
 // Whether the player is typing into the GUI (tide_gui_typing), once a frame:

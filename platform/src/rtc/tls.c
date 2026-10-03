@@ -216,7 +216,7 @@ int rtc_tls_receive(rtc_tls *t, const rtc_socket s, void *out, const size_t capa
 // ones, and its name.
 #include <jni.h>
 
-void *tide_android_vm(void); // The app's Java VM (platform/android/raylib/rcore_android_tide.c)
+void *tide_android_vm(void); // The app's Java VM (platform/android/activity.c)
 
 #define BUFFER 65536 // Bigger than a TLS record, sealed or not
 

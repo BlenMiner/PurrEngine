@@ -1,6 +1,5 @@
 // UDP for sessions: tide_platform_udp_open and tide_platform_resolve (see
-// tide/platform.h). A file of its own, since it includes the operating
-// system's headers, which raylib's clash with.
+// tide/platform.h). A file of its own, for the operating system's headers.
 
 #if !defined(_WIN32) && !defined(__wasi__)
 #define _DEFAULT_SOURCE // getaddrinfo and struct addrinfo under strict C

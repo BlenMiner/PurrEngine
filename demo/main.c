@@ -141,7 +141,7 @@ static uint64_t world_hash(const tide_world *w)
 }
 
 // Renders the views offscreen and reads pixels back, which proves the whole
-// path works (Tide views, the draw list, raylib, WebGL on the web) without
+// path works (Tide views, the draw list, the renderer, WebGL on the web) without
 // needing a visible window. The frame's render() set the camera for
 // tide_platform_world_to_screen.
 static bool smoke_pixels(const tide_world *w)
@@ -178,8 +178,7 @@ static int smoke_frame(const float seconds)
     const uint64_t hash = world_hash(server);
     printf("smoke: %d ticks, %u entities, hash 0x%016llX (expected 0x%016llX)\n", (int)server->Time.tick,
            (unsigned)tide_world_entity_count(server), (unsigned long long)hash, SMOKE_HASH);
-    // A frame loop that doesn't present frames and poll events (raylib built
-    // with SUPPORT_CUSTOM_FRAME_CONTROL) never advances its frame time either.
+    // A frame loop that doesn't time its frames would say none passed.
     const bool frames = smoke_seconds > 0.0;
     printf("smoke: frames took %.3f s%s\n", smoke_seconds, frames ? "" : ", expected time to pass");
     const bool pixels = smoke_pixels(match);

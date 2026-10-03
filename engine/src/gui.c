@@ -114,7 +114,7 @@ static float clamp_f(const float v, const float lo, const float hi)
     return v < lo ? lo : v > hi ? hi : v;
 }
 
-// Without the platform's font: about the width of raylib's default one.
+// Without the platform's font: a guess, on the wide side.
 static float guess_width(const char *text, const float size)
 {
     return (float)strlen(text) * size * 0.6f;

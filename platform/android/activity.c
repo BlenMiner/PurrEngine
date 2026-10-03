@@ -1,8 +1,5 @@
-// raylib's platform backend for Tide's Android builds: Android's NativeActivity,
-// with OpenGL ES 3 through EGL, and no Java of our own. rcore.c includes it in
-// place of its own backends (see cmake/Raylib.cmake), so it sees raylib's
-// internal CORE state. Based on raylib's platforms/rcore_template.c, like the
-// web's.
+// Android's window (see src/window.h): Android's NativeActivity, with OpenGL
+// ES 3 through EGL, and no Java of our own.
 //
 // Android starts the app by loading its library and calling
 // ANativeActivity_onCreate on its main thread, which mustn't block. The program
@@ -11,15 +8,16 @@
 // under `app.lock`, and wake the program's looper; one that takes something
 // away (the window, the input queue) waits until the program let it go.
 //
-// Keys and fingers bypass raylib's own handling: keys go to raylib's key state,
-// which the platform layer reads by physical position (Android's key codes are
-// positions), and fingers go to the platform layer as events (native.h). A key,
-// mouse button or finger pressed and released between two polls reads as held
-// for one, as on the web.
+// Keys are read by physical position (Android's key codes are positions), and
+// fingers are the touchscreen's, never the mouse's. A key, mouse button or
+// gamepad button pressed and released between two frames reads as held for
+// one, as on the web.
 //
 // The screen is the window in the display's logical pixels, as a browser's CSS
-// pixels are: its own pixels over (dpi / 160). raylib scales its drawing up to
-// the window's own pixels, so it's sharp.
+// pixels are: its own pixels over (dpi / 160). It renders the window's own
+// pixels, so it's sharp.
+
+#include "window.h"
 
 #include <android/configuration.h>
 #include <android/input.h>
@@ -32,15 +30,14 @@
 #include <fcntl.h>
 #include <jni.h>
 #include <pthread.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+#include <string.h>
 #include <unistd.h>
 
-#include "native.h"
+#define COUNT_OF(array) (sizeof(array) / sizeof((array)[0]))
 
-extern CoreData CORE;
-
-int InitPlatform(void);
 int main(int argc, char **argv); // The program's
 
 enum { LOOPER_WAKE = 1, LOOPER_INPUT = 2 }; // What woke the program's looper
@@ -69,18 +66,25 @@ static struct {
     EGLConfig config;
     EGLContext context;
     EGLSurface surface;
-    float scale; // The window's pixels per logical pixel
+    float scale;                    // The window's pixels per logical pixel
+    int width, height;              // The window's size in logical pixels, as of when it last had one...
+    int pixel_width, pixel_height;  // ...and in its own
 
-    // Input: what's held, and what was pressed since the last poll.
-    bool keys_held[MAX_KEYBOARD_KEYS], keys_tapped[MAX_KEYBOARD_KEYS];
-    int mouse_held, mouse_tapped; // Bits in raylib's order: left, right, middle, back, forward
-    bool pad_held[MAX_GAMEPAD_BUTTONS], pad_tapped[MAX_GAMEPAD_BUTTONS]; // The first gamepad's buttons
-    float pad_axes[MAX_GAMEPAD_AXES]; // ...and axes, as raylib has them: triggers -1 released to 1
-    bool pad_seen;                    // A gamepad sent something
-    Vector2 mouse_at, wheel;
-    tide_touch_report touches[256];
+    // Input: what's held, and what was pressed since it was last asked about.
+    bool keys_held[TIDE_KEY_COUNT], keys_tapped[TIDE_KEY_COUNT];
+    uint32_t mouse_held, mouse_tapped; // Bits in tide_mouse's order: left, right, middle, back, forward
+    uint32_t pad_held, pad_tapped;     // The first gamepad's buttons: bits, 1 << tide_pad_button
+    float pad_sticks[4];               // ...its sticks: the left one's x and y, then the right one's
+    float pad_triggers[2];             // ...and its triggers, 0 to 1
+    bool pad_seen;                     // A gamepad sent something
+    float mouse_x, mouse_y, wheel_x, wheel_y;
+    bool paste_asked; // Ctrl+V went down
+    tide_touch_report touches[256]; // Where, from 0 to 1 across the window
     unsigned touch_start, touch_count;
-} app = {.lock = PTHREAD_MUTEX_INITIALIZER, .taken = PTHREAD_COND_INITIALIZER, .wake = {-1, -1}};
+    uint32_t typed[256]; // Characters typed and not yet taken: more than fit are dropped
+    unsigned typed_start, typed_count;
+} app = {.lock = PTHREAD_MUTEX_INITIALIZER, .taken = PTHREAD_COND_INITIALIZER, .wake = {-1, -1},
+         .width = 1, .height = 1, .pixel_width = 1, .pixel_height = 1};
 
 // ---------------------------------------------------------------------------
 // The program's output, which Android drops: to the system's log, a line each.
@@ -187,12 +191,12 @@ static void on_destroy(ANativeActivity *activity)
 static void on_configuration_changed(ANativeActivity *activity)
 {
     (void)activity;
-    wake(); // The program looks at the window's size every poll anyway
+    wake(); // The program looks at the window's size every frame anyway
 }
 
 static JavaVM *java_vm; // The app's, for code that calls Java (rooms' TLS: platform/src/rtc/tls.c)
-static int ui_keyboard_pipe[2] = {-1, -1}; // The program's asks of the main thread (tide_android_typing)
-static int on_keyboard_asked(int fd, int events, void *data);
+static int ui_pipe[2] = {-1, -1}; // The program's asks of the main thread: the keyboard, and copying
+static int on_ui_asked(int fd, int events, void *data);
 
 void *tide_android_vm(void)
 {
@@ -245,7 +249,7 @@ static void *run_program(void *unused)
     char *argv[16];
     const int argc = intent_args(text, sizeof text, argv, 16);
     const int code = main(argc, argv);
-    // main returned without CloseWindow (see ClosePlatform): the app ends
+    // main returned without closing a window (see tide_window_close): the app ends
     pthread_mutex_lock(&app.lock);
     app.running = false;
     if (app.activity) ANativeActivity_finish(app.activity);
@@ -275,10 +279,9 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     if (pipe(app.wake) != 0) abort();
     fcntl(app.wake[0], F_SETFL, O_NONBLOCK); // The program reads what's there, and goes on
     // What the program asks of the main thread, which only it may do: the keyboard
-    if (pipe(ui_keyboard_pipe) == 0) {
-        fcntl(ui_keyboard_pipe[0], F_SETFL, O_NONBLOCK);
-        ALooper_addFd(ALooper_forThread(), ui_keyboard_pipe[0], ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT,
-                      on_keyboard_asked, NULL);
+    if (pipe(ui_pipe) == 0) {
+        fcntl(ui_pipe[0], F_SETFL, O_NONBLOCK);
+        ALooper_addFd(ALooper_forThread(), ui_pipe[0], ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT, on_ui_asked, NULL);
     }
     // How dense the display is, for logical pixels: Android's medium density is 160 dpi.
     AConfiguration *config = AConfiguration_new();
@@ -301,22 +304,18 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 // The program's thread: the window and EGL
 
 // Takes the window's sizes: the screen in logical pixels, rendering in its
-// own. Returns whether they changed.
-static bool FitWindow(void)
+// own. It follows the screen's turns and the system's bars.
+static void fit_window(void)
 {
-    if (!app.window) return false;
+    if (!app.window) return;
     const int width = ANativeWindow_getWidth(app.window), height = ANativeWindow_getHeight(app.window);
-    if (width <= 0 || height <= 0) return false;
-    const Size render = {(unsigned)width, (unsigned)height};
-    const Size screen = {(unsigned)((float)width / app.scale + 0.5f), (unsigned)((float)height / app.scale + 0.5f)};
-    if (screen.width == CORE.Window.screen.width && screen.height == CORE.Window.screen.height &&
-        render.width == CORE.Window.render.width && render.height == CORE.Window.render.height)
-        return false;
-    CORE.Window.screen = CORE.Window.display = screen;
-    CORE.Window.render = CORE.Window.currentFbo = render;
-    const Vector2 scale = GetWindowScaleDPI();
-    CORE.Window.screenScale = MatrixScale(scale.x, scale.y, 1.0f);
-    return true;
+    if (width <= 0 || height <= 0) return;
+    app.pixel_width = width;
+    app.pixel_height = height;
+    app.width = (int)((float)width / app.scale + 0.5f);
+    app.height = (int)((float)height / app.scale + 0.5f);
+    if (app.width < 1) app.width = 1;
+    if (app.height < 1) app.height = 1;
 }
 
 static void drop_surface(void)
@@ -326,7 +325,6 @@ static void drop_surface(void)
         eglDestroySurface(app.display, app.surface);
         app.surface = EGL_NO_SURFACE;
     }
-    FLAG_SET(CORE.Window.flags, FLAG_WINDOW_MINIMIZED);
 }
 
 static void make_surface(void)
@@ -337,13 +335,12 @@ static void make_surface(void)
     ANativeWindow_setBuffersGeometry(app.window, 0, 0, format);
     app.surface = eglCreateWindowSurface(app.display, app.config, app.window, NULL);
     if (app.surface == EGL_NO_SURFACE || !eglMakeCurrent(app.display, app.surface, app.surface, app.context)) {
-        TRACELOG(LOG_WARNING, "PLATFORM: no surface to draw in (EGL error 0x%x)", eglGetError());
+        fprintf(stderr, "tide: no surface to draw in (EGL error 0x%x)\n", (unsigned)eglGetError());
         drop_surface();
         return;
     }
     eglSwapInterval(app.display, 1); // Frames at the display's pace
-    FLAG_CLEAR(CORE.Window.flags, FLAG_WINDOW_MINIMIZED);
-    if (FitWindow() && CORE.Window.ready) SetupViewport((int)CORE.Window.render.width, (int)CORE.Window.render.height);
+    fit_window();
 }
 
 // Takes what the activity changed: a window and input queue, or none, and
@@ -385,54 +382,56 @@ static void poll_looper(const int ms)
     }
 }
 
-void tide_android_wait(const double seconds)
-{
-    poll_looper(seconds > 0.0 ? (int)(seconds * 1000.0) + 1 : 0);
-}
-
 // ---------------------------------------------------------------------------
 // Input
 
-// Android's key codes (positions) for raylib's keys; the back button is Escape,
+// Android's key codes (positions) for Tide's keys; the back button is Escape,
 // as in Unity.
 static const struct {
     int32_t android;
-    int raylib;
+    tide_key key;
 } keys[] = {
-    {AKEYCODE_A, KEY_A}, {AKEYCODE_B, KEY_B}, {AKEYCODE_C, KEY_C}, {AKEYCODE_D, KEY_D}, {AKEYCODE_E, KEY_E},
-    {AKEYCODE_F, KEY_F}, {AKEYCODE_G, KEY_G}, {AKEYCODE_H, KEY_H}, {AKEYCODE_I, KEY_I}, {AKEYCODE_J, KEY_J},
-    {AKEYCODE_K, KEY_K}, {AKEYCODE_L, KEY_L}, {AKEYCODE_M, KEY_M}, {AKEYCODE_N, KEY_N}, {AKEYCODE_O, KEY_O},
-    {AKEYCODE_P, KEY_P}, {AKEYCODE_Q, KEY_Q}, {AKEYCODE_R, KEY_R}, {AKEYCODE_S, KEY_S}, {AKEYCODE_T, KEY_T},
-    {AKEYCODE_U, KEY_U}, {AKEYCODE_V, KEY_V}, {AKEYCODE_W, KEY_W}, {AKEYCODE_X, KEY_X}, {AKEYCODE_Y, KEY_Y},
-    {AKEYCODE_Z, KEY_Z},
-    {AKEYCODE_0, KEY_ZERO}, {AKEYCODE_1, KEY_ONE}, {AKEYCODE_2, KEY_TWO}, {AKEYCODE_3, KEY_THREE},
-    {AKEYCODE_4, KEY_FOUR}, {AKEYCODE_5, KEY_FIVE}, {AKEYCODE_6, KEY_SIX}, {AKEYCODE_7, KEY_SEVEN},
-    {AKEYCODE_8, KEY_EIGHT}, {AKEYCODE_9, KEY_NINE},
-    {AKEYCODE_SPACE, KEY_SPACE}, {AKEYCODE_ENTER, KEY_ENTER}, {AKEYCODE_ESCAPE, KEY_ESCAPE},
-    {AKEYCODE_BACK, KEY_ESCAPE}, {AKEYCODE_TAB, KEY_TAB}, {AKEYCODE_DEL, KEY_BACKSPACE},
-    {AKEYCODE_INSERT, KEY_INSERT}, {AKEYCODE_FORWARD_DEL, KEY_DELETE}, {AKEYCODE_MOVE_HOME, KEY_HOME},
-    {AKEYCODE_MOVE_END, KEY_END}, {AKEYCODE_PAGE_UP, KEY_PAGE_UP}, {AKEYCODE_PAGE_DOWN, KEY_PAGE_DOWN},
-    {AKEYCODE_DPAD_UP, KEY_UP}, {AKEYCODE_DPAD_DOWN, KEY_DOWN}, {AKEYCODE_DPAD_LEFT, KEY_LEFT},
-    {AKEYCODE_DPAD_RIGHT, KEY_RIGHT},
-    {AKEYCODE_SHIFT_LEFT, KEY_LEFT_SHIFT}, {AKEYCODE_SHIFT_RIGHT, KEY_RIGHT_SHIFT},
-    {AKEYCODE_CTRL_LEFT, KEY_LEFT_CONTROL}, {AKEYCODE_CTRL_RIGHT, KEY_RIGHT_CONTROL},
-    {AKEYCODE_ALT_LEFT, KEY_LEFT_ALT}, {AKEYCODE_ALT_RIGHT, KEY_RIGHT_ALT}, {AKEYCODE_CAPS_LOCK, KEY_CAPS_LOCK},
-    {AKEYCODE_F1, KEY_F1}, {AKEYCODE_F2, KEY_F2}, {AKEYCODE_F3, KEY_F3}, {AKEYCODE_F4, KEY_F4},
-    {AKEYCODE_F5, KEY_F5}, {AKEYCODE_F6, KEY_F6}, {AKEYCODE_F7, KEY_F7}, {AKEYCODE_F8, KEY_F8},
-    {AKEYCODE_F9, KEY_F9}, {AKEYCODE_F10, KEY_F10}, {AKEYCODE_F11, KEY_F11}, {AKEYCODE_F12, KEY_F12},
-    {AKEYCODE_MINUS, KEY_MINUS}, {AKEYCODE_EQUALS, KEY_EQUAL}, {AKEYCODE_LEFT_BRACKET, KEY_LEFT_BRACKET},
-    {AKEYCODE_RIGHT_BRACKET, KEY_RIGHT_BRACKET}, {AKEYCODE_BACKSLASH, KEY_BACKSLASH},
-    {AKEYCODE_SEMICOLON, KEY_SEMICOLON}, {AKEYCODE_APOSTROPHE, KEY_APOSTROPHE}, {AKEYCODE_COMMA, KEY_COMMA},
-    {AKEYCODE_PERIOD, KEY_PERIOD}, {AKEYCODE_SLASH, KEY_SLASH}, {AKEYCODE_GRAVE, KEY_GRAVE},
-    {AKEYCODE_NUMPAD_0, KEY_KP_0}, {AKEYCODE_NUMPAD_1, KEY_KP_1}, {AKEYCODE_NUMPAD_2, KEY_KP_2},
-    {AKEYCODE_NUMPAD_3, KEY_KP_3}, {AKEYCODE_NUMPAD_4, KEY_KP_4}, {AKEYCODE_NUMPAD_5, KEY_KP_5},
-    {AKEYCODE_NUMPAD_6, KEY_KP_6}, {AKEYCODE_NUMPAD_7, KEY_KP_7}, {AKEYCODE_NUMPAD_8, KEY_KP_8},
-    {AKEYCODE_NUMPAD_9, KEY_KP_9}, {AKEYCODE_NUMPAD_ENTER, KEY_KP_ENTER}, {AKEYCODE_NUMPAD_ADD, KEY_KP_ADD},
-    {AKEYCODE_NUMPAD_SUBTRACT, KEY_KP_SUBTRACT}, {AKEYCODE_NUMPAD_MULTIPLY, KEY_KP_MULTIPLY},
-    {AKEYCODE_NUMPAD_DIVIDE, KEY_KP_DIVIDE}, {AKEYCODE_NUMPAD_DOT, KEY_KP_DECIMAL},
+    {AKEYCODE_A, TIDE_KEY_a}, {AKEYCODE_B, TIDE_KEY_b}, {AKEYCODE_C, TIDE_KEY_c}, {AKEYCODE_D, TIDE_KEY_d},
+    {AKEYCODE_E, TIDE_KEY_e}, {AKEYCODE_F, TIDE_KEY_f}, {AKEYCODE_G, TIDE_KEY_g}, {AKEYCODE_H, TIDE_KEY_h},
+    {AKEYCODE_I, TIDE_KEY_i}, {AKEYCODE_J, TIDE_KEY_j}, {AKEYCODE_K, TIDE_KEY_k}, {AKEYCODE_L, TIDE_KEY_l},
+    {AKEYCODE_M, TIDE_KEY_m}, {AKEYCODE_N, TIDE_KEY_n}, {AKEYCODE_O, TIDE_KEY_o}, {AKEYCODE_P, TIDE_KEY_p},
+    {AKEYCODE_Q, TIDE_KEY_q}, {AKEYCODE_R, TIDE_KEY_r}, {AKEYCODE_S, TIDE_KEY_s}, {AKEYCODE_T, TIDE_KEY_t},
+    {AKEYCODE_U, TIDE_KEY_u}, {AKEYCODE_V, TIDE_KEY_v}, {AKEYCODE_W, TIDE_KEY_w}, {AKEYCODE_X, TIDE_KEY_x},
+    {AKEYCODE_Y, TIDE_KEY_y}, {AKEYCODE_Z, TIDE_KEY_z},
+    {AKEYCODE_0, TIDE_KEY_digit0}, {AKEYCODE_1, TIDE_KEY_digit1}, {AKEYCODE_2, TIDE_KEY_digit2},
+    {AKEYCODE_3, TIDE_KEY_digit3}, {AKEYCODE_4, TIDE_KEY_digit4}, {AKEYCODE_5, TIDE_KEY_digit5},
+    {AKEYCODE_6, TIDE_KEY_digit6}, {AKEYCODE_7, TIDE_KEY_digit7}, {AKEYCODE_8, TIDE_KEY_digit8},
+    {AKEYCODE_9, TIDE_KEY_digit9},
+    {AKEYCODE_SPACE, TIDE_KEY_space}, {AKEYCODE_ENTER, TIDE_KEY_enter}, {AKEYCODE_ESCAPE, TIDE_KEY_escape},
+    {AKEYCODE_BACK, TIDE_KEY_escape}, {AKEYCODE_TAB, TIDE_KEY_tab}, {AKEYCODE_DEL, TIDE_KEY_backspace},
+    {AKEYCODE_INSERT, TIDE_KEY_insert}, {AKEYCODE_FORWARD_DEL, TIDE_KEY_delete}, {AKEYCODE_MOVE_HOME, TIDE_KEY_home},
+    {AKEYCODE_MOVE_END, TIDE_KEY_end}, {AKEYCODE_PAGE_UP, TIDE_KEY_pageUp}, {AKEYCODE_PAGE_DOWN, TIDE_KEY_pageDown},
+    {AKEYCODE_DPAD_UP, TIDE_KEY_upArrow}, {AKEYCODE_DPAD_DOWN, TIDE_KEY_downArrow},
+    {AKEYCODE_DPAD_LEFT, TIDE_KEY_leftArrow}, {AKEYCODE_DPAD_RIGHT, TIDE_KEY_rightArrow},
+    {AKEYCODE_SHIFT_LEFT, TIDE_KEY_leftShift}, {AKEYCODE_SHIFT_RIGHT, TIDE_KEY_rightShift},
+    {AKEYCODE_CTRL_LEFT, TIDE_KEY_leftCtrl}, {AKEYCODE_CTRL_RIGHT, TIDE_KEY_rightCtrl},
+    {AKEYCODE_ALT_LEFT, TIDE_KEY_leftAlt}, {AKEYCODE_ALT_RIGHT, TIDE_KEY_rightAlt},
+    {AKEYCODE_CAPS_LOCK, TIDE_KEY_capsLock},
+    {AKEYCODE_F1, TIDE_KEY_f1}, {AKEYCODE_F2, TIDE_KEY_f2}, {AKEYCODE_F3, TIDE_KEY_f3}, {AKEYCODE_F4, TIDE_KEY_f4},
+    {AKEYCODE_F5, TIDE_KEY_f5}, {AKEYCODE_F6, TIDE_KEY_f6}, {AKEYCODE_F7, TIDE_KEY_f7}, {AKEYCODE_F8, TIDE_KEY_f8},
+    {AKEYCODE_F9, TIDE_KEY_f9}, {AKEYCODE_F10, TIDE_KEY_f10}, {AKEYCODE_F11, TIDE_KEY_f11},
+    {AKEYCODE_F12, TIDE_KEY_f12},
+    {AKEYCODE_MINUS, TIDE_KEY_minus}, {AKEYCODE_EQUALS, TIDE_KEY_equals},
+    {AKEYCODE_LEFT_BRACKET, TIDE_KEY_leftBracket}, {AKEYCODE_RIGHT_BRACKET, TIDE_KEY_rightBracket},
+    {AKEYCODE_BACKSLASH, TIDE_KEY_backslash}, {AKEYCODE_SEMICOLON, TIDE_KEY_semicolon},
+    {AKEYCODE_APOSTROPHE, TIDE_KEY_quote}, {AKEYCODE_COMMA, TIDE_KEY_comma}, {AKEYCODE_PERIOD, TIDE_KEY_period},
+    {AKEYCODE_SLASH, TIDE_KEY_slash}, {AKEYCODE_GRAVE, TIDE_KEY_backquote},
+    {AKEYCODE_NUMPAD_0, TIDE_KEY_numpad0}, {AKEYCODE_NUMPAD_1, TIDE_KEY_numpad1}, {AKEYCODE_NUMPAD_2, TIDE_KEY_numpad2},
+    {AKEYCODE_NUMPAD_3, TIDE_KEY_numpad3}, {AKEYCODE_NUMPAD_4, TIDE_KEY_numpad4}, {AKEYCODE_NUMPAD_5, TIDE_KEY_numpad5},
+    {AKEYCODE_NUMPAD_6, TIDE_KEY_numpad6}, {AKEYCODE_NUMPAD_7, TIDE_KEY_numpad7}, {AKEYCODE_NUMPAD_8, TIDE_KEY_numpad8},
+    {AKEYCODE_NUMPAD_9, TIDE_KEY_numpad9},
+    {AKEYCODE_NUMPAD_ENTER, TIDE_KEY_numpadEnter}, {AKEYCODE_NUMPAD_ADD, TIDE_KEY_numpadPlus},
+    {AKEYCODE_NUMPAD_SUBTRACT, TIDE_KEY_numpadMinus}, {AKEYCODE_NUMPAD_MULTIPLY, TIDE_KEY_numpadMultiply},
+    {AKEYCODE_NUMPAD_DIVIDE, TIDE_KEY_numpadDivide}, {AKEYCODE_NUMPAD_DOT, TIDE_KEY_numpadPeriod},
 };
 
-// True if it's a key of ours; others (volume, power) are the system's.
+_Static_assert(COUNT_OF(keys) == TIDE_KEY_COUNT + 1, "every key in devices.h needs Android's code, and the back button");
+
 // The character a key types, with what's held (Shift and the like) and the
 // keyboard's layout: Java's, as the NDK has no way to it. 0 for none.
 static int typed_char(const AInputEvent *event)
@@ -466,22 +465,22 @@ static int typed_char(const AInputEvent *event)
     return c;
 }
 
-// A gamepad's buttons (Android's key codes) as raylib's: by position, as
+// A gamepad's buttons (Android's key codes) as Tide's: by position, as
 // Unity's, so A is south.
 static const struct {
     int32_t android;
-    int raylib;
+    tide_pad_button button;
 } pad_buttons[] = {
-    {AKEYCODE_BUTTON_A, GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {AKEYCODE_BUTTON_B, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT},
-    {AKEYCODE_BUTTON_X, GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {AKEYCODE_BUTTON_Y, GAMEPAD_BUTTON_RIGHT_FACE_UP},
-    {AKEYCODE_BUTTON_L1, GAMEPAD_BUTTON_LEFT_TRIGGER_1}, {AKEYCODE_BUTTON_R1, GAMEPAD_BUTTON_RIGHT_TRIGGER_1},
-    {AKEYCODE_BUTTON_L2, GAMEPAD_BUTTON_LEFT_TRIGGER_2}, {AKEYCODE_BUTTON_R2, GAMEPAD_BUTTON_RIGHT_TRIGGER_2},
-    {AKEYCODE_BUTTON_THUMBL, GAMEPAD_BUTTON_LEFT_THUMB}, {AKEYCODE_BUTTON_THUMBR, GAMEPAD_BUTTON_RIGHT_THUMB},
-    {AKEYCODE_BUTTON_START, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {AKEYCODE_BUTTON_SELECT, GAMEPAD_BUTTON_MIDDLE_LEFT},
-    {AKEYCODE_BUTTON_MODE, GAMEPAD_BUTTON_MIDDLE}, {AKEYCODE_DPAD_UP, GAMEPAD_BUTTON_LEFT_FACE_UP},
-    {AKEYCODE_DPAD_DOWN, GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {AKEYCODE_DPAD_LEFT, GAMEPAD_BUTTON_LEFT_FACE_LEFT},
-    {AKEYCODE_DPAD_RIGHT, GAMEPAD_BUTTON_LEFT_FACE_RIGHT},
+    {AKEYCODE_BUTTON_A, TIDE_PAD_buttonSouth},          {AKEYCODE_BUTTON_B, TIDE_PAD_buttonEast},
+    {AKEYCODE_BUTTON_X, TIDE_PAD_buttonWest},           {AKEYCODE_BUTTON_Y, TIDE_PAD_buttonNorth},
+    {AKEYCODE_BUTTON_L1, TIDE_PAD_leftShoulder},        {AKEYCODE_BUTTON_R1, TIDE_PAD_rightShoulder},
+    {AKEYCODE_BUTTON_THUMBL, TIDE_PAD_leftStickButton}, {AKEYCODE_BUTTON_THUMBR, TIDE_PAD_rightStickButton},
+    {AKEYCODE_BUTTON_START, TIDE_PAD_start},            {AKEYCODE_BUTTON_SELECT, TIDE_PAD_select},
+    {AKEYCODE_DPAD_UP, TIDE_PAD_dpad_up},               {AKEYCODE_DPAD_DOWN, TIDE_PAD_dpad_down},
+    {AKEYCODE_DPAD_LEFT, TIDE_PAD_dpad_left},           {AKEYCODE_DPAD_RIGHT, TIDE_PAD_dpad_right},
 };
+
+_Static_assert(COUNT_OF(pad_buttons) == TIDE_PAD_COUNT, "every gamepad button needs Android's code");
 
 static bool from_gamepad(const AInputEvent *event)
 {
@@ -489,19 +488,11 @@ static bool from_gamepad(const AInputEvent *event)
     return (source & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (source & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK;
 }
 
-// The first gamepad said something: its triggers start released.
-static void pad_seen(void)
+static void pad_button(const tide_pad_button button, const bool down)
 {
-    if (app.pad_seen) return;
     app.pad_seen = true;
-    app.pad_axes[GAMEPAD_AXIS_LEFT_TRIGGER] = app.pad_axes[GAMEPAD_AXIS_RIGHT_TRIGGER] = -1.0f;
-}
-
-static void pad_button(const int button, const bool down)
-{
-    pad_seen();
-    app.pad_held[button] = down;
-    if (down) app.pad_tapped[button] = true;
+    if (down) app.pad_held |= 1u << button, app.pad_tapped |= 1u << button;
+    else app.pad_held &= ~(1u << button);
 }
 
 // True if it's a key of ours, or types a character; others (volume, power)
@@ -511,23 +502,25 @@ static bool handle_key(const AInputEvent *event)
     const int32_t code = AKeyEvent_getKeyCode(event);
     const int32_t action = AKeyEvent_getAction(event);
     if (from_gamepad(event) && action != AKEY_EVENT_ACTION_MULTIPLE) {
-        for (size_t i = 0; i < sizeof pad_buttons / sizeof pad_buttons[0]; i++) {
+        for (size_t i = 0; i < COUNT_OF(pad_buttons); i++) {
             if (pad_buttons[i].android != code) continue;
-            pad_button(pad_buttons[i].raylib, action == AKEY_EVENT_ACTION_DOWN);
+            pad_button(pad_buttons[i].button, action == AKEY_EVENT_ACTION_DOWN);
             return true;
         }
     }
     bool ours = false;
     if (action == AKEY_EVENT_ACTION_DOWN) {
         const int c = typed_char(event);
-        if (c >= 32 && c != 127 && CORE.Input.Keyboard.charPressedQueueCount < MAX_CHAR_PRESSED_QUEUE) {
-            CORE.Input.Keyboard.charPressedQueue[CORE.Input.Keyboard.charPressedQueueCount++] = c;
+        if (c >= 32 && c != 127 && app.typed_count < COUNT_OF(app.typed)) {
+            app.typed[(app.typed_start + app.typed_count++) % COUNT_OF(app.typed)] = (uint32_t)c;
             ours = true;
         }
+        // Ctrl+V on a keyboard pastes
+        if (code == AKEYCODE_V && (AKeyEvent_getMetaState(event) & AMETA_CTRL_ON)) app.paste_asked = true;
     }
-    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+    for (size_t i = 0; i < COUNT_OF(keys); i++) {
         if (keys[i].android != code) continue;
-        const int key = keys[i].raylib;
+        const tide_key key = keys[i].key;
         if (action == AKEY_EVENT_ACTION_DOWN) {
             app.keys_held[key] = true;
             app.keys_tapped[key] = true;
@@ -589,7 +582,6 @@ static void keyboard_on_ui(const bool show)
     (*env)->PopLocalFrame(env, NULL);
 }
 
-// The main thread's looper calls it when the program asked: '1' shows, '0' hides.
 // What to put on the clipboard, which the main thread takes ('c').
 static char copy_text[4096];
 
@@ -619,7 +611,7 @@ static void copy_on_ui(void)
 
 // The main thread's looper calls it when the program asked: '1' shows the
 // keyboard and '0' hides it (the last word goes), 'c' copies.
-static int on_keyboard_asked(int fd, int events, void *data)
+static int on_ui_asked(int fd, int events, void *data)
 {
     (void)events, (void)data;
     char asked[64];
@@ -633,21 +625,20 @@ static int on_keyboard_asked(int fd, int events, void *data)
     return 1;
 }
 
-void tide_android_typing(const bool typing)
+static void ask_ui(const char asked)
 {
-    const char asked = typing ? '1' : '0';
-    if (ui_keyboard_pipe[1] >= 0 && write(ui_keyboard_pipe[1], &asked, 1) < 0) { } // The main thread is gone
+    if (ui_pipe[1] >= 0 && write(ui_pipe[1], &asked, 1) < 0) { } // The main thread is gone
 }
 
 static void report_touch(const AInputEvent *event, const size_t index, const tide_touch_phase phase)
 {
-    if (app.touch_count == sizeof app.touches / sizeof app.touches[0]) return; // Dropped, as a finger past the slots
+    if (app.touch_count == COUNT_OF(app.touches)) return; // Dropped, as a finger past the slots
     const float width = app.window ? (float)ANativeWindow_getWidth(app.window) : 1.0f;
     const float height = app.window ? (float)ANativeWindow_getHeight(app.window) : 1.0f;
     const tide_touch_report r = {phase, (uint32_t)AMotionEvent_getPointerId(event, index),
                                  AMotionEvent_getX(event, index) / (width > 0.0f ? width : 1.0f),
                                  AMotionEvent_getY(event, index) / (height > 0.0f ? height : 1.0f)};
-    app.touches[(app.touch_start + app.touch_count++) % (sizeof app.touches / sizeof app.touches[0])] = r;
+    app.touches[(app.touch_start + app.touch_count++) % COUNT_OF(app.touches)] = r;
 }
 
 static bool is_mouse(const AInputEvent *event, const size_t index)
@@ -664,46 +655,38 @@ static bool handle_motion(const AInputEvent *event)
     if (count == 0) return false;
 
     if (from_gamepad(event) && kind == AMOTION_EVENT_ACTION_MOVE) { // Its sticks, triggers and d-pad
-        static const struct {
-            int32_t android;
-            int raylib;
-            bool trigger;
-        } axes[] = {
-            {AMOTION_EVENT_AXIS_X, GAMEPAD_AXIS_LEFT_X, false},  {AMOTION_EVENT_AXIS_Y, GAMEPAD_AXIS_LEFT_Y, false},
-            {AMOTION_EVENT_AXIS_Z, GAMEPAD_AXIS_RIGHT_X, false}, {AMOTION_EVENT_AXIS_RZ, GAMEPAD_AXIS_RIGHT_Y, false},
-            {AMOTION_EVENT_AXIS_LTRIGGER, GAMEPAD_AXIS_LEFT_TRIGGER, true},
-            {AMOTION_EVENT_AXIS_RTRIGGER, GAMEPAD_AXIS_RIGHT_TRIGGER, true},
-        };
-        pad_seen();
-        for (size_t i = 0; i < sizeof axes / sizeof axes[0]; i++) {
-            const float v = AMotionEvent_getAxisValue(event, axes[i].android, 0);
-            app.pad_axes[axes[i].raylib] = axes[i].trigger ? v * 2.0f - 1.0f : v;
-        }
+        static const int32_t sticks[4] = {AMOTION_EVENT_AXIS_X, AMOTION_EVENT_AXIS_Y, AMOTION_EVENT_AXIS_Z,
+                                          AMOTION_EVENT_AXIS_RZ};
+        app.pad_seen = true;
+        for (size_t i = 0; i < 4; i++) app.pad_sticks[i] = AMotionEvent_getAxisValue(event, sticks[i], 0);
+        app.pad_triggers[0] = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_LTRIGGER, 0);
+        app.pad_triggers[1] = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RTRIGGER, 0);
         // Some pads give their triggers as the brake and the gas
         const float brake = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_BRAKE, 0);
         const float gas = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_GAS, 0);
-        if (brake > 0.0f) app.pad_axes[GAMEPAD_AXIS_LEFT_TRIGGER] = brake * 2.0f - 1.0f;
-        if (gas > 0.0f) app.pad_axes[GAMEPAD_AXIS_RIGHT_TRIGGER] = gas * 2.0f - 1.0f;
+        if (brake > 0.0f) app.pad_triggers[0] = brake;
+        if (gas > 0.0f) app.pad_triggers[1] = gas;
         // A d-pad that's a hat: -1 to 1 on each axis
         const float hat_x = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0);
         const float hat_y = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0);
-        pad_button(GAMEPAD_BUTTON_LEFT_FACE_LEFT, hat_x < -0.5f);
-        pad_button(GAMEPAD_BUTTON_LEFT_FACE_RIGHT, hat_x > 0.5f);
-        pad_button(GAMEPAD_BUTTON_LEFT_FACE_UP, hat_y < -0.5f);
-        pad_button(GAMEPAD_BUTTON_LEFT_FACE_DOWN, hat_y > 0.5f);
+        pad_button(TIDE_PAD_dpad_left, hat_x < -0.5f);
+        pad_button(TIDE_PAD_dpad_right, hat_x > 0.5f);
+        pad_button(TIDE_PAD_dpad_up, hat_y < -0.5f);
+        pad_button(TIDE_PAD_dpad_down, hat_y > 0.5f);
         return true;
     }
 
     if (is_mouse(event, 0)) { // A mouse, on a Chromebook or a phone it's plugged into
-        app.mouse_at = (Vector2){AMotionEvent_getX(event, 0) / app.scale, AMotionEvent_getY(event, 0) / app.scale};
+        app.mouse_x = AMotionEvent_getX(event, 0) / app.scale;
+        app.mouse_y = AMotionEvent_getY(event, 0) / app.scale;
         if (kind == AMOTION_EVENT_ACTION_SCROLL) {
-            app.wheel.x += AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HSCROLL, 0);
-            app.wheel.y += AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_VSCROLL, 0);
+            app.wheel_x += AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HSCROLL, 0);
+            app.wheel_y += AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_VSCROLL, 0);
         }
         const int32_t buttons = AMotionEvent_getButtonState(event);
-        const int held = ((buttons & AMOTION_EVENT_BUTTON_PRIMARY) ? 1 : 0) | ((buttons & AMOTION_EVENT_BUTTON_SECONDARY) ? 2 : 0)
-                       | ((buttons & AMOTION_EVENT_BUTTON_TERTIARY) ? 4 : 0) | ((buttons & AMOTION_EVENT_BUTTON_BACK) ? 8 : 0)
-                       | ((buttons & AMOTION_EVENT_BUTTON_FORWARD) ? 16 : 0);
+        const uint32_t held = ((buttons & AMOTION_EVENT_BUTTON_PRIMARY) ? 1u : 0u) | ((buttons & AMOTION_EVENT_BUTTON_SECONDARY) ? 2u : 0u)
+                            | ((buttons & AMOTION_EVENT_BUTTON_TERTIARY) ? 4u : 0u) | ((buttons & AMOTION_EVENT_BUTTON_BACK) ? 8u : 0u)
+                            | ((buttons & AMOTION_EVENT_BUTTON_FORWARD) ? 16u : 0u);
         app.mouse_tapped |= held;
         app.mouse_held = held;
         return true;
@@ -742,120 +725,76 @@ static void handle_input(void)
     }
 }
 
-bool tide_native_touchscreen(void)
+bool tide_window_key_held(const tide_key key)
+{
+    const bool held = app.keys_held[key] || app.keys_tapped[key];
+    app.keys_tapped[key] = false;
+    return held;
+}
+
+void tide_window_mouse_state(tide_window_mouse *out)
+{
+    *out = (tide_window_mouse){app.mouse_x, app.mouse_y, app.wheel_x, app.wheel_y, app.mouse_held | app.mouse_tapped};
+    app.wheel_x = app.wheel_y = 0.0f;
+    app.mouse_tapped = 0;
+}
+
+void tide_window_gamepad_state(tide_window_gamepad *out)
+{
+    // The first gamepad, once it said something (Android tells programs of
+    // pads coming and going through Java only)
+    *out = (tide_window_gamepad){.connected = app.pad_seen};
+    if (!app.pad_seen) return;
+    out->left_x = app.pad_sticks[0];
+    out->left_y = app.pad_sticks[1];
+    out->right_x = app.pad_sticks[2];
+    out->right_y = app.pad_sticks[3];
+    out->left_trigger = app.pad_triggers[0];
+    out->right_trigger = app.pad_triggers[1];
+    out->buttons = app.pad_held | app.pad_tapped;
+    app.pad_tapped = 0;
+}
+
+bool tide_window_touchscreen(void)
 {
     return true; // Android's devices have one, or emulate one
 }
 
-bool tide_native_take_touch(tide_touch_report *r)
+bool tide_window_take_touch(tide_touch_report *r)
 {
     if (app.touch_count == 0) return false;
     *r = app.touches[app.touch_start];
-    app.touch_start = (app.touch_start + 1) % (sizeof app.touches / sizeof app.touches[0]);
+    r->x *= (float)app.width;
+    r->y *= (float)app.height;
+    app.touch_start = (app.touch_start + 1) % COUNT_OF(app.touches);
     app.touch_count--;
     return true;
 }
 
-void PollInputEvents(void)
+uint32_t tide_window_take_char(void)
 {
-    CORE.Input.Keyboard.keyPressedQueueCount = 0;
-    CORE.Input.Keyboard.charPressedQueueCount = 0;
-    for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) {
-        CORE.Input.Keyboard.previousKeyState[i] = CORE.Input.Keyboard.currentKeyState[i];
-        CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
-    }
-    for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) CORE.Input.Mouse.previousButtonState[i] = CORE.Input.Mouse.currentButtonState[i];
-    CORE.Input.Mouse.previousWheelMove = CORE.Input.Mouse.currentWheelMove;
-    CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
-
-    // Keys and buttons pressed since the last poll read as held for this one,
-    // even if they're up again.
-    memset(app.keys_tapped, 0, sizeof app.keys_tapped);
-    memset(app.pad_tapped, 0, sizeof app.pad_tapped);
-    app.mouse_tapped = 0;
-    app.wheel = (Vector2){0.0f, 0.0f};
-
-    poll_looper(0);
-
-    for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) CORE.Input.Keyboard.currentKeyState[i] = app.keys_held[i] || app.keys_tapped[i];
-    // The first gamepad, once it said something (Android tells programs of
-    // pads coming and going through Java only)
-    CORE.Input.Gamepad.ready[0] = app.pad_seen;
-    if (app.pad_seen) {
-        CORE.Input.Gamepad.axisCount[0] = GAMEPAD_AXIS_RIGHT_TRIGGER + 1;
-        for (int i = 0; i < MAX_GAMEPAD_BUTTONS; i++) {
-            CORE.Input.Gamepad.previousButtonState[0][i] = CORE.Input.Gamepad.currentButtonState[0][i];
-            CORE.Input.Gamepad.currentButtonState[0][i] = app.pad_held[i] || app.pad_tapped[i];
-        }
-        for (int i = 0; i < MAX_GAMEPAD_AXES; i++) CORE.Input.Gamepad.axisState[0][i] = app.pad_axes[i];
-    }
-    const int buttons = app.mouse_held | app.mouse_tapped;
-    for (int i = 0; i < MAX_MOUSE_BUTTONS && i < 5; i++) CORE.Input.Mouse.currentButtonState[i] = (buttons >> i) & 1;
-    CORE.Input.Mouse.currentWheelMove = app.wheel;
-    CORE.Input.Mouse.currentPosition = app.mouse_at;
-
-    // The window follows the screen's turns and the system's bars.
-    CORE.Window.resizedLastFrame = FitWindow();
-    if (CORE.Window.resizedLastFrame) SetupViewport((int)CORE.Window.render.width, (int)CORE.Window.render.height);
+    if (app.typed_count == 0) return 0;
+    const uint32_t c = app.typed[app.typed_start];
+    app.typed_start = (app.typed_start + 1) % COUNT_OF(app.typed);
+    app.typed_count--;
+    return c;
 }
 
-// ---------------------------------------------------------------------------
-// Window: the activity's, which the system moves and sizes
-
-bool WindowShouldClose(void)
-{
-    pthread_mutex_lock(&app.lock);
-    const bool destroyed = app.destroyed;
-    pthread_mutex_unlock(&app.lock);
-    return destroyed;
-}
-void ToggleFullscreen(void) { }
-void ToggleBorderlessWindowed(void) { }
-void MaximizeWindow(void) { }
-void MinimizeWindow(void) { }
-void RestoreWindow(void) { }
-void SetWindowState(unsigned int flags) { (void)flags; }
-void ClearWindowState(unsigned int flags) { (void)flags; }
-void SetWindowIcon(Image image) { (void)image; }
-void SetWindowIcons(Image *images, int count) { (void)images, (void)count; }
-void SetWindowTitle(const char *title) { CORE.Window.title = title; }
-void SetWindowPosition(int x, int y) { (void)x, (void)y; }
-void SetWindowMonitor(int monitor) { (void)monitor; }
-void SetWindowMinSize(int width, int height) { CORE.Window.screenMin = (Size){(unsigned)width, (unsigned)height}; }
-void SetWindowMaxSize(int width, int height) { CORE.Window.screenMax = (Size){(unsigned)width, (unsigned)height}; }
-void SetWindowSize(int width, int height) { (void)width, (void)height; }
-void SetWindowOpacity(float opacity) { (void)opacity; }
-void SetWindowFocused(void) { }
-void *GetWindowHandle(void) { return app.window; }
-int GetMonitorCount(void) { return 1; }
-int GetCurrentMonitor(void) { return 0; }
-Vector2 GetMonitorPosition(int monitor) { (void)monitor; return (Vector2){0, 0}; }
-int GetMonitorWidth(int monitor) { (void)monitor; return (int)CORE.Window.display.width; }
-int GetMonitorHeight(int monitor) { (void)monitor; return (int)CORE.Window.display.height; }
-int GetMonitorPhysicalWidth(int monitor) { (void)monitor; return 0; }
-int GetMonitorPhysicalHeight(int monitor) { (void)monitor; return 0; }
-int GetMonitorRefreshRate(int monitor) { (void)monitor; return 60; }
-const char *GetMonitorName(int monitor) { (void)monitor; return "display"; }
-Vector2 GetWindowPosition(void) { return (Vector2){0, 0}; }
-Vector2 GetWindowScaleDPI(void)
-{
-    const Size s = CORE.Window.screen, r = CORE.Window.render;
-    return (Vector2){s.width ? (float)r.width / (float)s.width : 1.0f, s.height ? (float)r.height / (float)s.height : 1.0f};
-}
 // The clipboard is Java's: what's copied goes from the main thread, and what's
 // pasted comes on the program's (Ctrl+V on a keyboard).
-void SetClipboardText(const char *text)
+void tide_window_copy(const char *text)
 {
     pthread_mutex_lock(&app.lock);
     snprintf(copy_text, sizeof copy_text, "%s", text ? text : "");
     pthread_mutex_unlock(&app.lock);
-    const char asked = 'c';
-    if (ui_keyboard_pipe[1] >= 0 && write(ui_keyboard_pipe[1], &asked, 1) < 0) { } // The main thread is gone
+    ask_ui('c');
 }
 
-const char *GetClipboardText(void)
+const char *tide_window_take_paste(void)
 {
     static char pasted[4096];
+    if (!app.paste_asked) return NULL;
+    app.paste_asked = false;
     pasted[0] = '\0';
     JNIEnv *env = NULL;
     if (!java_vm || !app.activity || (*java_vm)->AttachCurrentThread(java_vm, &env, NULL) != JNI_OK) return pasted;
@@ -878,88 +817,92 @@ const char *GetClipboardText(void)
     (*env)->PopLocalFrame(env, NULL);
     return pasted;
 }
-Image GetClipboardImage(void) { return (Image){0}; }
-void ShowCursor(void) { CORE.Input.Mouse.cursorHidden = false; }
-void HideCursor(void) { CORE.Input.Mouse.cursorHidden = true; }
-void EnableCursor(void) { CORE.Input.Mouse.cursorLocked = false; }
-void DisableCursor(void) { CORE.Input.Mouse.cursorLocked = true; }
 
-void SwapScreenBuffer(void)
+void tide_window_typing(const bool typing)
+{
+    ask_ui(typing ? '1' : '0');
+}
+
+// ---------------------------------------------------------------------------
+// Window: the activity's, which the system moves and sizes
+
+bool tide_window_should_close(void)
+{
+    pthread_mutex_lock(&app.lock);
+    const bool destroyed = app.destroyed;
+    pthread_mutex_unlock(&app.lock);
+    return destroyed;
+}
+
+// An app in the background has no window: frames come when the frame
+// function asked, and draw nothing, until the system freezes it.
+bool tide_window_unseen(void)
+{
+    return app.surface == EGL_NO_SURFACE;
+}
+
+void tide_window_size(int *width, int *height)
+{
+    fit_window();
+    *width = app.width;
+    *height = app.height;
+}
+
+void tide_window_pixel_size(int *width, int *height)
+{
+    fit_window();
+    *width = app.pixel_width;
+    *height = app.pixel_height;
+}
+
+void tide_window_present(void)
 {
     if (app.surface != EGL_NO_SURFACE && !eglSwapBuffers(app.display, app.surface)) {
         const EGLint error = eglGetError();
         if (error == EGL_BAD_SURFACE || error == EGL_BAD_NATIVE_WINDOW) drop_surface(); // Gone under us
     }
+    poll_looper(0);
 }
 
-// ---------------------------------------------------------------------------
-// Misc
-
-double GetTime(void)
+// It waits on the activity, so a window given back goes on at once.
+void tide_window_wait(const double seconds)
 {
-    struct timespec ts = {0};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    const unsigned long long ns = (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec;
-    return (double)(ns - CORE.Time.base) * 1e-9;
+    poll_looper(seconds > 0.0 ? (int)(seconds * 1000.0) + 1 : 0);
 }
 
-void OpenURL(const char *url) { (void)url; }
-
-int SetGamepadMappings(const char *mappings) { (void)mappings; return 0; }
-void SetGamepadVibration(int gamepad, float left, float right, float duration)
+bool tide_window_open(const tide_window_desc *desc)
 {
-    (void)gamepad, (void)left, (void)right, (void)duration;
-}
-void SetMousePosition(int x, int y)
-{
-    CORE.Input.Mouse.currentPosition = (Vector2){(float)x, (float)y};
-    CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
-}
-void SetMouseCursor(int cursor) { CORE.Input.Mouse.cursor = cursor; }
-const char *GetKeyName(int key) { (void)key; return ""; }
-
-// ---------------------------------------------------------------------------
-
-int InitPlatform(void)
-{
+    (void)desc; // The system sizes the activity's window, and names it after the app
     app.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (app.display == EGL_NO_DISPLAY || !eglInitialize(app.display, NULL, NULL)) {
-        TRACELOG(LOG_FATAL, "PLATFORM: no EGL display");
-        return -1;
+        fprintf(stderr, "tide: no EGL display\n");
+        return false;
     }
     const EGLint wanted[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RED_SIZE, 8,
                              EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_DEPTH_SIZE, 24, EGL_NONE};
     EGLint found = 0;
     if (!eglChooseConfig(app.display, wanted, &app.config, 1, &found) || found < 1) {
-        TRACELOG(LOG_FATAL, "PLATFORM: this device has no OpenGL ES 3");
-        return -1;
+        fprintf(stderr, "tide: this device has no OpenGL ES 3\n");
+        return false;
     }
     eglBindAPI(EGL_OPENGL_ES_API);
     const EGLint version[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
     app.context = eglCreateContext(app.display, app.config, EGL_NO_CONTEXT, version);
     if (app.context == EGL_NO_CONTEXT) {
-        TRACELOG(LOG_FATAL, "PLATFORM: no OpenGL ES 3 context (EGL error 0x%x)", eglGetError());
-        return -1;
+        fprintf(stderr, "tide: no OpenGL ES 3 context (EGL error 0x%x)\n", (unsigned)eglGetError());
+        return false;
     }
     app.surface = EGL_NO_SURFACE;
 
-    // The first window: rlgl needs a context that's current to start.
-    FLAG_SET(CORE.Window.flags, FLAG_WINDOW_MINIMIZED);
-    while (!WindowShouldClose()) {
+    // The first window: the renderer needs a context that's current to start.
+    while (!tide_window_should_close()) {
         poll_looper(-1);
         if (app.surface != EGL_NO_SURFACE) break;
     }
-    if (app.surface == EGL_NO_SURFACE) return -1; // The activity went before it had a window
-
-    rlLoadExtensions((void *)eglGetProcAddress);
-    FitWindow();
-    CORE.Window.ready = true;
-    InitTimer();
-    CORE.Storage.basePath = GetWorkingDirectory();
-    return 0;
+    return app.surface != EGL_NO_SURFACE; // Or the activity went before it had a window
 }
 
-void ClosePlatform(void)
+void tide_window_close(void)
 {
     drop_surface();
     if (app.context != EGL_NO_CONTEXT) eglDestroyContext(app.display, app.context);

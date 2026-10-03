@@ -199,7 +199,7 @@ jobs:
           cmake --build --preset web-package
           for abi in arm64 x86_64; do
             cmake --preset android-package-$abi
-            cmake --build --preset android-package-$abi --target tide_platform raylib
+            cmake --build --preset android-package-$abi --target tide_platform
           done
           cmake -DNAME=tide-${{ matrix.platform }} -P cmake/package.cmake
       # Build a game with the package, as a user would.

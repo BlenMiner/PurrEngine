@@ -13,7 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include "native.h"
+#include "touch_win32.h"
 
 #define QUEUE 256 // Events between two polls; more are dropped, as a finger that touches while every slot is taken
 
@@ -63,12 +63,12 @@ void tide_win32_touch_attach(void *window)
     glfw_proc = (WNDPROC)SetWindowLongPtrW((HWND)window, GWLP_WNDPROC, (LONG_PTR)touch_proc);
 }
 
-bool tide_native_touchscreen(void)
+bool tide_win32_touchscreen(void)
 {
     return GetSystemMetrics(SM_MAXIMUMTOUCHES) > 0;
 }
 
-bool tide_native_take_touch(tide_touch_report *r)
+bool tide_win32_take_touch(tide_touch_report *r)
 {
     if (queue_count == 0) return false;
     *r = queue[queue_start];

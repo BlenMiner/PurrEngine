@@ -11,7 +11,7 @@
 // later. tidec reads the member lists below (the X-macros), so Tide and C
 // always agree on the names.
 //
-// The platform layer (raylib, for example) updates the devices every frame with
+// The platform layer (tide/platform.h) updates the devices every frame with
 // tide_button_set, the mouse fields, tide_touch_event and tide_pointer_poll. Once per tick, the host builds the local
 // player's input from them (tide_input_sample in generated code) and then calls
 // tide_devices_consume to start the next sample window. Views read them once

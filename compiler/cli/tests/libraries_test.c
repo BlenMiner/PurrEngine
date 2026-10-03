@@ -496,9 +496,9 @@ TIDE_TEST(cli_wasm_function_imports_of_a_library)
     bytes b = {0};
     put(&b, "!<arch>\n", 8);
     member(&b, "/", "\0\0\0\0", 4);
-    put_object(&b, "rlgl.o/", "glClear");
+    put_object(&b, "platform.o/", "glClear");
     member(&b, "notes.txt/", "odd", 3); // Not an object, and padded
-    put_object(&b, "rcore.o/", "glViewport");
+    put_object(&b, "canvas.o/", "glViewport");
 
     char names[256] = "";
     TIDE_REQUIRE(wasm_archive_imports(b.data, b.len, "env", found_import, names));

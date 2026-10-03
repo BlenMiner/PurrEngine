@@ -7,7 +7,7 @@
 #include "tide/math.h"
 
 // Immediate-mode drawing: Tide's Draw API records commands into a draw
-// list, and a renderer plays them back (tide_platform_draw, on raylib). The list
+// list, and a renderer plays them back (tide_platform_draw, on OpenGL). The list
 // knows nothing about any renderer, so replacing one doesn't touch game code.
 //
 // Temporary implementation written by Claude; the project owner takes it over

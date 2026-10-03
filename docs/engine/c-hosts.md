@@ -31,7 +31,7 @@ int main(int argc, char **argv)
 
 It opens a window and runs the game in a session (`tide/session.h`): it samples this machine's input once per tick, draws the views and the GUI every frame, and takes `--host [port]`, `--join code` and `--connect address` from the command line. `--host` opens the match, in a room (see [Multiplayer](../language/multiplayer.md#rooms)), and a UDP port too, except on the web. `title` and `tick_rate` go over the game's settings (see [Settings](../language/basics.md#settings)): leave them out for those, and `game_name` stands in for a title the game doesn't set. `tide_run_desc` also has `width` and `height` (960 by 540 by default) and `stats`.
 
-Hosts include `tide/platform.h`, never raylib: the generated header names types after the game's components, and raylib defines many of the same names.
+Hosts reach the window, input and drawing through `tide/platform.h`, which includes no system header: the generated header names types after the game's components (`Transform`, `Camera`), and the system's headers define many of the same names.
 
 ## The generated header
 

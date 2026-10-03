@@ -6,7 +6,7 @@
 // Bundle, which Google Play takes and makes APKs of for each phone: the same
 // files with the manifest and resources as protocol buffers, signed as a JAR.
 // The library is the program, which Android's NativeActivity loads (see
-// platform/android/raylib/rcore_android_tide.c), so the app has no code of its
+// platform/android/activity.c), so the app has no code of its
 // own, and its only resource is its icon. The key is sign.h's.
 
 #include <stdbool.h>

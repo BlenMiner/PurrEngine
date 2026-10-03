@@ -21,7 +21,7 @@ TIDE_WEB_IMPORT(canvas_pixel_width) int tide_web_canvas_pixel_width(void);
 TIDE_WEB_IMPORT(canvas_pixel_height) int tide_web_canvas_pixel_height(void);
 
 // The mouse over the canvas, in CSS pixels from its top left. Buttons are a
-// bit mask in raylib's order: left, right, middle, back, forward. A button
+// bit mask in tide_mouse's order: left, right, middle, back, forward. A button
 // pressed since the last call reads as held, even if it's already up again.
 TIDE_WEB_IMPORT(mouse_x) float tide_web_mouse_x(void);
 TIDE_WEB_IMPORT(mouse_y) float tide_web_mouse_y(void);

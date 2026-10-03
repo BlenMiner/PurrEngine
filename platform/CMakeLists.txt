@@ -1,19 +1,39 @@
-# The platform layer: a window, the frame loop and input devices, on raylib.
-# Hosts and views link it; the simulation never does (see AGENTS.md).
-include("${PROJECT_SOURCE_DIR}/cmake/Raylib.cmake")
-
+# The platform layer: a window, the frame loop, input devices and the renderer,
+# on OpenGL. Hosts and views link it; the simulation never does (see AGENTS.md).
 file(GLOB TIDE_PLATFORM_SOURCES CONFIGURE_DEPENDS src/*.c)
 if(NOT TIDE_WEB)
     # WebRTC for rooms on desktop (src/rtc/rtc.h); the web has the browser's.
     file(GLOB TIDE_RTC_SOURCES CONFIGURE_DEPENDS src/rtc/*.c)
     list(APPEND TIDE_PLATFORM_SOURCES ${TIDE_RTC_SOURCES})
 endif()
+# The window (src/window.h): the page's canvas, Android's activity, or GLFW's.
+if(TIDE_WEB)
+    list(APPEND TIDE_PLATFORM_SOURCES web/canvas.c)
+elseif(TIDE_ANDROID)
+    list(APPEND TIDE_PLATFORM_SOURCES android/activity.c)
+else()
+    include("${PROJECT_SOURCE_DIR}/cmake/GLFW.cmake")
+    list(APPEND TIDE_PLATFORM_SOURCES desktop/glfw.c desktop/gl.c)
+endif()
 
-add_library(tide_platform STATIC ${TIDE_PLATFORM_SOURCES})
-target_include_directories(tide_platform PUBLIC include)
-# Private: hosts go through tide/platform.h only. A file with a game's generated
-# header can't include raylib.h, whose names clash with components.
-target_link_libraries(tide_platform PUBLIC tide PRIVATE raylib)
+# The font text is drawn in (src/font.c), inside the library, as an array.
+set(TIDE_FONT_C "${CMAKE_CURRENT_BINARY_DIR}/tide_font.c")
+add_custom_command(OUTPUT "${TIDE_FONT_C}"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/font/Tuffy.ttf" "-DOUTPUT=${TIDE_FONT_C}"
+        -DNAME=tide_font_ttf -P "${PROJECT_SOURCE_DIR}/cmake/embed.cmake"
+    DEPENDS font/Tuffy.ttf "${PROJECT_SOURCE_DIR}/cmake/embed.cmake"
+    COMMENT "The platform's font as C"
+    VERBATIM)
+
+add_library(tide_platform STATIC ${TIDE_PLATFORM_SOURCES} "${TIDE_FONT_C}")
+# Hosts go through include/ only; third_party/ is stb_truetype, for the font.
+target_include_directories(tide_platform PUBLIC include PRIVATE src third_party)
+target_link_libraries(tide_platform PUBLIC tide)
+if(TIDE_ANDROID)
+    target_link_libraries(tide_platform PUBLIC android log EGL GLESv3)
+elseif(NOT TIDE_WEB)
+    target_link_libraries(tide_platform PRIVATE glfw)
+endif()
 if(WIN32)
     target_link_libraries(tide_platform PUBLIC ws2_32 secur32) # UDP, for sessions; TLS, for the relay
 elseif(APPLE)
@@ -29,10 +49,10 @@ target_link_libraries(tide_platform PUBLIC ${CMAKE_DL_LIBS})
 
 if(TIDE_WEB)
     # The page's JavaScript (web/tide.js) provides the canvas, input and frames
-    # (web/tide_web.h), and implements the GL functions rlgl imports by name.
-    # It allocates strings for glGetString with malloc.
+    # (web/tide_web.h), and implements the GL functions the renderer imports
+    # by name (src/gl.h).
     target_include_directories(tide_platform PUBLIC web)
-    target_link_options(tide_platform INTERFACE -Wl,--allow-undefined -Wl,--export=malloc -Wl,--export=free)
+    target_link_options(tide_platform INTERFACE -Wl,--allow-undefined)
 endif()
 
 # tide_web_page(<target> [SHELL <page.html>])
@@ -66,7 +86,7 @@ endfunction()
 #
 # Android builds: makes the shared library <target> an app, <target>.apk next
 # to it, which runs the program's main() in Android's NativeActivity
-# (platform/android/raylib/rcore_android_tide.c). Its ID is dev.tide.<target>,
+# (platform/android/activity.c). Its ID is dev.tide.<target>,
 # and it's signed with a key every build of this repo shares
 # (build/android-debug.pem, made the first time), so a new build installs
 # over the last. Does nothing in other builds, so it can be called
@@ -86,7 +106,8 @@ function(tide_android_app target)
     if(ARG_LABEL)
         set(label "${ARG_LABEL}")
     endif()
-    # The activity's way in is in raylib, which nothing in the program calls.
+    # The activity's way in is in the platform layer, which nothing in the
+    # program calls.
     target_link_options(${target} PRIVATE -Wl,-u,ANativeActivity_onCreate)
     string(REPLACE "-" "_" id "${target}")
     add_custom_command(TARGET ${target} POST_BUILD
@@ -99,8 +120,9 @@ function(tide_android_app target)
     add_dependencies(${target} tide_android_key)
 endfunction()
 
-# In the package, the platform layer is prebuilt: tide links games with it and
-# raylib, native or web.
+# In the package, the platform layer is prebuilt: tide links games with it,
+# native, web or Android. It's one library, GLFW inside on desktop
+# (cmake/GLFW.cmake).
 install(DIRECTORY include/tide DESTINATION include COMPONENT tide)
 install(FILES web/shell.html DESTINATION web COMPONENT tide)
 if(TIDE_WEB)
@@ -127,8 +149,7 @@ elseif(MINGW)
         PATTERN c++ EXCLUDE PATTERN wrl EXCLUDE PATTERN wrl.h EXCLUDE PATTERN "*.hxx" EXCLUDE PATTERN "*.idl" EXCLUDE
         PATTERN "*.tlb" EXCLUDE)
     set(mingw_libs crt2.o dllcrt2.o crtbegin.o crtend.o)
-    foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 opengl32 winmm ws2_32
-                         secur32)
+    foreach(lib IN ITEMS mingw32 mingwex moldname msvcrt kernel32 user32 gdi32 shell32 advapi32 ws2_32 secur32)
         list(APPEND mingw_libs lib${lib}.a)
     endforeach()
     list(TRANSFORM mingw_libs PREPEND "${mingw_target}/lib/")
@@ -145,7 +166,7 @@ elseif(NOT WIN32)
 endif()
 # On Windows, only the MinGW build's platform layer goes in the package.
 if(TIDE_PACKAGE_LIBS)
-    install(FILES $<TARGET_FILE:tide_platform> $<TARGET_FILE:raylib> DESTINATION ${TIDE_PACKAGE_LIBS} COMPONENT tide)
+    install(FILES $<TARGET_FILE:tide_platform> DESTINATION ${TIDE_PACKAGE_LIBS} COMPONENT tide)
 endif()
 
 # Carrying a world over to a build whose data layout changed, for hot
