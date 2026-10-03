@@ -322,6 +322,16 @@ static void hide_pointer(tide_devices *d)
 
 #undef RELEASE
 
+// Where the pointer in `d` is, in the GUI's pixels: false for a finger that's
+// off the screen, which is nowhere.
+static bool pointer_place(const tide_gui *g, const tide_devices *d, tide_float2 *at)
+{
+    const tide_pointer *p = &d->pointer;
+    if (p->touch && !p->press.held && !p->press.pressed && !p->press.up) return false;
+    *at = tide_f2(p->position.x, g->height - p->position.y);
+    return true;
+}
+
 // Whether the pointer in `d` is on the GUI: on a widget or an area, where the
 // last frame drew them. The game's samples and the views read a press before
 // the frame's GUI sees it, so where the pointer is now says whose it is, not
@@ -329,10 +339,8 @@ static void hide_pointer(tide_devices *d)
 // the frame it lands in, and so is a click the mouse made as it came.
 static bool on_gui(const tide_gui *g, const tide_devices *d)
 {
-    const tide_pointer *p = &d->pointer;
-    // A finger that's off the screen is nowhere.
-    if (p->touch && !p->press.held && !p->press.pressed && !p->press.up) return false;
-    const tide_float2 at = tide_f2(p->position.x, g->height - p->position.y);
+    tide_float2 at;
+    if (!pointer_place(g, d, &at)) return false;
     for (uint32_t i = 0; i < g->rect_count; i++) {
         if (contains(g->rects[i], at)) return true;
     }
@@ -359,6 +367,28 @@ static void hide_claimed(tide_devices *d, const uint32_t what)
 {
     if (what & TIDE_GUI_KEYBOARD) hide_keyboard(d);
     if (what & TIDE_GUI_POINTER) hide_pointer(d);
+}
+
+// What views claimed that `view` doesn't read, or the game for 0, with the
+// pointer where `d` has it: what any view claimed last frame, and the pointer
+// where it's on a widget of a view's own now, as with the GUI's (see on_gui);
+// less what `view` claimed itself.
+static uint32_t claimed_from(const tide_gui *g, const tide_devices *d, const uint32_t view)
+{
+    uint32_t taken = g->taken;
+    uint32_t own = 0;
+    for (uint32_t i = 0; view && i < g->claim_count; i++) {
+        if (g->claims[i].view == view) own = g->claims[i].what;
+    }
+    tide_float2 at;
+    if (g->claim_rect_count && pointer_place(g, d, &at)) {
+        for (uint32_t i = 0; i < g->claim_rect_count; i++) {
+            if (!contains(g->claim_rects[i].rect, at)) continue;
+            taken |= TIDE_GUI_POINTER;
+            if (view && g->claim_rects[i].view == view) own |= TIDE_GUI_POINTER;
+        }
+    }
+    return taken & ~own;
 }
 
 // Moves the focus with Tab, the arrows and the d-pad, in last frame's order.
@@ -423,7 +453,7 @@ void tide_gui_begin(tide_gui *g, const tide_devices *devices, const tide_float2 
     hide(g, &g->devices);
     // ...and what views claimed then, until a view runs (tide_gui_view).
     g->unclaimed = g->devices;
-    hide_claimed(&g->devices, g->taken);
+    hide_claimed(&g->devices, claimed_from(g, &g->unclaimed, 0));
     g->view = 0;
 
     g->claimed = false;
@@ -475,6 +505,9 @@ void tide_gui_end(tide_gui *g, tide_draw_list *draw)
     memcpy(g->claims, g->claims_next, g->claim_count_next * sizeof g->claims[0]);
     g->claim_count = g->claim_count_next;
     g->claim_count_next = 0;
+    memcpy(g->claim_rects, g->claim_rects_next, g->claim_rect_count_next * sizeof g->claim_rects[0]);
+    g->claim_rect_count = g->claim_rect_count_next;
+    g->claim_rect_count_next = 0;
     g->keyboard_shown = g->keyboard_shown_next;
     g->keyboard_shown_next = false;
     g->view = 0;
@@ -493,8 +526,9 @@ bool tide_gui_typing(const tide_gui *g)
 void tide_gui_hide(tide_gui *g, tide_devices *d)
 {
     g->game_input = true;
+    const uint32_t claimed = claimed_from(g, d, 0);
     hide(g, d);
-    hide_claimed(d, g->taken);
+    hide_claimed(d, claimed);
     d->keyboard.text = (tide_typed){0}; // What's typed is a frame's: views read it
 }
 
@@ -504,13 +538,9 @@ void tide_gui_hide(tide_gui *g, tide_devices *d)
 void tide_gui_view(tide_gui *g, const uint32_t view)
 {
     g->view = view;
-    if (!g->taken) return; // Nothing's claimed: every view reads the same devices
-    uint32_t own = 0;
-    for (uint32_t i = 0; i < g->claim_count; i++) {
-        if (g->claims[i].view == view) own = g->claims[i].what;
-    }
+    if (!g->taken && !g->claim_rect_count) return; // Nothing's claimed: every view reads the same devices
     g->devices = g->unclaimed;
-    hide_claimed(&g->devices, g->taken & ~own);
+    hide_claimed(&g->devices, claimed_from(g, &g->unclaimed, view));
 }
 
 // The view that's running claims `what`. Past TIDE_GUI_MAX_CLAIMS views, a
@@ -535,6 +565,16 @@ void tide_gui_claim_pointer(tide_gui *g)
 void tide_gui_claim_keyboard(tide_gui *g)
 {
     claim(g, TIDE_GUI_KEYBOARD);
+}
+
+void tide_gui_claim_pointer_at(tide_gui *g, const tide_rect rect)
+{
+    if (g->claim_rect_count_next < TIDE_GUI_MAX_CLAIM_RECTS) {
+        g->claim_rects_next[g->claim_rect_count_next++] = (tide_gui_claim_rect){rect, g->view};
+        return;
+    }
+    // More places than a frame remembers: the pointer on it, as this frame sees it
+    if (contains(rect, g->mouse)) claim(g, TIDE_GUI_POINTER);
 }
 
 void tide_gui_show_keyboard(tide_gui *g)

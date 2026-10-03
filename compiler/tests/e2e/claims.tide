@@ -62,6 +62,9 @@ void Rename(mut string name, mut bool renaming, mut int keys)
 
 view Toolbox(mut Tools tools)
 {
+    // Where it is, in the GUI's pixels: a press on it is this view's from the
+    // frame it lands in.
+    GUI.ClaimPointer(Rect(0, Screen.height - 200, 200, 200));
     var pointer = Devices.pointer;
     var over = Over(pointer);
     if (over && pointer.press.down)
@@ -71,7 +74,7 @@ view Toolbox(mut Tools tools)
         tools.clicks += 1;
     }
     if (!pointer.press.pressed) tools.dragging = false;
-    if (over || tools.dragging) GUI.ClaimPointer();
+    if (tools.dragging) GUI.ClaimPointer(); // ...and wherever it goes, while it's dragged
     if (tools.renaming) Rename(tools.name, tools.renaming, tools.keys);
 }
 

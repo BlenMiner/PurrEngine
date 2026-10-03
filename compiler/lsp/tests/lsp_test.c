@@ -1066,6 +1066,10 @@ TIDE_TEST(lsp_gui)
     const char *claim = request("textDocument/hover");
     TIDE_CHECK(has(claim, "GUI.ClaimPointer()"));
     TIDE_CHECK(has(claim, "hidden from the input's `Sample` and from the other views"));
+    // At a rect: where a widget of the view's own is
+    open_document("scene Main { }\nview V()\n{\n    GUI.Claim$Pointer(Rect(0, 0, 200, 200));\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+    TIDE_CHECK(has(request("textDocument/hover"), "GUI.ClaimPointer(Rect rect)"));
 
     open_document("local singleton M { bool on; }\nscene Main { }\nview V(mut M m) { GUILayout.Tog$gle(\"On\", m.on); }\n");
     const char *toggle = request("textDocument/hover");

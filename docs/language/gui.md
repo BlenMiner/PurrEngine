@@ -153,11 +153,12 @@ A view can draw widgets itself with `Draw`, or hand the devices to a UI library 
 
 | Call | What it does |
 |---|---|
-| `GUI.ClaimPointer()` | This view is using the pointer: the mouse's buttons and scroll, the pointer's press and the primary touch |
+| `GUI.ClaimPointer(rect)` | This view has a widget at `rect`: the pointer on it is this view's |
+| `GUI.ClaimPointer()` | This view is using the pointer wherever it is, as while it drags something |
 | `GUI.ClaimKeyboard()` | This view is using the keyboard: the keys and [what's typed](./input.md#typed-text) |
 | `GUI.ShowKeyboard()` | The player is typing: phones show their keyboard, as they do for a text field |
 
-What a view claims is hidden from the input's `Sample` and from the other views, as what the GUI uses is, and the view that claimed it goes on reading it. A camera view that drags with the mouse needs no changes to stay still while a toolbox is dragged.
+What a view claims is hidden from the input's `Sample` and from the other views, as what the GUI uses is, and the view that claimed it goes on reading it. The pointer's claim covers the mouse's buttons and scroll, the pointer's press and the primary touch. A camera view that drags with the mouse needs no changes to stay still while a toolbox is dragged.
 
 ```csharp
 local singleton Toolbox
@@ -170,11 +171,13 @@ local singleton Toolbox
 // A toolbox in the window's lower left corner
 view Tools(mut Toolbox box)
 {
+    GUI.ClaimPointer(Rect(0, Screen.height - 200, 200, 200));
+    if (box.dragging) GUI.ClaimPointer();
+
     var pointer = Devices.pointer;
     var over = pointer.position.x < 200 && pointer.position.y < 200;
     if (over && pointer.press.down) box.dragging = true;
     if (!pointer.press.pressed) box.dragging = false;
-    if (over || box.dragging) GUI.ClaimPointer();
 
     if (box.renaming)
     {
@@ -186,10 +189,14 @@ view Tools(mut Toolbox box)
 }
 ```
 
-A claim lasts one frame: make it every frame the widget uses the device, as you draw the widget every frame. A view that stops running leaves nothing claimed. A function's claim is the view's that called it.
+A claim lasts one frame: make it every frame, as you draw the widget every frame. A view that stops running leaves nothing claimed. A function's claim is the view's that called it.
 
-::: tip Claim before the press
-A claim hides from the next frame on, and unlike the GUI's own widgets, the engine doesn't know where yours are. So claim the pointer while it's over your widget, as the example does, not once it's pressed: then a click on it never reaches the game. A press with nothing before it, like a finger touching the widget, or a widget that appears under the pointer, reaches the game and the other views for that one frame.
+`GUI.ClaimPointer(rect)` says where a widget is, in the GUI's pixels, from the top left like every `Rect`. Call it every frame the widget is there, whether the pointer is on it or not. A press on it is then the view's from the frame it lands in, as on the GUI's own widgets: a finger that touches it never reaches the game.
+
+`GUI.ClaimPointer()`, with no rect, claims the pointer wherever it is: for a widget dragged off its rect, as in the example, or a library that only says it wants the mouse.
+
+::: tip Give the rect where you can
+A claim with no rect hides from the next frame on, since the engine doesn't know where your widget is. With a mouse, claiming while it's over the widget is enough: the click comes later. A finger hovers over nothing, so its touch reaches the game and the other views for the frame it lands in. On a phone, only a rect keeps it from them.
 :::
 
 The rest follows from the GUI being drawn on top:

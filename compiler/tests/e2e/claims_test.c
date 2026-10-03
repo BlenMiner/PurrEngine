@@ -70,9 +70,9 @@ TIDE_TEST(claims_keep_a_click_from_the_game_and_other_views)
     tide_button_set(&devices.mouse.left, false);
     step();
 
-    // The pointer comes onto the toolbox, which claims it; then it's pressed.
+    // The pointer comes onto the toolbox and presses between two frames, with
+    // nothing before it, as a finger does: the toolbox said where it is.
     devices.mouse.position = tide_f2(100.0f, 100.0f);
-    step();
     tide_button_set(&devices.mouse.left, true);
     const tide_input in = step();
     TIDE_CHECK(!in.fire);                           // Not the game's
@@ -80,7 +80,8 @@ TIDE_TEST(claims_keep_a_click_from_the_game_and_other_views)
     TIDE_CHECK(local.Tools.clicks == 1);            // The view that claimed it read the press
     TIDE_CHECK(local.Camera.drags == 1);            // The other view didn't
 
-    // Dragged off the toolbox, it stays the toolbox's until it's let go.
+    // Dragged off the toolbox, it stays the toolbox's until it's let go: it
+    // claims the pointer wherever it goes while it drags.
     devices.mouse.position = tide_f2(900.0f, 500.0f);
     TIDE_CHECK(!step().fire);
     TIDE_CHECK(local.Tools.dragging && local.Camera.drags == 1);
