@@ -10,6 +10,7 @@
 
 #define BUFFER (256 * 1024)
 #define CONNECT_TIMEOUT 10.0
+#define CLOSE_TIMEOUT 10.0 // A server that doesn't answer our close frame by then is gone
 
 static void base64(const uint8_t *in, const size_t n, char *out)
 {
@@ -119,12 +120,29 @@ static void send_frame(rtc_ws *w, const uint8_t opcode, const void *data, const 
 
 void rtc_ws_send(rtc_ws *w, const char *text, const size_t size)
 {
-    if (w->state != RTC_WS_CLOSED) send_frame(w, 1, text, size);
+    if (w->state == RTC_WS_CONNECTING || w->state == RTC_WS_OPEN) send_frame(w, 1, text, size);
+}
+
+void rtc_ws_finish(rtc_ws *w, const double now)
+{
+    if (w->state == RTC_WS_CLOSING) return;
+    if (w->state != RTC_WS_OPEN) { // Nothing reached the server yet: nothing to make sure of
+        closed(w);
+        return;
+    }
+    static const uint8_t normal[] = {0x03, 0xe8}; // 1000
+    send_frame(w, 8, normal, sizeof normal);
+    w->state = RTC_WS_CLOSING;
+    w->started = now;
 }
 
 void rtc_ws_update(rtc_ws *w, const double now)
 {
     if (w->state == RTC_WS_CLOSED) return;
+    if (w->state == RTC_WS_CLOSING && now - w->started > CLOSE_TIMEOUT) {
+        closed(w);
+        return;
+    }
     if (w->state == RTC_WS_CONNECTING && !w->upgraded) {
         if (now - w->started > CONNECT_TIMEOUT) {
             closed(w);
@@ -167,6 +185,7 @@ void rtc_ws_update(rtc_ws *w, const double now)
         memmove(w->out, w->out + sent, w->out_size - (size_t)sent);
         w->out_size -= (size_t)sent;
     }
+    bool lost = false;
     for (;;) {
         if (w->in_size == BUFFER) {
             closed(w); // A message too big for us
@@ -174,11 +193,19 @@ void rtc_ws_update(rtc_ws *w, const double now)
         }
         const int got = raw_receive(w, w->in + w->in_size, BUFFER - w->in_size);
         if (got < 0) {
-            closed(w);
-            return;
+            lost = true;
+            break;
         }
         if (got == 0) break;
         w->in_size += (size_t)got;
+    }
+    // Closing, what comes is read and let go, up to the server's close frame,
+    // which may have come just before the connection's end
+    char none[1];
+    while (w->state == RTC_WS_CLOSING && rtc_ws_next(w, none, sizeof none)) {}
+    if (lost) {
+        closed(w);
+        return;
     }
     if (!w->upgraded) {
         // The server's answer: 101, with the key we sent, hashed
@@ -238,6 +265,7 @@ bool rtc_ws_next(rtc_ws *w, char *message, const size_t capacity)
         if (opcode == 9) {
             send_frame(w, 10, payload, (size_t)size); // Ping: pong
         } else if (opcode == 8) {
+            w->answered = w->state == RTC_WS_CLOSING;
             closed(w);
             return false;
         } else if ((opcode == 1 || opcode == 2) && fin && size < capacity) {

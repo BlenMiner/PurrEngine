@@ -622,7 +622,7 @@ void rtc_tls_free(rtc_tls *t);
 // WebSocket (ws.c), for the relay: wss://, or ws:// (on this machine, for
 // tests), text messages.
 
-enum { RTC_WS_CONNECTING, RTC_WS_OPEN, RTC_WS_CLOSED };
+enum { RTC_WS_CONNECTING, RTC_WS_OPEN, RTC_WS_CLOSING, RTC_WS_CLOSED };
 
 typedef struct rtc_ws {
     int state;
@@ -630,10 +630,11 @@ typedef struct rtc_ws {
     rtc_tls *tls; // wss://
     bool connected;
     bool upgraded;
+    bool answered; // Closing: the server's close frame answered ours (rtc_ws_finish)
     char request[512];
     char key[25];
-    double started;
-    uint8_t *in;  // What came, not read yet
+    double started; // Connecting, or closing: since when
+    uint8_t *in;    // What came, not read yet
     size_t in_size;
     uint8_t *out; // What's to go, not sent yet
     size_t out_size;
@@ -645,6 +646,15 @@ void rtc_ws_update(rtc_ws *w, double now);
 // The next text message, NUL-terminated: false if there's none yet.
 bool rtc_ws_next(rtc_ws *w, char *message, size_t capacity);
 void rtc_ws_send(rtc_ws *w, const char *text, size_t size);
+// Closes it as RFC 6455 does, for what has to reach the server: our close
+// frame goes after what's queued, and updates read on (RTC_WS_CLOSING) until
+// the server's close frame answers it, the connection's lost, or 10 seconds
+// pass. It's
+// RTC_WS_CLOSED then, `answered` if the server read everything we sent, which
+// it reads in order. Closing at once instead can lose what's sent: a socket
+// closed before it read what came, or as more comes, is reset, and the server
+// drops whatever it hadn't read yet.
+void rtc_ws_finish(rtc_ws *w, double now);
 void rtc_ws_close(rtc_ws *w);
 
 // ---------------------------------------------------------------------------
