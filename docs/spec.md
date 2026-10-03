@@ -1377,6 +1377,7 @@ Implemented, awaiting approval:
 - Any code that can call a function can call an extern one, match code and local code alike. The language doesn't mark or check what C does: its determinism, the state it keeps and its thread safety are the game's to get right, and the compiler takes a C call as touching nothing it tracks, so C never makes systems wait for each other, and a system that calls C splits its entities across threads like any other. An `Entity` a system that splits its entities passes C may be one it just spawned, whose ID comes once the system is done: `tide_entity_is_temporary` (`tide/entity.h`) tells, and a handle C keeps stays temporary.
 - The C function's name is the extern's own name as written, or the one `[NativeName("...")]` gives, so the Tide name can follow Tide's style: `[NativeName("stb_perlin_noise3")] extern float Noise(...);`. A namespace doesn't change the C name.
 - A game's C is in its folder, with nothing to set up: every `.c` file there compiles with the game, with the engine's determinism flags, and every prebuilt library there (`.a`, `.lib`, `.so`, `.dll`, `.dylib`) links with it when it was built for the platform being built for. tide tells which platform a library is for from its contents, not its name or folder, so one folder holds every platform's libraries. C for one platform only uses `#ifdef`, as any C does.
+- On Android, a game's prebuilt libraries are shared ones (`.so`). An ELF static library has nothing that says whether it's Linux's or Android's (clang makes the same objects for both), and tide tells libraries by their contents, so an ELF one is Linux's: no folder or name says otherwise.
 - Writing `external` gets an error that points to `extern`.
 - C takes pointers without Tide having pointer arithmetic: the parameter says how a value is passed, and the call takes its address. `mut T` is `T *`, `in T` is `const T *`, a `List<T>` is a pointer to its elements (`T *` with `mut`), with the count passed separately, and a `string` is a zero-terminated UTF-8 copy. Each is only valid during the call. A `const char *` that C returns is copied into text.
 - C calls keep the order of evaluation: calls to C, and to functions that call it, run left to right like the rest of Tide, whatever order C would pick.
@@ -1420,7 +1421,6 @@ Implemented, awaiting approval:
 ### Open
 
 - Objects C owns (`ma_engine *`): a handle type only local state can hold, since pointers differ between machines.
-- Static libraries for Android. An ELF static library has nothing that says whether it's Linux's or Android's (clang makes the same objects for both), so contents can't tell them apart as they do every other library. For now an ELF one is Linux's, and Android takes shared libraries only.
 - Keeping the state of C libraries across hot reloads, by building them apart from the game's library.
 - Reading declarations from C headers, with tide's built-in clang.
 
