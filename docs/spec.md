@@ -1341,7 +1341,7 @@ Implemented, awaiting approval:
 - Values are constant expressions, and can name constants.
 - Settings are part of the build, so every machine in a match has the same ones.
 - The editor completes the settings' names and shows each one's default and what it does. A name that isn't a setting is an error that says which one was meant.
-- The first settings are `title` (the window's), `tickRate` (ticks per second, 60 by default), `hostMigration` (see Sessions) and `appId` (the app's ID on phones). The window's size, the most players and the default port can come later.
+- The first settings are `title` (the window's), `tickRate` (ticks per second, 60 by default), `hostMigration` (see Sessions), `appId` (the app's ID on phones) and `version` (the version people see). The window's size, the most players and the default port can come later.
 
 ```csharp
 settings
@@ -1360,6 +1360,7 @@ Implemented, awaiting approval:
 - `tickRate` is an int from 1 to 1000, known while compiling. The machine that runs a match decides its rate (its desc's, or its game's), and the players who join tick at it. A new `tickRate` under `tide run` takes effect when a match starts.
 - `title` is text written out, or a constant that is. `--title` and CMake's `TITLE` go over it, and without any of them, the window has the game's name: its folder's under `tide`, its target's under CMake. Under `tide run`, a new title shows the next time the game runs. On Android it's the app's name under its icon.
 - `appId` is text written out, or a constant that is: what Android and iOS, and their app stores, know the app by, like `com.studio.game`, the same for every version. It's two parts or more between dots, of letters and digits, each starting with a letter: what Android and iOS both take. Without it, apps are `dev.tide.<the game's name>`, which is fine to test with; an app made to ship (`tide build --android --release`) needs one.
+- `version` is text written out, or a constant that is: the version people see, like `1.2.0`, one to three numbers between dots, which Android and iOS both take (iOS's version has to be). Without it, it's `1.0`. The number app stores order updates by is each build's own: on Android, the minutes since 2020.
 - A setting that's set twice, a name that isn't a setting, and a type written before one are errors. The last two say that a game's own values are constants.
 - In generated C, the settings are in `tide_game_api` (`tick_rate` and `title`), in the `.c` rather than the header, so they don't change the game's hash.
 

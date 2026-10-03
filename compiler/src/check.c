@@ -5185,6 +5185,26 @@ static bool valid_app_id(const str id)
     return !start && parts >= 2 && id.len <= 200;
 }
 
+// A version both Android and iOS take: one to three numbers between dots, as
+// iOS's CFBundleShortVersionString has to be.
+static bool valid_version(const str v)
+{
+    int parts = 1, digits = 0;
+    for (int i = 0; i < v.len; i++) {
+        const char ch = v.ptr[i];
+        if (ch == '.') {
+            if (digits == 0) return false;
+            parts++;
+            digits = 0;
+        } else if (ch >= '0' && ch <= '9') {
+            if (++digits > 9) return false;
+        } else {
+            return false;
+        }
+    }
+    return digits > 0 && parts <= 3;
+}
+
 // settings { tickRate = 30; }: the engine's settings for the game (builtins.h),
 // each set to a constant of its type. A game has one block.
 static void check_settings(checker *c)
@@ -5264,6 +5284,17 @@ static void check_settings(checker *c)
                     diag_note("it's parts of letters and digits, each starting with a letter, between dots, like "
                               "'com.studio.game'");
                     prog->app_id = NULL;
+                }
+            } else if (str_eq_c(f->name, "version")) {
+                prog->version = text_literal(value);
+                if (!prog->version) {
+                    diag_error(value->at, "the version is text written out, like 'version = \"1.2.0\";', or a constant "
+                                          "that is");
+                } else if (!valid_version(prog->version->text)) {
+                    diag_error(value->at, "'" STR_FMT "' isn't a version that Android and iOS both take",
+                               STR_ARG(prog->version->text));
+                    diag_note("it's one to three numbers between dots, like '1.2.0'");
+                    prog->version = NULL;
                 }
             }
         }

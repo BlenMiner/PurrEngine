@@ -1,0 +1,6 @@
+// expect: '1.2.3.4' isn't a version that Android and iOS both take
+settings
+{
+    version = "1.2.3.4";
+}
+scene Main { }

@@ -620,6 +620,7 @@ typedef struct program {
     uint32_t tick_rate;        // tickRate, or 0 where it isn't set
     const expr *title;         // title, the text it's set to, or NULL
     const expr *app_id;        // appId, likewise
+    const expr *version;       // version, likewise
     bool host_migration;       // hostMigration
 } program;
 

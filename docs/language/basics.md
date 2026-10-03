@@ -100,6 +100,7 @@ settings
 | `tickRate` | How many times a second the match ticks, from 1 to 1000: `Time.dt` is 1 / `tickRate` | 60 |
 | `hostMigration` | When the machine running a room's match goes, another player's takes it over (see [Host migration](./multiplayer.md#host-migration)) | `false` |
 | `appId` | The app's ID on phones, like `com.studio.game`: what Android and iOS, and their app stores, know it by (see [Android](../guide/cli.md#android)) | `dev.tide.<the game's name>`, to test with |
+| `version` | The version people see, like `1.2.0`: one to three numbers between dots. Each build's version code, which app stores order updates by, goes up by itself | `1.0` |
 
 - Settings are set without a type, to constant expressions, which can name constants. A game's own values go in constants, not settings.
 - A game has one `settings` block. The editors complete the settings' names and show what each one does.

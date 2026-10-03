@@ -1548,7 +1548,8 @@ static char *build_android(const char *root, const build_options *opts, char *pa
     // Each CPU: objects of its own, in <cache>/<abi>. The app is made for
     // Android 16, as Google Play wants.
     char *cache = b.cache;
-    apk_desc desc = {.package = id, .lib_name = "game", .version_code = android_version_code(), .version_name = "1.0",
+    apk_desc desc = {.package = id, .lib_name = "game", .version_code = android_version_code(),
+                     .version_name = b.info.version[0] ? b.info.version : "1.0",
                      .min_sdk = atoi(ANDROID_API), .target_sdk = 36, .debuggable = !opts->release};
     for (int abi = 0; abi < ANDROID_ABIS; abi++) {
         char target_flag[64];

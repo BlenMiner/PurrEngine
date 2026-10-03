@@ -756,6 +756,9 @@ static const setting settings[] = {
      "The app's ID on phones, like `com.studio.game`: what Android and iOS, and their app stores, know it by, the "
      "same for every version. Parts of letters and digits, each starting with a letter, between dots. Without it, "
      "builds are `dev.tide.<the game's name>`, which is fine for testing; `tide build --android --release` needs one."},
+    {"version", TY_STRING, "1.0",
+     "The version people see, like `1.2.0`: one to three numbers between dots, which Android and iOS both take. "
+     "Each build's version code, which app stores order updates by, goes up by itself."},
     {"hostMigration", TY_BOOL, "false",
      "When the machine running a room's match leaves or stops answering, another player's machine takes the match "
      "over from the last tick it verified, and the others join it again as the same players. Private scenes the new "

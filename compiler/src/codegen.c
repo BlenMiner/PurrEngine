@@ -8305,6 +8305,7 @@ bool codegen(program *prog, const codegen_options *opts)
     if (opts->info) {
         setting_text(opts->info->title, sizeof opts->info->title, prog->title);
         setting_text(opts->info->app_id, sizeof opts->info->app_id, prog->app_id);
+        setting_text(opts->info->version, sizeof opts->info->version, prog->version);
     }
     gen g = {0};
     g.prog = prog;
