@@ -470,14 +470,14 @@
     "builtins": {
       "patterns": [
         {
-          "comment": "Built-in value types, void for what a method or function returns, text and Actions, and what an enum is stored as (enum Voxel : byte). Not after a '.': Draw.Rect is a function",
+          "comment": "Built-in value types, void for what a method or function returns, text, Actions and the draw list C takes, and what an enum is stored as (enum Voxel : byte). Not after a '.': Draw.Rect is a function",
           "name": "storage.type.primitive.tide",
-          "match": "(?<!\\.)\\b(void|bool|int[234]?|float(?:2x2|3x3|4x4|[234])?|quaternion|Entity|LocalEntity|PlayerID|Color|Rect|string|Action|byte|ushort)\\b"
+          "match": "(?<!\\.)\\b(void|bool|int[234]?|float(?:2x2|3x3|4x4|[234])?|quaternion|Entity|LocalEntity|PlayerID|Color|Rect|string|Action|DrawList|byte|ushort)\\b"
         },
         {
           "comment": "Built-in singletons, components, events, enums, records, generic types and function groups. Not after a '.': GUI.Button is a function",
           "name": "support.class.tide",
-          "match": "(?<!\\.)\\b(Time|Math|Draw|GUI|GUILayout|Screen|Anchor|Owner|Devices|Keyboard|Mouse|Gamepad|Button|Dpad|Spawned|Destroyed|PlayerJoined|PlayerLeft|Scene|SceneVisibility|Session|SessionState|DisconnectReason|Connected|Disconnected|Wait|Clipboard|List|Grid2|Grid3)\\b"
+          "match": "(?<!\\.)\\b(Time|Math|Draw|GUI|GUILayout|Screen|Anchor|Vertex|Filter|Owner|Devices|Keyboard|Mouse|Gamepad|Button|Dpad|Spawned|Destroyed|PlayerJoined|PlayerLeft|Scene|SceneVisibility|Session|SessionState|DisconnectReason|Connected|Disconnected|Wait|Clipboard|List|Grid2|Grid3)\\b"
         },
         {
           "comment": "Spawn(...), Send(...)",

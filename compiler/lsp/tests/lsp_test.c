@@ -606,6 +606,50 @@ static const char *c_definition(const char *marked)
     return definition_line();
 }
 
+// Meshes: Draw.Mesh, Draw.Clip and Draw.Screen, the built-in Vertex and
+// Filter, and the draw list a view passes to C.
+TIDE_TEST(lsp_meshes)
+{
+    start();
+#define MESH_TYPES                                                                 \
+    "scene Main { }\n"                                                             \
+    "extern void DrawUI(DrawList list);\n"                                         \
+    "local singleton Art\n{\n    Grid2<Color> pixels = Grid2(4, 4);\n    List<Vertex> corners;\n}\n"
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Screen();\n    Draw.Clip(Rect(0, 0, 4, 4));\n"
+                             "    Draw.Mesh(art.corners, [0, 1, 2], art.pixels, Filter.Point);\n"
+                             "    Draw.Mesh([Vertex { position = float2(1, 2) }], [0, 0, 0]);\n"
+                             "    Draw.Clip();\n    DrawUI(Draw.list);\n}\n");
+    TIDE_CHECK(has(last_sent(), "\"diagnostics\":[]"));
+
+    const char *draw = complete(MESH_TYPES "view V(Art art)\n{\n    Draw.$\n}\n");
+    TIDE_CHECK(offers(draw, "Mesh") && offers(draw, "Clip") && offers(draw, "Screen") && offers(draw, "list"));
+    TIDE_CHECK(has(draw, "Mesh(${1:vertices}, ${2:indices})"));
+    TIDE_CHECK(has(draw, "Draw.list: DrawList"));
+    const char *filter = complete(MESH_TYPES "view V(Art art)\n{\n    Draw.Mesh(art.corners, [0, 1, 2], art.pixels, Filter.$);\n}\n");
+    TIDE_CHECK(offers(filter, "Point") && offers(filter, "Bilinear"));
+    const char *corner = complete(MESH_TYPES "view V(Art art)\n{\n    var v = Vertex { $ };\n}\n");
+    TIDE_CHECK(offers(corner, "position") && offers(corner, "uv") && offers(corner, "color"));
+    const char *param = complete(MESH_TYPES "extern void Paint($);\n");
+    TIDE_CHECK(offers(param, "DrawList") && offers(param, "Vertex"));
+    const char *tide_param = complete(MESH_TYPES "void Paint($) { }\n"); // Only C takes one
+    TIDE_CHECK(!offers(tide_param, "DrawList") && offers(tide_param, "Vertex"));
+
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Me$sh(art.corners, [0, 1, 2], art.pixels);\n}\n");
+    const char *mesh = request("textDocument/hover");
+    TIDE_CHECK(has(mesh, "Draw.Mesh(List<Vertex> vertices, List<int> indices, Grid2<Color> texture, Filter filter)"));
+    TIDE_CHECK(has(mesh, "Triangles: three of `indices` each"));
+    open_document(MESH_TYPES "view V(Art art)\n{\n    DrawUI(Draw.li$st);\n}\n");
+    TIDE_CHECK(has(request("textDocument/hover"), "Draw.list: DrawList"));
+    open_document(MESH_TYPES "view V(Art art)\n{\n    Draw.Mesh(art.corners, $\n}\n");
+    TIDE_CHECK(has(request("textDocument/signatureHelp"), "Draw.Mesh(List<Vertex> vertices, List<int> indices)"));
+
+    TIDE_CHECK(has(c_definition(MESH_TYPES "view V(Art art)\n{\n    Draw.Me$sh(art.corners, [0, 1, 2]);\n}\n"),
+                   "void tide_draw_mesh_lists("));
+    TIDE_CHECK(has(c_definition(MESH_TYPES "view V(Art art)\n{\n    Draw.Cl$ip();\n}\n"), "void tide_draw_no_clip("));
+    TIDE_CHECK(has(c_definition(MESH_TYPES "view V(Art art)\n{\n    Draw.Scr$een();\n}\n"), "void tide_draw_screen("));
+#undef MESH_TYPES
+}
+
 // The type of what's at the cursor, and an event's or the input's code.
 TIDE_TEST(lsp_type_definition_and_implementation)
 {

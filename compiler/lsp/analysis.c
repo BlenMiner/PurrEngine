@@ -1003,6 +1003,8 @@ static const char *builtin_type_doc(const type_kind kind)
     case TY_RECT: return "A rectangle on the screen, for the GUI: x and y from the top left, y down, then width and height.";
     case TY_STRING: return "Text, written in double quotes.";
     case TY_ACTION: return "Code the caller writes in braces after the call, run with `content();`.";
+    case TY_DRAW_LIST: return "The frame's draw list, for a game's C to draw into with tide/draw.h: an extern "
+                              "function takes one, and a view passes it `Draw.list`.";
     case TY_LIST: return "A list of values, which grows and shrinks: `Count`, `items[i]`, `Add`, `RemoveAt`, `foreach`, "
                          "and `parallel` through its elements by index.";
     case TY_GRID: return "Cells at positions, kept in chunks only where something's set: `cells[x, y]`, `size`, `Clear()`, "
@@ -4489,6 +4491,7 @@ void analysis_completion(const int line, const int character, jbuf *out)
                 complete_value_types(&c, VT_LOCALS | VT_LOCAL_ENTITY);
                 complete_structs(&c);
                 complete_namespaces(&c, false);
+                if (pk != T_MUT && pk != T_IDENT) item(&c, "DrawList", CK_STRUCT, "DrawList", builtin_type_doc(TY_DRAW_LIST), NULL);
             } else if (pk == T_IDENT) {
                 complete_param_name(&c, prev->text);
             }
@@ -4877,6 +4880,7 @@ static const char *check_new_name(const occurrence *target, const str name)
     static const char *const reserved[] = {"Math", "Draw", "Devices", "Time", "Owner", "Spawn", "Send", "Spawned",
                                            "Destroyed", "PlayerJoined", "PlayerLeft", "Scene", "SceneVisibility",
                                            "GUI", "GUILayout", "Screen", "Anchor", "Action", "Session", "SessionState", "Clipboard",
+                                           "Vertex", "Filter", "DrawList",
                                            "DisconnectReason", "Connected", "Disconnected", "Wait", "List", "Grid2", "Grid3",
                                            "string", "Sample", "Sanitize"};
     static char message[160];

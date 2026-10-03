@@ -1,0 +1,4 @@
+// expect: a function can't return a DrawList
+scene Main { }
+
+extern DrawList Get();

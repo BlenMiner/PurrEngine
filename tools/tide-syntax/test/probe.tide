@@ -31,6 +31,7 @@ int? Find(List<int> items, int wanted) { return null; }
 extern List<int> Primes(int count);
 extern float Noise(float x, float y);
 extern void Fill(in Stats stats, mut List<float> values);
+extern void DrawUI(DrawList list);
 const List<int> NONE = [];
 const int MAX_HEALTH = 100;
 
@@ -99,6 +100,9 @@ view Show(Devices devices)
     float2x3 wrong = default;
     int2x2 alsoWrong = default;
     Draw.Rect(0, 0, 1, 1, Color.white);
+    Vertex corner = default;
+    Draw.Mesh([corner], [0, 0, 0], cells, Filter.Point);
+    DrawUI(Draw.list);
     if (GUI.Button("Copy")) Clipboard.Copy("x");
 }
 

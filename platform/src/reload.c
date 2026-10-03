@@ -418,6 +418,7 @@ static void swap(const tide_host_game *next, void *library)
     old->unload();
     library_close(reload.library);
     reload.library = library;
+    tide_draw_forget(&tide_run_draw); // The pixels the old build's C named were its own
 }
 
 // Swaps in the newest build, if there's a newer one, and starts over if tide

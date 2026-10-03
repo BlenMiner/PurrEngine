@@ -153,6 +153,14 @@ uint64_t tide_heap_hash(uint64_t h, const tide_heap *heap)
     return h;
 }
 
+uint64_t tide_heap_block_hash(tide_heap *h, const uint32_t block)
+{
+    tide_page *p = h->page[block >> TIDE_HEAP_PAGE_SHIFT];
+    const uint64_t hash = tide_page_hash(p, in_use(h, p));
+    __atomic_add_fetch(&h->moves, 1u, __ATOMIC_RELAXED);
+    return hash;
+}
+
 void tide_heap_free(tide_heap *h)
 {
     for (uint32_t i = 0; i < h->pages; i++) tide_page_release(h->page[i], 1);

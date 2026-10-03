@@ -67,11 +67,6 @@ typedef struct tide_textref tide_textref;
 #define TIDE_GUI_MAX_SIZES 256 // Containers whose size is remembered; a power of two
 #endif
 
-// A rectangle: its top left corner and its size.
-typedef struct tide_rect {
-    float x, y, width, height;
-} tide_rect;
-
 // Where GUILayout.Area puts an area, named as Unity's TextAnchor. Tide's
 // Anchor enum has the same values.
 typedef enum tide_anchor {

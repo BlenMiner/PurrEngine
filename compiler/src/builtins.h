@@ -14,6 +14,15 @@ bool builtin_owner(str name);
 // calls.
 void builtins_use(const decl *anchor);
 
+// The types Draw.Mesh takes, as the program has them: List<Vertex>,
+// List<int>, Grid2<Color> (NULL when the program has no such grid, so nothing
+// is one) and the Filter enum. Call before resolving a call of it.
+void builtins_use_mesh(const decl *vertices, const decl *indices, const decl *pixels, const decl *filter);
+
+// The list type owner.name takes as its argument `index`, when every version
+// of it that has one takes the same: what `[a, b, c]` written there is.
+bool builtin_list_param(str owner, str name, int index, type *out);
+
 // Resolves owner.name(args) for a call whose arguments are already checked.
 // Fills e->call, e->c_callee and e->arg_want, and for the GUI e->arg_mut and
 // e->gui. Reports errors and returns TY_ERROR on failure.

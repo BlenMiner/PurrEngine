@@ -1,0 +1,7 @@
+// expect: 'DrawList' is built into the language
+scene Main { }
+
+struct DrawList
+{
+    int count;
+}

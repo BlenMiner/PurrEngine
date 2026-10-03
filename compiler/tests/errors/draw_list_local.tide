@@ -1,0 +1,10 @@
+// expect: the draw list is only passed on, to an extern function that takes a DrawList
+scene Main { }
+
+extern void Paint(DrawList list);
+
+view Show()
+{
+    var list = Draw.list;
+    Paint(list);
+}

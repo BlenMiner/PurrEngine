@@ -43,10 +43,12 @@ typedef struct tide_heap {
     uint32_t pages;                   // Pages as far as `used` goes
     uint32_t room;                    // Pages `page` has room for
     // Counts the times a block may have moved or gone: a page copied to be
-    // changed, or blocks released. Code that keeps a block's address a while
-    // (a grid's chunk cache, see tide/grid.h) checks it didn't change. It's
-    // no state of its own either, and read atomically, as other threads may
-    // read it while one system changes the heap.
+    // changed, or blocks released; and the times a page's hash was asked for
+    // (tide_heap_block_hash), after which a change has to say so again. Code
+    // that keeps a block's address a while (a grid's chunk cache, see
+    // tide/grid.h) checks it didn't change. It's no state of its own either,
+    // and read atomically, as other threads may read it while one system
+    // changes the heap.
     uint32_t moves;
     // The page each page-sized piece of the heap is in. A page bigger than
     // that is at each of its places, with a reference for each. Before the
@@ -65,6 +67,13 @@ uint64_t tide_heap_hash(uint64_t h, const tide_heap *heap);
 
 // Lets go of its pages, leaving it empty.
 void tide_heap_free(tide_heap *h);
+
+// The hash of the page `block` is in, as tide_heap_hash takes it: kept until
+// the page changes, so asking again costs nothing while it hasn't. Code that
+// keeps a block's address to write through (a grid's chunk cache) wouldn't
+// say the page changed again, so this counts as a move: it looks its block
+// up once more.
+uint64_t tide_heap_block_hash(tide_heap *h, uint32_t block);
 
 // The heap as bytes, for sending a world and carrying it over, and reading
 // it back into an empty heap (false when the bytes aren't one).

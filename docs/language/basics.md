@@ -31,7 +31,7 @@ The editors' formatter lays code out this way (see [Editors](../guide/editors.md
 | `PlayerID` | A player (see [Input](./input.md)) |
 | `T?`, like `int?` | A value or nothing (see [Errors](./errors.md)) |
 
-The engine has enums of its own too, on the pages they belong to: `Anchor` ([GUI](./gui.md)), `SceneVisibility` ([Scenes](./scenes.md)), `SessionState` and `DisconnectReason` ([Multiplayer](./multiplayer.md)).
+The engine has enums of its own too, on the pages they belong to: `Anchor` ([GUI](./gui.md)), `Filter` ([Views and drawing](./views.md#textures)), `SceneVisibility` ([Scenes](./scenes.md)), `SessionState` and `DisconnectReason` ([Multiplayer](./multiplayer.md)).
 
 Everything is a value: assigning copies it, and nothing is shared, text and lists included. That's what keeps the whole world plain data, which the engine copies to take snapshots.
 

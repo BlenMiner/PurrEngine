@@ -1,5 +1,6 @@
 #include "tide/platform.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -430,8 +431,8 @@ void tide_platform_poll(tide_devices *devices)
 }
 
 // The camera maps world units (y up) to window pixels (y down). Each frame's
-// list starts at the origin with 1 unit per pixel. After TIDE_DRAW_GUI, it
-// maps the GUI's pixels instead: from the top left, y down.
+// list starts at the origin with 1 unit per pixel. After TIDE_DRAW_SCREEN, it
+// maps the screen's pixels instead: from the top left, y down.
 typedef struct camera {
     tide_float2 center;
     float scale; // Pixels per world unit
@@ -481,20 +482,34 @@ typedef struct shape {
     float kind;       // SHAPE_*
 } shape;
 
-// What a list comes to, in order: runs of shapes, clears and text.
-enum { STEP_SHAPES, STEP_CLEAR, STEP_TEXT };
+// A mesh's corner, in window pixels. Meshes go to the GPU as triangles, three
+// of these each: a run of them with one texture is one draw call.
+typedef struct mesh_vertex {
+    float position[2];
+    float uv[2];
+    uint8_t color[4]; // RGBA
+} mesh_vertex;
+
+// What a list comes to, in order: runs of shapes, clears, text, runs of
+// triangles and clips.
+enum { STEP_SHAPES, STEP_CLEAR, STEP_TEXT, STEP_MESH, STEP_CLIP, STEP_NO_CLIP };
 
 typedef struct draw_step {
-    uint32_t kind;  // STEP_*
-    uint32_t first; // STEP_SHAPES: its shapes; STEP_TEXT: its text's offset in the list
+    uint32_t kind;    // STEP_*
+    uint32_t first;   // STEP_SHAPES: its shapes; STEP_TEXT: its text's offset in the list; STEP_MESH: its vertices
     uint32_t count;
-    Vector2 at; // STEP_TEXT: its top left corner in window pixels, and its height
+    uint32_t texture; // STEP_MESH: 1 + its texture's place in the list's, or 0 for none
+    uint32_t filter;  // ...and how it's sampled: tide_filter
+    Vector2 at; // STEP_TEXT: its top left corner in window pixels, and its height; STEP_CLIP: its top left corner
+    Vector2 to; // STEP_CLIP: its bottom right corner
     float size;
     Color color;
 } draw_step;
 
 static shape *shapes;
 static uint32_t shape_count, shape_capacity;
+static mesh_vertex *mesh_vertices;
+static uint32_t mesh_vertex_count, mesh_vertex_capacity;
 static draw_step *steps;
 static uint32_t step_count, step_capacity;
 
@@ -522,6 +537,38 @@ static void add_shape(const int kind, const float ax, const float ay, const floa
     if (step_count == 0 || steps[step_count - 1].kind != STEP_SHAPES) add_step(STEP_SHAPES)->first = shape_count;
     steps[step_count - 1].count++;
     shapes[shape_count++] = (shape){{ax, ay}, {bx, by}, {color.r, color.g, color.b, color.a}, (float)kind};
+}
+
+// A mesh command's triangles, their corners through the camera, after the
+// ones before it when nothing came between them.
+static void add_mesh(const tide_draw_list *list, const tide_draw_command *c, const camera *cam)
+{
+    const uint32_t count = c->mesh.count;
+    if (count > mesh_vertex_capacity - mesh_vertex_count) {
+        uint64_t capacity = mesh_vertex_capacity ? mesh_vertex_capacity : 4096u;
+        while (capacity < (uint64_t)mesh_vertex_count + count) capacity *= 2u;
+        if (capacity > UINT32_MAX / sizeof(mesh_vertex)) tide_out_of_memory();
+        mesh_vertices = tide_realloc(mesh_vertices, mesh_vertex_capacity * sizeof(mesh_vertex),
+                                     (size_t)capacity * sizeof(mesh_vertex));
+        mesh_vertex_capacity = (uint32_t)capacity;
+    }
+    draw_step *s = step_count ? &steps[step_count - 1] : NULL;
+    if (!s || s->kind != STEP_MESH || s->texture != c->mesh.texture || s->filter != c->mesh.filter) {
+        s = add_step(STEP_MESH);
+        s->first = mesh_vertex_count;
+        s->texture = c->mesh.texture;
+        s->filter = c->mesh.filter;
+    }
+    s->count += count;
+    const uint32_t *indices = list->indices + c->mesh.first;
+    mesh_vertex *out = mesh_vertices + mesh_vertex_count;
+    for (uint32_t i = 0; i < count; i++) {
+        const tide_vertex *v = &list->vertices[indices[i]];
+        const Vector2 p = to_screen(cam, v->position);
+        const Color color = to_raylib(v->color);
+        out[i] = (mesh_vertex){{p.x, p.y}, {v->uv.x, v->uv.y}, {color.r, color.g, color.b, color.a}};
+    }
+    mesh_vertex_count += count;
 }
 
 // OpenGL ES 3 on the web and Android, OpenGL 3.3 on desktop.
@@ -589,6 +636,54 @@ static struct {
     int mvp, corner, shape, color, kind;
 } gpu;
 
+// A mesh's pixels are its corners' colors, blended across each triangle,
+// times its texture's (a white pixel, for a mesh with none).
+static const char mesh_vertex_shader[] = GLSL_VERSION
+    "in vec2 position;\n" // In window pixels
+    "in vec2 uv;\n"
+    "in vec4 color;\n"
+    "uniform mat4 mvp;\n"
+    "out vec2 at;\n"
+    "out vec4 tint;\n"
+    "void main() {\n"
+    "    at = uv;\n"
+    "    tint = color;\n"
+    "    gl_Position = mvp * vec4(position, 0.0, 1.0);\n"
+    "}\n";
+
+static const char mesh_fragment_shader[] = GLSL_VERSION
+    "in vec2 at;\n"
+    "in vec4 tint;\n"
+    "uniform sampler2D pixels;\n"
+    "out vec4 pixel;\n"
+    "void main() {\n"
+    "    pixel = texture(pixels, at) * tint;\n"
+    "}\n";
+
+static struct {
+    unsigned int shader, vao, vertices;
+    uint32_t capacity; // Vertices the buffer holds
+    int mvp, pixels, position, uv, color;
+} mesh_gpu;
+
+// A texture on the GPU: a copy of a draw list's, uploaded when a list first
+// draws with it and again when its pixels changed, and let go once a frame
+// draws without it. Nothing else keeps it: the pixels are the game's.
+typedef struct gpu_texture {
+    uint64_t id; // Whose pixels (see tide_draw_texture)
+    uint64_t version;
+    uint32_t space;
+    int32_t width, height;
+    uint32_t epoch; // Its list's when it copied them (see tide_draw_forget)
+    unsigned int gl;
+    int filter;     // The last it was sampled with, or -1
+    uint32_t frame; // The frame that last drew with it
+} gpu_texture;
+
+static gpu_texture *gpu_textures;
+static uint32_t gpu_texture_count, gpu_texture_capacity;
+static uint32_t gpu_frame;
+
 // rlgl's matrices, as its own drawing uses them (rlMatrixMultiply(modelview,
 // projection) in rlgl.h).
 static Matrix shape_mvp(void)
@@ -639,6 +734,157 @@ static void shapes_start(void)
     rlDisableVertexArray();
 }
 
+static void meshes_start(void)
+{
+    if (mesh_gpu.shader) return;
+    mesh_gpu.shader = rlLoadShaderProgram(mesh_vertex_shader, mesh_fragment_shader);
+    if (mesh_gpu.shader == 0 || mesh_gpu.shader == rlGetShaderIdDefault()) {
+        TraceLog(LOG_FATAL, "DRAW: the meshes' shader didn't compile (see above)");
+        abort();
+    }
+    mesh_gpu.mvp = rlGetLocationUniform(mesh_gpu.shader, "mvp");
+    mesh_gpu.pixels = rlGetLocationUniform(mesh_gpu.shader, "pixels");
+    mesh_gpu.position = rlGetLocationAttrib(mesh_gpu.shader, "position");
+    mesh_gpu.uv = rlGetLocationAttrib(mesh_gpu.shader, "uv");
+    mesh_gpu.color = rlGetLocationAttrib(mesh_gpu.shader, "color");
+    mesh_gpu.vao = rlLoadVertexArray();
+}
+
+// This list's triangles into their buffer, which grows as they need.
+static void upload_meshes(void)
+{
+    if (mesh_vertex_count == 0) return;
+    meshes_start();
+    if (mesh_vertex_count > mesh_gpu.capacity) {
+        uint32_t capacity = mesh_gpu.capacity ? mesh_gpu.capacity : 4096u;
+        while (capacity < mesh_vertex_count) capacity *= 2u;
+        rlEnableVertexArray(mesh_gpu.vao);
+        if (mesh_gpu.vertices) rlUnloadVertexBuffer(mesh_gpu.vertices);
+        mesh_gpu.vertices = rlLoadVertexBuffer(NULL, (int)(capacity * sizeof(mesh_vertex)), true);
+        mesh_gpu.capacity = capacity;
+        rlSetVertexAttribute((unsigned)mesh_gpu.position, 2, RL_FLOAT, false, sizeof(mesh_vertex),
+                             (int)offsetof(mesh_vertex, position));
+        rlSetVertexAttribute((unsigned)mesh_gpu.uv, 2, RL_FLOAT, false, sizeof(mesh_vertex), (int)offsetof(mesh_vertex, uv));
+        rlSetVertexAttribute((unsigned)mesh_gpu.color, 4, RL_UNSIGNED_BYTE, true, sizeof(mesh_vertex),
+                             (int)offsetof(mesh_vertex, color));
+        const int attributes[] = {mesh_gpu.position, mesh_gpu.uv, mesh_gpu.color};
+        for (int i = 0; i < 3; i++) rlEnableVertexAttribute((unsigned)attributes[i]);
+        rlDisableVertexArray();
+    }
+    rlUpdateVertexBuffer(mesh_gpu.vertices, mesh_vertices, (int)(mesh_vertex_count * sizeof(mesh_vertex)), 0);
+}
+
+// The GPU's copy of a list's texture, uploaded if it hasn't got these pixels.
+static gpu_texture *texture_for(const tide_draw_texture *t)
+{
+    gpu_texture *g = NULL;
+    for (uint32_t i = 0; i < gpu_texture_count && !g; i++) {
+        if (gpu_textures[i].id == t->id && gpu_textures[i].space == t->space) g = &gpu_textures[i];
+    }
+    if (!g) {
+        if (gpu_texture_count == gpu_texture_capacity) {
+            const uint32_t capacity = gpu_texture_capacity ? gpu_texture_capacity * 2u : 8u;
+            gpu_textures = tide_realloc(gpu_textures, gpu_texture_capacity * sizeof(gpu_texture),
+                                        capacity * sizeof(gpu_texture));
+            gpu_texture_capacity = capacity;
+        }
+        g = &gpu_textures[gpu_texture_count++];
+        *g = (gpu_texture){.id = t->id, .space = t->space};
+    }
+    g->frame = gpu_frame;
+    if (g->gl && g->version == t->version && g->width == t->width && g->height == t->height && g->epoch == t->epoch) {
+        return g;
+    }
+    if (g->gl && g->width == t->width && g->height == t->height) {
+        rlUpdateTexture(g->gl, 0, 0, t->width, t->height, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, t->pixels);
+    } else {
+        if (g->gl) rlUnloadTexture(g->gl);
+        g->gl = rlLoadTexture(t->pixels, t->width, t->height, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
+        rlTextureParameters(g->gl, RL_TEXTURE_WRAP_S, RL_TEXTURE_WRAP_CLAMP);
+        rlTextureParameters(g->gl, RL_TEXTURE_WRAP_T, RL_TEXTURE_WRAP_CLAMP);
+        g->filter = -1;
+    }
+    g->version = t->version;
+    g->width = t->width;
+    g->height = t->height;
+    g->epoch = t->epoch;
+    return g;
+}
+
+// Lets go of the textures the frame didn't draw with.
+static void forget_textures(void)
+{
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < gpu_texture_count; i++) {
+        if (gpu_textures[i].frame != gpu_frame) {
+            if (gpu_textures[i].gl) rlUnloadTexture(gpu_textures[i].gl);
+            continue;
+        }
+        gpu_textures[kept++] = gpu_textures[i];
+    }
+    gpu_texture_count = kept;
+    gpu_frame++;
+}
+
+static void draw_mesh(const tide_draw_list *list, const draw_step *s)
+{
+    unsigned int texture = rlGetTextureIdDefault(); // A white pixel
+    if (s->texture) {
+        gpu_texture *g = texture_for(&list->textures[s->texture - 1u]);
+        if (g->gl && g->filter != (int)s->filter) {
+            const int filter = s->filter == TIDE_FILTER_POINT ? RL_TEXTURE_FILTER_NEAREST : RL_TEXTURE_FILTER_LINEAR;
+            rlTextureParameters(g->gl, RL_TEXTURE_MIN_FILTER, filter);
+            rlTextureParameters(g->gl, RL_TEXTURE_MAG_FILTER, filter);
+            g->filter = (int)s->filter;
+        }
+        if (g->gl) texture = g->gl;
+    }
+    rlDrawRenderBatchActive();  // What raylib batched before it (text) goes first
+    rlDisableBackfaceCulling(); // Either side of a triangle draws
+    rlEnableShader(mesh_gpu.shader);
+    rlSetUniformMatrix(mesh_gpu.mvp, shape_mvp());
+    const int unit = 0;
+    rlSetUniform(mesh_gpu.pixels, &unit, RL_SHADER_UNIFORM_INT, 1);
+    rlActiveTextureSlot(0);
+    rlEnableTexture(texture);
+    rlEnableVertexArray(mesh_gpu.vao);
+    rlDrawVertexArray((int)s->first, (int)s->count);
+    rlDisableVertexArray();
+    rlDisableTexture();
+    rlDisableShader();
+    rlEnableBackfaceCulling();
+}
+
+// Whether the list is drawn into a render texture of the window's size, in
+// its pixels, rather than the window, whose are the display's.
+static bool offscreen;
+
+static int nearest_pixel(const float v)
+{
+    return (int)floorf(v + 0.5f);
+}
+
+// Only what's inside the step's rect draws from here on, or everything again.
+static void clip(const draw_step *s)
+{
+    rlDrawRenderBatchActive(); // What raylib batched before it isn't clipped by it
+    if (s->kind == STEP_NO_CLIP) {
+        rlDisableScissorTest();
+        return;
+    }
+    // OpenGL's are the framebuffer's pixels, from the bottom left
+    const Vector2 scale = offscreen ? (Vector2){1.0f, 1.0f} : GetWindowScaleDPI();
+#ifdef __APPLE__
+    const int height = offscreen ? GetScreenHeight() : nearest_pixel((float)GetScreenHeight() * scale.y);
+#else
+    const int height = offscreen ? GetScreenHeight() : GetRenderHeight();
+#endif
+    const int left = nearest_pixel(s->at.x * scale.x), right = nearest_pixel(s->to.x * scale.x);
+    const int top = nearest_pixel(s->at.y * scale.y), bottom = nearest_pixel(s->to.y * scale.y);
+    rlEnableScissorTest();
+    rlScissor(left, height - bottom, right > left ? right - left : 0, bottom > top ? bottom - top : 0);
+}
+
 // The instance buffer's attributes, from shape `first` on.
 static void point_at(const uint32_t first)
 {
@@ -686,6 +932,7 @@ static void draw_list(const tide_draw_list *list)
 {
     shapes_start();
     shape_count = 0;
+    mesh_vertex_count = 0;
     step_count = 0;
     camera cam = {{0.0f, 0.0f}, 1.0f, false};
     camera world = cam; // The last world camera, for tide_platform_world_to_screen
@@ -702,9 +949,24 @@ static void draw_list(const tide_draw_list *list)
             cam.gui = false;
             world = cam;
             break;
-        case TIDE_DRAW_GUI:
+        case TIDE_DRAW_SCREEN:
             cam.scale = 1.0f;
             cam.gui = true;
+            break;
+        case TIDE_DRAW_MESH:
+            add_mesh(list, c, &cam);
+            break;
+        case TIDE_DRAW_CLIP: {
+            // Its corners on the screen, whichever way up the units are
+            const Vector2 p = to_screen(&cam, c->a);
+            const Vector2 q = to_screen(&cam, tide_f2(c->a.x + c->b.x, c->a.y + c->b.y));
+            draw_step *s = add_step(STEP_CLIP);
+            s->at = (Vector2){p.x < q.x ? p.x : q.x, p.y < q.y ? p.y : q.y};
+            s->to = c->b.x > 0.0f && c->b.y > 0.0f ? (Vector2){p.x < q.x ? q.x : p.x, p.y < q.y ? q.y : p.y} : s->at;
+            break;
+        }
+        case TIDE_DRAW_NO_CLIP:
+            add_step(STEP_NO_CLIP);
             break;
         case TIDE_DRAW_CIRCLE:
         case TIDE_DRAW_WIRE_CIRCLE: {
@@ -741,8 +1003,10 @@ static void draw_list(const tide_draw_list *list)
     last_camera = world;
 
     upload_shapes();
+    upload_meshes();
     rlDrawRenderBatchActive(); // What came before the list goes under it, and is cleared
     ClearBackground(BLACK);    // Every frame starts black; Draw.Clear picks another color
+    bool clipped = false;
     for (uint32_t i = 0; i < step_count; i++) {
         const draw_step *s = &steps[i];
         if (s->kind == STEP_SHAPES) {
@@ -750,10 +1014,17 @@ static void draw_list(const tide_draw_list *list)
         } else if (s->kind == STEP_CLEAR) {
             rlDrawRenderBatchActive(); // Text before it is cleared too
             ClearBackground(s->color);
+        } else if (s->kind == STEP_MESH) {
+            draw_mesh(list, s);
+        } else if (s->kind == STEP_CLIP || s->kind == STEP_NO_CLIP) {
+            clip(s);
+            clipped = s->kind == STEP_CLIP;
         } else {
             DrawTextEx(GetFontDefault(), list->text + s->first, s->at, s->size, s->size / 10.0f, s->color);
         }
     }
+    if (clipped) clip(&(draw_step){.kind = STEP_NO_CLIP}); // What's drawn after the list isn't the list's to clip
+    forget_textures();
 }
 
 // Nobody sees it while the window is minimized or, on the web, the page is
@@ -823,7 +1094,9 @@ void tide_platform_read_pixels(const tide_draw_list *list, const tide_float2 *po
     const int height = GetScreenHeight();
     const RenderTexture2D target = LoadRenderTexture(GetScreenWidth(), height);
     BeginTextureMode(target);
+    offscreen = true;
     draw_list(list);
+    offscreen = false;
     EndTextureMode();
     const Image image = LoadImageFromTexture(target.texture);
     UnloadRenderTexture(target);

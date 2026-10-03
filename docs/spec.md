@@ -976,6 +976,11 @@ component Body
 ```
 
 - Something that jumps, like a respawn, a portal or a camera cut, says so from match code: `entity.Snap()` or `singleton.Snap()`. For the tick it happens in, views draw it as it is instead of sliding from where it was.
+- Meshes are the general shape: `Draw.Mesh(vertices, indices)` draws triangles with a position, a texture coordinate and a color at each corner, three indices each, in order with the other Draw calls. The engine gives general primitives rather than a helper for each case.
+- A texture is a grid of colors: `Draw.Mesh(vertices, indices, texture)` takes a `Grid2<Color>` with a size. There's no texture type and no handle. The pixels are the game's state, local or the match's, and the engine keeps a copy on the GPU, which it uploads again when the cells change. So hot reloading carries textures as it carries any state, on every platform.
+- Filtering is how a draw reads the pixels, not part of them: `Draw.Mesh(vertices, indices, texture, Filter.Point)`. Left out, it's `Filter.Bilinear`, as Unity's default.
+- `Draw.Clip(rect)` keeps the Draw calls after it inside a rectangle, and `Draw.Clip()` ends it.
+- `Draw.Screen()` puts the Draw calls after it in the screen's pixels, from the top left with `y` down, as the GUI's are. What views draw there is under the GUI's widgets.
 - A struct or component can say how it blends with an `Interpolate` override: `T Interpolate(T from, T to, float t)`, declared in it like an operator, with no value of its own. It replaces the default blend for that type wherever views see it:
 
 ```csharp
@@ -1019,7 +1024,18 @@ event(Died dead) Respawn(mut Body body, Arena arena)
   - `Draw.Rect(center, size, color)` and `Draw.WireRect(center, size, color)`.
   - `Draw.Line(from, to, color)`.
   - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the height.
+  - `Draw.Mesh(vertices, indices)`, `Draw.Mesh(vertices, indices, texture)` and `Draw.Mesh(vertices, indices, texture, filter)`: a `List<Vertex>`, a `List<int>`, a `Grid2<Color>` and a `Filter`.
+  - `Draw.Clip(rect)` and `Draw.Clip()`, and `Draw.Screen()`.
 - Later Draw calls draw over earlier ones.
+- `Vertex` is a built-in struct: `float2 position`, `float2 uv` and `Color color = Color.white`, so a corner that leaves its color out takes the texture's as it is. `Filter` is a built-in enum, `Point` and `Bilinear`, with the values of Unity's `FilterMode`. A game can't declare either name outside a namespace.
+- Triangles draw whichever way round their corners go. A triangle with an index past the vertices is left out, and so are the one or two indices after the last whole triangle. Colors blend over what's behind them by their alpha, which isn't premultiplied.
+- `uv` (0, 0) is the outer corner of the grid's cell (0, 0), and (1, 1) the outer corner of its last cell. Past them, it reads the cells at the edge.
+- The GPU's copy of a texture is a byte a channel: a cell's floats are clamped to 0 to 1, and NaN is 0. Where the grid has no chunk, it's clear. A grid with an open axis has no size, so it's no texture, and the mesh draws with its colors alone. How big a texture can be is the GPU's limit, at least 2048 by 2048.
+- The engine tells whether a grid's cells changed from the hashes it keeps of the grid's chunks, without reading the cells: a frame that changed nothing costs a hash per chunk. A texture no call of a frame draws with is let go, and comes back when one does.
+- Views read the match's grids as they are at the latest tick: cells aren't blended.
+- `[a, b, c]` where a built-in function takes a list is that list, as it is for a function's argument: `Draw.Mesh(corners, [0, 1, 2])`.
+- `Draw.Clip`'s `Rect` goes from (x, y) to (x + width, y + height) in the units the calls are in: the world's under a camera, with `y` up, and pixels after `Draw.Screen()`. It's set where it lands on the screen then, to whole pixels, and stays there when the camera changes. `Draw.Clear` fills the clip. Each frame starts with none, and a view's clip never clips the GUI.
+- `Draw.Camera` after `Draw.Screen()` goes back to the world.
 - `Color` is a built-in value type with `r`, `g`, `b` and `a`, floats from 0 to 1, as in Unity. It's built with `Color(r, g, b)` (alpha 1) or `Color(r, g, b, a)`. The constants are `Color.white`, `black`, `red`, `green`, `blue`, `yellow`, `cyan`, `magenta`, `gray` and `clear`, with Unity's values and names. Components and singletons can hold colors. There are no operators on colors yet.
 - Text is written in double quotes, with the escapes `\"`, `\\` and `\n`. Its type is `string` (see Text).
 - Blending: a view's match components and singletons are copies, their fields that blend set between last tick's value and this tick's, as far as this moment is between the two ticks. Vectors, matrices, colors and rects blend component by component, quaternions the short way round (normalized), and structs field by field. An entity that wasn't there last tick is drawn as it is. Local state isn't blended: it's this machine's, as it is.
@@ -1045,7 +1061,8 @@ view DrawHud(Arena arena)
 
 - Drawing from systems, with the prediction stage (verified, predicted, replayed) visible to the code.
 - Views reading input, for example to draw where the local player aims before the tick runs.
-- 3D drawing, sprites and textures, layers.
+- 3D drawing, layers, and a sprite in one call (a textured rectangle is a mesh of four corners for now).
+- Textures: mipmaps and how `uv` wraps, chosen like the filter; a pixel of a byte a channel, a quarter of a `Color`'s memory; pixels from image files; sending only the part that changed.
 
 ## GUI
 
@@ -1115,7 +1132,7 @@ Implemented, awaiting approval:
 - A field for any enum. A game couldn't write one itself until there are generics.
 - Styles and themes.
 - More than one block per function, like Swift's labelled trailing closures.
-- The pieces widgets are made of, so a game can build its own like the built-in ones: a control's ID, which the compiler derives from the call as for the built-in widgets, whether it's hovered, pressed or focused, and drawing in GUI units.
+- The pieces widgets are made of, so a game can build its own like the built-in ones: a control's ID, which the compiler derives from the call as for the built-in widgets, whether it's hovered, pressed or focused, and drawing in the GUI's layer, over its panels (`Draw.Screen()` draws in its pixels, under it).
 - Scrolling, clipping, and keys that repeat while held.
 
 ## Local state
@@ -1380,6 +1397,7 @@ Implemented, awaiting approval:
 - Writing `external` gets an error that points to `extern`.
 - C takes pointers without Tide having pointer arithmetic: the parameter says how a value is passed, and the call takes its address. `mut T` is `T *`, `in T` is `const T *`, a `List<T>` is a pointer to its elements (`T *` with `mut`), with the count passed separately, and a `string` is a zero-terminated UTF-8 copy. Each is only valid during the call. A `const char *` that C returns is copied into text.
 - C calls keep the order of evaluation: calls to C, and to functions that call it, run left to right like the rest of Tide, whatever order C would pick.
+- A game's C draws by taking the frame's draw list: `extern void DrawUI(DrawList list);`, called as `DrawUI(Draw.list)` from a view or a function it calls. C draws into it with `tide/draw.h`, as much as it likes, in order with the view's own Draw calls. So libraries that hand over triangles each frame (Dear ImGui, Nuklear, Spine) need no way to return lists to Tide.
 
 ```csharp
 [NativeName("stb_perlin_noise3")]
@@ -1407,6 +1425,10 @@ Implemented, awaiting approval:
 - A list's elements are plain data (no text or lists in them). C gets NULL for an empty list. With `mut`, C can change the elements, but not how many there are. C can't return a list.
 - C gets text as it is when a zero follows it, and a copy in the scratch area otherwise. Text C returns is copied into the scratch area, as C may reuse its memory; NULL is empty text. A `mut string` can't go to C.
 - An `Action` and the devices can't be passed to C, nor structs that hold text or lists.
+- `DrawList` is only an extern function's parameter, a `tide_draw_list *` in C, neither `mut` nor `in`. `Draw.list` is only an argument for one: a local, a field or a Tide function's parameter can't hold it. It needs the frame, as `Draw` does, so it's an error in systems, tasks and a parallel loop's steps.
+- C draws meshes with `tide_draw_mesh`, or `tide_draw_vertices` and `tide_draw_triangles` for vertices that several batches share, and clips with `tide_draw_clip` and `tide_draw_no_clip`. `tide_vertex` is `Vertex`.
+- C's textures are pixels it keeps: `tide_texture` is their address, `width`, `height` and a `version`, 4 bytes a pixel (red, green, blue, alpha), rows from the first. The draw list copies them when their version or size isn't what it last copied, so C can free or change them once the call returns, and says they changed by changing the version. C holds no handle, and nothing is created or freed.
+- At a hot reload the draw list forgets the textures it copied, as the new build's C may name other pixels at the same address and version.
 - Calls are put in order the way spawns and GUI calls are: what has to go first runs before its statement, and before a loop's condition each round. An `&&` or `||` whose right side calls C, or a `?:` whose sides do, runs as `if` statements then, so each part still only runs when it would, with its own calls in order. So do struct operators that call C.
 - `extern` declarations go at the top level of a file, not in structs. `local` doesn't apply to them.
 - The C name must be a C identifier, not a C keyword. `[NativeName]` can't name the engine's functions (`tide_...`), and two externs can't name the same C function.

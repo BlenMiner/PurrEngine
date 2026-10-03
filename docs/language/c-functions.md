@@ -130,6 +130,65 @@ Tide's types have no padding the compiler adds, so a C struct with the same fiel
 
 C functions can't `fail` (see [Errors](./errors.md)): they return what C returns. To turn a C function's error code into an error, check it in a Tide function that fails, and call that.
 
+## Drawing from C
+
+Some libraries draw their own way: Dear ImGui, Nuklear, Clay, RmlUi and Spine hand over triangles every frame, as vertices, indices, and batches that each have a texture and a clip rectangle. How many there are changes every frame, so they don't go through Tide lists: a view passes C its draw list, and C draws into it with the engine's own functions, `tide/draw.h`.
+
+```csharp
+extern void DrawUI(DrawList list);
+
+view UI()
+{
+    Draw.Screen();
+    DrawUI(Draw.list);
+}
+```
+
+```c
+#include "tide/draw.h"
+
+void DrawUI(tide_draw_list *list)
+{
+    // The batches' vertices, once, then each batch's triangles with its clip
+    // and its texture
+    const uint32_t base = tide_draw_vertices(list, vertices, vertex_count);
+    for (int i = 0; i < batch_count; i++) {
+        tide_draw_clip(list, batches[i].clip);
+        tide_draw_triangles(list, base, indices + batches[i].first, batches[i].count, &atlas, TIDE_FILTER_BILINEAR);
+    }
+    tide_draw_no_clip(list);
+}
+```
+
+A `DrawList` parameter is for extern functions only, and takes `Draw.list`, which is only ever passed on. Like `Draw`, it needs the frame, so views and the functions they call can use it. What C draws lands in order with what the view draws before and after the call.
+
+C has everything Tide's `Draw` has, as `tide_draw_circle`, `tide_draw_text`, `tide_draw_camera`, `tide_draw_screen` and the rest, and meshes:
+
+- `tide_vertex` is Tide's `Vertex`: a position, a uv and a color of four floats. Indices are `uint32_t`.
+- `tide_draw_mesh(list, vertices, vertex_count, indices, index_count, texture, filter)` draws triangles, like `Draw.Mesh`. `texture` is NULL for none.
+- `tide_draw_vertices` and `tide_draw_triangles` are the same in two steps, for vertices several batches share: the first copies them into the list and returns where they start, and the second draws triangles of them.
+- `tide_draw_clip(list, rect)` and `tide_draw_no_clip(list)` are `Draw.Clip`.
+
+### C's own pixels
+
+C draws with pixels it keeps itself, where a library made them:
+
+```c
+static tide_texture atlas; // Its pixels: 4 bytes each, red, green, blue and alpha, rows from the first
+
+void LoadFont(void)
+{
+    atlas.pixels = BakeFont(&atlas.width, &atlas.height);
+    atlas.version++;
+}
+```
+
+Nothing is created or uploaded, and C holds no handle. A mesh names its pixels, and the draw list copies them when it hasn't got them as they are: when they're new to it, or their `version` or size isn't what it last copied. The GPU gets them from that copy, and lets them go once a frame draws without them. So:
+
+- Change `version` whenever the pixels change, or when other pixels come to be at that address. Counting up does it; `tide_texture_version(pixels, width, height)` hashes them instead, for pixels that rarely change.
+- C can free its pixels, or change them, as soon as the call returns.
+- At a hot reload, C's state starts over, and the draw list forgets what it copied: an atlas the new build bakes is drawn as baked, whatever its address and version.
+
 ## Order
 
 C can keep state, so calling it is a side effect, and Tide keeps its order: in `Pick(Roll(), Roll())`, the first `Roll` runs first on every platform, though C itself would let each compiler pick. The same goes for functions, methods and operators that call C, and for calls inside `&&`, `||` and `?:`, whose parts still only run when they would.

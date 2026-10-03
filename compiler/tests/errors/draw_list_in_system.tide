@@ -1,0 +1,15 @@
+// expect: Draw can only be used in views, and in functions they call
+scene Main { }
+
+extern void Paint(DrawList list);
+
+singleton Count
+{
+    int frames;
+}
+
+system Run(mut Count count)
+{
+    count.frames += 1;
+    Paint(Draw.list);
+}

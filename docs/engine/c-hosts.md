@@ -89,7 +89,7 @@ The generated header is the API between the game and its host. Namespaced declar
 
 ## A frame
 
-A zeroed `tide_draw_list` and `tide_gui` are ready to use. A draw list grows as a frame needs, keeps its memory for the next one, and `tide_draw_free` lets it go.
+A zeroed `tide_draw_list` and `tide_gui` are ready to use. A draw list grows as a frame needs, keeps its memory for the next one, and `tide_draw_free` lets it go. It also keeps a copy of each texture the last frame drew with (see [Textures](../language/views.md#textures)), which `tide_platform_draw` uploads when it changed; a host that swaps the game's code for another build calls `tide_draw_forget`, as `tide/host.h` does at a hot reload.
 
 ```c
 tide_draw_reset(&draw);

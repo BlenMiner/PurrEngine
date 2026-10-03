@@ -1,0 +1,12 @@
+// expect: this list holds int, not float
+scene Main { }
+
+local singleton Art
+{
+    List<Vertex> corners;
+}
+
+view Show(Art art)
+{
+    Draw.Mesh(art.corners, [0, 1.5, 2]);
+}

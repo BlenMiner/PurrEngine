@@ -33,6 +33,7 @@ typedef enum type_kind {
     TY_STRING,     // Text: literals, and function parameters and locals that hold them
     TY_RECT,       // Rect: a GUI rectangle, x and y from the top left, width and height
     TY_ACTION,      // Action: a function's last parameter, the code its caller writes in braces after the call
+    TY_DRAW_LIST,  // DrawList: the frame's draw list, `Draw.list`, which only an extern function takes
     TY_LIST,       // List<T>: decl is the list type, whose one field is its element
     TY_GRID,       // Grid2<T> and Grid3<T>: decl is the grid type, whose one field is its cell
     TY_COMPONENT,
@@ -589,6 +590,8 @@ typedef struct program {
     decl *input;         // The input declaration, if any.
     decl *scene_visibility; // The built-in enum SceneVisibility
     decl *anchor;        // The built-in enum Anchor, where GUILayout.Area goes
+    decl *vertex;        // The built-in struct Vertex, a corner of what Draw.Mesh draws
+    decl *filter;        // The built-in enum Filter, how Draw.Mesh samples its texture
     decl *session;       // The built-in local singleton Session: this machine's part in a match
     decl *connected;     // Built-in local events: this machine joined a match, and left it
     decl *disconnected;

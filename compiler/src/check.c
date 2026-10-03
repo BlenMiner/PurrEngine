@@ -1502,6 +1502,7 @@ static void check_method_args(checker *c, expr *e, decl *m)
         } else if (!type_assignable(p->type, arg->type)) {
             diag_error(arg->at, "'" STR_FMT "' takes %s for '" STR_FMT "', not %s", STR_ARG(m->name), type_name(p->type),
                        STR_ARG(p->name), type_name(arg->type));
+            if (p->type.kind == TY_DRAW_LIST) diag_note("pass the frame's draw list: 'Draw.list'");
         } else if (p->mode == PARAM_MUT) {
             if (through_element(arg)) {
                 diag_error(arg->at, "a list's element is a copy, so '" STR_FMT "' can't change it", STR_ARG(m->name));
@@ -2166,6 +2167,19 @@ static type check_clipboard_call(checker *c, expr *e)
     return T_VOID_;
 }
 
+// Draw.Mesh takes the program's own List<Vertex> and List<int>, its
+// Grid2<Color> if it has one, and its Filter.
+static void use_mesh_types(checker *c)
+{
+    const decl *pixels = NULL;
+    for (int i = 0; i < c->prog->grids.count; i++) {
+        const decl *g = c->prog->grids.items[i];
+        if (g->dims == 2 && g->fields.items[0].type.kind == TY_COLOR) pixels = g;
+    }
+    builtins_use_mesh(list_of(c->prog, decl_type(c->prog->vertex)).decl, list_of(c->prog, (type){TY_INT, NULL}).decl,
+                      pixels, c->prog->filter);
+}
+
 static type check_method(checker *c, expr *e)
 {
     if (names_wait(c, e->object)) {
@@ -2190,11 +2204,16 @@ static type check_method(checker *c, expr *e)
     // Math.Dot(a, b), quaternion.AxisAngle(axis, angle), Draw.Circle(center,
     // radius, color), GUILayout.Button(text)
     if (names_builtin_owner(c, e->object)) {
-        // `default` takes its type from the version of the function the other arguments pick.
-        for (int i = 0; i < e->args.count; i++) {
-            if (e->args.items[i]->kind != E_DEFAULT) check_expr(c, e->args.items[i]);
-        }
         const str owner = e->object->name;
+        if (str_eq_c(owner, "Draw") && str_eq_c(e->name, "Mesh")) use_mesh_types(c);
+        // `default` takes its type from the version of the function the other arguments pick,
+        // and [a, b, c] is the list the function takes there.
+        for (int i = 0; i < e->args.count; i++) {
+            expr *arg = e->args.items[i];
+            type list;
+            if (arg->kind == E_LIST && builtin_list_param(owner, e->name, i, &list)) check_expr_want(c, arg, list);
+            else if (arg->kind != E_DEFAULT) check_expr(c, arg);
+        }
         const bool gui = str_eq_c(owner, "GUI") || str_eq_c(owner, "GUILayout");
         if ((gui || str_eq_c(owner, "Draw")) && !check_frame_use(c, e->at, gui ? "The GUI" : "Draw")) return T_ERR;
         const type result = resolve_builtin_call(owner, e);
@@ -2743,6 +2762,7 @@ static type check_member(checker *c, expr *e)
     // quaternion.identity, Math.PI
     if (names_builtin_owner(c, e->object)) {
         if (str_eq_c(e->object->name, "Screen") && !check_frame_use(c, e->at, "Screen")) return T_ERR;
+        if (str_eq_c(e->object->name, "Draw") && !check_frame_use(c, e->at, "Draw")) return T_ERR;
         return resolve_builtin_member(e->object->name, e);
     }
 
@@ -4051,7 +4071,7 @@ static bool own_cell_only_expr(const expr *e, const stmt *loop)
     default:
         return false; // Spawns, sends, draws, the GUI, list and grid changes, C: in order
     }
-    if (e->kind == E_AWAIT || e->kind == E_TRY) return false;
+    if (e->kind == E_AWAIT || e->kind == E_TRY || e->type.kind == TY_DRAW_LIST) return false;
     if (e->kind == E_INDEX && e->object->type.kind == TY_GRID && same_place(e->object, loop->value)) {
         int64_t at[3];
         if (!own_offset(e->lhs, loop, e->object->type.decl->dims, at) || at[0] || at[1] || at[2]) return false;
@@ -4172,6 +4192,7 @@ static void check_step_expr(checker *c, const expr *e)
     default: break;
     }
     if (e->kind == E_AWAIT) what = "wait";
+    if (e->type.kind == TY_DRAW_LIST) what = "draw";
     if (e->call == CALL_FUNCTION && e->method && e->method->is_async) what = "start tasks";
     if (e->call == CALL_GRID && same_place(e->object, c->parallel->value)) what = "change the whole grid";
     if (what) {
@@ -4683,6 +4704,11 @@ static void check_var(checker *c, stmt *s)
             diag_error(s->value->at, "this expression doesn't produce a value");
             value = T_ERR;
         }
+        if (value.kind == TY_DRAW_LIST) {
+            diag_error(s->value->at, "the draw list is only passed on, to an extern function that takes a DrawList");
+            diag_note("write 'Draw.list' where it goes, like 'DrawUI(Draw.list);'");
+            value = T_ERR;
+        }
         s->type = value;
     } else {
         str inner_name;
@@ -4699,6 +4725,10 @@ static void check_var(checker *c, stmt *s)
             s->type = (type){TY_STRING, NULL};
         } else if (str_eq_c(type_name_, "Action")) {
             diag_error(s->type_at, "an Action is only ever a function's last parameter, run with 'content();'");
+            s->type = T_ERR;
+        } else if (str_eq_c(type_name_, "DrawList")) {
+            diag_error(s->type_at, "the draw list is only passed on, to an extern function that takes a DrawList");
+            diag_note("write 'Draw.list' where it goes, like 'DrawUI(Draw.list);'");
             s->type = T_ERR;
         } else if (d) {
             s->type = decl_type(d);
@@ -5457,6 +5487,10 @@ static void resolve_field_types(const checker *c, const decl *d)
             diag_error(at, "fields can't hold an Action; it's only ever a function's last parameter");
             continue;
         }
+        if (str_eq_c(f->type_name, "DrawList")) {
+            diag_error(at, "fields can't hold a DrawList; it's the frame's, which a view passes to C as 'Draw.list'");
+            continue;
+        }
         decl *const t = find_type(c, f->type_name, at);
         if (t && (t->kind == DECL_STRUCT || t->kind == DECL_ENUM)) {
             f->type = decl_type(t);
@@ -5680,6 +5714,11 @@ static type method_type(const checker *c, const str name, const loc at, const bo
         diag_error(at, "a function can't return an Action; it takes one, as its last parameter");
         return T_ERR;
     }
+    if (str_eq_c(name, "DrawList")) {
+        if (!is_return) return (type){TY_DRAW_LIST, NULL};
+        diag_error(at, "a function can't return a DrawList; an extern function takes one, passed 'Draw.list'");
+        return T_ERR;
+    }
     for (int i = 0; i < c->prog->records.count; i++) { // Devices, Keyboard, ..., Button
         if (str_eq(c->prog->records.items[i]->name, name)) return (type){TY_RECORD, c->prog->records.items[i]};
     }
@@ -5759,6 +5798,15 @@ static void check_signature(const checker *c, decl *m)
         }
         if (p->type.kind == TY_RECORD && p->mode == PARAM_MUT) {
             diag_error(p->at, "devices can only be read, so '" STR_FMT "' can't be 'mut'", STR_ARG(p->name));
+        }
+        if (p->type.kind == TY_DRAW_LIST && !m->is_extern) {
+            diag_error(p->type_at, "only extern functions take a DrawList: C draws into it with tide/draw.h");
+            diag_note("a Tide function draws with Draw itself, like 'Draw.Mesh(vertices, indices);'");
+            p->type = T_ERR;
+        } else if (p->type.kind == TY_DRAW_LIST && p->mode != PARAM_READ) {
+            diag_error(p->at, "a DrawList goes to C as it is, a 'tide_draw_list *'; drop '%s'",
+                       p->mode == PARAM_MUT ? "mut" : "in");
+            p->mode = PARAM_READ;
         }
         if (p->type.kind != TY_ACTION) continue;
         if (m->kind != DECL_FUNCTION) {
@@ -6470,6 +6518,39 @@ static void add_builtins(program *prog)
     }
     prog->anchor = anchor;
 
+    // struct Vertex { float2 position; float2 uv; Color color = Color.white; }:
+    // a corner of what Draw.Mesh draws, as tide/draw.h's tide_vertex. And
+    // enum Filter { Point, Bilinear }: how it reads its texture between cells,
+    // with tide_filter's values, which are Unity's FilterMode's.
+    decl *vertex = NEW(decl);
+    vertex->kind = DECL_STRUCT;
+    vertex->name = str_from("Vertex");
+    vertex->builtin = true;
+    static const char *const vertex_fields[][2] = {{"position", "float2"}, {"uv", "float2"}, {"color", "Color"}};
+    for (int i = 0; i < (int)(sizeof vertex_fields / sizeof vertex_fields[0]); i++) {
+        const field f = {str_from(vertex_fields[i][0]), str_from(vertex_fields[i][1]), {0, 0, 0}, {0}, NULL, {0, 0, 0},
+                         {0}, {0, 0, 0}, false, 0, false};
+        vec_push(vertex->fields, f);
+    }
+    expr *white = NEW(expr);
+    white->kind = E_MEMBER;
+    white->member = str_from("white");
+    white->object = NEW(expr);
+    white->object->kind = E_NAME;
+    white->object->name = str_from("Color");
+    vertex->fields.items[2].default_value = white;
+    prog->vertex = vertex;
+    static const char *const filters[] = {"Point", "Bilinear"};
+    decl *filter = NEW(decl);
+    filter->kind = DECL_ENUM;
+    filter->name = str_from("Filter");
+    filter->builtin = true;
+    for (int i = 0; i < (int)(sizeof filters / sizeof filters[0]); i++) {
+        const enum_member m = {str_from(filters[i]), {0, 0, 0}, NULL, i};
+        vec_push(filter->members, m);
+    }
+    prog->filter = filter;
+
     // This machine's part in a match (see tide/session.h, whose enums have the
     // same values): local singleton Session { SessionState state; PlayerID
     // player; int ping; bool server; bool open; }, its room (see check_member),
@@ -6519,6 +6600,8 @@ static void add_builtins(program *prog)
     vec_push(decls, owner);
     vec_push(decls, visibility);
     vec_push(decls, anchor);
+    vec_push(decls, vertex);
+    vec_push(decls, filter);
     vec_push(decls, state);
     vec_push(decls, reason);
     vec_push(decls, session);
@@ -6720,7 +6803,7 @@ static bool is_builtin_name(const str name)
     return builtin_type_named(name, &dummy) || str_eq_c(name, "Math") || str_eq_c(name, "Draw")
         || str_eq_c(name, "Devices") || str_eq_c(name, "Spawn") || str_eq_c(name, "Send") || str_eq_c(name, "Scene")
         || str_eq_c(name, "GUI") || str_eq_c(name, "GUILayout") || str_eq_c(name, "Screen") || str_eq_c(name, "Action")
-        || str_eq_c(name, "string");
+        || str_eq_c(name, "DrawList") || str_eq_c(name, "string");
 }
 
 // What a declaration is called in generated C: Combat_Health for Combat.Health.

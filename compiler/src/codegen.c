@@ -1983,6 +1983,15 @@ static void gen_expr(gen *g, sb *o, const expr *e)
                 gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
             }
             sb_put(o, ")");
+        } else if (e->call == CALL_DRAW && strcmp(e->c_callee, "tide_draw_mesh_grid") == 0) {
+            // Draw.Mesh(vertices, indices, texture, filter): the grid with its shape, and the filter it has when left out
+            sb_put(o, "tide_draw_mesh_grid(tide_draw");
+            for (int i = 0; i < e->args.count; i++) {
+                sb_put(o, ", ");
+                gen_as(g, o, e->args.items[i], e->arg_want.items[i]);
+                if (i == 2) sb_printf(o, ", &%s", grid_shape_name(e->args.items[2]->type.decl));
+            }
+            sb_put(o, e->args.count == 3 ? ", TIDE_FILTER_BILINEAR)" : ")");
         } else if (e->call == CALL_BUILTIN || e->call == CALL_DRAW) {
             sb_printf(o, "%s(%s", e->c_callee, e->call == CALL_DRAW ? "tide_draw" : "");
             for (int i = 0; i < e->args.count; i++) {
@@ -3914,7 +3923,7 @@ static void gen_header(gen *g)
     sb_put(o, "#pragma once\n\n");
     sb_put(o, "#include <stdbool.h>\n#include <stdint.h>\n\n");
     sb_put(o, "#include \"tide/color.h\"\n#include \"tide/devices.h\"\n#include \"tide/draw.h\"\n#include \"tide/entity.h\"\n"
-              "#include \"tide/grid.h\"\n#include \"tide/gui.h\"\n#include \"tide/math.h\"\n#include \"tide/list.h\"\n#include \"tide/player.h\"\n#include \"tide/session.h\"\n"
+              "#include \"tide/grid.h\"\n#include \"tide/gui.h\"\n#include \"tide/math.h\"\n#include \"tide/list.h\"\n#include \"tide/mesh.h\"\n#include \"tide/player.h\"\n#include \"tide/session.h\"\n"
               "#include \"tide/jobs.h\"\n#include \"tide/table.h\"\n#include \"tide/text.h\"\n\n");
 
     bool enums = false;
@@ -6017,6 +6026,8 @@ static const char *extern_param(gen *g, const param *p)
     const char *name = local_cname(g, p->name);
     if (p->type.kind == TY_STRING) {
         sb_printf(&b, "const char *%s", name);
+    } else if (p->type.kind == TY_DRAW_LIST) { // The frame's list, which C draws into
+        sb_printf(&b, "tide_draw_list *%s", name);
     } else if (p->type.kind == TY_LIST) {
         sb_printf(&b, "%s%s *%s", p->mode == PARAM_MUT ? "" : "const ", c_type(list_elem(p->type.decl)), name);
     } else if (p->mode == PARAM_MUT || p->mode == PARAM_IN) {

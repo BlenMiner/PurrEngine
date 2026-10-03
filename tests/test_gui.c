@@ -85,7 +85,7 @@ TIDE_TEST(gui_draws_over_the_world)
     tide_gui_layout_button(&gui, 1, "Go");
     end();
     TIDE_REQUIRE(draw.count >= 4);
-    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_GUI);
+    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_SCREEN);
     TIDE_CHECK(draw.commands[1].kind == TIDE_DRAW_TEXT && strcmp(draw.text + draw.commands[1].text, "Hello") == 0);
     TIDE_CHECK(draw.commands[2].kind == TIDE_DRAW_RECT); // The button, below the label
     TIDE_CHECK(draw.commands[2].a.y == 28.0f + 5.0f + 14.0f);
@@ -93,6 +93,22 @@ TIDE_TEST(gui_draws_over_the_world)
     begin(); // A frame without a GUI adds nothing
     end();
     TIDE_CHECK(draw.count == 0);
+}
+
+// A clip the views left on is theirs: the GUI draws on the whole screen.
+TIDE_TEST(gui_isnt_clipped_by_the_views)
+{
+    start();
+    begin();
+    tide_gui_layout_label(&gui, "Hello");
+    tide_draw_reset(&draw);
+    tide_draw_clip(&draw, (tide_rect){0.0f, 0.0f, 10.0f, 10.0f});
+    tide_gui_end(&gui, &draw);
+    TIDE_REQUIRE(draw.count == 4);
+    TIDE_CHECK(draw.commands[0].kind == TIDE_DRAW_CLIP);
+    TIDE_CHECK(draw.commands[1].kind == TIDE_DRAW_NO_CLIP);
+    TIDE_CHECK(draw.commands[2].kind == TIDE_DRAW_SCREEN);
+    TIDE_CHECK(draw.commands[3].kind == TIDE_DRAW_TEXT);
 }
 
 TIDE_TEST(gui_toggle_and_slider_change_values)
