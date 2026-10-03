@@ -392,6 +392,14 @@ static void mesh_3d_scene(void)
     for (int i = -1; i <= 1; i++) square_3d(tide_f3(4.0f * (float)i, -2, 0), ahead, 2.0f, orange, NULL);
     tide_draw_rect(&list, at(over.x, over.y), tide_f2(6, 6), cyan);
 
+    // A mesh too big for indices of 16 bits, drawn with its last corners
+    static tide_vertex3 many[70000];
+    static const uint32_t last_corners[6] = {69996, 69997, 69998, 69996, 69998, 69999};
+    static const tide_float3 square[4] = {{-5, -3, 0}, {-3, -3, 0}, {-3, -5, 0}, {-5, -5, 0}};
+    for (int i = 0; i < 4; i++) many[69996 + i] = (tide_vertex3){square[i], {0, 0}, yellow};
+    const tide_mesh big = {many, 70000, last_corners, 6, 1};
+    tide_draw_mesh_3d(&list, &big, tide_identity_f4x4(), NULL, TIDE_FILTER_POINT);
+
     // Turned a quarter around y, the camera looks along +x, its right along -z
     const tide_quaternion turned = tide_axisangle_q(tide_f3(0, 1, 0), TIDE_PI_F * 0.5f);
     tide_draw_camera_3d(&list, tide_f3(0, 0, -10), turned, 90.0f);
@@ -407,6 +415,7 @@ static void meshes_3d(void)
 {
     const tide_float2 near_red = seen(0, 6, 0), near_green = seen(-4, 2, 0), textured = seen(4, 2, 0);
     const tide_float2 left = seen(-4, -2, 0), middle = seen(0, -2, 0), right = seen(4, -2, 0), turned = seen(4, -4, 0);
+    const tide_float2 big = seen(-4, -4, 0);
     const float edge = screen.y * 0.5f / 10.0f + 4.0f; // Past a near square's edge, inside a far one's
     const float quarter = screen.y * 0.5f / 20.0f;     // A quarter of a near square across
     const check checks[] = {
@@ -423,6 +432,7 @@ static void meshes_3d(void)
         {middle.x, middle.y, cyan, "a rect drawn after them, over the one in the middle"},
         {middle.x + 12.0f, middle.y, orange, "and the rest of it"},
         {(left.x + middle.x) * 0.5f, middle.y, background, "and nothing between them"},
+        {big.x, big.y, yellow, "a mesh with more corners than 16-bit indices reach"},
         {turned.x, turned.y, purple, "a mesh to the right of a turned camera"},
         {screen.x * 0.5f, screen.y * 0.5f + 120.0f, green, "a mesh through an orthographic camera"},
         {screen.x * 0.5f + 15.0f, screen.y * 0.5f + 120.0f, background, "and its size there"},

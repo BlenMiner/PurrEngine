@@ -689,9 +689,9 @@ static const char mesh_3d_vertex_shader[] = GLSL_VERSION
     "    gl_Position = camera * (mat4(model0, model1, model2, model3) * vec4(position, 1.0));\n"
     "}\n";
 
-// A 3D mesh's corner on the GPU: its triangles go there as three of these
-// each, uploaded when a list first draws the mesh, and let go once a frame
-// draws without it.
+// A 3D mesh's corner on the GPU. A mesh goes there as its corners, each
+// once, and its triangles as indices into them, uploaded when a list first
+// draws it, and let go once a frame draws without it.
 typedef struct mesh_3d_vertex {
     float position[3];
     float uv[2];
@@ -709,16 +709,54 @@ typedef struct gpu_mesh {
     uint64_t id, other, version; // Which it is (see tide_draw_mesh_data)
     uint32_t space;
     uint32_t epoch;
-    unsigned int buffer;
-    uint32_t corners;  // Its triangles' corners in `buffer`, three each
-    uint32_t capacity; // Corners `buffer` has room for
-    uint32_t frame;    // The frame that last drew it
+    unsigned int vertices, indices; // Its buffers
+    uint32_t vertex_capacity;       // Corners `vertices` has room for
+    uint32_t index_capacity;        // Bytes `indices` has room for
+    uint32_t index_count;           // Three a triangle...
+    unsigned int index_type;        // ...of 16 bits where they fit, or 32 (GL_UNSIGNED_SHORT or GL_UNSIGNED_INT)
+    uint32_t frame;                 // The frame that last drew it
 } gpu_mesh;
 
 static gpu_mesh *gpu_meshes;
 static uint32_t gpu_mesh_count; // Places, as the list's
-static mesh_3d_vertex *mesh_3d_corners; // A mesh's, on their way to the GPU
-static uint32_t mesh_3d_corner_capacity;
+static void *mesh_3d_upload;    // A mesh's corners or indices, on their way to the GPU
+static size_t mesh_3d_upload_capacity;
+
+enum { GL_TRIANGLES_ = 0x0004, GL_UNSIGNED_SHORT_ = 0x1403, GL_UNSIGNED_INT_ = 0x1405 };
+
+// OpenGL's glDrawElementsInstanced, which rlgl only calls with 16-bit
+// indices: the page's on the web, OpenGL ES 3's on Android, and on desktop
+// through GLFW, which raylib's window runs on.
+#if defined(__wasm__) || defined(__ANDROID__)
+void glDrawElementsInstanced(unsigned int mode, int count, unsigned int type, const void *indices, int instances);
+
+static void draw_elements_instanced(const int count, const unsigned int type, const int instances)
+{
+    glDrawElementsInstanced(GL_TRIANGLES_, count, type, NULL, instances);
+}
+#else
+typedef void (*glfw_proc)(void);
+glfw_proc glfwGetProcAddress(const char *name);
+typedef void (*draw_elements_instanced_proc)(unsigned int mode, int count, unsigned int type, const void *indices,
+                                             int instances);
+
+static void draw_elements_instanced(const int count, const unsigned int type, const int instances)
+{
+    static draw_elements_instanced_proc draw;
+    if (!draw) draw = (draw_elements_instanced_proc)glfwGetProcAddress("glDrawElementsInstanced");
+    draw(GL_TRIANGLES_, count, type, NULL, instances);
+}
+#endif
+
+// Room for `bytes` in mesh_3d_upload.
+static void *upload_room(const size_t bytes)
+{
+    if (bytes > mesh_3d_upload_capacity) {
+        mesh_3d_upload = tide_realloc(mesh_3d_upload, mesh_3d_upload_capacity, bytes);
+        mesh_3d_upload_capacity = bytes;
+    }
+    return mesh_3d_upload;
+}
 
 // A texture on the GPU: a copy of a draw list's, uploaded when a list first
 // draws with it and again when its pixels changed, and let go once a frame
@@ -831,6 +869,7 @@ static void meshes_3d_start(void)
 }
 
 // The GPU's copy of the list's 3D mesh `mesh`, uploaded if it hasn't got it.
+// Its index buffer goes with the 3D meshes' vertex array, which is bound.
 static gpu_mesh *mesh_for(const tide_draw_list *list, const uint32_t mesh)
 {
     if (list->mesh_count > gpu_mesh_count) {
@@ -841,36 +880,49 @@ static gpu_mesh *mesh_for(const tide_draw_list *list, const uint32_t mesh)
     const tide_draw_mesh_data *m = &list->meshes[mesh - 1u];
     gpu_mesh *g = &gpu_meshes[mesh - 1u];
     g->frame = gpu_frame;
-    if (g->buffer && g->id == m->id && g->other == m->other && g->version == m->version && g->space == m->space
+    if (g->vertices && g->id == m->id && g->other == m->other && g->version == m->version && g->space == m->space
         && g->epoch == m->epoch) {
         return g;
     }
-    // Each triangle's corners, three each
-    if (m->index_count > mesh_3d_corner_capacity) {
-        mesh_3d_corners = tide_realloc(mesh_3d_corners, mesh_3d_corner_capacity * sizeof(mesh_3d_vertex),
-                                       m->index_count * sizeof(mesh_3d_vertex));
-        mesh_3d_corner_capacity = m->index_count;
-    }
-    for (uint32_t i = 0; i < m->index_count; i++) {
-        const tide_vertex3 *v = &m->vertices[m->indices[i]];
+    // Its corners, each once
+    mesh_3d_vertex *corners = upload_room((size_t)m->vertex_count * sizeof(mesh_3d_vertex));
+    for (uint32_t i = 0; i < m->vertex_count; i++) {
+        const tide_vertex3 *v = &m->vertices[i];
         const Color color = to_raylib(v->color);
-        mesh_3d_corners[i] = (mesh_3d_vertex){{v->position.x, v->position.y, v->position.z}, {v->uv.x, v->uv.y},
-                                              {color.r, color.g, color.b, color.a}};
+        corners[i] = (mesh_3d_vertex){{v->position.x, v->position.y, v->position.z}, {v->uv.x, v->uv.y},
+                                      {color.r, color.g, color.b, color.a}};
     }
-    const int bytes = (int)(m->index_count * sizeof(mesh_3d_vertex));
-    if (g->buffer && m->index_count <= g->capacity) {
-        rlUpdateVertexBuffer(g->buffer, mesh_3d_corners, bytes, 0);
+    const int vertex_bytes = (int)(m->vertex_count * sizeof(mesh_3d_vertex));
+    if (g->vertices && m->vertex_count <= g->vertex_capacity) {
+        rlUpdateVertexBuffer(g->vertices, corners, vertex_bytes, 0);
     } else {
-        if (g->buffer) rlUnloadVertexBuffer(g->buffer);
-        g->buffer = rlLoadVertexBuffer(mesh_3d_corners, bytes, false);
-        g->capacity = m->index_count;
+        if (g->vertices) rlUnloadVertexBuffer(g->vertices);
+        g->vertices = rlLoadVertexBuffer(corners, vertex_bytes, false);
+        g->vertex_capacity = m->vertex_count;
+    }
+    // ...and its triangles, in 16 bits where they fit
+    const bool small = m->vertex_count <= 65536u;
+    const size_t index_bytes = (size_t)m->index_count * (small ? sizeof(uint16_t) : sizeof(uint32_t));
+    const void *indices = m->indices;
+    if (small) {
+        uint16_t *narrow = upload_room(index_bytes);
+        for (uint32_t i = 0; i < m->index_count; i++) narrow[i] = (uint16_t)m->indices[i];
+        indices = narrow;
+    }
+    if (g->indices && index_bytes <= g->index_capacity) {
+        rlUpdateVertexBufferElements(g->indices, indices, (int)index_bytes, 0);
+    } else {
+        if (g->indices) rlUnloadVertexBuffer(g->indices);
+        g->indices = rlLoadVertexBufferElement(indices, (int)index_bytes, false);
+        g->index_capacity = (uint32_t)index_bytes;
     }
     g->id = m->id;
     g->other = m->other;
     g->version = m->version;
     g->space = m->space;
     g->epoch = m->epoch;
-    g->corners = m->index_count;
+    g->index_count = m->index_count;
+    g->index_type = small ? GL_UNSIGNED_SHORT_ : GL_UNSIGNED_INT_;
     return g;
 }
 
@@ -881,11 +933,15 @@ static void upload_meshes_3d(const tide_draw_list *list)
     bool any = false;
     for (uint32_t i = 0; i < step_count; i++) {
         if (steps[i].kind != STEP_MESH_3D) continue;
-        if (!any) meshes_3d_start();
+        if (!any) {
+            meshes_3d_start();
+            rlEnableVertexArray(mesh_3d_gpu.vao);
+        }
         any = true;
         mesh_for(list, steps[i].mesh);
     }
     if (!any) return;
+    rlDisableVertexArray();
     if (list->matrix_count > mesh_3d_gpu.capacity) {
         uint32_t capacity = mesh_3d_gpu.capacity ? mesh_3d_gpu.capacity : 1024u;
         while (capacity < list->matrix_count) capacity *= 2u;
@@ -900,8 +956,9 @@ static void upload_meshes_3d(const tide_draw_list *list)
 static void forget_meshes_3d(void)
 {
     for (uint32_t i = 0; i < gpu_mesh_count; i++) {
-        if (gpu_meshes[i].buffer && gpu_meshes[i].frame != gpu_frame) {
-            rlUnloadVertexBuffer(gpu_meshes[i].buffer);
+        if (gpu_meshes[i].vertices && gpu_meshes[i].frame != gpu_frame) {
+            rlUnloadVertexBuffer(gpu_meshes[i].vertices);
+            rlUnloadVertexBuffer(gpu_meshes[i].indices);
             gpu_meshes[i] = (gpu_mesh){0};
         }
     }
@@ -1033,7 +1090,7 @@ static void draw_mesh_3d(const tide_draw_list *list, const draw_step *s)
     rlActiveTextureSlot(0);
     rlEnableTexture(texture);
     rlEnableVertexArray(mesh_3d_gpu.vao);
-    rlEnableVertexBuffer(g->buffer);
+    rlEnableVertexBuffer(g->vertices);
     rlSetVertexAttribute((unsigned)mesh_3d_gpu.position, 3, RL_FLOAT, false, sizeof(mesh_3d_vertex),
                          (int)offsetof(mesh_3d_vertex, position));
     rlSetVertexAttribute((unsigned)mesh_3d_gpu.uv, 2, RL_FLOAT, false, sizeof(mesh_3d_vertex),
@@ -1045,7 +1102,8 @@ static void draw_mesh_3d(const tide_draw_list *list, const draw_step *s)
         rlSetVertexAttribute((unsigned)mesh_3d_gpu.model[i], 4, RL_FLOAT, false, sizeof(tide_float4x4),
                              (int)(s->first * sizeof(tide_float4x4) + (uint32_t)i * sizeof(tide_float4)));
     }
-    rlDrawVertexArrayInstanced(0, (int)g->corners, (int)s->count);
+    rlEnableVertexBufferElement(g->indices);
+    draw_elements_instanced((int)g->index_count, g->index_type, (int)s->count);
     rlDisableVertexArray();
     rlDisableTexture();
     rlDisableShader();
