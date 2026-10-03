@@ -355,6 +355,7 @@ typedef struct build {
     const char *root;
     const build_options *opts;
     bool library; // For `tide run`: the game is a library, which a host reloads (see tide/host.h)
+    int abi;      // For Android: which of its CPUs is being built (android_abis)
     char *folder;
     const char *name;
     char *include;
@@ -572,6 +573,8 @@ typedef struct c_side {
     file_list objects; // Its .c files, compiled
     file_list link;    // Its libraries for the target, as the linker takes them
     file_list dynamic; // ...those the program loads as it starts, which go next to it
+    file_list names;   // On Android, the name each of those goes in the app by
+    file_list unsure;  // On Android, ELF libraries for its CPU left out as Linux's
 } c_side;
 
 static void free_game_c(c_side *c)
@@ -579,11 +582,17 @@ static void free_game_c(c_side *c)
     free_files(&c->objects);
     free_files(&c->link);
     free_files(&c->dynamic);
+    free_files(&c->names);
+    free_files(&c->unsure);
 }
+
+// Android's CPUs, in android_abis' order
+static const unsigned android_cpus[ANDROID_ABIS] = {LIB_ARM64, LIB_X64};
 
 static lib_platform target_platform(const build *b)
 {
     if (b->opts->web) return LIB_WEB;
+    if (b->opts->android) return LIB_ANDROID;
 #ifdef _WIN32
     return LIB_WINDOWS;
 #elif defined(__APPLE__)
@@ -596,6 +605,7 @@ static lib_platform target_platform(const build *b)
 static unsigned target_cpu(const build *b)
 {
     if (b->opts->web) return LIB_WASM32;
+    if (b->opts->android) return android_cpus[b->abi];
 #if defined(_WIN32) || defined(__x86_64__)
     return LIB_X64; // Windows games are always x86-64 (NATIVE_TARGET)
 #elif defined(__aarch64__) || defined(__arm64__)
@@ -685,27 +695,94 @@ static bool compile_game_c(const build *b, c_side *out)
     return ok;
 }
 
+// Links to the ELF shared library at `path` by its name, so the program asks
+// for it by name, wherever the two are put.
+static void link_by_name(c_side *out, const char *path)
+{
+    char *dir = path_dir(path);
+    char *search = format("-L%s", dir, NULL);
+    char *name = format("-l:%s", path_base(path), NULL);
+    add_file(&out->link, search);
+    add_file(&out->link, name);
+    free(dir);
+    free(search);
+    free(name);
+}
+
+// The pages of Android's newer phones: a library loads there when its
+// segments are aligned to them (the game's own is: link_android).
+#define ANDROID_PAGE_SIZE 16384
+
+// A shared library for the Android app: linked to, and put in the app beside
+// the game's library under the name that one asks for it by, which is its
+// soname, or its file's name when it has none. An app's libraries are named
+// lib<name>.so, one of a name for each CPU. False after saying why it can't
+// go in.
+static bool add_android_library(const build *b, const char *path, const lib_info *info, c_side *out)
+{
+    const char *name = info->name[0] ? info->name : path_base(path);
+    const size_t n = strlen(name);
+    if (n < 7 || strncmp(name, "lib", 3) != 0 || strcmp(name + n - 3, ".so") != 0) {
+        fprintf(stderr, "tide: %s can't go in an Android app: its libraries are named lib<name>.so, and this one's "
+                        "name is %s\n", path, name);
+        fprintf(stderr, info->name[0] ? "  = note: that's the name it was linked with, which the game asks for it by; "
+                                        "link it again with -Wl,-soname,lib<name>.so\n"
+                                      : "  = note: rename the file\n");
+        return false;
+    }
+    if (strcmp(name, "libgame.so") == 0) {
+        fprintf(stderr, "tide: %s can't go in an Android app: libgame.so is the game's own library there\n", path);
+        return false;
+    }
+    for (int i = 0; i < out->names.count; i++) {
+        if (strcmp(out->names.items[i], name) != 0) continue;
+        fprintf(stderr, "tide: two libraries for %s are named %s: %s and %s\n", android_abis[b->abi], name,
+                out->dynamic.items[i], path);
+        fprintf(stderr, "  = note: an Android app holds one library of a name for each CPU\n");
+        return false;
+    }
+    if (info->page_size && info->page_size < ANDROID_PAGE_SIZE) {
+        fprintf(stderr, "tide: warning: %s is aligned for %u KiB pages, and phones with 16 KiB pages may not load it\n",
+                path, (unsigned)(info->page_size / 1024));
+        fprintf(stderr, "  = note: Google Play requires apps to run on those phones; build the library with NDK r28 or "
+                        "newer, or link it with -Wl,-z,max-page-size=16384\n");
+    }
+    add_file(&out->dynamic, path);
+    add_file(&out->names, name);
+    link_by_name(out, path);
+    return true;
+}
+
 // The libraries in `folder` (the game's or a package's) built for the target:
 // static ones (and Windows import libraries) are linked in, and dynamic ones
-// are linked to and go next to the program, which finds them there. A library
-// tide can't read is left out, saying so; one for another platform or CPU is
-// left out quietly.
-static void find_libraries_in(const build *b, const char *folder, c_side *out)
+// are linked to and go next to the program, which finds them there (on
+// Android, in the app). A library tide can't read is left out, saying so; one
+// for another platform or CPU is left out quietly. False after saying why a
+// library for the target can't be used.
+static bool find_libraries_in(const build *b, const char *folder, c_side *out)
 {
     file_list libraries = own_files_of(folder, library_extensions);
     const lib_platform platform = target_platform(b);
     const unsigned cpu = target_cpu(b);
     bool dynamic = false;
-    for (int i = 0; i < libraries.count; i++) {
+    bool ok = true;
+    for (int i = 0; i < libraries.count && ok; i++) {
         const char *path = libraries.items[i];
         const lib_info info = lib_identify_file(path);
         if (info.platform == LIB_UNKNOWN) {
             fprintf(stderr, "tide: left out %s: tide can't tell which platform it was built for\n", path);
             continue;
         }
+        // Linux's and Android's are both ELF (see libraries.h): if the link
+        // fails, one taken for Linux's may be why
+        if (platform == LIB_ANDROID && info.platform == LIB_LINUX && (info.cpus & cpu)) add_file(&out->unsure, path);
         if (info.platform != platform || !(info.cpus & cpu)) continue;
         if (!info.dynamic) {
             add_file(&out->link, path);
+            continue;
+        }
+        if (platform == LIB_ANDROID) {
+            ok = add_android_library(b, path, &info, out);
             continue;
         }
         add_file(&out->dynamic, path);
@@ -715,15 +792,7 @@ static void find_libraries_in(const build *b, const char *folder, c_side *out)
 #elif defined(__APPLE__)
         add_file(&out->link, path);
 #else
-        // By its name, so the program looks for it by name: next to itself
-        char *dir = path_dir(path);
-        char *search = format("-L%s", dir, NULL);
-        char *name = format("-l:%s", path_base(path), NULL);
-        add_file(&out->link, search);
-        add_file(&out->link, name);
-        free(dir);
-        free(search);
-        free(name);
+        link_by_name(out, path); // So the program looks for it by name: next to itself
 #endif
     }
 #ifdef __APPLE__
@@ -734,14 +803,15 @@ static void find_libraries_in(const build *b, const char *folder, c_side *out)
     (void)dynamic;
 #endif
     free_files(&libraries);
+    return ok;
 }
 
 // The game's libraries, and its packages'.
-static void find_libraries(const build *b, c_side *out)
+static bool find_libraries(const build *b, c_side *out)
 {
-    if (b->opts->android) return; // Not yet: which ELF library is Android's isn't in its headers
-    find_libraries_in(b, b->folder, out);
-    for (int p = 0; p < b->packages.count; p++) find_libraries_in(b, b->packages.items[p].folder, out);
+    bool ok = find_libraries_in(b, b->folder, out);
+    for (int p = 0; p < b->packages.count && ok; p++) ok = find_libraries_in(b, b->packages.items[p].folder, out);
+    return ok;
 }
 
 // Copies the game's dynamic libraries into `dir`, next to its program. Ones
@@ -1006,8 +1076,7 @@ char *tide_build(const char *root, const build_options *opts)
     if (!compile_c(&b, game_c, objects.items[0], gen)) return NULL;
     if (!compile_c(&b, main_c, objects.items[1], gen)) return NULL;
     c_side c = {0};
-    if (!compile_game_c(&b, &c)) return NULL;
-    find_libraries(&b, &c);
+    if (!compile_game_c(&b, &c) || !find_libraries(&b, &c)) return NULL;
 
     char *output;
     const char *suffix = opts->web ? ".html" : EXE_SUFFIX;
@@ -1074,11 +1143,9 @@ static bool build_library(run *r)
     add_file(&objects, path_join(r->dir, r->web ? "main.o" : "library.o"));
     c_side c = {0};
     bool ok = compile_c(&r->b, game_c, objects.items[0], r->gen)
-           && compile_c(&r->b, library_c, objects.items[1], r->gen) && compile_game_c(&r->b, &c);
-    if (ok) {
-        find_libraries(&r->b, &c);
-        copy_dynamic(&c, r->dir); // Next to the host, which loads the game's library
-    }
+           && compile_c(&r->b, library_c, objects.items[1], r->gen) && compile_game_c(&r->b, &c)
+           && find_libraries(&r->b, &c);
+    if (ok) copy_dynamic(&c, r->dir); // Next to the host, which loads the game's library
     const uint32_t n = r->builds + 1u;
     char *linked = build_path(r, n, ".tmp");
     char *pdb = build_path(r, n, ".pdb");
@@ -1481,11 +1548,12 @@ static int android_version_code(void)
 }
 
 // Links the game for one CPU: a library with the platform layer, built for
-// Android in the package (lib/android/<abi>), and Android's own libraries.
-static bool link_android(const build *b, const file_list *objects, const c_side *c, const int abi, const char *output)
+// Android in the package (lib/android/<abi>), the game's libraries for that
+// CPU, and Android's own.
+static bool link_android(const build *b, const file_list *objects, const c_side *c, const char *output)
 {
     char *lib_dir = path_join(b->root, "lib/android");
-    char *abi_dir = path_join(lib_dir, android_abis[abi]);
+    char *abi_dir = path_join(lib_dir, android_abis[b->abi]);
     char *platform_lib = path_join(abi_dir, "libtide_platform.a");
     char *raylib_lib = path_join(abi_dir, "libraylib.a");
     free(lib_dir);
@@ -1504,6 +1572,7 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     arg(&a, "-shared");
     for (int i = 0; i < objects->count; i++) arg(&a, objects->items[i]);
     for (int i = 0; i < c->objects.count; i++) arg(&a, c->objects.items[i]);
+    for (int i = 0; i < c->link.count; i++) arg(&a, c->link.items[i]);
     for (int i = 0; i < b->engine.count; i++) arg(&a, b->engine.items[i]);
     arg(&a, platform_lib);
     arg(&a, raylib_lib);
@@ -1524,6 +1593,17 @@ static bool link_android(const build *b, const file_list *objects, const c_side 
     free(platform_lib);
     free(raylib_lib);
     if (code == -1) fprintf(stderr, "tide: couldn't start %s\n", b->compiler);
+    // What the link may have lacked: a library that doesn't say it's Android's
+    for (int i = 0; code > 0 && i < c->unsure.count; i++) {
+        const char *path = c->unsure.items[i];
+        if (has_extension(path, ".so")) {
+            fprintf(stderr, "  = note: left out %s, which tide took for Linux's: it has no .note.android.ident, the "
+                            "note the NDK puts in the libraries it links for Android\n", path);
+        } else {
+            fprintf(stderr, "  = note: left out %s, which tide took for Linux's: a static library doesn't say which "
+                            "of the two it's for, so build it as a shared one (.so) for Android\n", path);
+        }
+    }
     return code == 0;
 }
 
@@ -1545,18 +1625,22 @@ static char *build_android(const char *root, const build_options *opts, char *pa
     write_main(main_c, opts, b.name);
     char *game_c = path_join(gen, "game.c");
 
-    // Each CPU: objects of its own, in <cache>/<abi>. The app is made for
-    // Android 16, as Google Play wants.
+    // Each CPU: objects of its own, in <cache>/<abi>, and the game's libraries
+    // for it, of which the shared ones go in the app with the game's. The app
+    // is made for Android 16, as Google Play wants.
     char *cache = b.cache;
     apk_desc desc = {.package = id, .lib_name = "game", .version_code = android_version_code(),
                      .version_name = b.info.version[0] ? b.info.version : "1.0",
                      .min_sdk = atoi(ANDROID_API), .target_sdk = 36, .debuggable = !opts->release};
+    c_side c[ANDROID_ABIS] = {0};
+    apk_lib *needed = NULL;
     for (int abi = 0; abi < ANDROID_ABIS; abi++) {
         char target_flag[64];
         snprintf(target_flag, sizeof target_flag, "--target=%s-linux-android" ANDROID_API, android_arches[abi]);
         build_target.flag = target_flag;
         build_target.sysroot_flag = format("--sysroot=%s", ndk.sysroot, NULL);
         build_target.builtins = ndk.builtins[abi];
+        b.abi = abi;
         b.cache = path_join(cache, android_abis[abi]);
         sys_mkdirs(b.cache);
         b.engine_built = false;
@@ -1566,14 +1650,18 @@ static char *build_android(const char *root, const build_options *opts, char *pa
         add_file(&objects, path_join(b.cache, "game.o"));
         add_file(&objects, path_join(b.cache, "main.o"));
         if (!compile_c(&b, game_c, objects.items[0], gen) || !compile_c(&b, main_c, objects.items[1], gen)) return NULL;
-        c_side c = {0};
-        if (!compile_game_c(&b, &c)) return NULL;
+        if (!compile_game_c(&b, &c[abi]) || !find_libraries(&b, &c[abi])) return NULL;
         char *lib = path_join(b.cache, "libgame.so");
-        if (!link_android(&b, &objects, &c, abi, lib)) return NULL;
+        if (!link_android(&b, &objects, &c[abi], lib)) return NULL;
         desc.abis[desc.lib_count] = android_abis[abi];
         desc.libs[desc.lib_count++] = lib;
-        free_game_c(&c);
+        needed = realloc(needed, sizeof(apk_lib) * (size_t)(desc.needed_count + c[abi].dynamic.count + 1));
+        if (!needed) abort();
+        for (int i = 0; i < c[abi].dynamic.count; i++) {
+            needed[desc.needed_count++] = (apk_lib){android_abis[abi], c[abi].names.items[i], c[abi].dynamic.items[i]};
+        }
     }
+    desc.needed = needed;
     build_target = (target){0};
 
     char *output;
@@ -1625,6 +1713,8 @@ static char *build_android(const char *root, const build_options *opts, char *pa
         }
         printf("Built %s for Google Play\n", bundle);
     }
+    for (int abi = 0; abi < ANDROID_ABIS; abi++) free_game_c(&c[abi]);
+    free(needed);
     if (package) snprintf(package, package_size, "%s", id);
     return output;
 }
