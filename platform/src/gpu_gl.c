@@ -372,8 +372,15 @@ static void gl_draw_indexed(const uint32_t count, const uint32_t instances)
     glDrawElementsInstanced(GL_TRIANGLES, (GLsizei)count, index_type, NULL, (GLsizei)instances);
 }
 
+// The window's context, which stays.
+static uint32_t gl_epoch(void)
+{
+    return 1;
+}
+
 const tide_gpu tide_gpu_gl = {
     .name = GL_NAME,
+    .epoch = gl_epoch,
     .buffer = gl_buffer_make,
     .buffer_write = gl_buffer_write,
     .buffer_free = gl_buffer_free,

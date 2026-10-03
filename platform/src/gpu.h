@@ -84,6 +84,12 @@ typedef struct tide_gpu_pipeline_desc {
 typedef struct tide_gpu {
     const char *name; // What draws: "WebGPU", "OpenGL 3.3"...
 
+    // Which device there is to draw with: 0 while there's none, and another
+    // number once one was lost and another found (WebGPU's can be: a driver
+    // that starts over). Everything made on the last one went with it, and
+    // nothing below is called while there's none.
+    uint32_t (*epoch)(void);
+
     // A buffer of `size` bytes, holding `data` if it's given. Sizes, and what's
     // written, are multiples of 4 bytes.
     tide_gpu_id (*buffer)(tide_gpu_buffer_kind kind, size_t size, const void *data);

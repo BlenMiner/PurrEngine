@@ -6,6 +6,7 @@
 
 #include "tide_web.h"
 
+TIDE_WEB_IMPORT(gpu_epoch) uint32_t tide_web_gpu_epoch(void);
 TIDE_WEB_IMPORT(gpu_buffer) tide_gpu_id tide_web_gpu_buffer(tide_gpu_buffer_kind kind, size_t size, const void *data);
 TIDE_WEB_IMPORT(gpu_buffer_write) void tide_web_gpu_buffer_write(tide_gpu_id buffer, size_t offset, const void *data, size_t size);
 TIDE_WEB_IMPORT(gpu_buffer_free) void tide_web_gpu_buffer_free(tide_gpu_id buffer);
@@ -45,6 +46,7 @@ static tide_gpu_id tide_web_gpu_pipeline(const tide_gpu_pipeline_desc *desc)
 
 const tide_gpu tide_gpu_webgpu = {
     .name = "WebGPU",
+    .epoch = tide_web_gpu_epoch,
     .buffer = tide_web_gpu_buffer,
     .buffer_write = tide_web_gpu_buffer_write,
     .buffer_free = tide_web_gpu_buffer_free,

@@ -577,6 +577,23 @@ typedef struct gpu_texture {
 static gpu_texture *gpu_textures;
 static uint32_t gpu_texture_count, gpu_texture_capacity;
 static uint32_t gpu_frame;
+static uint32_t gpu_epoch; // The device all of the above was made on (tide_gpu.epoch)
+
+// Whether there's a device to draw with. When it's another than last time,
+// what the renderer had on the last one went with it: it forgets it, and
+// makes it again as lists draw. It can: the lists keep their textures' and
+// meshes' copies, and the font its atlas.
+static bool gpu_ready(void)
+{
+    const uint32_t epoch = gpu->epoch();
+    if (epoch == 0 || epoch == gpu_epoch) return epoch != 0;
+    free(gpu_state.target_pixels);
+    memset(&gpu_state, 0, sizeof gpu_state);
+    if (gpu_meshes) memset(gpu_meshes, 0, gpu_mesh_count * sizeof(gpu_mesh));
+    gpu_texture_count = 0;
+    gpu_epoch = epoch;
+    return true;
+}
 
 // The pipelines, the quad and the white pixel, the first time a list is drawn.
 static void renderer_start(void)
@@ -896,6 +913,7 @@ static void clip(const draw_step *s)
 // the frame's camera, textures and meshes as they are.
 static void draw_list(const tide_draw_list *list, const tide_gpu_id target, const bool over)
 {
+    if (!gpu_ready()) return; // Between a device that was lost and the next
     offscreen = target != 0;
     tide_font_frame();
     shape_count = 0;
@@ -1111,6 +1129,10 @@ void tide_platform_draw_overlay(const char *text)
 void tide_platform_read_pixels(const tide_draw_list *list, const tide_float2 *points, const int count, uint32_t *out)
 {
     const int width = screen_width, height = screen_height;
+    if (!gpu_ready()) { // Nothing to draw with for now: no pixels
+        memset(out, 0, (size_t)(count > 0 ? count : 0) * sizeof *out);
+        return;
+    }
     if (!gpu_state.target || gpu_state.target_width != width || gpu_state.target_height != height) {
         if (gpu_state.target) gpu->target_free(gpu_state.target);
         gpu_state.target = gpu->target(width, height);

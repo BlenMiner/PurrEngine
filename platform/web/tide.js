@@ -413,6 +413,7 @@
                 if (windowTarget.context) {
                     windowTarget.context.configure({ device, format: gpuFormat, alphaMode: 'opaque' });
                     if (!plainGroup) gpuStart();
+                    devices = devices || 1;
                     return 2;
                 }
                 device = null;
@@ -984,7 +985,8 @@
         gpuFree[kind].push(id);
     }
 
-    async function findDevice() {
+    // `again`: for a canvas that already draws with WebGPU, which it keeps to.
+    async function findDevice(again) {
         if (wantedBackend === 'webgl' || !navigator.gpu) return;
         try {
             const adapter = await navigator.gpu.requestAdapter();
@@ -992,23 +994,55 @@
             // The browser's software device is slower than WebGL on a GPU
             const software = adapter.info && 'isFallbackAdapter' in adapter.info ? adapter.info.isFallbackAdapter
                 : adapter.isFallbackAdapter;
-            if (software && wantedBackend !== 'webgpu') return;
+            if (software && wantedBackend !== 'webgpu' && !again) return;
             const found = await adapter.requestDevice();
             // A mistake in how the program uses it: test pages stop at one, as for GL's
             found.onuncapturederror = event => {
                 if (config.checkGL) fail(new Error('WebGPU: ' + event.error.message));
                 else printErr('tide: WebGPU: ' + event.error.message);
             };
-            found.lost.then(info => {
-                if (info.reason !== 'destroyed') printErr('tide: the GPU went away: ' + info.message);
-            });
+            found.lost.then(info => { if (device === found) deviceLost(info); });
             gpuFormat = navigator.gpu.getPreferredCanvasFormat();
             device = found;
         } catch (error) {
             printErr('tide: no WebGPU: ' + error);
         }
     }
-    const deviceAsked = findDevice();
+    const deviceAsked = findDevice(false);
+
+    // A device that goes away (its driver started over, or the browser took
+    // the GPU back) takes what the program made on it. The page asks for
+    // another, and the program, which sees their count change (gpu_epoch),
+    // makes everything again from what it keeps (platform/src/platform.c).
+    // Meanwhile it draws nothing. The canvas can't go to WebGL: with no device
+    // to be had again, it stays as it is.
+    let devices = 0; // How many the program has drawn with, this one included
+    async function deviceLost(info) {
+        printErr('tide: the GPU went away (' + (info.message || info.reason) + '): asking for it again');
+        device = null;
+        for (const kind in gpuTables) {
+            gpuTables[kind] = [null];
+            gpuFree[kind] = [];
+        }
+        bindGroups.clear();
+        retired.length = 0;
+        uniformBuffer = plainGroup = pass = commands = null;
+        uniformSlots = 0;
+        windowTarget.depth = null;
+        windowTarget.width = windowTarget.height = 0;
+        sharedWrites = null;
+        await findDevice(true);
+        if (!device) {
+            printErr('tide: no GPU to draw with any more: reload the page');
+            return;
+        }
+        windowTarget.context.configure({ device, format: gpuFormat, alphaMode: 'opaque' });
+        gpuStart();
+        devices++;
+    }
+    // For tests: loses the device as a GPU going away would, and says how many there have been.
+    config.loseDevice = () => { if (device) device.destroy(); };
+    config.gpuDevices = () => devices;
 
     // Whether the device takes bytes straight from memory shared with workers,
     // which the program's is when it runs on threads. Copied out first if not.
@@ -1105,6 +1139,8 @@
     }
 
     Object.assign(platform, {
+        // Which device the program draws with, counted from 1: another once one was lost, and 0 while there's none
+        gpu_epoch: () => device && plainGroup ? devices : 0,
         gpu_buffer(kind, size, ptr) {
             const buffer = device.createBuffer({ size,
                 usage: (kind === 0 ? GPUBufferUsage.VERTEX : GPUBufferUsage.INDEX) | GPUBufferUsage.COPY_DST });
