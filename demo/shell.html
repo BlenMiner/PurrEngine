@@ -16,19 +16,28 @@
 <pre id="log"></pre>
 <script>
   // `?smoke` runs the automated check instead of the game (see demo/main.c).
-  // Its output goes into #log, the exit code into <body data-exit>, and a GL
-  // error stops it.
+  // Its output goes into #log, the exit code into <body data-exit>, and a
+  // mistake in how it draws (a GL error, or one of WebGPU's) stops it. Served
+  // rather than opened from disk (cmake/run_web_served_test.mjs), it also
+  // sends both back to its server, in order.
   const smoke = new URLSearchParams(location.search).has('smoke');
   const log = document.getElementById('log');
-  function show(text) { if (smoke) log.textContent += text + '\n'; }
+  const served = smoke && location.protocol !== 'file:';
+  let sent = Promise.resolve();
+  const post = (path, body) => { if (served) sent = sent.then(() => fetch(path, { method: 'POST', body })); };
+  function show(text) {
+    if (!smoke) return;
+    log.textContent += text + '\n';
+    post('log', String(text));
+  }
   var Tide = {
     canvas: document.getElementById('canvas'),
     arguments: smoke ? ['--smoke'] : [],
     checkGL: smoke,
     print: text => { console.log(text); show(text); },
     printErr: text => { console.error(text); show(text); },
-    onExit: code => { document.body.dataset.exit = code; },
-    onAbort: reason => { show('abort: ' + reason); document.body.dataset.exit = 'abort'; },
+    onExit: code => { document.body.dataset.exit = code; post('result', String(code)); },
+    onAbort: reason => { show('abort: ' + reason); document.body.dataset.exit = 'abort'; post('result', 'abort'); },
   };
 </script>
 {{{ SCRIPT }}}

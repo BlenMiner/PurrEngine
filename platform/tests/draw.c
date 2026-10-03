@@ -15,6 +15,10 @@
 #include "tide/platform.h"
 #include "tide/time.h"
 
+#ifdef __wasm__
+#include "tide_web.h" // The page, to lose WebGPU's device
+#endif
+
 #define WIDTH 256
 #define HEIGHT 352
 
@@ -573,12 +577,40 @@ static bool benching;
 static int frame(void *user, const float seconds)
 {
     (void)user, (void)seconds;
+    static bool said;
+    if (!said) printf("renderer: %s\n", tide_platform_renderer()); // What a test of one backend looks for
+    said = true;
     screen = tide_platform_screen_size();
     if (benching) return bench();
+#ifdef __wasm__
+    // WebGPU's device can go away (a driver that starts over), taking what the
+    // renderer made on it. Once everything checked out, the page loses it as
+    // that would, and when it says it found another, everything has to draw
+    // again from what the list and the font keep.
+    static int lost; // 1: lost, and waiting for another; 2: checking again
+    if (lost == 1) {
+        if (!tide_web_eval("Tide.gpuDevices() > 1")) return TIDE_KEEP_RUNNING;
+        printf("the device was lost, and the page found another\n");
+        lost = 2;
+    }
+    if (lost == 2) {
+        meshes_3d();
+        tiles_leave_no_gaps();
+        return run_checks();
+    }
+#endif
     meshes();
     meshes_3d();
     tiles_leave_no_gaps();
-    return run_checks();
+    const int code = run_checks();
+#ifdef __wasm__
+    if (code == 0 && strcmp(tide_platform_renderer(), "WebGPU") == 0) {
+        tide_web_eval("Tide.loseDevice()");
+        lost = 1;
+        return TIDE_KEEP_RUNNING;
+    }
+#endif
+    return code;
 }
 
 int main(const int argc, char **argv)

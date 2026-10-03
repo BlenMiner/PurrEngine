@@ -1,18 +1,21 @@
 #pragma once
 
 // What the page's JavaScript (platform/web/tide.js) gives WebAssembly in web
-// builds: the canvas and its WebGL 2 context, input, and the frame loop. The
-// GL functions themselves are imported by their C names (see tide.js).
+// builds: the canvas and what draws in it, input, and the frame loop. The GL
+// functions themselves are imported by their C names (see tide.js), and
+// WebGPU's by gpu_web.c.
 
 #include <stdbool.h>
 #include <stdint.h>
 
 #define TIDE_WEB_IMPORT(name) __attribute__((import_module("tide"), import_name(#name)))
 
-// Sizes the canvas and creates its WebGL 2 context: `width` x `height` CSS
-// pixels, or the whole page when `resizable`. False if the browser has no
-// WebGL 2.
-TIDE_WEB_IMPORT(init_canvas) bool tide_web_init_canvas(int width, int height, bool resizable);
+// Sizes the canvas, `width` x `height` CSS pixels, or the whole page when
+// `resizable`, and readies what draws in it: 2 for WebGPU, which the page
+// found a device for before the program started; 1 for a WebGL 2 context;
+// 0 if the browser has neither, or not the one the page asked for.
+enum { TIDE_WEB_NO_CANVAS, TIDE_WEB_WEBGL, TIDE_WEB_WEBGPU };
+TIDE_WEB_IMPORT(init_canvas) int tide_web_init_canvas(int width, int height, bool resizable);
 // Its size in CSS pixels, which the program counts in...
 TIDE_WEB_IMPORT(canvas_width) int tide_web_canvas_width(void);
 TIDE_WEB_IMPORT(canvas_height) int tide_web_canvas_height(void);

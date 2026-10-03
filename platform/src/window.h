@@ -13,11 +13,16 @@
 
 #include "tide/devices.h"
 #include "tide/platform.h"
+#include "gpu.h"
 
-// Opens the window, with an OpenGL 3.3, OpenGL ES 3 or WebGL 2 context current
-// in it. False, having said why, if there's none to be had.
+// Opens the window, with what draws in it: an OpenGL 3.3, OpenGL ES 3 or
+// WebGL 2 context that's current or, on the web, WebGPU where the browser has
+// it. False, having said why, if there's none to be had.
 bool tide_window_open(const tide_window_desc *desc);
 void tide_window_close(void);
+
+// What draws in the window that's open.
+const tide_gpu *tide_window_gpu(void);
 
 // Whether the program is to end: the user closed the window, or the system
 // took the app away.
