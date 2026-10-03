@@ -202,6 +202,11 @@ bool tide_window_open(const tide_window_desc *desc)
     return true;
 }
 
+const tide_gpu *tide_window_gpu(void)
+{
+    return &tide_gpu_gl;
+}
+
 void tide_window_close(void)
 {
     if (window) glfwDestroyWindow(window);

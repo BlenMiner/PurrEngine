@@ -49,7 +49,7 @@ static void usage(void)
            "  --web              a web page (WebGL 2), with clang's WebAssembly target\n"
            "  --android          an Android app (.apk); run installs it on the phone or emulator connected\n"
            "  --title <title>    the window's title (default: the game's title setting, or the folder's name)\n"
-           "  --stats            show the frame rate, ping, bandwidth, tick, entity count and threads\n"
+           "  --stats            show the frame rate, ping, bandwidth, tick, entity count, threads and what draws\n"
            "  -o <path>          build: where the program goes\n"
            "  --no-open          run --web: serve the page without opening a browser\n"
            "\n"

@@ -9,17 +9,25 @@
 <pre id="log"></pre>
 <script>
   // For headless web tests (see cmake/WebTest.cmake): stdout goes into #log,
-  // the exit code into <body data-exit>, and a GL error stops the program.
+  // the exit code into <body data-exit>, and a mistake in how the program
+  // draws (a GL error, or one of WebGPU's) stops it. Served rather than opened
+  // from disk (cmake/run_web_served_test.mjs), the page also sends both back
+  // to its server, in order.
   const log = document.getElementById('log');
-  const show = text => { console.log(text); log.textContent += text + '\n'; };
+  const served = location.protocol !== 'file:';
+  let sent = Promise.resolve();
+  const post = (path, body) => { if (served) sent = sent.then(() => fetch(path, { method: 'POST', body })); };
+  const show = text => { console.log(text); log.textContent += text + '\n'; post('log', String(text)); };
+  // ?bench is --bench; backend= isn't the program's, but the page's: what draws (see tide.js)
+  const words = location.search ? location.search.slice(1).split('&').filter(word => !word.startsWith('backend=')) : [];
   var Tide = {
     canvas: document.getElementById('canvas'),
-    checkGL: !/[?&]bench\b/.test(location.search), // Timings can't: each check waits for the GPU
-    arguments: location.search ? location.search.slice(1).split('&').map(a => '--' + a) : [], // ?bench is --bench
+    checkGL: !words.includes('bench'), // Timings can't: each check waits for the GPU
+    arguments: words.map(word => '--' + word),
     print: show,
     printErr: show,
-    onExit: code => { document.body.dataset.exit = code; },
-    onAbort: reason => { show('abort: ' + reason); document.body.dataset.exit = 'abort'; },
+    onExit: code => { document.body.dataset.exit = code; post('result', String(code)); },
+    onAbort: reason => { show('abort: ' + reason); document.body.dataset.exit = 'abort'; post('result', 'abort'); },
   };
 </script>
 {{{ SCRIPT }}}

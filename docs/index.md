@@ -29,7 +29,7 @@ features:
   - title: A schedule you can read
     details: The compiler knows every system's data, so it plans which ones can run at the same time, and tells you why the others wait.
   - title: The web is a real platform
-    details: Every game also builds as one self-contained web page on WebGL 2, running the same simulation as desktop.
+    details: Every game also builds as one self-contained web page on WebGPU or WebGL 2, running the same simulation as desktop.
   - title: Nothing to set up
     details: One tide command, with clang built in. Write a .tide file and run tide run. Editor support for VS Code and JetBrains IDEs.
 ---

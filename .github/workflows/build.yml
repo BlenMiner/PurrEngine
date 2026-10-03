@@ -145,8 +145,18 @@ jobs:
           cmake --preset release
           cmake --build --preset release
           ctest --preset release -LE gpu
+      # The WebGPU ones (label webgpu) run on the browser's software WebGPU.
+      # Linux's runners leave them out: without a GPU, Chrome there draws with
+      # WebGPU but gives nothing back when the test reads its pixels.
       - name: Test (web)
-        run: cmake --workflow --preset web-release
+        run: |
+          cmake --preset web-release
+          cmake --build --preset web-release
+          if [ "$RUNNER_OS" = Linux ]; then
+            ctest --preset web-release -LE webgpu
+          else
+            ctest --preset web-release
+          fi
       # The target tide builds Windows games for; its platform layer goes in the package.
       - name: Test (MinGW)
         if: runner.os == 'Windows'

@@ -72,7 +72,7 @@ Then, in that folder:
 | `tide run` | Builds the game and plays it |
 | `tide run --web` | Builds it as a web page and opens it |
 | `tide build` | Builds the game into `build/` |
-| `tide build --release --web` | An optimized, self-contained `.html` (WebGL 2) |
+| `tide build --release --web` | An optimized, self-contained `.html` (WebGPU, or WebGL 2 where the browser has none) |
 | `tide schedule` | Shows which systems can run at the same time, and why the others wait |
 | `tide add github.com/owner/repo` | Adds a package, at its newest commit, to `tide.packages` |
 | `tide update` | Moves the packages to the newest commits of what they follow |
