@@ -31,6 +31,10 @@ A networking-first game engine:
 ## Rendering and platform
 
 - raylib handles windows, input and rendering for now. The web build renders with WebGL 2, through our own JavaScript (see Web builds).
+- raylib is to go, in this order (agreed):
+  1. A small OpenGL layer of our own (OpenGL 3.3, OpenGL ES 3 and WebGL 2) in its place: GLFW directly for desktop windows and input, the web's and Android's backends as they are but no longer patched into raylib's `rcore.c`, and text through `stb_truetype`, drawn as textured meshes. It stays afterwards as a small fallback for machines without the main backends: browsers without WebGPU and older phones.
+  2. The main backends: WebGPU on the web and Vulkan natively (MoltenVK on Apple until a Metal backend is worth writing), built to one design: explicit pipelines, buffers and compute.
+  3. Tide code that runs on the GPU compiles to WGSL and SPIR-V. On the OpenGL fallback, compute runs on CPU threads instead, so games work everywhere. What the GPU computes is for what's seen, never the match: GPUs don't give the same bits everywhere.
 - Rendering stays disconnected from the simulation, so it can be replaced later (for example for consoles):
   - The simulation never includes raylib or any platform header.
   - The view reads the world and draws it. It never writes simulation state.
