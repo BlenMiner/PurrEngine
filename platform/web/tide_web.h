@@ -85,8 +85,9 @@ TIDE_WEB_IMPORT(threads) uint32_t tide_web_threads(void);
 // Frames go on, but nobody sees what they draw.
 TIDE_WEB_IMPORT(hidden) bool tide_web_hidden(void);
 
-// Runs JavaScript, for tests that need to fake browser events.
-TIDE_WEB_IMPORT(eval) void tide_web_eval(const char *script);
+// Runs JavaScript, for tests that need to fake browser events or ask the page
+// something: whether its value is truthy.
+TIDE_WEB_IMPORT(eval) bool tide_web_eval(const char *script);
 
 // Rooms (platform/src/rooms.c): matches players find by a code, through the
 // relay, with WebRTC data channels between them. One at a time: opening one

@@ -479,7 +479,7 @@
         },
         hidden: () => document.hidden ? 1 : 0,
         stop() { stopped = true; },
-        eval(scriptPtr) { (0, eval)(string(scriptPtr)); },
+        eval: scriptPtr => (0, eval)(string(scriptPtr)) ? 1 : 0,
     };
 
     // -----------------------------------------------------------------------

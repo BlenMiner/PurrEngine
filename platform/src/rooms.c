@@ -289,6 +289,7 @@ static void on_relay(native_room *r, const char *text)
         relay_send(r, json);
         r->announced = true;
     } else if (rtc_json_get(m, "hosting").text) {
+        rtc_debug("room %s: the relay has it", r->code);
         r->reachable = true;
         if (r->moving) { // The room's host was gone: this machine is now
             r->moving = false;
