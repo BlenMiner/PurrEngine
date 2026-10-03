@@ -1412,6 +1412,7 @@ Implemented, awaiting approval:
 - The C name must be a C identifier, not a C keyword. `[NativeName]` can't name the engine's functions (`tide_...`), and two externs can't name the same C function.
 - tidec declares each extern function itself in the generated C, from its Tide signature, rather than including the library's header, whose names could clash with the game's. If the signature doesn't match C's, the game is wrong the way C would be.
 - Libraries: static libraries and Windows import libraries link in; `.so` and `.dylib` files link and are copied next to the game, which finds them there; a `.dll` is copied next to the game, and links through its import library (`.lib`). Windows games build for MinGW, so a static library built with Microsoft's compiler may need its C runtime and fail to link; rebuild it with clang or MinGW. A library tide can't read (LLVM bitcode, text) is left out, saying so.
+- On Android, the game's shared libraries (`.so`) for each of the app's CPUs link and go in the app with the game, each under the name it was linked with (its soname, or else its file's name), which has to be `lib<name>.so`. Android's libraries and Linux's are both ELF: a shared library is Android's when it has the note Android's NDK puts in what it links (`.note.android.ident`). tide warns about a library whose segments are aligned for pages smaller than 16 KiB, which may not load on phones that have those.
 - On the web, only C files and WebAssembly libraries define functions. A web build fails when an extern function has no definition there, rather than when the page calls it.
 - `tide run` builds again when a C file, header or library changes. C code is part of the game's library, which each build replaces, so the state C keeps starts over at each reload.
 - tide's own CMake (`tide_add_game`) compiles the `.c` files in the game's folder but the host's, or those listed after `SOURCES`. It doesn't pick up libraries.
@@ -1419,6 +1420,7 @@ Implemented, awaiting approval:
 ### Open
 
 - Objects C owns (`ma_engine *`): a handle type only local state can hold, since pointers differ between machines.
+- Static libraries for Android. An ELF static library has nothing that says whether it's Linux's or Android's (clang makes the same objects for both), so contents can't tell them apart as they do every other library. For now an ELF one is Linux's, and Android takes shared libraries only.
 - Keeping the state of C libraries across hot reloads, by building them apart from the game's library.
 - Reading declarations from C headers, with tide's built-in clang.
 
