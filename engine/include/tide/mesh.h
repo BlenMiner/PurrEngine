@@ -22,3 +22,11 @@
 void tide_draw_mesh_lists(tide_draw_list *d, tide_list vertices, tide_list indices);
 void tide_draw_mesh_grid(tide_draw_list *d, tide_list vertices, tide_list indices, tide_grid texture,
                          const tide_grid_shape *shape, int32_t filter);
+
+// The same in 3D, with lists of `Vertex3` and a transform: Tide's
+// Draw.Mesh(vertices, indices, transform[, texture[, filter]]). The lists are
+// a mesh the draw list keeps (see tide_draw_mesh_slot): a list that doesn't
+// change costs a hash of its pages' hashes to draw again, not a copy.
+void tide_draw_mesh3_lists(tide_draw_list *d, tide_list vertices, tide_list indices, tide_float4x4 transform);
+void tide_draw_mesh3_grid(tide_draw_list *d, tide_list vertices, tide_list indices, tide_float4x4 transform,
+                          tide_grid texture, const tide_grid_shape *shape, int32_t filter);

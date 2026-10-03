@@ -405,6 +405,7 @@ float2 flat = trs.position.xz;
 - `quaternion` has `value`, a `float4` with (x, y, z) as the vector part. Matrices are stored column by column and have columns `c0` to `c3`.
 - `Math.PI`, `Math.TAU`, `Math.E`, `quaternion.identity`, `float2x2.identity`, `float3x3.identity`, `float4x4.identity`.
 - `quaternion.AxisAngle(axis, angle)`, `quaternion.Euler(radians)` (Z first, then X, then Y, Unity's default order), `quaternion.LookRotation(forward, up)`, `float4x4.TRS(translation, rotation, scale)`, `float4x4.Translate(translation)`.
+- Projections, as Unity.Mathematics': `float4x4.PerspectiveFov(verticalFov, aspect, near, far)`, with the field of view in radians and `aspect` width over height, and `float4x4.Ortho(width, height, near, far)`. They take a view looking down -z, as OpenGL's and Unity's, to clip space, where z goes from -1 at `near` to 1 at `far`.
 
 **Operators**
 
@@ -1027,7 +1028,8 @@ event(Died dead) Respawn(mut Body body, Arena arena)
   - `Draw.Text(text, position, size, color)`: `position` is the top left corner and `size` the height.
   - `Draw.Mesh(vertices, indices)`, `Draw.Mesh(vertices, indices, texture)` and `Draw.Mesh(vertices, indices, texture, filter)`: a `List<Vertex>`, a `List<int>`, a `Grid2<Color>` and a `Filter`.
   - `Draw.Clip(rect)` and `Draw.Clip()`, and `Draw.Screen()`.
-- Later Draw calls draw over earlier ones.
+  - In 3D: `Draw.Camera(position, rotation, fieldOfView)` and `Draw.Camera(transform, projection)`, and `Draw.Mesh(vertices, indices, transform)`, `Draw.Mesh(vertices, indices, transform, texture)` and `Draw.Mesh(vertices, indices, transform, texture, filter)`: a `List<Vertex3>`, a `List<int>`, a `float4x4`, a `Grid2<Color>` and a `Filter`.
+- Later Draw calls draw over earlier ones, but for 3D meshes among themselves (below).
 - `Vertex` is a built-in struct: `float2 position`, `float2 uv` and `Color color = Color.white`, so a corner that leaves its color out takes the texture's as it is. `Filter` is a built-in enum, `Point` and `Bilinear`, with the values of Unity's `FilterMode`. A game can't declare either name outside a namespace.
 - Triangles draw whichever way round their corners go. A triangle with an index past the vertices is left out, and so are the one or two indices after the last whole triangle. Colors blend over what's behind them by their alpha, which isn't premultiplied.
 - `uv` (0, 0) is the outer corner of the grid's cell (0, 0), and (1, 1) the outer corner of its last cell. Past them, it reads the cells at the edge.
@@ -1037,6 +1039,13 @@ event(Died dead) Respawn(mut Body body, Arena arena)
 - `[a, b, c]` where a built-in function takes a list is that list, as it is for a function's argument: `Draw.Mesh(corners, [0, 1, 2])`.
 - `Draw.Clip`'s `Rect` goes from (x, y) to (x + width, y + height) in the units the calls are in: the world's under a camera, with `y` up, and pixels after `Draw.Screen()`. It's set where it lands on the screen then, to whole pixels, and stays there when the camera changes. `Draw.Clear` fills the clip. Each frame starts with none, and a view's clip never clips the GUI.
 - `Draw.Camera` after `Draw.Screen()` goes back to the world.
+- 3D meshes go through a camera of their own, which the 2D one and `Draw.Screen()` leave as it is, and the other calls go through theirs whatever the 3D camera is.
+- `Draw.Camera(position, rotation, fieldOfView)` is a perspective camera: at `position`, looking along `rotation`'s `+z` with its `+x` to the right of the screen and `+y` up, as Unity's, and seeing `fieldOfView` degrees up and down (clamped to 0.00001 to 179, as Unity does), as much across as the screen's shape gives. It sees from 0.3 units in front of it on, as Unity's cameras, and has no far side, which costs depth precision next to nothing. Each frame starts with one at the origin, looking along `+z`, with 60 degrees.
+- `Draw.Camera(transform, projection)` is any camera: `transform` places it in the world, looking along its `+z`, and `projection` takes what it sees, looking down `-z` (OpenGL's and Unity's view space), to clip space, the screen's shape included. `Screen.width / Screen.height` is the shape.
+- `Vertex3` is a built-in struct: `float3 position`, `float2 uv` and `Color color = Color.white`. A game can't declare the name outside a namespace.
+- 3D meshes are the only calls that test and write depth: they hide each other by how far they are, whatever their order, and every other call draws over what's there, in order. `Draw.Clear` clears depth too, within the clip. A see-through 3D mesh blends with what's behind it and writes depth like any other. Triangles, textures and filters are as a mesh's: either side draws, and there's no lighting.
+- A 3D mesh is its two lists. The engine keeps a copy of each it draws, on the GPU too, and only copies it again when it changed: a world's list tells from the hashes its heap keeps of its pages (a list in chunks, of each chunk's), so drawing one that didn't change costs a hash for each of its pages; a list made along the way is read. A mesh no call of a frame draws is let go. A mesh that changed is another copy, so what a frame drew before it changed stays as it was.
+- Instances of one 3D mesh drawn in a row, with the same texture and filter and nothing between them, are one draw: a view that runs for each entity and draws one mesh draws them all at once. Lists made along the way are the same mesh when they hold the same.
 - `Color` is a built-in value type with `r`, `g`, `b` and `a`, floats from 0 to 1, as in Unity. It's built with `Color(r, g, b)` (alpha 1) or `Color(r, g, b, a)`. The constants are `Color.white`, `black`, `red`, `green`, `blue`, `yellow`, `cyan`, `magenta`, `gray` and `clear`, with Unity's values and names. Components and singletons can hold colors. There are no operators on colors yet.
 - Text is written in double quotes, with the escapes `\"`, `\\` and `\n`. Its type is `string` (see Text).
 - Blending: a view's match components and singletons are copies, their fields that blend set between last tick's value and this tick's, as far as this moment is between the two ticks. Vectors, matrices, colors and rects blend component by component, quaternions the short way round (normalized), and structs field by field. An entity that wasn't there last tick is drawn as it is. Local state isn't blended: it's this machine's, as it is.
@@ -1062,7 +1071,8 @@ view DrawHud(Arena arena)
 
 - Drawing from systems, with the prediction stage (verified, predicted, replayed) visible to the code.
 - Views reading input, for example to draw where the local player aims before the tick runs.
-- 3D drawing, layers, and a sprite in one call (a textured rectangle is a mesh of four corners for now).
+- 3D: code of the game's own that runs on the GPU for each pixel and each corner, in Tide, which takes what it reads of the view around it implicitly (as a parallel loop's step does), with more of a corner (normals) once it can read them; drawing into a texture that later meshes sample, for shadows, reflections and effects; meshes in the grid's chunks, for voxels; capturing the mouse, for cameras that look around.
+- Layers, and a sprite in one call (a textured rectangle is a mesh of four corners for now).
 - Textures: mipmaps and how `uv` wraps, chosen like the filter; a pixel of a byte a channel, a quarter of a `Color`'s memory; pixels from image files; sending only the part that changed.
 
 ## GUI
@@ -1465,6 +1475,7 @@ Implemented, awaiting approval:
 - An `Action` and the devices can't be passed to C, nor structs that hold text or lists.
 - `DrawList` is only an extern function's parameter, a `tide_draw_list *` in C, neither `mut` nor `in`. `Draw.list` is only an argument for one: a local, a field or a Tide function's parameter can't hold it. It needs the frame, as `Draw` does, so it's an error in systems, tasks and a parallel loop's steps.
 - C draws meshes with `tide_draw_mesh`, or `tide_draw_vertices` and `tide_draw_triangles` for vertices that several batches share, and clips with `tide_draw_clip` and `tide_draw_no_clip`. `tide_vertex` is `Vertex`.
+- C draws 3D meshes with `tide_draw_mesh_3d`, through `tide_draw_camera_3d` and `tide_draw_camera_matrices`. `tide_vertex3` is `Vertex3`. A `tide_mesh` is its vertices and indices where C keeps them, and a `version`, as a texture's: the draw list copies them when it hasn't got that version, and C says they changed by changing it (`tide_mesh_version` hashes them).
 - C's textures are pixels it keeps: `tide_texture` is their address, `width`, `height` and a `version`, 4 bytes a pixel (red, green, blue, alpha), rows from the first. The draw list copies them when their version or size isn't what it last copied, so C can free or change them once the call returns, and says they changed by changing the version. C holds no handle, and nothing is created or freed.
 - At a hot reload the draw list forgets the textures it copied, as the new build's C may name other pixels at the same address and version.
 - Calls are put in order the way spawns and GUI calls are: what has to go first runs before its statement, and before a loop's condition each round. An `&&` or `||` whose right side calls C, or a `?:` whose sides do, runs as `if` statements then, so each part still only runs when it would, with its own calls in order. So do struct operators that call C.

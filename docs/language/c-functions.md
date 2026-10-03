@@ -235,6 +235,8 @@ C has everything Tide's `Draw` has, as `tide_draw_circle`, `tide_draw_text`, `ti
 - `tide_draw_mesh(list, vertices, vertex_count, indices, index_count, texture, filter)` draws triangles, like `Draw.Mesh`. `texture` is NULL for none.
 - `tide_draw_vertices` and `tide_draw_triangles` are the same in two steps, for vertices several batches share: the first copies them into the list and returns where they start, and the second draws triangles of them.
 - `tide_draw_clip(list, rect)` and `tide_draw_no_clip(list)` are `Draw.Clip`.
+- `tide_vertex3` is Tide's `Vertex3`. `tide_draw_camera_3d(list, position, rotation, field_of_view)` and `tide_draw_camera_matrices(list, transform, projection)` are the 3D `Draw.Camera`.
+- `tide_draw_mesh_3d(list, &mesh, transform, texture, filter)` draws a 3D mesh, a `tide_mesh`: its vertices and indices, and a version (see below). Instances of one mesh drawn in a row, with one texture and filter, are drawn at once.
 
 ### C's own pixels
 
@@ -255,6 +257,8 @@ Nothing is created or uploaded, and C holds no handle. A mesh names its pixels, 
 - Change `version` whenever the pixels change, or when other pixels come to be at that address. Counting up does it; `tide_texture_version(pixels, width, height)` hashes them instead, for pixels that rarely change.
 - C can free its pixels, or change them, as soon as the call returns.
 - At a hot reload, C's state starts over, and the draw list forgets what it copied: an atlas the new build bakes is drawn as baked, whatever its address and version.
+
+3D meshes go the same way: a `tide_mesh` names its vertices and indices where C keeps them, and the list copies them when it hasn't got its `version` of them, so a mesh that doesn't change costs nothing to draw again, frame after frame. Change `version` whenever they change, or hash them with `tide_mesh_version(&mesh)`.
 
 ## Order
 

@@ -279,3 +279,239 @@ TIDE_TEST(draw_grids_are_textures)
     tide_text_use(NULL, NULL);
     tide_heap_free(&heap);
 }
+
+// ---------------------------------------------------------------------------
+// 3D
+
+// Where a world position lands through the list's camera command `i`, from
+// -1 to 1 across the screen each way, and its depth.
+static tide_float3 through(const tide_draw_list *d, const uint32_t i, const tide_float3 p)
+{
+    const tide_float4 clip = tide_mul_f4x4_f4(d->matrices[d->commands[i].camera.matrix], tide_f4(p.x, p.y, p.z, 1.0f));
+    return tide_f3(clip.x / clip.w, clip.y / clip.w, clip.z / clip.w);
+}
+
+static bool about(const float a, const float b)
+{
+    return a - b < 1e-4f && b - a < 1e-4f;
+}
+
+// The camera looks along its rotation's +z, with +x to the right of the
+// screen and +y up, as Unity's do, from 0.3 units in front of it on.
+TIDE_TEST(draw_cameras_3d)
+{
+    tide_draw_list d = {0};
+    tide_draw_camera_3d(&d, tide_f3(0.0f, 0.0f, -5.0f), tide_identity_q(), 90.0f);
+    TIDE_REQUIRE(d.count == 1 && d.commands[0].kind == TIDE_DRAW_CAMERA_3D && d.commands[0].camera.fit == 1);
+    tide_float3 p = through(&d, 0, tide_f3(0.0f, 0.0f, 0.0f));
+    TIDE_CHECK(about(p.x, 0.0f) && about(p.y, 0.0f) && p.z > 0.0f && p.z < 1.0f);
+    p = through(&d, 0, tide_f3(1.0f, 2.0f, 0.0f));
+    TIDE_CHECK(about(p.x, 0.2f) && about(p.y, 0.4f));
+    TIDE_CHECK(about(through(&d, 0, tide_f3(0.0f, 0.0f, -4.7f)).z, -1.0f)); // The near side
+    TIDE_CHECK(through(&d, 0, tide_f3(0.0f, 0.0f, 1e5f)).z < 1.0f);         // ...and no far one
+    TIDE_CHECK(through(&d, 0, tide_f3(0.0f, 0.0f, 10.0f)).z > p.z);         // Farther is deeper
+
+    // Turned a quarter around y, it looks along +x, its right along -z
+    tide_draw_camera_3d(&d, tide_f3(0.0f, 0.0f, 0.0f), tide_axisangle_q(tide_f3(0.0f, 1.0f, 0.0f), TIDE_PI_F * 0.5f), 90.0f);
+    p = through(&d, 1, tide_f3(5.0f, 0.0f, -1.0f));
+    TIDE_CHECK(about(p.x, 0.2f) && about(p.y, 0.0f) && p.z > 0.0f);
+
+    // Any projection, from where the camera is
+    const tide_float4x4 at = tide_trs_f4x4(tide_f3(0.0f, 0.0f, -5.0f), tide_identity_q(), tide_f3_splat(1.0f));
+    tide_draw_camera_matrices(&d, at, tide_perspectivefov_f4x4(TIDE_PI_F * 0.5f, 2.0f, 0.3f, 100.0f));
+    TIDE_REQUIRE(d.commands[2].kind == TIDE_DRAW_CAMERA_3D && d.commands[2].camera.fit == 0);
+    p = through(&d, 2, tide_f3(1.0f, 2.0f, 0.0f));
+    TIDE_CHECK(about(p.x, 0.1f) && about(p.y, 0.4f) && p.z > -1.0f && p.z < 1.0f);
+    TIDE_CHECK(about(through(&d, 2, tide_f3(0.0f, 0.0f, 95.0f)).z, 1.0f));
+    tide_draw_camera_matrices(&d, at, tide_ortho_f4x4(10.0f, 4.0f, 1.0f, 11.0f));
+    p = through(&d, 3, tide_f3(5.0f, -2.0f, 1.0f));
+    TIDE_CHECK(about(p.x, 1.0f) && about(p.y, -1.0f) && about(p.z, 0.0f));
+    tide_draw_free(&d);
+}
+
+static const tide_vertex3 cube_corners[4] = {
+    {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}},
+    {{1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 1.0f}},
+    {{1.0f, 1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}},
+    {{0.0f, 1.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},
+};
+static const uint32_t cube_indices[9] = {0, 1, 2, 0, 2, 3, 0, 1, 9}; // The last triangle's past the corners
+
+// A mesh is copied once, and its instances drawn one after another are one
+// command.
+TIDE_TEST(draw_meshes_3d_are_kept_and_instanced)
+{
+    tide_draw_list d = {0};
+    tide_mesh mesh = {cube_corners, 4, cube_indices, 9, 1};
+    for (int i = 0; i < 3; i++) {
+        tide_draw_mesh_3d(&d, &mesh, tide_translate_f4x4(tide_f3((float)i, 0.0f, 0.0f)), NULL, TIDE_FILTER_BILINEAR);
+    }
+    static const uint8_t pixel[4] = {1, 2, 3, 4};
+    const tide_texture texture = {pixel, 1, 1, 7};
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), &texture, TIDE_FILTER_POINT); // Another texture: a run of its own
+    tide_draw_camera_3d(&d, tide_f3(0.0f, 0.0f, 0.0f), tide_identity_q(), 60.0f);
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), &texture, TIDE_FILTER_POINT); // After a camera too
+    TIDE_REQUIRE(d.count == 4 && d.mesh_count == 1 && d.texture_count == 1);
+    const tide_draw_command *c = &d.commands[0];
+    TIDE_CHECK(c->kind == TIDE_DRAW_MESH_3D && c->mesh3.mesh == 1 && c->mesh3.count == 3 && c->mesh3.texture == 0);
+    TIDE_CHECK(d.matrices[c->mesh3.first + 2].c3.x == 2.0f);
+    TIDE_CHECK(d.commands[1].mesh3.count == 1 && d.commands[1].mesh3.texture == 1);
+    TIDE_CHECK(d.commands[1].mesh3.filter == TIDE_FILTER_POINT);
+    TIDE_CHECK(d.commands[3].kind == TIDE_DRAW_MESH_3D && d.commands[3].mesh3.mesh == 1);
+    const tide_draw_mesh_data *m = &d.meshes[0];
+    TIDE_REQUIRE(m->space == TIDE_MESH_MEMORY && m->vertex_count == 4 && m->index_count == 6);
+    TIDE_CHECK(m->vertices[3].position.z == 1.0f && m->indices[5] == 3);
+
+    // The same version isn't copied again, in this frame or the next
+    d.meshes[0].vertices[0].position.x = 77.0f;
+    tide_draw_reset(&d);
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+    TIDE_CHECK(d.mesh_count == 1 && d.meshes[0].vertices[0].position.x == 77.0f);
+
+    // Another version takes another place, and what the frame drew before
+    // stays as it was
+    mesh.version = 2;
+    mesh.index_count = 3;
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+    TIDE_REQUIRE(d.count == 2 && d.mesh_count == 2);
+    TIDE_CHECK(d.commands[1].mesh3.mesh == 2 && d.meshes[1].index_count == 3 && d.meshes[0].index_count == 6);
+
+    // A frame that doesn't draw one lets it go, and its place goes to the next
+    tide_draw_reset(&d);
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+    tide_draw_reset(&d);
+    TIDE_CHECK(d.meshes[0].space == TIDE_MESH_NONE && d.meshes[0].vertices == NULL && d.meshes[1].space == TIDE_MESH_MEMORY);
+    mesh.version = 3;
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+    TIDE_CHECK(d.mesh_count == 2 && d.commands[0].mesh3.mesh == 1 && d.meshes[0].version == 3);
+
+    // A mesh with no triangles draws nothing
+    const tide_mesh none = {cube_corners, 4, cube_indices + 6, 3, 1};
+    tide_draw_mesh_3d(&d, &none, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+    TIDE_CHECK(d.count == 1);
+    TIDE_CHECK(tide_mesh_version(&mesh) == tide_mesh_version(&mesh) && tide_mesh_version(&mesh) != tide_mesh_version(&none));
+    tide_draw_free(&d);
+}
+
+// Many meshes are each found again, frame after frame, without a copy.
+TIDE_TEST(draw_meshes_3d_many)
+{
+    enum { MESHES = 3000 };
+    static tide_vertex3 corners[MESHES][3];
+    static const uint32_t triangle[3] = {0, 1, 2};
+    tide_draw_list d = {0};
+    for (int frame = 0; frame < 3; frame++) {
+        tide_draw_reset(&d);
+        for (int i = 0; i < MESHES; i++) {
+            corners[i][1].position.x = (float)i;
+            const tide_mesh mesh = {corners[i], 3, triangle, 3, (uint64_t)i};
+            tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+        }
+        TIDE_CHECK(d.mesh_count == MESHES && d.count == MESHES);
+    }
+    bool same = true;
+    for (int i = 0; i < MESHES; i++) {
+        same = same && d.meshes[d.commands[i].mesh3.mesh - 1u].vertices[1].position.x == (float)i;
+    }
+    TIDE_CHECK(same);
+    tide_draw_free(&d);
+}
+
+// Tide's lists are meshes the list keeps: one that doesn't change isn't
+// copied again, one that does is, and lists made along the way, which take
+// the same places in the scratch area again, are told apart by what's in them.
+TIDE_TEST(draw_lists_are_meshes_3d)
+{
+    tide_heap heap = {0};
+    tide_text_use(NULL, &heap);
+    const uint32_t mark = tide_scratch_mark();
+    tide_list vertices = {0}, big = {0};
+    for (int i = 0; i < 4; i++) {
+        *(tide_vertex3 *)tide_list_add(&vertices, sizeof(tide_vertex3), TIDE_IN_LOCAL) = cube_corners[i];
+    }
+    for (int i = 0; i < 2000; i++) { // In chunks
+        tide_vertex3 *v = tide_list_add(&big, sizeof(tide_vertex3), TIDE_IN_LOCAL);
+        v->position.x = (float)i;
+    }
+    static const int32_t indices[6] = {0, 1, 2, 0, 2, 3};
+    const tide_float4x4 at = tide_identity_f4x4();
+    tide_draw_list d = {0};
+    tide_draw_mesh3_lists(&d, vertices, tide_list_from(indices, 6, sizeof(int32_t)), at);
+    tide_draw_mesh3_lists(&d, big, tide_list_from(indices, 6, sizeof(int32_t)), at);
+    TIDE_REQUIRE(d.count == 2 && d.mesh_count == 2);
+    TIDE_CHECK(d.meshes[0].space == TIDE_MESH_LISTS && d.meshes[0].index_count == 6 && d.meshes[1].vertex_count == 2000);
+    TIDE_CHECK(d.meshes[1].vertices[1999].position.x == 1999.0f);
+    d.meshes[0].vertices[0].position.x = 77.0f;
+    d.meshes[1].vertices[0].position.x = 77.0f;
+
+    for (int frame = 0; frame < 2; frame++) {
+        tide_draw_reset(&d);
+        tide_scratch_reset(mark);
+        tide_draw_mesh3_lists(&d, vertices, tide_list_from(indices, 6, sizeof(int32_t)), at);
+        tide_draw_mesh3_lists(&d, big, tide_list_from(indices, 6, sizeof(int32_t)), at);
+        TIDE_CHECK(d.mesh_count == 2 && d.meshes[0].vertices[0].position.x == 77.0f);
+        TIDE_CHECK(d.meshes[1].vertices[0].position.x == 77.0f);
+    }
+
+    // Changed, through the list's chunk
+    ((tide_vertex3 *)tide_list_at_mut(big, 1500, sizeof(tide_vertex3)))->position.y = 5.0f;
+    tide_draw_reset(&d);
+    tide_scratch_reset(mark);
+    tide_draw_mesh3_lists(&d, big, tide_list_from(indices, 6, sizeof(int32_t)), at);
+    TIDE_REQUIRE(d.count == 1);
+    const tide_draw_mesh_data *m = &d.meshes[d.commands[0].mesh3.mesh - 1u];
+    TIDE_CHECK(m->vertices[0].position.x == 0.0f && m->vertices[1500].position.y == 5.0f);
+
+    // Two lists made along the way, at the same place in the scratch area
+    tide_draw_reset(&d);
+    tide_scratch_reset(mark);
+    tide_draw_mesh3_lists(&d, tide_list_from(cube_corners, 3, sizeof(tide_vertex3)),
+                          tide_list_from(indices, 3, sizeof(int32_t)), at);
+    tide_scratch_reset(mark);
+    tide_draw_mesh3_lists(&d, tide_list_from(cube_corners + 1, 3, sizeof(tide_vertex3)),
+                          tide_list_from(indices, 3, sizeof(int32_t)), at);
+    TIDE_REQUIRE(d.count == 2);
+    TIDE_CHECK(d.commands[0].mesh3.mesh != d.commands[1].mesh3.mesh);
+    TIDE_CHECK(d.meshes[d.commands[0].mesh3.mesh - 1u].vertices[0].position.x == 0.0f);
+    TIDE_CHECK(d.meshes[d.commands[1].mesh3.mesh - 1u].vertices[0].position.x == 1.0f);
+
+    // ...and the same indices made again at other places, as a view does for
+    // each entity, are one mesh's instances
+    tide_draw_reset(&d);
+    for (int i = 0; i < 3; i++) tide_draw_mesh3_lists(&d, vertices, tide_list_from(indices, 6, sizeof(int32_t)), at);
+    TIDE_CHECK(d.count == 1 && d.commands[0].mesh3.count == 3);
+
+    tide_draw_free(&d);
+    tide_list_release(&vertices, TIDE_IN_LOCAL);
+    tide_list_release(&big, TIDE_IN_LOCAL);
+    tide_scratch_reset(mark);
+    tide_text_use(NULL, NULL);
+    tide_heap_free(&heap);
+}
+
+// A list that forgot its meshes copies them again, and its commands draw
+// nothing of what it forgot; appended, a list's 3D commands come along.
+TIDE_TEST(draw_meshes_3d_forget_and_append)
+{
+    const tide_mesh mesh = {cube_corners, 4, cube_indices, 6, 1};
+    tide_draw_list d = {0}, world = {0};
+    tide_draw_camera_3d(&d, tide_f3(1.0f, 2.0f, 3.0f), tide_identity_q(), 60.0f);
+    tide_draw_mesh_3d(&d, &mesh, tide_translate_f4x4(tide_f3(1.0f, 0.0f, 0.0f)), NULL, TIDE_FILTER_BILINEAR);
+    tide_draw_mesh_3d(&d, &mesh, tide_translate_f4x4(tide_f3(2.0f, 0.0f, 0.0f)), NULL, TIDE_FILTER_BILINEAR);
+
+    tide_draw_clear(&world, TIDE_COLOR_BLACK);
+    tide_draw_append(&world, &d);
+    TIDE_REQUIRE(world.count == 3 && world.mesh_count == 1 && world.matrix_count == 3);
+    TIDE_CHECK(world.commands[1].kind == TIDE_DRAW_CAMERA_3D && world.commands[1].camera.fit == 1);
+    TIDE_CHECK(memcmp(&world.matrices[world.commands[1].camera.matrix], &d.matrices[d.commands[0].camera.matrix],
+                      sizeof(tide_float4x4)) == 0);
+    TIDE_CHECK(world.commands[2].mesh3.count == 2 && world.matrices[world.commands[2].mesh3.first + 1].c3.x == 2.0f);
+    TIDE_CHECK(world.meshes[0].index_count == 6);
+
+    tide_draw_forget(&d);
+    TIDE_CHECK(d.mesh_count == 0 && d.commands[1].mesh3.mesh == 0);
+    tide_draw_mesh_3d(&d, &mesh, tide_identity_f4x4(), NULL, TIDE_FILTER_BILINEAR);
+    TIDE_CHECK(d.mesh_count == 1 && d.meshes[0].epoch == d.epoch && d.meshes[0].index_count == 6);
+    tide_draw_free(&world);
+    tide_draw_free(&d);
+}

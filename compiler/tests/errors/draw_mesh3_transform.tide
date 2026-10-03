@@ -1,0 +1,13 @@
+// expect: no version of Draw.Mesh takes (List<Vertex3>, List<int>)
+scene Main { }
+
+local singleton Art
+{
+    List<Vertex3> corners;
+}
+
+// A 3D mesh goes somewhere in the world: it takes a transform
+view Show(Art art)
+{
+    Draw.Mesh(art.corners, [0, 1, 2]);
+}

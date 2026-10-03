@@ -3,8 +3,9 @@
 //
 // It checks that each shape lands where it should, that commands draw in
 // the order they were recorded whatever the renderer batches together, that
-// a frame can draw far more than a list used to hold, and that meshes draw
-// their triangles with their corners' colors, their textures and the clip.
+// a frame can draw far more than a list used to hold, that meshes draw
+// their triangles with their corners' colors, their textures and the clip,
+// and that 3D meshes draw through their cameras, nearest in front.
 // `--bench` (or `?bench` on the web) times frames of many shapes instead.
 
 #include <stdio.h>
@@ -331,6 +332,118 @@ static void meshes(void)
     check_pixels(forgotten, 1);
 }
 
+// ---------------------------------------------------------------------------
+// 3D meshes: cameras, depth, instances and textures
+
+// Where a 3D point lands in the window, through the camera mesh_3d_scene
+// starts with: at (0, 0, -10) looking along +z, seeing 90 degrees up and
+// down, so that at a distance of d, a unit is half the screen's height over
+// d pixels, across as up and down.
+static tide_float2 seen(const float x, const float y, const float z)
+{
+    const float pixels = screen.y * 0.5f / (z + 10.0f);
+    return tide_f2(screen.x * 0.5f + x * pixels, screen.y * 0.5f - y * pixels);
+}
+
+// Red, green, blue and white, two by two
+static const uint8_t quarters[2 * 2 * 4] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255};
+static const tide_texture quarters_texture = {quarters, 2, 2, 1};
+
+// A square `size` across around `center`, facing along -z turned by
+// `rotation`, with the texture's first pixel at its top left.
+static void square_3d(const tide_float3 center, const tide_quaternion rotation, const float size, const tide_color color,
+                      const tide_texture *texture)
+{
+    const tide_vertex3 corners[4] = {
+        {{-0.5f, 0.5f, 0.0f}, {0.0f, 0.0f}, color},
+        {{0.5f, 0.5f, 0.0f}, {1.0f, 0.0f}, color},
+        {{0.5f, -0.5f, 0.0f}, {1.0f, 1.0f}, color},
+        {{-0.5f, -0.5f, 0.0f}, {0.0f, 1.0f}, color},
+    };
+    static const uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+    tide_mesh mesh = {corners, 4, indices, 6, 0};
+    mesh.version = tide_mesh_version(&mesh);
+    tide_draw_mesh_3d(&list, &mesh, tide_trs_f4x4(center, rotation, tide_f3_splat(size)), texture, TIDE_FILTER_POINT);
+}
+
+static void mesh_3d_scene(void)
+{
+    const tide_quaternion ahead = tide_identity_q();
+    tide_draw_reset(&list);
+    tide_draw_clear(&list, background);
+    tide_draw_camera_3d(&list, tide_f3(0, 0, -10), ahead, 90.0f);
+    // A clear clears depth too: nothing behind this hides after it
+    square_3d(tide_f3(0, 0, -5), ahead, 20.0f, yellow, NULL);
+    tide_draw_clear(&list, background);
+
+    // The nearest in front, drawn first or last; the far one a third smaller
+    square_3d(tide_f3(0, 6, 0), ahead, 2.0f, red, NULL);
+    square_3d(tide_f3(0, 9, 5), ahead, 6.0f, blue, NULL);
+    square_3d(tide_f3(-6, 3, 5), ahead, 6.0f, yellow, NULL);
+    square_3d(tide_f3(-4, 2, 0), ahead, 2.0f, green, NULL);
+
+    // A texture, its first pixel at the top left
+    square_3d(tide_f3(4, 2, 0), ahead, 2.0f, white, &quarters_texture);
+
+    // Instances of one mesh, one after another: over a rect drawn before
+    // them, and under one drawn after, as shapes never test depth
+    const tide_float2 under = seen(4, -2, 0), over = seen(0, -2, 0);
+    tide_draw_rect(&list, at(under.x, under.y), tide_f2(10, 10), magenta);
+    for (int i = -1; i <= 1; i++) square_3d(tide_f3(4.0f * (float)i, -2, 0), ahead, 2.0f, orange, NULL);
+    tide_draw_rect(&list, at(over.x, over.y), tide_f2(6, 6), cyan);
+
+    // A mesh too big for indices of 16 bits, drawn with its last corners
+    static tide_vertex3 many[70000];
+    static const uint32_t last_corners[6] = {69996, 69997, 69998, 69996, 69998, 69999};
+    static const tide_float3 square[4] = {{-5, -3, 0}, {-3, -3, 0}, {-3, -5, 0}, {-5, -5, 0}};
+    for (int i = 0; i < 4; i++) many[69996 + i] = (tide_vertex3){square[i], {0, 0}, yellow};
+    const tide_mesh big = {many, 70000, last_corners, 6, 1};
+    tide_draw_mesh_3d(&list, &big, tide_identity_f4x4(), NULL, TIDE_FILTER_POINT);
+
+    // Turned a quarter around y, the camera looks along +x, its right along -z
+    const tide_quaternion turned = tide_axisangle_q(tide_f3(0, 1, 0), TIDE_PI_F * 0.5f);
+    tide_draw_camera_3d(&list, tide_f3(0, 0, -10), turned, 90.0f);
+    square_3d(tide_f3(10, -4, -14), turned, 2.0f, purple, NULL);
+
+    // Any projection: an orthographic one, 10 pixels a unit
+    tide_draw_camera_matrices(&list, tide_translate_f4x4(tide_f3(100, 0, 0)),
+                              tide_ortho_f4x4(screen.x / 10.0f, screen.y / 10.0f, 0.1f, 100.0f));
+    square_3d(tide_f3(100, -12, 5), ahead, 2.0f, green, NULL);
+}
+
+static void meshes_3d(void)
+{
+    const tide_float2 near_red = seen(0, 6, 0), near_green = seen(-4, 2, 0), textured = seen(4, 2, 0);
+    const tide_float2 left = seen(-4, -2, 0), middle = seen(0, -2, 0), right = seen(4, -2, 0), turned = seen(4, -4, 0);
+    const tide_float2 big = seen(-4, -4, 0);
+    const float edge = screen.y * 0.5f / 10.0f + 4.0f; // Past a near square's edge, inside a far one's
+    const float quarter = screen.y * 0.5f / 20.0f;     // A quarter of a near square across
+    const check checks[] = {
+        {near_red.x, near_red.y, red, "a near 3D mesh in front of a far one drawn after it"},
+        {near_red.x + edge, near_red.y, blue, "and the far one around it, smaller for being farther"},
+        {near_green.x, near_green.y, green, "a near 3D mesh drawn after a far one"},
+        {near_green.x + edge, near_green.y, yellow, "and the far one around it"},
+        {textured.x - quarter, textured.y - quarter, red, "a 3D mesh's texture: its first pixel at the top left"},
+        {textured.x + quarter, textured.y - quarter, green, "the one beside it"},
+        {textured.x - quarter, textured.y + quarter, blue, "the one below it"},
+        {textured.x + quarter, textured.y + quarter, white, "and its last"},
+        {left.x, left.y, orange, "the first instance of a mesh"},
+        {right.x, right.y, orange, "its last, over a rect drawn before it"},
+        {middle.x, middle.y, cyan, "a rect drawn after them, over the one in the middle"},
+        {middle.x + 12.0f, middle.y, orange, "and the rest of it"},
+        {(left.x + middle.x) * 0.5f, middle.y, background, "and nothing between them"},
+        {big.x, big.y, yellow, "a mesh with more corners than 16-bit indices reach"},
+        {turned.x, turned.y, purple, "a mesh to the right of a turned camera"},
+        {screen.x * 0.5f, screen.y * 0.5f + 120.0f, green, "a mesh through an orthographic camera"},
+        {screen.x * 0.5f + 15.0f, screen.y * 0.5f + 120.0f, background, "and its size there"},
+    };
+    // Twice: the second frame draws with what the first uploaded
+    for (int frame = 0; frame < 2; frame++) {
+        mesh_3d_scene();
+        check_pixels(checks, (int)(sizeof checks / sizeof checks[0]));
+    }
+}
+
 // Rects side by side, a cell each as a grid's view draws them, leave no gap
 // between them at any scale: not even where their shared edge falls exactly
 // on a row or column of pixel centers, as it does every 8 cells at 3.125
@@ -379,14 +492,34 @@ static void tiles_leave_no_gaps(void)
 
 #define BENCH_FRAMES 100
 
-// 0: nothing (what reading back costs), 1: rects, 2: circles, 3: rects with text between, 4: quads of one mesh
+// 0: nothing (what reading back costs), 1: rects, 2: circles, 3: rects with text between, 4: quads of one mesh,
+// 5: instances of a 3D cube
 static int bench_kind;
 static int bench_frame;
 static double bench_ms;
 
+// A cube a unit across, its faces' corners each a color of their own.
+static const tide_vertex3 cube_corners[8] = {
+    {{-0.5f, -0.5f, -0.5f}, {0, 0}, {1, 0, 0, 1}}, {{0.5f, -0.5f, -0.5f}, {0, 0}, {0, 1, 0, 1}},
+    {{0.5f, 0.5f, -0.5f}, {0, 0}, {0, 0, 1, 1}},   {{-0.5f, 0.5f, -0.5f}, {0, 0}, {1, 1, 0, 1}},
+    {{-0.5f, -0.5f, 0.5f}, {0, 0}, {1, 0, 1, 1}},  {{0.5f, -0.5f, 0.5f}, {0, 0}, {0, 1, 1, 1}},
+    {{0.5f, 0.5f, 0.5f}, {0, 0}, {1, 1, 1, 1}},    {{-0.5f, 0.5f, 0.5f}, {0, 0}, {0.5f, 0.5f, 0.5f, 1}},
+};
+static const uint32_t cube_indices[36] = {0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1,
+                                          3, 2, 6, 3, 6, 7, 0, 3, 7, 0, 7, 4, 1, 5, 6, 1, 6, 2};
+static const tide_mesh cube = {cube_corners, 8, cube_indices, 36, 1};
+
 static void bench_scene(void)
 {
     tide_draw_reset(&list);
+    if (bench_kind == 5) {
+        tide_draw_camera_3d(&list, tide_f3(128, 60, -40), tide_axisangle_q(tide_f3(1, 0, 0), 0.6f), 70.0f);
+        for (uint32_t i = 0; i < WIDTH * 256u; i++) {
+            const tide_float3 p = tide_f3((float)(i % WIDTH), 0.0f, (float)(i / WIDTH));
+            tide_draw_mesh_3d(&list, &cube, tide_translate_f4x4(p), NULL, TIDE_FILTER_BILINEAR);
+        }
+        return;
+    }
     for (uint32_t i = 0; bench_kind > 0 && i < WIDTH * 256u; i++) {
         const tide_float2 p = at((float)(i % WIDTH) + 0.5f, (float)(i / WIDTH) + 0.5f);
         const tide_color c = {(float)(i % WIDTH) / WIDTH, (float)(i / WIDTH) / 256.0f, 0.5f, 1.0f};
@@ -403,7 +536,7 @@ static void bench_scene(void)
 static int bench(void)
 {
     static const char *names[] = {"nothing", "65536 rects", "65536 circles", "65536 rects, text every 1024",
-                                  "65536 textured quads"};
+                                  "65536 textured quads", "65536 instances of a cube"};
     bench_scene();
     const uint64_t start = tide_time_now_ns();
     const tide_float2 point = tide_f2(1, 1);
@@ -414,7 +547,7 @@ static int bench(void)
     printf("%s: %.2f ms a frame\n", names[bench_kind], bench_ms / BENCH_FRAMES);
     bench_frame = 0;
     bench_ms = 0.0;
-    return ++bench_kind < 5 ? TIDE_KEEP_RUNNING : 0;
+    return ++bench_kind < 6 ? TIDE_KEEP_RUNNING : 0;
 }
 
 static bool benching;
@@ -425,6 +558,7 @@ static int frame(void *user, const float seconds)
     screen = tide_platform_screen_size();
     if (benching) return bench();
     meshes();
+    meshes_3d();
     tiles_leave_no_gaps();
     return run_checks();
 }

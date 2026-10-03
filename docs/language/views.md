@@ -37,6 +37,8 @@ Positions and sizes are in world units, with `y` up. The camera maps them to the
 | `Draw.Mesh(vertices, indices, texture)` | Triangles drawn with a grid of colors (see [Textures](#textures)) |
 | `Draw.Clip(rect)` | Only what's inside `rect` draws, for the calls after it; `Draw.Clip()` draws everywhere again (see [Clipping](#clipping)) |
 | `Draw.Screen()` | The calls after it are in the screen's pixels, from the top left, with `y` down (see [On the screen](#on-the-screen)) |
+| `Draw.Camera(position, rotation, fieldOfView)` | Sets the 3D camera for the 3D meshes after it (see [3D](#_3d)) |
+| `Draw.Mesh(vertices, indices, transform)` | A 3D mesh, placed in the world by `transform`, with a texture and filter as a mesh's (see [3D](#_3d)) |
 
 Each frame starts black, with the camera at the origin and one world unit per pixel.
 
@@ -147,6 +149,69 @@ view Health(Stats stats)
 ```
 
 What views draw there is under the GUI's widgets, which draw last.
+
+## 3D
+
+Meshes have a 3D version, which goes through a camera of its own. A corner is a `Vertex3`:
+
+```csharp
+struct Vertex3 // Built in
+{
+    float3 position;
+    float2 uv;
+    Color color = Color.white;
+}
+```
+
+`Draw.Camera(position, rotation, fieldOfView)` sets the 3D camera: where it is, which way it looks, along its rotation's `+z` with `+x` to the right and `+y` up as Unity's cameras do, and how much it sees up and down, in degrees, like Unity's `Camera.fieldOfView`. It sees from 0.3 units in front of it on, however far, and as much across as the screen's shape gives. `Draw.Mesh(vertices, indices, transform)` draws a 3D mesh through it, placed in the world by `transform`, which `float4x4.TRS(position, rotation, scale)` makes:
+
+```csharp
+local singleton Scenery
+{
+    List<Vertex3> crate;
+    List<int> faces;
+    Grid2<Color> wood = Grid2(16, 16);
+}
+
+view Look(Viewer viewer)
+{
+    Draw.Clear(Color(0.5, 0.7, 1));
+    Draw.Camera(viewer.position, viewer.rotation, 60);
+}
+
+// Once for each crate, and drawn for them all at once
+view Crates(Crate crate, Scenery scenery)
+{
+    Draw.Mesh(scenery.crate, scenery.faces, float4x4.TRS(crate.position, crate.rotation, float3(1)), scenery.wood);
+}
+```
+
+- 3D meshes hide each other by how far they are, whatever order they're drawn in. Everything else draws over what's there, in order, through the camera it had before: a view can draw a 3D scene and then a HUD over it, with no camera call between. `Draw.Clear` clears what's in front too.
+- A see-through mesh blends with what's behind it, and still hides what's drawn behind it later: draw see-through meshes last, the farthest first.
+- Triangles draw whichever way round their corners go. Textures and filters work as a mesh's do: `Draw.Mesh(vertices, indices, transform, texture, filter)`.
+- There's no lighting: a pixel is its corners' colors times its texture's, so shading goes in the corners' colors.
+- Each frame starts with the 3D camera at the origin, looking along `+z`, with a field of view of 60 degrees.
+
+### Big scenes
+
+The lists a 3D mesh is drawn from are kept on the GPU while frames draw them. A list that didn't change costs next to nothing to draw again, however big it is, so keep meshes in fields, local or the match's, rather than making them each frame. A list that changed is sent again the next frame.
+
+A mesh drawn again and again in a row, from the same lists, with the same texture and filter, is drawn all at once: a view that runs for each of thousands of entities and draws one mesh costs the GPU one draw. Something drawn between them, like another mesh or a camera, starts another.
+
+### Any projection
+
+`Draw.Camera(transform, projection)` sets the 3D camera from matrices: `transform` places it in the world, looking along its `+z`, and `projection` takes what it sees to the screen, the screen's shape included. `float4x4.PerspectiveFov(verticalFov, aspect, near, far)` makes a perspective one, with the field of view in radians, and `float4x4.Ortho(width, height, near, far)` one without perspective, as isometric games have, as Unity.Mathematics' do. `Screen.width / Screen.height` is the screen's shape.
+
+```csharp
+view Isometric(Viewer viewer)
+{
+    var place = float4x4.TRS(viewer.position, quaternion.Euler(float3(Math.Radians(30), Math.Radians(45), 0)), float3(1));
+    float height = 20;
+    Draw.Camera(place, float4x4.Ortho(height * Screen.width / Screen.height, height, 0.1, 1000));
+}
+```
+
+A game's C draws 3D meshes too, with vertices of its own, like a model a library loaded: see [Drawing from C](./c-functions.md#drawing-from-c).
 
 ## Smooth at any tick rate
 

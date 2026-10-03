@@ -102,6 +102,7 @@ view Show(Devices devices)
     Draw.Rect(0, 0, 1, 1, Color.white);
     Vertex corner = default;
     Draw.Mesh([corner], [0, 0, 0], cells, Filter.Point);
+    Vertex3 corner3 = default;
     DrawUI(Draw.list);
     if (GUI.Button("Copy")) Clipboard.Copy("x");
 }

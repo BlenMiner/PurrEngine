@@ -594,6 +594,7 @@ typedef struct program {
     decl *scene_visibility; // The built-in enum SceneVisibility
     decl *anchor;        // The built-in enum Anchor, where GUILayout.Area goes
     decl *vertex;        // The built-in struct Vertex, a corner of what Draw.Mesh draws
+    decl *vertex3;       // The built-in struct Vertex3, a corner of a 3D mesh
     decl *filter;        // The built-in enum Filter, how Draw.Mesh samples its texture
     decl *session;       // The built-in local singleton Session: this machine's part in a match
     decl *connected;     // Built-in local events: this machine joined a match, and left it

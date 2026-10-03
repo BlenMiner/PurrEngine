@@ -1,0 +1,61 @@
+// 3D: the built-in Vertex3, the 3D camera in both its forms, and Draw.Mesh in
+// 3D: lists the draw list keeps, a grid as the texture, and a mesh drawn for
+// every entity, which is one command.
+
+local singleton Scenery
+{
+    List<Vertex3> square;
+    Grid2<Color> bark = Grid2(2, 2);
+    int frames;
+}
+
+component Tree
+{
+    float3 position;
+    float height = 1;
+}
+
+scene Main { }
+
+event(Spawned) Plant(with Main)
+{
+    Spawn(Tree { position = float3(1, 0, 5) });
+    Spawn(Tree { position = float3(-1, 0, 5), height = 2 });
+    Spawn(Tree { position = float3(0, 0, 8) });
+}
+
+view Sky(mut Scenery scenery)
+{
+    scenery.frames += 1;
+    if (scenery.frames == 1)
+    {
+        scenery.square.Add(Vertex3 { position = float3(-0.5, 0, 0) });
+        scenery.square.Add(Vertex3 { position = float3(0.5, 0, 0), uv = float2(1, 0), color = Color.green });
+        scenery.square.Add(Vertex3 { position = float3(0.5, 1, 0), uv = float2(1, 1) });
+        scenery.square.Add(Vertex3 { position = float3(-0.5, 1, 0), uv = float2(0, 1) });
+        scenery.bark[0, 0] = Color.red;
+    }
+    if (scenery.frames == 3) scenery.square.Add(Vertex3 { position = float3(0, 2, 0) });
+
+    Draw.Clear(Color.black);
+    Draw.Camera(float3(0, 1, -5), quaternion.Euler(float3(0.1, 0, 0)), 60);
+    Draw.Mesh([Vertex3 { }, Vertex3 { position = float3(1, 0, 0) }, Vertex3 { position = float3(0, 1, 0) }], [0, 1, 2],
+              float4x4.Translate(float3(0, 0, 10)));
+}
+
+// Once for each tree, and one command for them all
+view Trees(Tree tree, Scenery scenery)
+{
+    Draw.Mesh(scenery.square, [0, 1, 2, 0, 2, 3], float4x4.TRS(tree.position, quaternion.identity, float3(1, tree.height, 1)),
+              scenery.bark, Filter.Point);
+}
+
+// Any projection, and the 2D camera, which 3D meshes don't go through
+view Ground(Scenery scenery)
+{
+    var above = float4x4.TRS(float3(0, 10, 0), quaternion.LookRotation(float3(0, -1, 0), float3(0, 0, 1)), float3(1));
+    Draw.Camera(above, float4x4.PerspectiveFov(Math.Radians(60), 1.5, 0.1, 100));
+    Draw.Mesh(scenery.square, [0, 1, 2, 0, 2, 3], float4x4.identity, scenery.bark);
+    Draw.Camera(float2(0, 0), 5);
+    Draw.Rect(float2(0, 0), float2(1, 1), Color.white);
+}

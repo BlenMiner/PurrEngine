@@ -2187,8 +2187,8 @@ static type check_clipboard_call(checker *c, expr *e)
     return T_VOID_;
 }
 
-// Draw.Mesh takes the program's own List<Vertex> and List<int>, its
-// Grid2<Color> if it has one, and its Filter.
+// Draw.Mesh takes the program's own List<Vertex>, List<Vertex3> and
+// List<int>, its Grid2<Color> if it has one, and its Filter.
 static void use_mesh_types(checker *c)
 {
     const decl *pixels = NULL;
@@ -2196,7 +2196,8 @@ static void use_mesh_types(checker *c)
         const decl *g = c->prog->grids.items[i];
         if (g->dims == 2 && g->fields.items[0].type.kind == TY_COLOR) pixels = g;
     }
-    builtins_use_mesh(list_of(c->prog, decl_type(c->prog->vertex)).decl, list_of(c->prog, (type){TY_INT, NULL}).decl,
+    builtins_use_mesh(list_of(c->prog, decl_type(c->prog->vertex)).decl,
+                      list_of(c->prog, decl_type(c->prog->vertex3)).decl, list_of(c->prog, (type){TY_INT, NULL}).decl,
                       pixels, c->prog->filter);
 }
 
@@ -2231,7 +2232,7 @@ static type check_method(checker *c, expr *e)
         for (int i = 0; i < e->args.count; i++) {
             expr *arg = e->args.items[i];
             type list;
-            if (arg->kind == E_LIST && builtin_list_param(owner, e->name, i, &list)) check_expr_want(c, arg, list);
+            if (arg->kind == E_LIST && builtin_list_param(owner, e->name, i, arg, &list)) check_expr_want(c, arg, list);
             else if (arg->kind != E_DEFAULT) check_expr(c, arg);
         }
         const bool gui = str_eq_c(owner, "GUI") || str_eq_c(owner, "GUILayout");
@@ -6564,6 +6565,20 @@ static void add_builtins(program *prog)
     white->object->name = str_from("Color");
     vertex->fields.items[2].default_value = white;
     prog->vertex = vertex;
+    // struct Vertex3 { float3 position; float2 uv; Color color = Color.white; }:
+    // a 3D mesh's corner, as tide/draw.h's tide_vertex3.
+    decl *vertex3 = NEW(decl);
+    vertex3->kind = DECL_STRUCT;
+    vertex3->name = str_from("Vertex3");
+    vertex3->builtin = true;
+    static const char *const vertex3_fields[][2] = {{"position", "float3"}, {"uv", "float2"}, {"color", "Color"}};
+    for (int i = 0; i < (int)(sizeof vertex3_fields / sizeof vertex3_fields[0]); i++) {
+        const field f = {str_from(vertex3_fields[i][0]), str_from(vertex3_fields[i][1]), {0, 0, 0}, {0}, NULL, {0, 0, 0},
+                         {0}, {0, 0, 0}, false, 0, false, false};
+        vec_push(vertex3->fields, f);
+    }
+    vertex3->fields.items[2].default_value = white;
+    prog->vertex3 = vertex3;
     static const char *const filters[] = {"Point", "Bilinear"};
     decl *filter = NEW(decl);
     filter->kind = DECL_ENUM;
@@ -6625,6 +6640,7 @@ static void add_builtins(program *prog)
     vec_push(decls, visibility);
     vec_push(decls, anchor);
     vec_push(decls, vertex);
+    vec_push(decls, vertex3);
     vec_push(decls, filter);
     vec_push(decls, state);
     vec_push(decls, reason);
