@@ -18,7 +18,7 @@ scene Main { }
 
 system Fill(mut Archive archive)
 {
-    if (archive.noise.Count > 0) return;
+    if (archive.noise.count > 0) return;
     for (var i = 0; i < 1_000_000; i++) archive.noise.Add(Math.Hash(i + 1));
 }
 

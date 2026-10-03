@@ -206,7 +206,7 @@ system Smooth(mut Wave wave)
 system SmoothByHand(mut Wave wave)
 {
     var was = wave.twin;
-    for (var i = 0; i < was.Count; i++) wave.twin[i] = (was[i - 1] + was[i] * 2 + was[i + 1]) / 4;
+    for (var i = 0; i < was.count; i++) wave.twin[i] = (was[i - 1] + was[i] * 2 + was[i + 1]) / 4;
 }
 
 // Each pair of neighbors, from even elements one tick and odd ones the next,
@@ -227,7 +227,7 @@ system SortPairs(Time time, mut Wave wave)
 
 system SortPairsByHand(Time time, mut Wave wave)
 {
-    for (var i = time.tick % 2; i + 1 < wave.paired.Count; i += 2)
+    for (var i = time.tick % 2; i + 1 < wave.paired.count; i += 2)
     {
         var a = wave.paired[i];
         var b = wave.paired[i + 1];

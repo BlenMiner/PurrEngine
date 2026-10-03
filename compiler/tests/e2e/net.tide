@@ -86,7 +86,7 @@ local singleton Menu
 view Start(mut Menu menu, Session session)
 {
     menu.inRoom = session.room == "K7QF2M";
-    menu.roomLength = session.room.Length;
+    menu.roomLength = session.room.length;
     menu.shown = $"{session}";
     if (menu.join)
     {

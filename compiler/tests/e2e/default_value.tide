@@ -93,9 +93,9 @@ system Use(mut Unit unit, mut Results t)
     Expect(t, v.x == 0 && v.y == 0 && q.value.w == 0 && m.c3.w == 0 && c.a == 0);
     Expect(t, e == default && p == default && this != default);
     Expect(t, mood == Mood.Calm && rank != Rank.Low && rank != Rank.High);
-    Expect(t, s == "" && s.Length == 0 && l.Count == 0);
+    Expect(t, s == "" && s.length == 0 && l.count == 0);
     Expect(t, stats.armor == 3 && stats.reach.lo == 0 && stats.reach.hi == 1 && stats.title == "knight");
-    Expect(t, u.level == 5 && u.name == "unit" && u.scores.Count == 2 && u.mood == Mood.Angry && u.aim.y == 2);
+    Expect(t, u.level == 5 && u.name == "unit" && u.scores.count == 2 && u.mood == Mood.Angry && u.aim.y == 2);
 
     // Assignments
     unit.level = default;
@@ -107,7 +107,7 @@ system Use(mut Unit unit, mut Results t)
     unit.target = default;
     unit.stats.title = "squire";
     unit.stats = default;
-    Expect(t, unit.level == 0 && unit.name == "" && unit.scores.Count == 0);
+    Expect(t, unit.level == 0 && unit.name == "" && unit.scores.count == 0);
     Expect(t, unit.aim.x == 0 && unit.mood == Mood.Calm && unit.target == default);
     Expect(t, unit.stats.title == "knight" && unit.stats.armor == 3);
 
@@ -118,7 +118,7 @@ system Use(mut Unit unit, mut Results t)
     Expect(t, Math.Length(Math.Lerp(default, float2(4, 0), 0.5)) == 2);
     mut List<int> items = [default, 7];
     items.Add(default);
-    Expect(t, items.Count == 3 && items[0] == 0 && items[1] == 7 && items[2] == 0);
+    Expect(t, items.count == 3 && items[0] == 0 && items[1] == 7 && items[2] == 0);
     Expect(t, "knight".Substring(default) == "knight");
 
     // Values of structs, and returns

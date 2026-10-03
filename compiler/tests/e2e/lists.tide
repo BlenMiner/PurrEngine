@@ -63,8 +63,8 @@ system Use(mut Inventory inv, mut Results t, mut Seen seen)
     if (t.checks > 0) return; // Once
 
     // Defaults and literals
-    Expect(t, inv.scores.Count == 3 && inv.scores[0] == 1 && inv.scores[2] == 3);
-    Expect(t, inv.tags.Count == 1 && inv.tags[0] == "new");
+    Expect(t, inv.scores.count == 3 && inv.scores[0] == 1 && inv.scores[2] == 3);
+    Expect(t, inv.tags.count == 1 && inv.tags[0] == "new");
 
     // Changing a component's list
     inv.scores.Add(4);
@@ -80,17 +80,17 @@ system Use(mut Inventory inv, mut Results t, mut Seen seen)
     Expect(t, inv.scores[99] == 0 && inv.scores[-1] == 0);
     inv.scores[99] = 5;
     inv.scores.RemoveAt(-1);
-    Expect(t, inv.scores.Count == 3);
+    Expect(t, inv.scores.count == 3);
 
     // A list taken out of a field is a copy
     mut var copy = inv.scores;
     copy.Add(100);
     copy[0] = 50;
-    Expect(t, inv.scores.Count == 3 && inv.scores[0] == 0 && copy.Count == 4 && copy[0] == 50);
+    Expect(t, inv.scores.count == 3 && inv.scores[0] == 0 && copy.count == 4 && copy[0] == 50);
 
     // Lists in and out of functions
     var doubled = Doubled(inv.scores);
-    Expect(t, doubled.Count == 3 && doubled[1] == 22);
+    Expect(t, doubled.count == 3 && doubled[1] == 22);
 
     // Structs with text in them
     inv.items.Add(Item { name = "sword", count = 1 });
@@ -120,16 +120,16 @@ system Use(mut Inventory inv, mut Results t, mut Seen seen)
 
     // Entities, and a whole list assigned
     seen.entities.Add(this);
-    Expect(t, seen.entities.Contains(this) && seen.entities.Count == 1);
+    Expect(t, seen.entities.Contains(this) && seen.entities.count == 1);
     mut List<int> fresh = [7, 8];
     inv.scores = fresh;
     fresh.Add(9); // The field has its own copy
-    Expect(t, inv.scores.Count == 2 && inv.scores[1] == 8 && fresh.Count == 3);
+    Expect(t, inv.scores.count == 2 && inv.scores[1] == 8 && fresh.count == 3);
 
     // Events carry lists
     this.Send(Found { codes = inv.scores });
     inv.scores.Clear();
-    Expect(t, inv.scores.Count == 0);
+    Expect(t, inv.scores.count == 0);
 }
 
 // Every tick after: new lists and text, the old ones released.
@@ -145,5 +145,5 @@ system Churn(mut Inventory inv, Results t)
 
 event(Found found) Heard(mut Results t)
 {
-    Expect(t, found.codes.Count == 2 && found.codes[0] == 7);
+    Expect(t, found.codes.count == 2 && found.codes[0] == 7);
 }

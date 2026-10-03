@@ -596,7 +596,7 @@ system Advance(mut Match match)
 ### Provisional
 
 - `for (var i = 0; i < n; i++) { ... }`: its start, condition and step are each optional. The variable it declares changes in its step, and is read-only in its body unless it's declared `mut var`.
-- `foreach (var item in list) { ... }` goes through a list's elements in order; `foreach (Type item in list)` names their type. Each element is a copy, read-only. The list's `Count` is read each round, so elements added along the way are reached too. A foreach over a grid goes through its cells' places, and `parallel` through them at once (see Grids); `parallel` goes through a list's elements at once too, by index (see Lists).
+- `foreach (var item in list) { ... }` goes through a list's elements in order; `foreach (Type item in list)` names their type. Each element is a copy, read-only. The list's `count` is read each round, so elements added along the way are reached too. A foreach over a grid goes through its cells' places, and `parallel` through them at once (see Grids); `parallel` goes through a list's elements at once too, by index (see Lists).
 - `i++`, `i--`, `++i` and `--i` are statements, on ints and floats, the same as `i += 1` and `i -= 1`. They aren't expressions.
 - `break` ends the innermost loop or switch; `continue` goes on to the innermost loop's next round, from inside a switch too. In a block after a call, both are the caller's: they end or continue the caller's loop, even if the function runs the block inside a loop of its own.
 - `Spawn`, `Scene.Load` and widgets can't be in a loop's condition or a for's step, which run again and again; they go in its body.
@@ -609,7 +609,7 @@ system Advance(mut Match match)
 ### Decided
 
 - `string` is text, as a value: assigning copies it, and nothing is ever shared.
-- A string's `Length` counts characters (Unicode code points), not bytes.
+- A string's `length` counts characters (Unicode code points), not bytes.
 - Components, singletons, structs and events can hold text. A world keeps it in its heap, part of the world, so snapshots have it too. The heap grows as it needs, with no limit but memory.
 - Nothing about text fails: past the end of a string, positions are clamped. Text that code makes stops growing when the scratch area is full.
 
@@ -620,7 +620,7 @@ system Advance(mut Match match)
 - Text can show numbers, bools, enums (their member's name), vectors and quaternions (`(1, 0.5)`), `Color` (`RGBA(1, 0, 0, 1)`), `Rect`, entities (`Entity(3:1)`, or `Entity(new)` for a temporary handle: see Entities) and players (`PlayerID(0)`). Floats are written with the fewest digits that read back as the same float, plainly from 1e-7 to 1e21 and with an exponent beyond (`1.5E+21`), the same on every platform: computed exactly, never with the platform's printf.
 - Text shows values with fields (structs, components, singletons, events and inputs) as C# shows records: `Stats { hp = 3, speed = 1.5 }`, `Nothing { }`, nested ones inside. Lists show as `[1, 2, 3]`. Text in them is in quotes, `name = "Bob"`, so `""` shows; it isn't escaped. Scenes show their own fields, not the engine's. `Session` shows its `room` last. The device records (`Devices` and the rest) don't show, nor does anything holding a matrix, which text can't show yet; the error names what's in the way.
 - `+` joins text with anything it can show: `"score " + score`, `1 + "st"`. `==` and `!=` compare text byte by byte. There's no `<` for text.
-- `Length`, and the methods `Contains`, `StartsWith`, `EndsWith`, `IndexOf` (-1 if it's not there), `Substring(start)` and `Substring(start, length)`, `ToUpper` and `ToLower` (ASCII letters only, for now), `Trim` and `Replace(from, to)`.
+- `length`, and the methods `Contains`, `StartsWith`, `EndsWith`, `IndexOf` (-1 if it's not there), `Substring(start)` and `Substring(start, length)`, `ToUpper` and `ToLower` (ASCII letters only, for now), `Trim` and `Replace(from, to)`.
 - Text that code makes, joining and formatting, lives in a scratch area that's cleared once the system, view or handler that made it is done, for each entity. It's only ever copied into a world's heap.
 - Heap text never changes once it's written: changing a field writes new text. What's released only goes back once the code running is done, so a copy of a field made before it changed still reads the old text, with no copying.
 - An input can't hold text: what players send each tick is numbers, bools and enums.
@@ -644,7 +644,7 @@ system Advance(mut Match match)
 ### Provisional
 
 - A list starts empty. `[a, b, c]` is a list where one goes, from what it goes into: `List<int> scores = [1, 2, 3];`, `scores = [];`, a field's default, an argument. `var x = [1, 2]` is an error, as it doesn't say the type.
-- `Count`, `items[i]` to read, `items[i] = x` and `items[i] += x` to write, and the methods `Add(item)`, `Insert(index, item)` (the index clamped), `RemoveAt(index)`, `Clear()`, and for elements that `==` compares (numbers, bools, enums, text, entities and players) `Contains(item)`, `IndexOf(item)` (-1 if it's not there) and `Remove(item)`, which returns whether it found one.
+- `count`, `items[i]` to read, `items[i] = x` and `items[i] += x` to write, and the methods `Add(item)`, `Insert(index, item)` (the index clamped), `RemoveAt(index)`, `Clear()`, and for elements that `==` compares (numbers, bools, enums, text, entities and players) `Contains(item)`, `IndexOf(item)` (-1 if it's not there) and `Remove(item)`, which returns whether it found one.
 - An element is a copy, as with C#'s List of structs: `items[i].count = 1` is an error that says to take it out, change it and put it back. A `mut` parameter or a mut method can't change an element in place either.
 - Changing a list needs it to be something that can change: a `mut` component or singleton, or a `mut` local.
 - Elements are values: built-in types, text, enums and structs, not ECS data (keep an `Entity` instead), and not lists, or structs with lists in them, yet.
@@ -743,7 +743,7 @@ int ParseScore(string text) fails ParseError
 {
     if (text == "") fail ParseError.Empty;
     mut var score = 0;
-    for (var i = 0; i < text.Length; i++)
+    for (var i = 0; i < text.length; i++)
     {
         var digit = "0123456789".IndexOf(text.Substring(i, 1));
         if (digit < 0) fail ParseError.NotANumber;
@@ -760,7 +760,7 @@ int Doubled(string text) fails ParseError
 
 int? Find(List<int> items, int wanted)
 {
-    for (var i = 0; i < items.Count; i++)
+    for (var i = 0; i < items.count; i++)
     {
         if (items[i] == wanted) return i;
     }

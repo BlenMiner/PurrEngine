@@ -60,13 +60,19 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     env:
-      TIDE_VERSION: ${{ needs.version.outputs.version || '0.0.0-dev' }}
+      TIDE_VERSION: ${{ needs.version.outputs.version }}
       TIDE_CHANNEL: ${{ github.ref_name == 'release' && 'stable' || 'nightly' }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+
+      # A push that releases nothing builds as this repo's version, as builds
+      # here do: the package's tests check `#if TIDE_0_1_OR_NEWER` against it.
+      - name: Version
+        if: env.TIDE_VERSION == ''
+        run: echo "TIDE_VERSION=$(cat VERSION)-dev" >> "$GITHUB_ENV"
 
       # Windows and Linux build with the LLVM tide's built-in clang comes from
       # (cmake/LLVM.cmake), which builds players' games: the runners' own is
@@ -159,13 +165,28 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           tools="$ANDROID_HOME/cmdline-tools/latest/bin"
-          yes | "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" > /dev/null
+          # Its yes to the licenses, without a pipe: yes ends with a broken one, which pipefail takes for failing
+          "$tools/sdkmanager" --install emulator platform-tools "system-images;android-36;default;x86_64" \
+            > /dev/null < <(yes)
+          # One folder for AVDs, which avdmanager and the emulator would each
+          # look for in their own places (the runner sets XDG_CONFIG_HOME)
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | "$tools/avdmanager" create avd -n tide -k "system-images;android-36;default;x86_64" --force
+          # The memory and disk Android 16 wants, which a new AVD's defaults don't give it
           "$ANDROID_HOME/emulator/emulator" -avd tide -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect \
-            -no-snapshot > emulator.log 2>&1 &
+            -no-snapshot -memory 4096 -cores 4 -partition-size 6144 > emulator.log 2>&1 &
+          emulator=$!
           adb="$ANDROID_HOME/platform-tools/adb"
-          "$adb" wait-for-device
-          until [ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
+          # Until Android says it booted. An emulator that ends first, or hasn't
+          # booted in 15 minutes, fails the step with what it said.
+          until [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do
+            if ! kill -0 $emulator 2>/dev/null || [ $SECONDS -gt 900 ]; then
+              cat emulator.log
+              exit 1
+            fi
+            sleep 2
+          done
           cmake --workflow --preset android-debug
 
       # The package's Android half is the platform layer for each CPU, built
@@ -190,6 +211,33 @@ jobs:
           build/dist/tide/bin/tide build build/try
           build/dist/tide/bin/tide build build/try --release --web
           build/dist/tide/bin/tide build build/try --android
+      # Its app and bundle made to ship, checked with Google's tools: apksigner,
+      # Java's JAR signatures, and bundletool (pinned), which Play runs on what
+      # it's given. Then the APKs bundletool makes of the bundle, signed with
+      # tide's key as Play signs with its own, play on the emulator, which the
+      # Android tests started.
+      - name: Try the package (Google Play)
+        if: runner.os == 'Linux'
+        run: |
+          printf 'settings\n{\n    appId = "dev.tide.trydemo";\n}\n' > build/try/settings.tide
+          build/dist/tide/bin/tide build build/try --android --release
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          "$tools/apksigner" verify --verbose build/try/build/try.apk
+          "$JAVA_HOME/bin/jarsigner" -verify build/try/build/try.aab | tee jarsigner.log
+          grep -q "jar verified" jarsigner.log
+          curl -fsSL -o bundletool.jar https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  bundletool.jar" | sha256sum -c
+          java -jar bundletool.jar validate --bundle=build/try/build/try.aab
+          openssl pkcs12 -export -in ~/.android/tide.pem -inkey ~/.android/tide.pem -out tide.p12 -passout pass:tide -name tide
+          java -jar bundletool.jar build-apks --bundle=build/try/build/try.aab --output=try.apks --connected-device \
+            --ks=tide.p12 --ks-pass=pass:tide --ks-key-alias=tide --key-pass=pass:tide
+          java -jar bundletool.jar install-apks --apks=try.apks
+          adb="$ANDROID_HOME/platform-tools/adb"
+          # -W: back once the app has drawn its first frame
+          "$adb" shell am start -W -n dev.tide.trydemo/android.app.NativeActivity | tee start.log
+          grep -q "Status: ok" start.log
+          "$adb" shell pidof dev.tide.trydemo
+          "$adb" shell dumpsys activity activities | grep topResumedActivity | grep -q dev.tide.trydemo
 
       - uses: actions/upload-artifact@v4
         with:

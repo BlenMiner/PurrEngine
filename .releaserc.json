@@ -9,10 +9,23 @@
       "@semantic-release/commit-analyzer",
       {
         "preset": "angular",
+        "parserOpts": {
+          "headerPattern": "^(\\w*)(?:\\((.*)\\))?!?: (.*)$",
+          "breakingHeaderPattern": "^(\\w*)(?:\\((.*)\\))?!: (.*)$"
+        },
         "releaseRules": [{ "breaking": true, "release": "minor" }]
       }
     ],
-    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "angular",
+        "parserOpts": {
+          "headerPattern": "^(\\w*)(?:\\((.*)\\))?!?: (.*)$",
+          "breakingHeaderPattern": "^(\\w*)(?:\\((.*)\\))?!: (.*)$"
+        }
+      }
+    ],
     [
       "@semantic-release/exec",
       {

@@ -46,7 +46,7 @@ Cross-Origin-Embedder-Policy: require-corp
 
 ## Android
 
-`tide build --android` makes an Android app, `<folder>/build/<name>.apk`, for phones and tablets (arm64) and Android's emulator (x86-64), on Android 10 and up. `tide run --android` builds it, installs it on the phone or emulator that's connected, starts it, and shows what it prints until it ends. `--host`, `--join` and `--connect` go to it as they do on a computer, and Android players play in the same rooms as everyone else.
+`tide build --android` makes an Android app, `<folder>/build/<name>.apk`, for phones and tablets (arm64) and Android's emulator (x86-64), on Android 10 and up. With `--release`, it also makes `<name>.aab`, for [Google Play](#google-play). `tide run --android` builds it, installs it on the phone or emulator that's connected, starts it, and shows what it prints until it ends. `--host`, `--join` and `--connect` go to it as they do on a computer, and Android players play in the same rooms as everyone else.
 
 To play on your phone, turn on USB debugging once: in **Settings > About phone**, tap **Build number** seven times, then turn on **USB debugging** in **System > Developer options**. Connect the phone, and allow your computer when it asks.
 
@@ -54,8 +54,23 @@ Building for Android needs two things of Google's: the NDK, Android's C library 
 
 - The app's ID is the game's `appId` setting (see [Settings](../language/basics.md#settings)). Without one, it's `dev.tide.<the game's name>`, which is fine for testing, but `--release` needs one.
 - Its name under its icon is the game's `title` setting, or `--title`, or else the game's name.
-- `tide` signs apps with a key it makes on your computer, `~/.android/tide.key`. A phone only takes an update to an app signed with the same key, so `tide run --android` replaces an app another computer installed.
-- `tide run --android` has no hot reload yet: run it again to see a change.
+- Its icon is `icon.png` in the game's folder: a square PNG, 512 by 512 pixels is plenty. Without one, it's Tide's.
+- `tide` signs apps with a key it makes on your computer the first time, `~/.android/tide.pem`. A phone only takes an update to an app signed with the same key, so keep a copy of it somewhere safe, and don't share it: whoever has it can sign apps as you. `tide run --android` replaces an app another computer installed.
+- To sign with another key (a build server's, or one you already have), set `TIDE_ANDROID_KEY` to its file: PEM, the private key (RSA, 2048 bits or more) and then its certificate. `openssl pkcs12 -in upload.p12 -nodes -out key.pem` makes one from a keystore; a `.jks` keystore becomes a `.p12` first with `keytool -importkeystore -srckeystore upload.jks -destkeystore upload.p12 -deststoretype PKCS12`.
+- Each build's version code, which Android only updates an app to a higher one of, is the minutes since 2020 began, so every build is newer than the last. Where `SOURCE_DATE_EPOCH` is set, it stands in for now. The version people see is 1.0.
+- The back button comes to the game as Escape, as in Unity.
+- While `tide run --android` runs, saving a `.tide` or C file builds the app again, installs it and starts it over: a phone can't swap code into a running app, so the match starts over too. Type `r` and press Enter to start it over yourself; closing the app ends the run.
+
+### Google Play
+
+`<name>.aab` is an App Bundle, which is what Google Play takes: Play makes the APKs from it, each phone getting only the library for its CPU. To put a game on Play:
+
+1. Make a developer account in the [Play Console](https://play.google.com/console) (Google charges a one-time fee), and create the app there.
+2. Give the game its `appId`, and build it with `tide build --android --release`.
+3. Upload `build/<name>.aab` to a release: internal testing is the quickest way to try it on your own phone. Play signs the APKs it makes with a key of its own, which it keeps (Play App Signing); `~/.android/tide.pem` is then your upload key, and Play only takes uploads signed with it.
+4. For an update, build again and upload the new `.aab`: its version code is higher than the last one's.
+
+Play's other requirements, like the version of Android an app is made for (Android 16) and support for phones with 16 KiB memory pages, `tide` meets itself. If you lose your upload key, Play can take a new one (the app's **App integrity** page asks for its certificate: the part of the key's file from `-----BEGIN CERTIFICATE-----` on).
 
 ## Hot reload
 

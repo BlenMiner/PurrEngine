@@ -75,7 +75,7 @@ C often takes pointers. Tide has none, and no pointer arithmetic: the parameter 
 | --- | --- |
 | `mut T x` | `T *`: the caller's variable, which C can change |
 | `in T x` | `const T *`: the caller's variable, read-only, with no copy (a copy for a value that's no variable's) |
-| `List<T> xs` | `const T *`: the list's elements, NULL when it's empty. Pass `xs.Count` too |
+| `List<T> xs` | `const T *`: the list's elements, NULL when it's empty. Pass `xs.count` too |
 | `mut List<T> xs` | `T *`: the elements, which C can change, but not how many there are |
 | `string s` | `const char *`: UTF-8, ending in a zero |
 
@@ -89,7 +89,7 @@ extern string Describe(in Stats stats);
 
 system Report(Scores scores, mut Summary summary)
 {
-    summary.average = Average(scores.values, scores.values.Count);
+    summary.average = Average(scores.values, scores.values.count);
     summary.text = Describe(summary.stats);
 }
 ```

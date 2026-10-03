@@ -40,7 +40,7 @@ system Setup(mut Space space)
 // list as its loop found it, so the order they run in never shows.
 system Gravity(mut Space space, Time time)
 {
-    var n = space.bodies.Count;
+    var n = space.bodies.count;
     parallel (var i in space.bodies)
     {
         mut var body = space.bodies[i];

@@ -24,7 +24,7 @@ bool android_find_ndk(const char *root, android_ndk *ndk);
 // adb: its path, or NULL after saying why it can't find or fetch it.
 char *android_find_adb(const char *root);
 
-// The key tide signs apps with on this machine, <home>/.android/tide.key,
-// where Android's own tools keep theirs: an app updates only with the key it
-// was installed with.
+// The key tide signs apps with on this machine (sign.h): the file
+// TIDE_ANDROID_KEY names, else <home>/.android/tide.pem, where Android's own
+// tools keep theirs. An app updates only with the key it was installed with.
 char *android_key_path(void);

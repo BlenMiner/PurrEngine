@@ -17,7 +17,7 @@ int ParseScore(string text) fails ParseError
 {
     if (text == "") fail ParseError.Empty;
     mut var score = 0;
-    for (var i = 0; i < text.Length; i++)
+    for (var i = 0; i < text.length; i++)
     {
         var digit = "0123456789".IndexOf(text.Substring(i, 1));
         if (digit < 0) fail ParseError.NotANumber;
@@ -100,7 +100,7 @@ Connect(7777)!;  // Carries on, whatever happened
 ```csharp
 int? Find(List<int> items, int wanted)
 {
-    for (var i = 0; i < items.Count; i++)
+    for (var i = 0; i < items.count; i++)
     {
         if (items[i] == wanted) return i;
     }

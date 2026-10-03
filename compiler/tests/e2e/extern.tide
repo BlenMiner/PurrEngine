@@ -169,10 +169,10 @@ system Run(mut Result r)
     r.pairSum = c_pair_sum(r.swapped);
 
     r.weights = [1.5, 2.5, 3];
-    r.weightSum = c_sum(r.weights, r.weights.Count);
+    r.weightSum = c_sum(r.weights, r.weights.count);
     r.literalSum = c_sum([10, 20], 2);
     r.counts = [1, 2, 3];
-    c_double_all(r.counts, r.counts.Count);
+    c_double_all(r.counts, r.counts.count);
     r.countsAfter = r.counts[0] * 100 + r.counts[1] * 10 + r.counts[2];
     List<int> none = [];
     r.emptyIsNull = c_is_null(none);
